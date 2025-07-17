@@ -1,10 +1,11 @@
 # hiphile
-A lightweight Navidrome client using GPUI.
+
+A lightweight Navidrome client built in Rust with GPUI.
 
 ## Roadmap
 
-- [ ] playback from stream
-- [ ] auto-switch device sample rate
-- [ ] scrobbling (last.fm) support
-- [ ] local cache library
-- [ ] fuzzy-find album/artist/song search
+- [ ] pure Rust audio backend
+- [ ] HQPlayer playback support
+- [ ] automatic device sample rate switching
+- [ ] local music library caching
+- [ ] fuzzy search
