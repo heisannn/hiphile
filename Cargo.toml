@@ -1,4 +1,4 @@
 [workspace]
 resolver = "3"
-members = ["crates/hiphile"]
+members = ["crates/core", "crates/hiphile", "crates/playback"]
 default-members = ["crates/hiphile"]
