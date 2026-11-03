@@ -42,41 +42,70 @@ enum Command {
     },
 }
 
+/// Where to connect. Anything left out comes from the last sign-in in the
+/// app: its server, its user, and the password saved in the keychain.
 #[derive(Args)]
 struct ServerArgs {
     /// Server address, e.g. https://music.example.com
     #[arg(long, env = "HIPHILE_SERVER")]
-    server: String,
-    #[arg(long, env = "HIPHILE_USERNAME", required_unless_present = "api_key")]
+    server: Option<String>,
+    #[arg(long, env = "HIPHILE_USERNAME", conflicts_with = "api_key")]
     username: Option<String>,
     #[arg(
         long,
         env = "HIPHILE_PASSWORD",
         hide_env_values = true,
-        requires = "username"
+        conflicts_with = "api_key"
     )]
     password: Option<String>,
     /// OpenSubsonic API key, used instead of username and password.
-    #[arg(
-        long,
-        env = "HIPHILE_API_KEY",
-        hide_env_values = true,
-        conflicts_with = "username"
-    )]
+    #[arg(long, env = "HIPHILE_API_KEY", hide_env_values = true)]
     api_key: Option<String>,
 }
 
 impl ServerArgs {
     fn client(self) -> anyhow::Result<client::Client> {
-        let credentials = match (self.api_key, self.username, self.password) {
-            (Some(key), _, _) => Credentials::api_key(key),
-            (None, Some(username), Some(password)) => Credentials::password(username, password),
-            _ => anyhow::bail!("pass --password (or HIPHILE_PASSWORD) together with --username"),
+        let profile = config::Store::user()
+            .ok()
+            .and_then(|store| store.last_profile().ok().flatten());
+        let address = self
+            .server
+            .or_else(|| profile.as_ref().map(|profile| profile.server().to_owned()))
+            .context("pass --server (or set HIPHILE_SERVER), or sign in once in the app")?;
+        let credentials = match self.api_key {
+            Some(key) => Credentials::api_key(key),
+            None => {
+                let username = self
+                    .username
+                    .or_else(|| {
+                        profile
+                            .filter(|profile| profile.server() == address)
+                            .map(|profile| profile.username().to_owned())
+                    })
+                    .context("pass --username (or set HIPHILE_USERNAME)")?;
+                let password = match self.password {
+                    Some(password) => password,
+                    None => saved_password(&address, &username)?,
+                };
+                Credentials::password(username, password)
+            }
         };
-        let server = client::Server::new(&self.server, credentials)?;
+        let server = client::Server::new(&address, credentials)?;
         let user_agent = concat!("hiphile-cli/", env!("CARGO_PKG_VERSION"));
         Ok(client::Client::new(net::Client::new(user_agent)?, server))
     }
+}
+
+fn saved_password(server: &str, username: &str) -> anyhow::Result<String> {
+    let profile = config::Profile::new(server, username);
+    config::Keychain::system()?
+        .password(&profile)?
+        .with_context(|| {
+            format!(
+                "no password for {username} on {server} in the keychain; \
+                 pass --password (or set HIPHILE_PASSWORD), or sign in in the app"
+            )
+        })
 }
 
 fn main() -> anyhow::Result<()> {

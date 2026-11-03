@@ -1,4 +1,4 @@
-use account::{SignIn, SignInEvent};
+use account::{SignIn, SignInEvent, Start};
 use actions::PlaySongs;
 use gpui_kit::component::{ActiveTheme as _, StyledExt as _, TitleBar, h_flex, v_flex};
 use gpui_kit::{
@@ -20,6 +20,9 @@ pub const WORKSPACE_CONTEXT: &str = "Workspace";
 /// workspace, and routes commands between features; it owns no feature state.
 pub struct AppShell {
     net: net::Client,
+    /// `None` where the system has no credential store; signing in then
+    /// always asks for the password.
+    keychain: Option<config::Keychain>,
     /// Keeps a focus target in the window, so menu and keyboard commands
     /// always reach this view's handlers.
     focus: FocusHandle,
@@ -37,6 +40,7 @@ enum Screen {
 /// Everything that exists only while signed in.
 struct Workspace {
     session: Session,
+    profile: config::Profile,
     library: Entity<Library>,
     player: Entity<Player>,
     /// Holds the session's decoded covers, so signing out frees them.
@@ -47,19 +51,31 @@ impl AppShell {
     pub fn new(net: net::Client, window: &mut Window, cx: &mut Context<Self>) -> Self {
         window.set_window_title("hiphile");
         let focus = cx.focus_handle();
-        let screen = Self::sign_in(&net, window, cx);
-        Self { net, focus, screen }
+        let keychain = config::Keychain::system().ok();
+        let screen = Self::sign_in(&net, keychain.clone(), Start::Resume, window, cx);
+        Self {
+            net,
+            keychain,
+            focus,
+            screen,
+        }
     }
 
-    fn sign_in(net: &net::Client, window: &mut Window, cx: &mut Context<Self>) -> Screen {
-        let view = cx.new(|cx| SignIn::new(net.clone(), window, cx));
+    fn sign_in(
+        net: &net::Client,
+        keychain: Option<config::Keychain>,
+        start: Start,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Screen {
+        let view = cx.new(|cx| SignIn::new(net.clone(), keychain, start, window, cx));
         let subscription = cx.subscribe_in(&view, window, |_, _, event, window, cx| {
-            let SignInEvent::SignedIn(session) = event;
-            let session = session.clone();
+            let SignInEvent::SignedIn { session, profile } = event;
+            let (session, profile) = (session.clone(), profile.clone());
             // Replacing the screen drops this subscription; do it after the
             // event has been delivered.
             cx.defer_in(window, move |this, window, cx| {
-                this.open_workspace(session, window, cx)
+                this.open_workspace(session, profile, window, cx)
             });
         });
         Screen::SignIn {
@@ -68,12 +84,19 @@ impl AppShell {
         }
     }
 
-    fn open_workspace(&mut self, session: Session, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_workspace(
+        &mut self,
+        session: Session,
+        profile: config::Profile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let library = cx.new(|cx| Library::new(session.clone(), window, cx));
         let player = cx.new(|cx| Player::new(session.clone(), cx));
         let covers = CoverCache::new(cx);
         self.screen = Screen::Workspace(Box::new(Workspace {
             session,
+            profile,
             library,
             player,
             covers,
@@ -81,13 +104,20 @@ impl AppShell {
         cx.notify();
     }
 
-    /// Drops the workspace, which stops playback, and returns to signing in.
+    /// Drops the workspace, which stops playback, forgets the saved
+    /// password, and returns to signing in.
     fn sign_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if matches!(self.screen, Screen::Workspace(_)) {
-            self.focus.focus(window, cx);
-            self.screen = Self::sign_in(&self.net, window, cx);
-            cx.notify();
+        let Screen::Workspace(workspace) = &self.screen else {
+            return;
+        };
+        if let Some(keychain) = self.keychain.clone() {
+            let profile = workspace.profile.clone();
+            cx.background_spawn(async move { keychain.delete_password(&profile) })
+                .detach();
         }
+        self.focus.focus(window, cx);
+        self.screen = Self::sign_in(&self.net, self.keychain.clone(), Start::Fresh, window, cx);
+        cx.notify();
     }
 
     fn player(&self) -> Option<&Entity<Player>> {

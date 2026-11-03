@@ -1,15 +1,26 @@
 [package]
 name = "config"
-description = "Server profiles, stored credentials, and preferences. No GPUI."
+description = "Server profiles and keychain passwords shared by the GUI and the CLI. No GPUI."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-directories.workspace = true
+config-rs.workspace = true
+dirs.workspace = true
+keyring-core.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 thiserror.workspace = true
+toml_edit.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-native-keyring-store.workspace = true
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+zbus-secret-service-keyring-store.workspace = true
 
 [lints]
 workspace = true

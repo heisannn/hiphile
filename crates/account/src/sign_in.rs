@@ -14,18 +14,36 @@ use subsonic::Credentials;
 
 /// Emitted once the server accepted the credentials.
 pub enum SignInEvent {
-    SignedIn(Session),
+    SignedIn {
+        session: Session,
+        /// Where the user signed in; its password is in the keychain.
+        profile: config::Profile,
+    },
+}
+
+/// How the form starts.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Start {
+    /// Signs in with the last profile's saved password, if there is one.
+    Resume,
+    /// Waits for the user, as after signing out.
+    Fresh,
 }
 
 /// The sign-in form. Owns its fields and the in-flight connection attempt;
 /// the app shell decides what happens after [`SignInEvent::SignedIn`].
+///
+/// A successful sign-in saves the profile to the settings directory and the
+/// password to the keychain.
 pub struct SignIn {
     net: net::Client,
     store: Option<config::Store>,
+    keychain: Option<config::Keychain>,
     server: Entity<InputState>,
     username: Entity<InputState>,
     password: Entity<InputState>,
     status: Status,
+    _resume: Task<()>,
     _attempt: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -50,8 +68,14 @@ enum InputField {
 impl EventEmitter<SignInEvent> for SignIn {}
 
 impl SignIn {
-    pub fn new(net: net::Client, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let store = config::Store::platform().ok();
+    pub fn new(
+        net: net::Client,
+        keychain: Option<config::Keychain>,
+        start: Start,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let store = config::Store::user().ok();
         let profile = store
             .as_ref()
             .and_then(|store| store.last_profile().ok().flatten());
@@ -98,16 +122,47 @@ impl SignIn {
             .clone();
         first_empty.update(cx, |input, cx| input.focus(window, cx));
 
-        Self {
+        let mut this = Self {
             net,
             store,
+            keychain,
             server,
             username,
             password,
             status: Status::Idle,
+            _resume: Task::ready(()),
             _attempt: Task::ready(()),
             _subscriptions: subscriptions,
+        };
+        if start == Start::Resume
+            && let Some(profile) = profile
+        {
+            this.resume(profile, window, cx);
         }
+        this
+    }
+
+    /// Reads the profile's saved password and signs in with it. Without one,
+    /// or if the keychain fails, the form waits for the user as usual.
+    fn resume(&mut self, profile: config::Profile, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(keychain) = self.keychain.clone() else {
+            return;
+        };
+        let lookup = cx.background_spawn(async move { keychain.password(&profile) });
+        self._resume = cx.spawn_in(window, async move |this, cx| {
+            let Ok(Some(password)) = lookup.await else {
+                return;
+            };
+            this.update_in(cx, |this, window, cx| {
+                // The user may have started typing meanwhile.
+                if this.password.read(cx).value().is_empty() {
+                    this.password
+                        .update(cx, |input, cx| input.set_value(password, window, cx));
+                    this.sign_in(window, cx);
+                }
+            })
+            .ok();
+        });
     }
 
     fn sign_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -135,7 +190,7 @@ impl SignIn {
             return;
         }
 
-        let credentials = Credentials::password(username.clone(), password);
+        let credentials = Credentials::password(username.clone(), password.clone());
         let server = match client::Server::new(&address, credentials) {
             Ok(server) => server,
             Err(error) => {
@@ -155,8 +210,12 @@ impl SignIn {
                 match result {
                     Ok(info) => {
                         this.status = Status::Idle;
-                        this.remember(&address, &username);
-                        cx.emit(SignInEvent::SignedIn(Session::new(client, info)));
+                        let profile = config::Profile::new(address, username);
+                        this.remember(&profile, password, cx);
+                        cx.emit(SignInEvent::SignedIn {
+                            session: Session::new(client, info),
+                            profile,
+                        });
                     }
                     Err(error) => this.status = Status::Failed(describe(&error).into()),
                 }
@@ -166,13 +225,16 @@ impl SignIn {
         });
     }
 
-    /// Saves where the user signed in, never the password. A failure only
-    /// means the fields start empty next time, so it is not shown.
-    fn remember(&self, server: &str, username: &str) {
+    /// Saves the profile, and the password to the keychain. A failure only
+    /// means the user types more next time, so it is not shown.
+    fn remember(&self, profile: &config::Profile, password: String, cx: &mut Context<Self>) {
         if let Some(store) = &self.store {
-            store
-                .save_profile(&config::Profile::new(server, username))
-                .ok();
+            store.save_profile(profile).ok();
+        }
+        if let Some(keychain) = self.keychain.clone() {
+            let profile = profile.clone();
+            cx.background_spawn(async move { keychain.set_password(&profile, &password) })
+                .detach();
         }
     }
 

@@ -11,6 +11,7 @@ async-channel.workspace = true
 audio.workspace = true
 clap.workspace = true
 client.workspace = true
+config.workspace = true
 futures.workspace = true
 net.workspace = true
 playback.workspace = true
