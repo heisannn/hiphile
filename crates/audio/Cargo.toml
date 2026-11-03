@@ -1,0 +1,17 @@
+[package]
+name = "audio"
+description = "Playback engine: symphonia decoding and cpal output. No GPUI."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-channel.workspace = true
+cpal.workspace = true
+rtrb.workspace = true
+rubato.workspace = true
+symphonia.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

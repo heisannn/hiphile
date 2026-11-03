@@ -1,0 +1,18 @@
+[package]
+name = "net"
+description = "HTTP transport: reqwest on a dedicated tokio runtime, exposed through runtime-agnostic futures."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+bytes.workspace = true
+futures.workspace = true
+http.workspace = true
+reqwest.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url.workspace = true
+
+[lints]
+workspace = true

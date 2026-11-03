@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Fails when a crate that must stay GPUI-independent gains a GPUI dependency.
+set -euo pipefail
+
+crates=(subsonic net client audio playback catalog config hiphile-cli)
+status=0
+for crate in "${crates[@]}"; do
+  if cargo tree -p "$crate" -e normal --prefix none | grep -qi '^gpui'; then
+    echo "error: $crate depends on GPUI" >&2
+    cargo tree -p "$crate" -e normal -i gpui-pre 2>/dev/null | head -20 >&2 || true
+    status=1
+  fi
+done
+exit "$status"

@@ -1,0 +1,17 @@
+[package]
+name = "account"
+description = "Feature: signing in to a server."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+client.workspace = true
+config.workspace = true
+gpui-kit.workspace = true
+net.workspace = true
+session.workspace = true
+subsonic.workspace = true
+
+[lints]
+workspace = true

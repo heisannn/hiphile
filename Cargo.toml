@@ -1,4 +1,65 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/hiphile", "crates/playback"]
+members = ["crates/*"]
 default-members = ["crates/hiphile"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+# Internal crates
+account = { path = "crates/account" }
+actions = { path = "crates/actions" }
+audio = { path = "crates/audio" }
+catalog = { path = "crates/catalog" }
+client = { path = "crates/client" }
+config = { path = "crates/config" }
+library = { path = "crates/library" }
+net = { path = "crates/net" }
+playback = { path = "crates/playback" }
+player = { path = "crates/player" }
+search = { path = "crates/search" }
+session = { path = "crates/session" }
+subsonic = { path = "crates/subsonic" }
+ui = { path = "crates/ui" }
+
+# External crates
+anyhow = "1.0"
+async-channel = "2.5"
+bytes = "1.12"
+clap = { version = "4.6", features = ["derive", "env"] }
+cpal = "0.18"
+directories = "6.0"
+futures = "0.3"
+http = "1.5"
+gpui-kit = "0.9"
+hex = "0.4"
+md-5 = "0.11"
+rand = "0.10"
+reqwest = "0.13"
+rtrb = "0.4"
+rubato = "5.0"
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1.0"
+symphonia = { version = "0.6", features = ["all"] }
+thiserror = "2.0"
+tokio = { version = "1.54", features = ["rt-multi-thread", "macros"] }
+url = "2.5"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.dev.package]
+gpui-pre = { opt-level = 3 }
+gpui-component = { opt-level = 3 }
+gpui-kit = { opt-level = 3 }
+gpui-kit-assets = { opt-level = 3 }
+gpui-pre-platform = { opt-level = 3 }
+rustybuzz = { opt-level = 3 }
+taffy = { opt-level = 3 }
+ttf-parser = { opt-level = 3 }

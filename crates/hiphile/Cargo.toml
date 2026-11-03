@@ -1,8 +1,19 @@
 [package]
 name = "hiphile"
-version = "0.1.0"
-edition = "2024"
+description = "Desktop OpenSubsonic client."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
 
 [dependencies]
-gpui = { git = "https://github.com/zed-industries/zed.git" }
-gpui-component = { git = "https://github.com/longbridge/gpui-component.git" }
+account.workspace = true
+actions.workspace = true
+gpui-kit.workspace = true
+library.workspace = true
+net.workspace = true
+player.workspace = true
+session.workspace = true
+ui.workspace = true
+
+[lints]
+workspace = true
