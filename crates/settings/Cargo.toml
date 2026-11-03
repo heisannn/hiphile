@@ -1,0 +1,15 @@
+[package]
+name = "settings"
+description = "Feature: the settings window."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+audio.workspace = true
+config.workspace = true
+gpui-kit.workspace = true
+ui.workspace = true
+
+[lints]
+workspace = true

@@ -1,40 +1,18 @@
 use audio::PlaybackFormat;
-
-/// `44.1 kHz`, `96 kHz`.
-pub(crate) fn sample_rate(rate: u32) -> String {
-    let khz = f64::from(rate) / 1000.0;
-    if rate.is_multiple_of(1000) {
-        format!("{khz:.0} kHz")
-    } else {
-        format!("{khz:.1} kHz")
-    }
-}
+use ui::format_sample_rate;
 
 /// How the current file reaches the device, e.g. `FLAC · 96 kHz` or, when
-/// the device cannot run at the file's rate, `FLAC · 96 → 48 kHz`.
+/// the device runs at another rate, `FLAC · 96 → 48 kHz`.
 pub(crate) fn describe(format: &PlaybackFormat, suffix: Option<&str>) -> String {
     let rate = if format.is_resampled() {
-        let source = sample_rate(format.source_rate());
+        let source = format_sample_rate(format.source_rate());
         let source = source.trim_end_matches(" kHz");
-        format!("{source} → {}", sample_rate(format.output_rate()))
+        format!("{source} → {}", format_sample_rate(format.output_rate()))
     } else {
-        sample_rate(format.output_rate())
+        format_sample_rate(format.output_rate())
     };
     match suffix {
         Some(suffix) => format!("{} · {rate}", suffix.to_uppercase()),
         None => rate,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn formats_common_rates() {
-        assert_eq!(sample_rate(44_100), "44.1 kHz");
-        assert_eq!(sample_rate(48_000), "48 kHz");
-        assert_eq!(sample_rate(88_200), "88.2 kHz");
-        assert_eq!(sample_rate(192_000), "192 kHz");
     }
 }

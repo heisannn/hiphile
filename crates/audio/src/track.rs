@@ -1,5 +1,6 @@
 use std::io::{Read, Seek};
 use std::sync::Arc;
+use std::time::Duration;
 
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::io::MediaSource;
@@ -12,6 +13,8 @@ pub struct Track {
     pub(crate) source: Box<dyn MediaSource>,
     pub(crate) hint: Hint,
     pub(crate) cancel: Option<Cancel>,
+    pub(crate) start_at: Duration,
+    pub(crate) start_paused: bool,
 }
 
 impl Track {
@@ -28,6 +31,8 @@ impl Track {
             }),
             hint: Hint::new(),
             cancel: None,
+            start_at: Duration::ZERO,
+            start_paused: false,
         }
     }
 
@@ -40,7 +45,21 @@ impl Track {
             }),
             hint: Hint::new(),
             cancel: None,
+            start_at: Duration::ZERO,
+            start_paused: false,
         }
+    }
+
+    /// Starts playing from `position` instead of the beginning.
+    pub fn start_at(mut self, position: Duration) -> Self {
+        self.start_at = position;
+        self
+    }
+
+    /// Starts paused, ready to [`crate::Engine::resume`].
+    pub fn start_paused(mut self, paused: bool) -> Self {
+        self.start_paused = paused;
+        self
     }
 
     /// How to make a blocked read of this source return, for sources that

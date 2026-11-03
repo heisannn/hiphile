@@ -67,6 +67,7 @@ struct Workspace {
     /// Holds the session's decoded covers, so signing out frees them.
     covers: Entity<CoverCache>,
     _player_events: Subscription,
+    _output_changes: Subscription,
 }
 
 impl AppShell {
@@ -117,7 +118,9 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         let library = cx.new(|cx| Library::new(session.clone(), window, cx));
-        let player = cx.new(|cx| Player::new(session.clone(), window, cx));
+        let audio_settings = settings::audio_settings(cx);
+        let output = audio_settings.read(cx).output().clone();
+        let player = cx.new(|cx| Player::new(session.clone(), output, window, cx));
         let queue = cx.new(|cx| QueueView::new(player.clone(), window, cx));
         let covers = CoverCache::new(cx);
         // The library marks the song the player is on; the shell also
@@ -135,6 +138,15 @@ impl AppShell {
                 cx.notify();
             }
         });
+        let output_changes = cx.subscribe(&audio_settings, {
+            let player = player.downgrade();
+            move |_, audio_settings, _: &settings::OutputChanged, cx| {
+                let output = audio_settings.read(cx).output().clone();
+                player
+                    .update(cx, |player, cx| player.set_output(output, cx))
+                    .ok();
+            }
+        });
         self.screen = Screen::Workspace(Box::new(Workspace {
             session,
             profile,
@@ -144,6 +156,7 @@ impl AppShell {
             panes: cx.new(|_| ResizableState::default()),
             covers,
             _player_events: player_events,
+            _output_changes: output_changes,
         }));
         cx.notify();
     }

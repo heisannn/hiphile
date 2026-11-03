@@ -2,6 +2,8 @@
 pub enum Error {
     #[error("no audio output device is available")]
     NoOutputDevice,
+    #[error("the chosen output device is not connected")]
+    OutputDeviceUnavailable,
     #[error("the output device does not accept 32-bit float audio")]
     UnsupportedOutputFormat,
     #[error("audio output failed: {0}")]

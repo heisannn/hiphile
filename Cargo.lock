@@ -3183,6 +3183,7 @@ dependencies = [
  "net",
  "player",
  "session",
+ "settings",
  "ui",
 ]
 
@@ -6681,6 +6682,16 @@ dependencies = [
  "subsonic",
  "tempfile",
  "url",
+]
+
+[[package]]
+name = "settings"
+version = "0.1.0"
+dependencies = [
+ "audio",
+ "config 0.1.0",
+ "gpui-kit",
+ "ui",
 ]
 
 [[package]]

@@ -9,7 +9,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crate::convert::Converter;
 use crate::decode::Decoder;
 use crate::device::device_name;
-use crate::output::{self, ConfigRange};
+use crate::output::{self, OutputSettings};
 use crate::track::Cancel;
 use crate::{Error, Track};
 
@@ -24,6 +24,11 @@ const RESTORE_DELAY: Duration = Duration::from_secs(5);
 /// The longest a finished track waits for the device to play its last
 /// samples, in case the device stops reporting its progress.
 const TAIL_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long opening a stream waits for the device to reach a new sample rate.
+/// External DACs can take well over cpal's default of a second, and a stream
+/// that gives up leaves the device switching anyway.
+const RATE_SWITCH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Serializes switching device rates across engines in this process, so one
 /// engine restoring a rate cannot interleave with another opening a stream.
@@ -49,6 +54,9 @@ pub struct Event {
 pub enum EventKind {
     /// The track started playing.
     Started(PlaybackFormat),
+    /// The track moved to other output settings, or to the rate someone else
+    /// set on the device, and goes on from where it was, paused if it was.
+    OutputChanged(PlaybackFormat),
     /// The track played to its end.
     Ended,
     /// The track stopped because of an error.
@@ -88,7 +96,7 @@ impl PlaybackFormat {
     }
 
     /// Whether samples are resampled, which happens only when the device
-    /// cannot run at the source rate.
+    /// runs at another rate than the source.
     pub fn is_resampled(&self) -> bool {
         self.source_rate != self.output_rate
     }
@@ -108,7 +116,11 @@ enum Command {
     Pause,
     Resume,
     Seek(Duration),
+    SetOutput(OutputSettings),
     Stop,
+    /// The stream stopped because the device changed under it, such as its
+    /// rate being set from outside the engine.
+    StreamInvalidated(Generation),
     OutputFailed(Generation, String),
     Shutdown,
 }
@@ -134,6 +146,15 @@ impl Shared {
             generation: AtomicU64::new(0),
             cancel: Mutex::new(None),
         }
+    }
+
+    fn position(&self) -> Duration {
+        let rate = self.output_rate.load(Ordering::Relaxed);
+        if rate == 0 {
+            return Duration::ZERO;
+        }
+        let frames = self.frames_played.load(Ordering::Relaxed);
+        Duration::from_secs_f64(frames as f64 / f64::from(rate))
     }
 
     fn is_current(&self, generation: Generation) -> bool {
@@ -224,6 +245,13 @@ impl Engine {
         self.send(Command::Seek(to));
     }
 
+    /// Plays on `output` from now on. A track playing or paused moves there
+    /// at once and reports [`EventKind::OutputChanged`], or
+    /// [`EventKind::Failed`] if it cannot.
+    pub fn set_output(&self, output: OutputSettings) {
+        self.send(Command::SetOutput(output));
+    }
+
     pub fn stop(&self) {
         self.shared.supersede(None);
         self.send(Command::Stop);
@@ -244,12 +272,7 @@ impl Engine {
 
     /// How much of the current track the device has played.
     pub fn position(&self) -> Duration {
-        let rate = self.shared.output_rate.load(Ordering::Relaxed);
-        if rate == 0 {
-            return Duration::ZERO;
-        }
-        let frames = self.shared.frames_played.load(Ordering::Relaxed);
-        Duration::from_secs_f64(frames as f64 / f64::from(rate))
+        self.shared.position()
     }
 
     /// Stops playback, returns the device to the sample rate it had before
@@ -312,6 +335,7 @@ fn serve(
         let load = LoadId(generation);
         events.send_blocking(Event { load, kind }).ok();
     };
+    let mut output = OutputSettings::default();
     let mut current: Option<Playback> = None;
     let mut idle_since: Option<Instant> = None;
     // A command that arrived behind a run of seeks.
@@ -376,7 +400,14 @@ fn serve(
                 // A newer request already replaced this one; dropping the
                 // track releases its source.
                 if shared.is_current(generation) {
-                    match Playback::start(track, generation, shared, command_sender, restore) {
+                    match Playback::start(
+                        track,
+                        generation,
+                        &output,
+                        shared,
+                        command_sender,
+                        restore,
+                    ) {
                         Ok(playback) if shared.is_current(generation) => {
                             emit(generation, EventKind::Started(playback.format.clone()));
                             current = Some(playback);
@@ -408,6 +439,33 @@ fn serve(
                     .seek(to, shared)
                     .map_err(|error| (playback.generation, error))
             }),
+            Some(Command::SetOutput(settings)) if settings == output => Ok(()),
+            Some(Command::SetOutput(settings)) => {
+                output = settings;
+                current.take().map_or(Ok(()), |playback| {
+                    let moved = playback.move_to(&output, shared, command_sender, restore)?;
+                    current = moved.inspect(|playback| {
+                        emit(
+                            playback.generation,
+                            EventKind::OutputChanged(playback.format.clone()),
+                        );
+                    });
+                    Ok(())
+                })
+            }
+            Some(Command::StreamInvalidated(generation)) => current
+                .take_if(|playback| playback.generation == generation)
+                .map_or(Ok(()), |playback| {
+                    let settings = keep_device_rate(&output, &playback, restore);
+                    let moved = playback.move_to(&settings, shared, command_sender, restore)?;
+                    current = moved.inspect(|playback| {
+                        emit(
+                            playback.generation,
+                            EventKind::OutputChanged(playback.format.clone()),
+                        );
+                    });
+                    Ok(())
+                }),
             Some(Command::Stop) => {
                 current = None;
                 Ok(())
@@ -552,9 +610,63 @@ impl RateRestore {
             self.original.sample_format(),
             |_: &mut cpal::Data, _: &cpal::OutputCallbackInfo| {},
             |_| {},
-            None,
+            Some(RATE_SWITCH_TIMEOUT),
         );
         drop(stream);
+    }
+}
+
+/// The device `output` names, or the system's default.
+fn find_device(output: &OutputSettings) -> Result<cpal::Device, Error> {
+    let host = cpal::default_host();
+    match output.device() {
+        None => host.default_output_device().ok_or(Error::NoOutputDevice),
+        // An id that cannot be read may come from another platform's settings.
+        Some(id) => id
+            .parse()
+            .ok()
+            .and_then(|id| host.device_by_id(&id))
+            .ok_or(Error::OutputDeviceUnavailable),
+    }
+}
+
+/// `output` at the rate the device runs at now, for a stream whose device has
+/// changed under it. Whoever changed the rate keeps it: asking for the old one
+/// again could fight them, and it stays when playback ends, so nothing is left
+/// to restore. The next track follows `output` again.
+fn keep_device_rate(
+    output: &OutputSettings,
+    playback: &Playback,
+    restore: &mut Option<RateRestore>,
+) -> OutputSettings {
+    let stream_rate = playback.format.output_rate;
+    let device_rate = find_device(output)
+        .and_then(|device| Ok(device.default_output_config()?.sample_rate()))
+        .unwrap_or(stream_rate);
+    if device_rate != stream_rate {
+        *restore = None;
+    }
+    OutputSettings::new(output.device().map(str::to_owned), Some(device_rate))
+}
+
+/// Where a stream picks up in its track.
+#[derive(Clone, Copy)]
+struct Start {
+    position: Duration,
+    paused: bool,
+    /// The position is at or past the end of the track.
+    past_end: bool,
+}
+
+impl Start {
+    /// Moves `decoder` to the position, which ends up where it could seek to.
+    fn seek(self, decoder: &mut Decoder) -> Result<Self, Error> {
+        let resumed = decoder.seek(self.position)?;
+        Ok(Self {
+            position: resumed.unwrap_or(self.position),
+            past_end: resumed.is_none(),
+            ..self
+        })
     }
 }
 
@@ -591,37 +703,134 @@ impl Playback {
     fn start(
         track: Track,
         generation: Generation,
+        settings: &OutputSettings,
         shared: &Arc<Shared>,
         commands: &mpsc::Sender<Command>,
         restore: &mut Option<RateRestore>,
     ) -> Result<Self, Error> {
-        let decoder = Decoder::open(track)?;
+        let start = Start {
+            position: track.start_at,
+            paused: track.start_paused,
+            past_end: false,
+        };
+        let mut decoder = Decoder::open(track)?;
+        // From the beginning, no seek is needed.
+        let start = if start.position.is_zero() {
+            start
+        } else {
+            start.seek(&mut decoder)?
+        };
+        Self::begin(
+            decoder, start, generation, settings, shared, commands, restore,
+        )
+    }
+
+    /// Goes on from the same position on `settings`, paused if it was.
+    fn reopen(
+        self,
+        settings: &OutputSettings,
+        shared: &Arc<Shared>,
+        commands: &mpsc::Sender<Command>,
+        restore: &mut Option<RateRestore>,
+    ) -> Result<Self, Error> {
+        let start = Start {
+            position: shared.position(),
+            paused: self.paused,
+            past_end: false,
+        };
+        let Self {
+            mut decoder,
+            generation,
+            stream,
+            ..
+        } = self;
+        // Release the device before opening it again.
+        drop(stream);
+        let start = start.seek(&mut decoder)?;
+        Self::begin(
+            decoder, start, generation, settings, shared, commands, restore,
+        )
+    }
+
+    /// [`Self::reopen`], leaving out a track superseded meanwhile. An error
+    /// names the generation it ends.
+    fn move_to(
+        self,
+        settings: &OutputSettings,
+        shared: &Arc<Shared>,
+        commands: &mpsc::Sender<Command>,
+        restore: &mut Option<RateRestore>,
+    ) -> Result<Option<Self>, (Generation, Error)> {
+        let generation = self.generation;
+        match self.reopen(settings, shared, commands, restore) {
+            Ok(playback) if shared.is_current(generation) => Ok(Some(playback)),
+            Ok(_) => Ok(None),
+            Err(_) if !shared.is_current(generation) => Ok(None),
+            Err(error) => {
+                shared.release(generation);
+                Err((generation, error))
+            }
+        }
+    }
+
+    /// Opens a stream for `decoder`, which is at `start`, and starts it.
+    fn begin(
+        decoder: Decoder,
+        start: Start,
+        generation: Generation,
+        settings: &OutputSettings,
+        shared: &Arc<Shared>,
+        commands: &mpsc::Sender<Command>,
+        restore: &mut Option<RateRestore>,
+    ) -> Result<Self, Error> {
+        let mut playback = Self::open(
+            decoder,
+            generation,
+            settings,
+            start.position,
+            shared,
+            commands,
+            restore,
+        )?;
+        // Past the end, the track ends once the device has played out.
+        playback.finished = start.past_end;
+        // Start with a full buffer so the first callbacks are not silent.
+        playback.fill()?;
+        if start.paused {
+            playback.pause()?;
+        } else {
+            playback.stream.play()?;
+        }
+        Ok(playback)
+    }
+
+    /// Opens a stream for `decoder`, which has yet to be filled and started.
+    /// `position` is where the decoder is in the track.
+    fn open(
+        decoder: Decoder,
+        generation: Generation,
+        settings: &OutputSettings,
+        position: Duration,
+        shared: &Arc<Shared>,
+        commands: &mpsc::Sender<Command>,
+        restore: &mut Option<RateRestore>,
+    ) -> Result<Self, Error> {
         let source = decoder.spec();
 
-        let device = cpal::default_host()
-            .default_output_device()
-            .ok_or(Error::NoOutputDevice)?;
+        let device = find_device(settings)?;
         let device_id = cfg!(target_os = "macos")
             .then(|| device.id().ok())
             .flatten();
         if let Some(left) = RateRestore::take_if_other(restore, device_id.as_ref()) {
             left.apply();
         }
-        let ranges: Vec<ConfigRange> = device
-            .supported_output_configs()?
-            .filter(|range| range.sample_format() == cpal::SampleFormat::F32)
-            .map(|range| ConfigRange {
-                channels: range.channels(),
-                min_rate: range.min_sample_rate(),
-                max_rate: range.max_sample_rate(),
-            })
-            .collect();
+        let ranges = output::config_ranges(&device)?;
         // Held until the stream exists, which is when cpal switches the rate.
         let setup = DEVICE_SETUP.lock().unwrap_or_else(PoisonError::into_inner);
         let device_config = device.default_output_config()?;
         let device_rate = device_config.sample_rate();
-        let output =
-            output::plan(&ranges, device_rate, source).ok_or(Error::UnsupportedOutputFormat)?;
+        let output = output::plan(&ranges, device_rate, source, settings.fixed_rate())
+            .ok_or(Error::UnsupportedOutputFormat)?;
         if let Some(device_id) = device_id {
             RateRestore::note(restore, device_id, device_config, output.rate);
         }
@@ -636,7 +845,8 @@ impl Playback {
         let capacity = ahead_frames.max(1) * channels;
         let (producer, consumer) = rtrb::RingBuffer::new(capacity);
 
-        shared.frames_played.store(0, Ordering::Relaxed);
+        let frames = (position.as_secs_f64() * f64::from(output.rate)) as u64;
+        shared.frames_played.store(frames, Ordering::Relaxed);
         shared.output_rate.store(output.rate, Ordering::Relaxed);
         let sounding = Arc::new(AtomicBool::new(false));
         let flush_until = Arc::new(AtomicU64::new(0));
@@ -653,18 +863,20 @@ impl Playback {
             {
                 let commands = commands.clone();
                 move |error: cpal::Error| {
-                    if is_fatal(error.kind()) {
+                    if matches!(error.kind(), cpal::ErrorKind::StreamInvalidated) {
+                        commands.send(Command::StreamInvalidated(generation)).ok();
+                    } else if is_fatal(error.kind()) {
                         commands
                             .send(Command::OutputFailed(generation, error.to_string()))
                             .ok();
                     }
                 }
             },
-            None,
+            Some(RATE_SWITCH_TIMEOUT),
         )?;
         drop(setup);
 
-        let mut playback = Self {
+        Ok(Self {
             converter: Converter::new(source, output)?,
             format: PlaybackFormat {
                 device: device_name(&device),
@@ -688,11 +900,7 @@ impl Playback {
             written: 0,
             flush_until,
             stream,
-        };
-        // Start with a full buffer so the first callbacks are not silent.
-        playback.fill()?;
-        playback.stream.play()?;
-        Ok(playback)
+        })
     }
 
     fn pause(&mut self) -> Result<(), Error> {
@@ -888,6 +1096,237 @@ mod tests {
         engine.seek(Duration::from_secs(20));
         assert!(matches!(next_event(&events).kind, EventKind::Ended));
         assert!(sought.elapsed() < Duration::from_secs(5));
+    }
+
+    /// A rate no test wav uses, that the default device supports and is not
+    /// running at.
+    fn another_supported_rate() -> u32 {
+        let current = default_device_rate();
+        crate::output_devices()
+            .unwrap()
+            .into_iter()
+            .find(crate::OutputDevice::is_default)
+            .unwrap()
+            .sample_rates()
+            .iter()
+            .copied()
+            .find(|rate| *rate != current)
+            .expect("the default device supports only one rate")
+    }
+
+    #[test]
+    #[ignore = "needs an audio output device"]
+    fn a_fixed_rate_resamples_every_track() {
+        let (mut engine, events) = Engine::spawn();
+        let fixed = another_supported_rate();
+        let source = default_device_rate();
+        engine.set_output(OutputSettings::new(None, Some(fixed)));
+        engine.load(Track::new(Cursor::new(wav(source, 2, source, 0))));
+        let EventKind::Started(format) = next_event(&events).kind else {
+            panic!("expected Started");
+        };
+        assert_eq!(format.source_rate(), source);
+        assert_eq!(format.output_rate(), fixed);
+        assert!(format.is_resampled());
+        // Waits for the device's rate to come back, which the next test's
+        // engine would otherwise race.
+        engine.shutdown();
+    }
+
+    #[test]
+    #[ignore = "needs an audio output device"]
+    fn new_settings_move_a_playing_track_and_keep_its_position() {
+        let (mut engine, events) = Engine::spawn();
+        let source = default_device_rate();
+        engine.load(Track::new(Cursor::new(wav(source, 2, source * 20, 0))));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        engine.seek(Duration::from_secs(10));
+        thread::sleep(Duration::from_millis(200));
+
+        let fixed = another_supported_rate();
+        engine.set_output(OutputSettings::new(None, Some(fixed)));
+        let EventKind::OutputChanged(format) = next_event(&events).kind else {
+            panic!("expected OutputChanged");
+        };
+        assert_eq!(format.output_rate(), fixed);
+        assert!(engine.position() >= Duration::from_secs(10));
+        assert!(engine.position() < Duration::from_secs(12));
+        engine.shutdown();
+    }
+
+    #[test]
+    #[ignore = "needs an audio output device"]
+    fn new_settings_keep_a_paused_track_paused() {
+        let (mut engine, events) = Engine::spawn();
+        let source = default_device_rate();
+        engine.load(Track::new(Cursor::new(wav(source, 2, source * 20, 0))));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        engine.pause();
+        engine.seek(Duration::from_secs(10));
+
+        engine.set_output(OutputSettings::new(None, Some(another_supported_rate())));
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::OutputChanged(_)
+        ));
+        thread::sleep(Duration::from_millis(300));
+        let position = engine.position();
+        assert!(position >= Duration::from_secs(10), "{position:?}");
+        assert!(position < Duration::from_millis(10_100), "{position:?}");
+        engine.shutdown();
+    }
+
+    #[test]
+    #[ignore = "needs an audio output device"]
+    #[cfg(target_os = "macos")]
+    fn shutdown_restores_the_device_rate_after_new_settings() {
+        let (mut engine, events) = Engine::spawn();
+        let original = default_device_rate();
+        let source = another_supported_rate();
+        engine.load(Track::new(Cursor::new(wav(source, 2, source * 20, 0))));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        engine.set_output(OutputSettings::new(None, Some(original)));
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::OutputChanged(_)
+        ));
+        engine.set_output(OutputSettings::new(None, Some(source)));
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::OutputChanged(_)
+        ));
+        engine.shutdown();
+        assert_eq!(default_device_rate(), original);
+    }
+
+    /// The device these tests open by id: the one `HIPHILE_TEST_DEVICE` names,
+    /// such as a virtual device, or else the default one.
+    fn device_to_open_by_id() -> crate::OutputDevice {
+        let name = std::env::var("HIPHILE_TEST_DEVICE").ok();
+        crate::output_devices()
+            .unwrap()
+            .into_iter()
+            .find(|device| match &name {
+                Some(name) => device.name().trim() == name,
+                None => device.is_default(),
+            })
+            .expect("no such device")
+    }
+
+    /// Sets the device's rate from outside the engine, as another app or
+    /// Audio MIDI Setup does.
+    fn set_rate_from_outside(id: &str, rate: u32) {
+        let host = cpal::default_host();
+        let device = host.device_by_id(&id.parse().unwrap()).unwrap();
+        let mut config = device.default_output_config().unwrap().config();
+        config.sample_rate = rate;
+        let stream = device.build_output_stream(
+            config,
+            |data: &mut [f32], _: &cpal::OutputCallbackInfo| data.fill(0.0),
+            |_| {},
+            Some(RATE_SWITCH_TIMEOUT),
+        );
+        drop(stream.unwrap());
+    }
+
+    fn current_rate(id: &str) -> u32 {
+        let host = cpal::default_host();
+        let device = host.device_by_id(&id.parse().unwrap()).unwrap();
+        device.default_output_config().unwrap().sample_rate()
+    }
+
+    #[test]
+    #[ignore = "needs an audio output device"]
+    fn a_device_chosen_by_id_plays_at_each_rate_asked_for() {
+        let device = device_to_open_by_id();
+        let id = device.id().unwrap().to_owned();
+        let original = current_rate(&id);
+        let other = *device
+            .sample_rates()
+            .iter()
+            .find(|rate| **rate != original)
+            .unwrap();
+
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id.clone()), None));
+        engine.load(Track::new(Cursor::new(wav(other, 2, other * 20, 0))));
+        let EventKind::Started(format) = next_event(&events).kind else {
+            panic!("expected Started");
+        };
+        assert_eq!(format.output_rate(), other);
+
+        engine.set_output(OutputSettings::new(Some(id.clone()), Some(original)));
+        let event = next_event(&events);
+        let EventKind::OutputChanged(format) = event.kind else {
+            panic!("expected OutputChanged, got {:?}", event.kind);
+        };
+        assert_eq!(format.output_rate(), original);
+        // A late notice of the engine's own switch must not stop the track.
+        assert_no_event(&events);
+        engine.shutdown();
+    }
+
+    #[test]
+    #[ignore = "needs an audio output device"]
+    fn a_rate_set_from_outside_is_kept_and_the_track_goes_on() {
+        let device = device_to_open_by_id();
+        let id = device.id().unwrap().to_owned();
+        let original = current_rate(&id);
+        let outside = *device
+            .sample_rates()
+            .iter()
+            .find(|rate| **rate != original)
+            .unwrap();
+
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id.clone()), None));
+        engine.load(Track::new(Cursor::new(wav(original, 2, original * 20, 0))));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        engine.seek(Duration::from_secs(10));
+        thread::sleep(Duration::from_millis(200));
+
+        set_rate_from_outside(&id, outside);
+        let event = next_event(&events);
+        let EventKind::OutputChanged(format) = event.kind else {
+            panic!("expected OutputChanged, got {:?}", event.kind);
+        };
+        assert_eq!(format.output_rate(), outside);
+        assert!(format.is_resampled());
+        assert!(engine.position() >= Duration::from_secs(10));
+        assert!(engine.position() < Duration::from_secs(12));
+        thread::sleep(Duration::from_millis(300));
+        assert!(engine.position() > Duration::from_secs(10));
+        assert_no_event(&events);
+
+        engine.shutdown();
+        let kept = current_rate(&id);
+        set_rate_from_outside(&id, original);
+        assert_eq!(kept, outside);
+    }
+
+    #[test]
+    #[ignore = "needs an audio output device"]
+    fn a_track_can_start_paused_partway_through() {
+        let device = device_to_open_by_id();
+        let id = device.id().unwrap().to_owned();
+        let rate = current_rate(&id);
+
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id), None));
+        let track = Track::new(Cursor::new(wav(rate, 2, rate * 20, 0)))
+            .start_at(Duration::from_secs(10))
+            .start_paused(true);
+        engine.load(track);
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        thread::sleep(Duration::from_millis(300));
+        let position = engine.position();
+        assert!(position >= Duration::from_secs(10), "{position:?}");
+        assert!(position < Duration::from_millis(10_100), "{position:?}");
+
+        engine.resume();
+        thread::sleep(Duration::from_millis(300));
+        assert!(engine.position() > position);
+        engine.shutdown();
     }
 
     /// 384 kHz is beyond typical devices, so this exercises resampling.
@@ -1176,6 +1615,17 @@ mod tests {
         engine.load(stalled_track());
         thread::sleep(Duration::from_millis(100));
         shutdown_within_deadline(engine);
+    }
+
+    #[test]
+    fn a_device_that_is_not_connected_fails_the_track() {
+        let (engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some("not-a-device".to_owned()), None));
+        engine.load(Track::new(Cursor::new(wav(44_100, 2, 4_410, 0))));
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::Failed(Error::OutputDeviceUnavailable)
+        ));
     }
 
     #[test]

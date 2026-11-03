@@ -30,6 +30,7 @@ fn main() {
 
             library::init(cx);
             player::init(WORKSPACE_CONTEXT, cx);
+            settings::init(cx);
             install_app_commands(cx);
 
             // Window geometry is a platform boundary, so it is given in pixels.
@@ -70,6 +71,8 @@ fn install_app_commands(cx: &mut App) {
 pub(crate) fn set_menus(queue_shown: bool, cx: &mut App) {
     cx.set_menus([
         Menu::new("hiphile").items([
+            MenuItem::action("Settings…", settings::OpenSettings),
+            MenuItem::separator(),
             MenuItem::action("Sign Out", SignOut),
             MenuItem::separator(),
             MenuItem::action("Quit hiphile", Quit),

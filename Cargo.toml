@@ -22,6 +22,7 @@ playback = { path = "crates/playback" }
 player = { path = "crates/player" }
 search = { path = "crates/search" }
 session = { path = "crates/session" }
+settings = { path = "crates/settings" }
 subsonic = { path = "crates/subsonic" }
 ui = { path = "crates/ui" }
 

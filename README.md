@@ -17,7 +17,7 @@ and configuration crates do not depend on GPUI, so the GUI and the CLI share the
 | Layer | Crates |
 | --- | --- |
 | Binaries | `hiphile` (GUI shell), `hiphile-cli` |
-| GUI features | `account`, `library`, `player`, `search` |
+| GUI features | `account`, `library`, `player`, `search`, `settings` |
 | GUI shared | `session`, `actions`, `ui` |
 | GPUI-independent | `subsonic`, `net`, `client`, `playback`, `audio`, `catalog`, `config` |
 
@@ -38,6 +38,11 @@ The app writes it on sign-in and keeps any other keys and comments in the file.
 file: signing in saves the password to the system keychain (Keychain on macOS,
 Credential Manager on Windows, the Secret Service elsewhere), the next launch
 signs in with it, and signing out deletes it.
+
+hiphile > Settings… chooses the output device and the sample rate, which take
+effect at once and are kept as `output_device` and `sample_rate` (in Hz).
+Without them, playback follows the system's default device and each song's own
+rate. `HIPHILE_OUTPUT_DEVICE` and `HIPHILE_SAMPLE_RATE` override them.
 
 ## Library cache
 
@@ -79,7 +84,8 @@ cargo run -p hiphile-cli -- play <SONG_ID>...
 cargo run -p hiphile-cli -- play --search "kind of blue"
 ```
 
-`play` switches the output device to each file's sample rate when the device
+`play` uses the output device and sample rate from the app's settings. Without
+a fixed rate, it switches the device to each file's rate when the device
 supports it, and resamples only when it does not.
 
 The workspace has a `config` crate, and so does crates.io (config-rs, used inside

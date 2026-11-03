@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use audio::{Engine, Event, EventKind, LoadId, PlaybackFormat};
+use audio::{Engine, Event, EventKind, LoadId, OutputSettings, PlaybackFormat};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _,
@@ -60,6 +60,8 @@ pub struct Player {
     queue: Queue<Song>,
     state: State,
     format: Option<PlaybackFormat>,
+    /// Where the stopped song picks back up, after its output failed.
+    resume: Option<Resume>,
     cover_url: Option<SharedString>,
     error: Option<SharedString>,
     /// The position as a fraction of the song.
@@ -82,6 +84,12 @@ pub struct Player {
     _subscriptions: Vec<Subscription>,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct Resume {
+    position: Duration,
+    paused: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State {
     Stopped,
@@ -94,8 +102,14 @@ enum State {
 impl EventEmitter<PlayerEvent> for Player {}
 
 impl Player {
-    pub fn new(session: session::Session, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        session: session::Session,
+        output: OutputSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let (engine, events) = Engine::spawn();
+        engine.set_output(output);
         let events = cx.spawn(async move |this, cx| {
             while let Ok(event) = events.recv().await {
                 if this
@@ -169,6 +183,7 @@ impl Player {
             queue: Queue::new(),
             state: State::Stopped,
             format: None,
+            resume: None,
             cover_url: None,
             error: None,
             position,
@@ -183,6 +198,15 @@ impl Player {
             saving_volume: false,
             _save_volume: Task::ready(()),
             _subscriptions: subscriptions,
+        }
+    }
+
+    /// Plays on `output` from now on, moving a song already playing there and
+    /// picking up one that the last output stopped.
+    pub fn set_output(&mut self, output: OutputSettings, cx: &mut Context<Self>) {
+        self.engine.set_output(output);
+        if self.state == State::Stopped && self.resume.is_some() {
+            self.open_current(false, cx);
         }
     }
 
@@ -276,6 +300,7 @@ impl Player {
                 self.engine.resume();
                 self.set_state(State::Playing, cx);
             }
+            State::Stopped if self.resume.is_some() => self.open_current(false, cx),
             State::Stopped if self.has_song() => self.play_current(cx),
             State::Stopped | State::Opening => {}
         }
@@ -332,6 +357,15 @@ impl Player {
         matches!(self.state, State::Playing | State::Paused)
     }
 
+    /// The position to show: where the song is, or where it would pick up.
+    fn position_now(&self) -> Duration {
+        if self.is_started() {
+            self.engine.position()
+        } else {
+            self.resume.unwrap_or_default().position
+        }
+    }
+
     fn duration(&self) -> Option<Duration> {
         self.format
             .as_ref()
@@ -356,11 +390,7 @@ impl Player {
     }
 
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let position = if self.is_started() {
-            self.engine.position()
-        } else {
-            Duration::ZERO
-        };
+        let position = self.position_now();
         if self.scrub.is_none() {
             self.show_position(position, window, cx);
         }
@@ -438,6 +468,7 @@ impl Player {
         self.engine.stop();
         self.load = None;
         self.format = None;
+        self.resume = None;
         if !self.has_song() {
             self.cover_url = None;
         }
@@ -445,11 +476,12 @@ impl Player {
     }
 
     fn play_current(&mut self, cx: &mut Context<Self>) {
+        self.resume = None;
         self.open_current(false, cx);
     }
 
-    /// Plays the current song from its start; with `forget_kept`, from the
-    /// server after removing its kept file.
+    /// Plays the current song from `resume`, or else from its start; with
+    /// `forget_kept`, from the server after removing its kept file.
     fn open_current(&mut self, forget_kept: bool, cx: &mut Context<Self>) {
         let Some(song) = self.queue.current().cloned() else {
             self.stop(cx);
@@ -490,7 +522,12 @@ impl Player {
             this.update(cx, |this, cx| match opened {
                 Ok(opened) => {
                     this.loaded_kept = opened.is_kept();
-                    this.load = Some(this.engine.load(opened.into_track()));
+                    let resume = this.resume.unwrap_or_default();
+                    let track = opened
+                        .into_track()
+                        .start_at(resume.position)
+                        .start_paused(resume.paused);
+                    this.load = Some(this.engine.load(track));
                 }
                 Err(error) => this.fail(&song, &session::describe(&error), cx),
             })
@@ -506,7 +543,17 @@ impl Player {
             EventKind::Started(format) => {
                 self.format = Some(format);
                 self.error = None;
-                self.set_state(State::Playing, cx);
+                let paused = self.resume.take().is_some_and(|resume| resume.paused);
+                let state = if paused {
+                    State::Paused
+                } else {
+                    State::Playing
+                };
+                self.set_state(state, cx);
+            }
+            EventKind::OutputChanged(format) => {
+                self.format = Some(format);
+                cx.notify();
             }
             EventKind::Ended => {
                 if self.queue.advance().is_some() {
@@ -521,10 +568,24 @@ impl Player {
                 self.open_current(true, cx);
             }
             EventKind::Failed(error) => {
+                // The output is at fault, not the song, so it can pick up
+                // once there is one that works.
+                self.resume = (!error.is_track_error()).then(|| self.resume_point());
                 if let Some(song) = self.queue.current().cloned() {
                     self.fail(&song, &describe(&error), cx);
                 }
             }
+        }
+    }
+
+    /// Where the current song is, or was to pick up if it had yet to start.
+    fn resume_point(&self) -> Resume {
+        match self.state {
+            State::Playing | State::Paused => Resume {
+                position: self.engine.position(),
+                paused: self.state == State::Paused,
+            },
+            State::Opening | State::Stopped => self.resume.unwrap_or_default(),
         }
     }
 
@@ -628,8 +689,7 @@ impl Player {
         let seekable = self.is_started() && duration.is_some();
         let position = match (self.scrub, duration) {
             (Some(fraction), Some(duration)) => duration.mul_f32(fraction),
-            _ if self.is_started() => self.engine.position(),
-            _ => Duration::ZERO,
+            _ => self.position_now(),
         };
         h_flex()
             .flex_none()
@@ -690,8 +750,12 @@ fn describe(error: &audio::Error) -> String {
         audio::Error::NoOutputDevice => {
             "No audio output device is available. Connect one and press Play.".to_owned()
         }
+        audio::Error::OutputDeviceUnavailable => {
+            "The output device isn't connected. Connect it or choose another in Settings, then press Play."
+                .to_owned()
+        }
         audio::Error::UnsupportedOutputFormat | audio::Error::Resample(_) => {
-            "The output device can't play this audio. Try another output device.".to_owned()
+            "The output device can't play this audio. Choose another in Settings.".to_owned()
         }
         audio::Error::Output(_) => "The audio output stopped. Press Play to try again.".to_owned(),
         audio::Error::UnsupportedFormat(_) => "hiphile can't play this file format.".to_owned(),

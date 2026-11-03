@@ -47,6 +47,8 @@ struct Settings {
     username: Option<String>,
     volume: Option<f32>,
     song_cache_gib: Option<f64>,
+    output_device: Option<String>,
+    sample_rate: Option<u32>,
 }
 
 /// The settings directory and its `config.toml`:
@@ -56,6 +58,8 @@ struct Settings {
 /// username = "alice"
 /// volume = 0.8
 /// song_cache_gib = 8
+/// output_device = "coreaudio:BuiltInSpeakerDevice"
+/// sample_rate = 48000
 /// ```
 #[derive(Clone, Debug)]
 pub struct Store {
@@ -114,6 +118,22 @@ impl Store {
         self.song_cache_bytes(settings.song_cache_gib)
     }
 
+    /// The id of the output device to play on, if one was chosen rather than
+    /// the system's default. `HIPHILE_OUTPUT_DEVICE` takes precedence over the
+    /// file.
+    pub fn output_device(&self) -> Result<Option<String>, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        Ok(settings.output_device)
+    }
+
+    /// The rate in Hz to run the output device at, if one was chosen rather
+    /// than each song's own. `HIPHILE_SAMPLE_RATE` takes precedence over the
+    /// file.
+    pub fn sample_rate(&self) -> Result<Option<u32>, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        Ok(settings.sample_rate.filter(|rate| *rate > 0))
+    }
+
     fn song_cache_bytes(&self, gib: Option<f64>) -> Result<Option<u64>, Error> {
         let Some(gib) = gib else {
             return Ok(None);
@@ -159,6 +179,28 @@ impl Store {
         // Two decimals are plenty, and keep the file readable.
         let volume = (f64::from(volume.clamp(0.0, 1.0)) * 100.0).round() / 100.0;
         self.edit(|document| document["volume"] = toml_edit::value(volume))
+    }
+
+    /// Records the output device, like [`Self::save_profile`]. `None` removes
+    /// the key, which means the system's default device.
+    pub fn save_output_device(&self, device: Option<&str>) -> Result<(), Error> {
+        self.edit(|document| match device {
+            Some(device) => document["output_device"] = toml_edit::value(device),
+            None => {
+                document.remove("output_device");
+            }
+        })
+    }
+
+    /// Records the output rate in Hz, like [`Self::save_profile`]. `None`
+    /// removes the key, which means each song's own rate.
+    pub fn save_sample_rate(&self, sample_rate: Option<u32>) -> Result<(), Error> {
+        self.edit(|document| match sample_rate {
+            Some(rate) => document["sample_rate"] = toml_edit::value(i64::from(rate)),
+            None => {
+                document.remove("sample_rate");
+            }
+        })
     }
 
     fn edit(&self, change: impl FnOnce(&mut toml_edit::DocumentMut)) -> Result<(), Error> {
@@ -313,6 +355,72 @@ mod tests {
         assert_eq!(read(&store, &[]).volume, Some(0.12));
         assert_eq!(load(&store, &[]), Some(profile));
         assert_eq!(read(&store, &[("HIPHILE_VOLUME", "0.5")]).volume, Some(0.5));
+    }
+
+    #[test]
+    fn output_round_trips_and_clears() {
+        let store = temporary_store("output");
+        let profile = Profile::new("https://music.example.com", "alice");
+        store.save_profile(&profile).unwrap();
+
+        store.save_output_device(Some("coreaudio:device")).unwrap();
+        store.save_sample_rate(Some(96_000)).unwrap();
+        let settings = read(&store, &[]);
+        assert_eq!(settings.output_device.as_deref(), Some("coreaudio:device"));
+        assert_eq!(settings.sample_rate, Some(96_000));
+
+        store.save_output_device(None).unwrap();
+        store.save_sample_rate(None).unwrap();
+        let settings = read(&store, &[]);
+        assert_eq!(settings.output_device, None);
+        assert_eq!(settings.sample_rate, None);
+        assert_eq!(load(&store, &[]), Some(profile));
+    }
+
+    #[test]
+    fn saving_one_output_key_leaves_the_other_alone() {
+        let store = temporary_store("output-one-key");
+        store.save_output_device(Some("a:b")).unwrap();
+        store.save_sample_rate(Some(44_100)).unwrap();
+
+        store.save_sample_rate(None).unwrap();
+        assert_eq!(read(&store, &[]).output_device.as_deref(), Some("a:b"));
+
+        store.save_sample_rate(Some(96_000)).unwrap();
+        store.save_output_device(None).unwrap();
+        assert_eq!(read(&store, &[]).sample_rate, Some(96_000));
+    }
+
+    #[test]
+    fn saving_an_output_key_leaves_a_key_it_cannot_read_alone() {
+        let store = temporary_store("output-unreadable");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        std::fs::write(
+            store.config_path(),
+            "volume = \"loud\"\noutput_device = \"a:b\"\n",
+        )
+        .unwrap();
+        store.save_sample_rate(Some(96_000)).unwrap();
+        let text = std::fs::read_to_string(store.config_path()).unwrap();
+        assert!(text.contains("volume = \"loud\""), "{text}");
+        assert!(text.contains("output_device = \"a:b\""), "{text}");
+        assert!(text.contains("sample_rate = 96000"), "{text}");
+    }
+
+    #[test]
+    fn environment_overrides_the_saved_output() {
+        let store = temporary_store("output-environment");
+        store.save_output_device(Some("a:b")).unwrap();
+        store.save_sample_rate(Some(44_100)).unwrap();
+        let settings = read(
+            &store,
+            &[
+                ("HIPHILE_OUTPUT_DEVICE", "c:d"),
+                ("HIPHILE_SAMPLE_RATE", "48000"),
+            ],
+        );
+        assert_eq!(settings.output_device.as_deref(), Some("c:d"));
+        assert_eq!(settings.sample_rate, Some(48_000));
     }
 
     #[test]

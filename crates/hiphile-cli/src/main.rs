@@ -273,6 +273,7 @@ fn play(args: ServerArgs, ids: Vec<String>, query: Option<String>) -> anyhow::Re
     let mut queue = playback::Queue::new();
     queue.replace(songs, 0);
     let (engine, events) = audio::Engine::spawn();
+    engine.set_output(output_settings());
     let song_cache = song_cache();
     let mut failures = 0;
     while let Some(song) = queue.current().cloned() {
@@ -284,6 +285,22 @@ fn play(args: ServerArgs, ids: Vec<String>, query: Option<String>) -> anyhow::Re
     }
     anyhow::ensure!(failures == 0, "{failures} song(s) could not be played");
     Ok(())
+}
+
+/// The output chosen in the app's settings. Settings that cannot be read mean
+/// the system's default device and each song's own rate.
+fn output_settings() -> audio::OutputSettings {
+    let saved = || -> anyhow::Result<audio::OutputSettings> {
+        let store = config::Store::user()?;
+        Ok(audio::OutputSettings::new(
+            store.output_device()?,
+            store.sample_rate()?,
+        ))
+    };
+    saved().unwrap_or_else(|error| {
+        eprintln!("warning: using the default audio output: {error:#}");
+        audio::OutputSettings::default()
+    })
 }
 
 /// The songs kept on this computer, shared with the app, unless the
@@ -344,7 +361,7 @@ fn play_track(
         match events.try_recv() {
             Ok(event) if event.load != load => {}
             Ok(audio::Event {
-                kind: audio::EventKind::Started(format),
+                kind: audio::EventKind::Started(format) | audio::EventKind::OutputChanged(format),
                 ..
             }) => {
                 duration = format.duration().or(duration);

@@ -1,15 +1,24 @@
 use cpal::traits::{DeviceTrait, HostTrait};
 
 use crate::Error;
+use crate::output;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutputDevice {
+    id: Option<String>,
     name: String,
     sample_rate: Option<u32>,
+    sample_rates: Vec<u32>,
     is_default: bool,
 }
 
 impl OutputDevice {
+    /// What [`crate::OutputSettings`] names this device by, stable across
+    /// launches. `None` when the system does not report one.
+    pub fn id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -17,6 +26,11 @@ impl OutputDevice {
     /// Rate of the device's current default output configuration.
     pub fn sample_rate(&self) -> Option<u32> {
         self.sample_rate
+    }
+
+    /// The standard rates the device can run at, lowest first.
+    pub fn sample_rates(&self) -> &[u32] {
+        &self.sample_rates
     }
 
     pub fn is_default(&self) -> bool {
@@ -37,10 +51,16 @@ pub fn output_devices() -> Result<Vec<OutputDevice>, Error> {
                 .default_output_config()
                 .ok()
                 .map(|config| config.sample_rate());
-            let is_default = default_id.is_some() && device.id().ok() == default_id;
+            let id = device.id().ok();
+            let is_default = default_id.is_some() && id == default_id;
+            let sample_rates = output::config_ranges(&device)
+                .map(|ranges| output::standard_rates(&ranges))
+                .unwrap_or_default();
             OutputDevice {
+                id: id.map(|id| id.to_string()),
                 name: device_name(&device),
                 sample_rate,
+                sample_rates,
                 is_default,
             }
         })
