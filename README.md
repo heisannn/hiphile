@@ -43,6 +43,9 @@ hiphile > Settings… chooses the output device and the sample rate, which take
 effect at once and are kept as `output_device` and `sample_rate` (in Hz).
 Without them, playback follows the system's default device and each song's own
 rate. `HIPHILE_OUTPUT_DEVICE` and `HIPHILE_SAMPLE_RATE` override them.
+Settings… also sets the song cache's limit, `song_cache_gib`, which
+`HIPHILE_SONG_CACHE_GIB` overrides, shows how much the cache takes, and clears
+it.
 
 ## Library cache
 
@@ -58,9 +61,9 @@ the images used longest ago are removed.
 A song that arrives whole is kept there too, and plays from the disk next
 time, as long as the server still reports the same file size; a kept file
 that turns out to be damaged is removed and the song fetched again. Songs
-share 8 GiB unless `config.toml` sets `song_cache_gib` (`0` keeps none, and
-a value that cannot be read keeps none either); past that, the songs played
-longest ago are removed. A song larger than three quarters of that is not
+share 8 GiB unless `config.toml` sets `song_cache_gib` (`0` means no limit, and
+a value that cannot be read keeps none); past that, the songs played longest
+ago are removed the next time a song is kept. A song larger than three quarters of that is not
 kept.
 The cache holds no credentials, and a version of it the app cannot read is
 emptied and filled again.

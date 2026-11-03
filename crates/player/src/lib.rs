@@ -26,9 +26,8 @@ actions!(
 );
 
 /// The songs kept on this computer, shared by every player in the app.
-/// Absent when there is nowhere to keep them, the settings keep none, or
-/// the settings cannot be read.
-struct GlobalSongCache(playback::SongCache);
+/// `None` when there is nowhere to keep them or the settings cannot be read.
+struct GlobalSongCache(Option<playback::SongCache>);
 
 impl Global for GlobalSongCache {}
 
@@ -44,12 +43,10 @@ pub fn init(context: &'static str, cx: &mut App) {
         Err(_) => Ok(None),
     };
     // A setting that cannot be read keeps no songs rather than the default
-    // amount. Without the cache every song comes from the server, so
-    // failing to open it raises no error.
-    if let Ok(capacity) = capacity
-        && let Ok(Some(song_cache)) = playback::SongCache::user(capacity)
-    {
-        cx.set_global(GlobalSongCache(song_cache));
+    // amount.
+    match capacity {
+        Ok(capacity) => set_song_capacity(capacity, cx),
+        Err(_) => cx.set_global(GlobalSongCache(None)),
     }
 
     let [next, previous, forward, backward, up, down, mute] = if cx.platform_info().is_mac() {
@@ -94,4 +91,11 @@ pub fn init(context: &'static str, cx: &mut App) {
         // Space toggles playback from the list, never from a text field.
         KeyBinding::new("space", TogglePlayback, Some(QUEUE_CONTEXT)),
     ]);
+}
+
+/// Keeps at most about `capacity` bytes of songs from now on, or the default
+/// amount for `None`. A download still arriving is not kept. Without the cache
+/// every song comes from the server, so failing to open it raises no error.
+pub fn set_song_capacity(capacity: Option<u64>, cx: &mut App) {
+    cx.set_global(GlobalSongCache(playback::SongCache::user(capacity).ok()));
 }

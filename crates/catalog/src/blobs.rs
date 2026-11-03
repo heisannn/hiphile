@@ -174,6 +174,34 @@ impl Blobs {
         self.usage.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// How many bytes the files of this kind take, for every server.
+    pub(crate) fn kept_bytes(&self) -> u64 {
+        self.blobs().iter().map(|blob| blob.len).sum()
+    }
+
+    /// Removes every file of this kind for every server. One that cannot be
+    /// removed does not stop the rest; the first such failure is returned.
+    pub(crate) fn clear(&self) -> Result<(), Error> {
+        let mut cleared = Ok(());
+        for blob in self.blobs() {
+            match fs::remove_file(&blob.path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    if cleared.is_ok() {
+                        cleared = Err(Error::Io {
+                            path: blob.path,
+                            source,
+                        });
+                    }
+                }
+            }
+        }
+        // The next write counts them again.
+        self.usage().kept = None;
+        cleared
+    }
+
     /// Every file of this kind kept for every server. Removes temporary
     /// files that were abandoned, by a crash for example.
     pub(crate) fn blobs(&self) -> Vec<Blob> {
@@ -292,6 +320,47 @@ mod tests {
             .unwrap();
         assert!(cover.exists(), "a song write removed a cover");
         assert_eq!(songs.blobs().len(), 1);
+    }
+
+    #[test]
+    fn no_limit_removes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = Blobs::new(dir.path(), "songs", u64::MAX);
+        let paths: Vec<_> = (0..3)
+            .map(|ix| blobs.path(&server(), "original", &format!("so-{ix}")))
+            .collect();
+        for path in &paths {
+            blobs.put(path, &[1; 100]).unwrap();
+        }
+        assert!(paths.iter().all(|path| path.exists()));
+        assert_eq!(blobs.kept_bytes(), 300);
+    }
+
+    #[test]
+    fn clearing_removes_only_this_kind_for_every_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let covers = Blobs::new(dir.path(), "covers", 1000);
+        let songs = Blobs::new(dir.path(), "songs", 1000);
+        let other = Url::parse("https://other.example.com").unwrap();
+        let cover = covers.path(&server(), "80", "al-1");
+        covers.put(&cover, &[1; 100]).unwrap();
+        songs
+            .put(&songs.path(&server(), "original", "so-1"), &[1; 100])
+            .unwrap();
+        songs
+            .put(&songs.path(&other, "original", "so-1"), &[1; 100])
+            .unwrap();
+        assert_eq!(songs.kept_bytes(), 200);
+
+        songs.clear().unwrap();
+        assert_eq!(songs.kept_bytes(), 0);
+        assert!(cover.exists(), "clearing songs removed a cover");
+
+        // What is written afterwards is counted from nothing.
+        let path = songs.path(&server(), "original", "so-2");
+        songs.put(&path, &[1; 100]).unwrap();
+        assert!(path.exists());
+        assert_eq!(songs.kept_bytes(), 100);
     }
 
     #[test]

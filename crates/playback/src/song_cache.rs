@@ -30,12 +30,10 @@ struct Keep {
 impl SongCache {
     /// Songs in the system cache directory, keeping at most about
     /// `capacity` bytes, the default when the settings leave it unset.
-    /// `None` when `capacity` is zero: the settings keep no songs.
-    pub fn user(capacity: Option<u64>) -> Result<Option<Self>, catalog::Error> {
-        match capacity.unwrap_or(SONG_CAPACITY) {
-            0 => Ok(None),
-            capacity => Ok(Some(Self::new(SongStore::user(capacity)?))),
-        }
+    pub fn user(capacity: Option<u64>) -> Result<Self, catalog::Error> {
+        Ok(Self::new(SongStore::user(
+            capacity.unwrap_or(SONG_CAPACITY),
+        )?))
     }
 
     /// Keeps songs in `store`, starting the thread that writes them.

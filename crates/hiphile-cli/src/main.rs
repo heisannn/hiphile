@@ -303,8 +303,8 @@ fn output_settings() -> audio::OutputSettings {
     })
 }
 
-/// The songs kept on this computer, shared with the app, unless the
-/// settings keep none. Settings that cannot be read keep none either.
+/// The songs kept on this computer, shared with the app. Settings that cannot
+/// be read keep none.
 fn song_cache() -> Option<playback::SongCache> {
     let capacity = match config::Store::user() {
         Ok(store) => store.song_cache_capacity(),
@@ -315,7 +315,7 @@ fn song_cache() -> Option<playback::SongCache> {
         .map_err(anyhow::Error::from)
         .and_then(|capacity| Ok(playback::SongCache::user(capacity)?));
     match song_cache {
-        Ok(song_cache) => song_cache,
+        Ok(song_cache) => Some(song_cache),
         Err(error) => {
             eprintln!("warning: songs will not be kept on this computer: {error:#}");
             None

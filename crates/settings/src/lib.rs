@@ -1,10 +1,15 @@
 //! Feature: the settings window.
 //!
-//! [`AudioSettings`] holds the chosen output and saves it; the app shell
-//! hands it to the player and passes on [`OutputChanged`].
+//! [`AudioSettings`] holds the chosen output and [`SongCacheSettings`] how many
+//! songs to keep, and each saves its own. The app shell hands them to the
+//! player and passes on [`OutputChanged`] and [`SongCacheChanged`].
 
 mod audio_settings;
+mod number_field;
 mod settings_view;
+mod song_cache_field;
+mod song_cache_settings;
+mod song_cache_usage;
 
 use gpui_kit::component::TitleBar;
 use gpui_kit::{
@@ -13,6 +18,7 @@ use gpui_kit::{
 };
 
 pub use audio_settings::{AudioSettings, OutputChanged};
+pub use song_cache_settings::{SongCacheChanged, SongCacheSettings};
 
 use settings_view::SettingsView;
 
@@ -23,6 +29,7 @@ actions!(settings, [OpenSettings, CloseWindow]);
 
 struct GlobalSettings {
     audio: Entity<AudioSettings>,
+    song_cache: Entity<SongCacheSettings>,
     /// The settings window, if one was opened. It may have been closed since.
     window: Option<AnyWindowHandle>,
 }
@@ -32,9 +39,12 @@ impl Global for GlobalSettings {}
 /// Reads the settings and registers commands. Call before building the menu
 /// bar.
 pub fn init(cx: &mut App) {
+    number_field::init(cx);
     let audio = cx.new(AudioSettings::new);
+    let song_cache = cx.new(SongCacheSettings::new);
     cx.set_global(GlobalSettings {
         audio,
+        song_cache,
         window: None,
     });
     // Deferred because an action reaches this handler while its window is being
@@ -55,6 +65,11 @@ pub fn init(cx: &mut App) {
 /// The chosen output, shared by the settings window and the player.
 pub fn audio_settings(cx: &App) -> Entity<AudioSettings> {
     cx.global::<GlobalSettings>().audio.clone()
+}
+
+/// How many songs to keep, shared by the settings window and the app shell.
+pub fn song_cache_settings(cx: &App) -> Entity<SongCacheSettings> {
+    cx.global::<GlobalSettings>().song_cache.clone()
 }
 
 /// Brings the settings window forward, opening it if it is not open.
@@ -81,8 +96,9 @@ fn open(cx: &mut App) {
         ..TitleBar::window_options()
     };
     let audio = audio_settings(cx);
+    let song_cache = song_cache_settings(cx);
     let opened = gpui_kit::open_window(options, cx, |window, cx| {
-        cx.new(|cx| SettingsView::new(audio, window, cx))
+        cx.new(|cx| SettingsView::new(audio, song_cache, window, cx))
     });
     if let Ok((window, _)) = opened {
         cx.global_mut::<GlobalSettings>().window = Some(window);

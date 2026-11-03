@@ -502,7 +502,7 @@ impl Player {
         let client = self.session.client().clone();
         let song_cache = cx
             .try_global::<GlobalSongCache>()
-            .map(|song_cache| song_cache.0.clone());
+            .and_then(|song_cache| song_cache.0.clone());
         // Replacing the task drops an earlier open, and with it its download.
         self._open = cx.spawn(async move |this, cx| {
             // Removing and opening a kept song read and write the disk.

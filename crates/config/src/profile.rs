@@ -110,12 +110,19 @@ impl Store {
     }
 
     /// How many bytes of songs may be kept on this computer, if the file
-    /// says: `song_cache_gib`, in GiB, where `0` keeps none.
+    /// says: `song_cache_gib`, in GiB, where `0` means no limit.
     /// `HIPHILE_SONG_CACHE_GIB` takes precedence over the file. A negative
     /// number is an error, not a reason to keep the default.
     pub fn song_cache_capacity(&self) -> Result<Option<u64>, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         self.song_cache_bytes(settings.song_cache_gib)
+    }
+
+    /// `song_cache_gib`, as [`Self::song_cache_capacity`] reads it.
+    pub fn song_cache_gib(&self) -> Result<Option<f64>, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        self.song_cache_bytes(settings.song_cache_gib)?;
+        Ok(settings.song_cache_gib)
     }
 
     /// The id of the output device to play on, if one was chosen rather than
@@ -138,7 +145,7 @@ impl Store {
         let Some(gib) = gib else {
             return Ok(None);
         };
-        bytes_in_gib(gib)
+        song_cache_capacity_of(gib)
             .map(Some)
             .ok_or_else(|| Error::InvalidSetting {
                 path: self.config_path(),
@@ -203,6 +210,19 @@ impl Store {
         })
     }
 
+    /// Records how many GiB of songs to keep, like [`Self::save_profile`].
+    /// `None` removes the key, which means the default amount. A negative
+    /// number would make the setting unreadable, so callers keep to `0` or
+    /// more.
+    pub fn save_song_cache_gib(&self, gib: Option<f64>) -> Result<(), Error> {
+        self.edit(|document| match gib {
+            Some(gib) => document["song_cache_gib"] = toml_edit::value(gib),
+            None => {
+                document.remove("song_cache_gib");
+            }
+        })
+    }
+
     fn edit(&self, change: impl FnOnce(&mut toml_edit::DocumentMut)) -> Result<(), Error> {
         let io_error = |path: &Path| {
             let path = path.to_owned();
@@ -236,11 +256,17 @@ impl Store {
     }
 }
 
-/// Bytes in `gib` GiB; `None` for a negative number or one that is not.
-fn bytes_in_gib(gib: f64) -> Option<u64> {
-    (gib.is_finite() && gib >= 0.0)
-        // Saturates for sizes no disk has.
-        .then(|| (gib * f64::from(1u32 << 30)) as u64)
+/// How many bytes of songs a `song_cache_gib` of `gib` keeps, where `0` means no
+/// limit; `None` for a negative number or one that is not.
+pub fn song_cache_capacity_of(gib: f64) -> Option<u64> {
+    (gib.is_finite() && gib >= 0.0).then(|| {
+        if gib == 0.0 {
+            u64::MAX
+        } else {
+            // Saturates for sizes no disk has.
+            (gib * f64::from(1u32 << 30)) as u64
+        }
+    })
 }
 
 #[cfg(test)]
@@ -439,9 +465,35 @@ mod tests {
             capacity(&[("HIPHILE_SONG_CACHE_GIB", "0.5")]),
             Ok(Some(512 << 20))
         );
-        assert_eq!(capacity(&[("HIPHILE_SONG_CACHE_GIB", "0")]), Ok(Some(0)));
+        assert_eq!(
+            capacity(&[("HIPHILE_SONG_CACHE_GIB", "0")]),
+            Ok(Some(u64::MAX))
+        );
         let negative = capacity(&[("HIPHILE_SONG_CACHE_GIB", "-1")]).unwrap_err();
         assert!(negative.contains("HIPHILE_SONG_CACHE_GIB"), "{negative}");
+    }
+
+    #[test]
+    fn song_cache_gib_round_trips_and_clears() {
+        let store = temporary_store("song-cache-save");
+        store.save_volume(0.5).unwrap();
+
+        store.save_song_cache_gib(Some(0.5)).unwrap();
+        assert_eq!(read(&store, &[]).song_cache_gib, Some(0.5));
+        assert_eq!(
+            store
+                .song_cache_bytes(read(&store, &[]).song_cache_gib)
+                .unwrap(),
+            Some(512 << 20)
+        );
+
+        store.save_song_cache_gib(Some(0.0)).unwrap();
+        assert_eq!(read(&store, &[]).song_cache_gib, Some(0.0));
+
+        store.save_song_cache_gib(None).unwrap();
+        let settings = read(&store, &[]);
+        assert_eq!(settings.song_cache_gib, None);
+        assert_eq!(settings.volume, Some(0.5));
     }
 
     #[test]

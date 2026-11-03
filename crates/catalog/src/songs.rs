@@ -97,6 +97,17 @@ impl SongStore {
         }
     }
 
+    /// How many bytes the kept songs take, for every server.
+    pub fn kept_bytes(&self) -> u64 {
+        self.blobs.kept_bytes()
+    }
+
+    /// Removes every kept song for every server. One that is being played
+    /// goes on from its open file.
+    pub fn clear(&self) -> Result<(), Error> {
+        self.blobs.clear()
+    }
+
     fn path(&self, server: &Url, id: &SongId) -> PathBuf {
         self.blobs.path(server, ORIGINAL, id.as_str())
     }

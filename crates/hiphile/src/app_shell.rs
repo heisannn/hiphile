@@ -45,6 +45,7 @@ pub struct AppShell {
     /// Whether the queue shows beside the library when the window is wide
     /// enough for it.
     queue_shown: bool,
+    _song_cache_changes: Subscription,
 }
 
 enum Screen {
@@ -78,12 +79,20 @@ impl AppShell {
         let screen = Self::sign_in(&net, keychain.clone(), Start::Resume, window, cx);
         let queue_shown = true;
         crate::set_menus(queue_shown, cx);
+        let song_cache_changes = cx.subscribe(
+            &settings::song_cache_settings(cx),
+            |_, song_cache, _: &settings::SongCacheChanged, cx| {
+                let capacity = song_cache.read(cx).capacity();
+                player::set_song_capacity(capacity, cx);
+            },
+        );
         Self {
             net,
             keychain,
             focus,
             screen,
             queue_shown,
+            _song_cache_changes: song_cache_changes,
         }
     }
 
