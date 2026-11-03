@@ -6,13 +6,17 @@
 //! the server no longer has. Albums that were opened keep the songs fetched
 //! for them, through [`Catalog::put_album`].
 //!
+//! [`CoverStore`] keeps cover art images beside each server's library.
+//!
 //! It is a cache: a database written by another version of the schema, or
 //! one that cannot be read, is emptied and filled again by the next sync.
 //! Credentials are never stored.
 
+mod covers;
 mod store;
 mod sync;
 
+pub use covers::{COVER_CAPACITY, COVER_REFRESH_AFTER, CoverStore, KeptCover};
 pub use store::Catalog;
 pub use sync::{Mode, Outcome, STALE_AFTER, Source, sync_albums, sync_songs};
 

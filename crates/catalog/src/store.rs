@@ -102,13 +102,7 @@ impl Catalog {
     /// The library of the server at `server`, in the system cache directory
     /// (`~/Library/Caches/hiphile` on macOS). Created if there is none.
     pub fn open_server(server: &Url) -> Result<Self, Error> {
-        let cache = dirs::cache_dir().ok_or(Error::NoCacheDir)?;
-        Self::open(
-            cache
-                .join("hiphile")
-                .join("servers")
-                .join(directory_name(server)),
-        )
+        Self::open(servers_dir()?.join(directory_name(server)))
     }
 
     /// The library kept in `dir`. Created if there is none.
@@ -418,9 +412,15 @@ impl Catalog {
     }
 }
 
+/// Where each server's cached files live, one directory per server.
+pub(crate) fn servers_dir() -> Result<PathBuf, Error> {
+    let cache = dirs::cache_dir().ok_or(Error::NoCacheDir)?;
+    Ok(cache.join("hiphile").join("servers"))
+}
+
 /// `host-hash`: readable, and different for servers on one host under
 /// different paths or ports.
-fn directory_name(server: &Url) -> String {
+pub(crate) fn directory_name(server: &Url) -> String {
     let address = server.as_str().trim_end_matches('/');
     let digest = hex::encode(Md5::digest(address.as_bytes()));
     let host: String = server

@@ -12,9 +12,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 use gpui_kit::{App, SharedString};
 use subsonic::{CoverArtId, ServerInfo};
 
-/// Installs the shared transport. Call once at startup, after `gpui_kit::init`.
+/// Installs the shared transport, which keeps cover art on disk when the
+/// system has a cache directory. Call once at startup, after
+/// `gpui_kit::init`.
 pub fn init(net: net::Client, cx: &mut App) {
-    cx.set_http_client(Arc::new(http::NetHttpClient::new(net)));
+    let covers = catalog::CoverStore::user().ok();
+    cx.set_http_client(Arc::new(http::NetHttpClient::new(net, covers)));
 }
 
 /// A server the user has signed in to.
@@ -119,7 +122,7 @@ pub fn describe(error: &client::Error) -> String {
             "The server sent a response hiphile doesn't understand.".to_owned()
         }
         client::Error::NotAudio(_) => "The server sent something other than audio.".to_owned(),
-        client::Error::InvalidServerUrl(_) => {
+        client::Error::InvalidServerUrl(_) | client::Error::ServerUrlHasExtras(_) => {
             "The server address is not usable. Sign out and check it.".to_owned()
         }
     }

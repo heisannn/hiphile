@@ -283,7 +283,9 @@ fn describe(error: &client::Error) -> String {
         client::Error::Network(_) => {
             "Couldn't reach the server. Check the address and your connection.".to_owned()
         }
-        client::Error::InvalidServerUrl(_) => format!("{error}."),
+        client::Error::InvalidServerUrl(_) | client::Error::ServerUrlHasExtras(_) => {
+            format!("{error}.")
+        }
     }
 }
 

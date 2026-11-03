@@ -1,6 +1,6 @@
 use url::Url;
 
-use crate::Credentials;
+use crate::{CoverArtId, Credentials};
 
 /// Protocol version sent as `v`.
 pub const PROTOCOL_VERSION: &str = "1.16.1";
@@ -127,6 +127,71 @@ impl Endpoint {
     }
 }
 
+/// What a URL built from [`Endpoint::cover_art`] asks for, read back from
+/// it without the salt and credentials it carries, so the same image can be
+/// recognized whichever URL asked for it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CoverArtRequest {
+    server: Url,
+    id: CoverArtId,
+    size: Option<u32>,
+}
+
+impl CoverArtRequest {
+    /// `None` when `url` is not a `getCoverArt` call, or says what it asks
+    /// for more than once, so which image the server sends is unclear.
+    pub fn parse(url: &Url) -> Option<Self> {
+        let prefix = url.path().strip_suffix("/rest/getCoverArt")?;
+        let mut id = None;
+        let mut size = None;
+        for (name, value) in url.query_pairs() {
+            match name.as_ref() {
+                "id" if id.is_none() => id = Some(CoverArtId::new(value.as_ref())),
+                "size" if size.is_none() => size = Some(value.parse().ok()?),
+                "id" | "size" => return None,
+                _ => {}
+            }
+        }
+        let mut server = url.clone();
+        server.set_query(None);
+        server.set_fragment(None);
+        server.set_path(prefix);
+        Some(Self {
+            server,
+            id: id?,
+            size,
+        })
+    }
+
+    /// The server's base URL, as given to [`Endpoint::url`].
+    pub fn server(&self) -> &Url {
+        &self.server
+    }
+
+    pub fn id(&self) -> &CoverArtId {
+        &self.id
+    }
+
+    /// Pixels across, when a scaled image was asked for.
+    pub fn size(&self) -> Option<u32> {
+        self.size
+    }
+}
+
+/// Leaves out any user name and password in the server's address.
+impl std::fmt::Debug for CoverArtRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut server = self.server.clone();
+        server.set_username("").ok();
+        server.set_password(None).ok();
+        f.debug_struct("CoverArtRequest")
+            .field("server", &server.as_str())
+            .field("id", &self.id)
+            .field("size", &self.size)
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,6 +207,51 @@ mod tests {
         let base = Url::parse("https://example.com/navidrome/").unwrap();
         let url = Endpoint::ping().url(&base, &Credentials::api_key("k"));
         assert_eq!(url.path(), "/navidrome/rest/ping");
+    }
+
+    #[test]
+    fn cover_art_requests_read_back_without_credentials() {
+        let credentials = Credentials::password("alice", "secret");
+        for base in [
+            "https://music.example.com",
+            "https://example.com/navidrome/",
+        ] {
+            let base = Url::parse(base).unwrap();
+            let id = CoverArtId::new("al-1_6512");
+            let url = Endpoint::cover_art(&id, Some(512)).url(&base, &credentials);
+            let request = CoverArtRequest::parse(&url).unwrap();
+            assert_eq!(request.id(), &id);
+            assert_eq!(request.size(), Some(512));
+            assert_eq!(
+                request.server().as_str().trim_end_matches('/'),
+                base.as_str().trim_end_matches('/')
+            );
+            assert_eq!(request.server().query(), None);
+        }
+        let base = Url::parse("https://music.example.com").unwrap();
+        let ping = Endpoint::ping().url(&base, &credentials);
+        assert_eq!(CoverArtRequest::parse(&ping), None);
+    }
+
+    #[test]
+    fn unclear_cover_art_requests_are_not_read() {
+        let parse = |url: &str| CoverArtRequest::parse(&Url::parse(url).unwrap());
+        let base = "https://music.example.com/rest/getCoverArt";
+        assert!(parse(&format!("{base}?id=a&size=80")).is_some());
+        assert_eq!(parse(&format!("{base}?id=a")).unwrap().size(), None);
+        assert_eq!(parse(&format!("{base}?size=80")), None);
+        assert_eq!(parse(&format!("{base}?id=a&size=large")), None);
+        assert_eq!(parse(&format!("{base}?id=a&id=b")), None);
+        assert_eq!(parse(&format!("{base}?id=a&size=80&size=512")), None);
+    }
+
+    #[test]
+    fn cover_art_requests_print_without_a_password() {
+        let url =
+            Url::parse("https://alice:secret@music.example.com/rest/getCoverArt?id=a").unwrap();
+        let printed = format!("{:?}", CoverArtRequest::parse(&url).unwrap());
+        assert!(!printed.contains("secret"), "{printed}");
+        assert!(!printed.contains("alice"), "{printed}");
     }
 
     #[test]

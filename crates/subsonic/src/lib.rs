@@ -14,7 +14,7 @@ mod song;
 
 pub use album::{Album, AlbumWithSongs};
 pub use auth::Credentials;
-pub use endpoint::{CLIENT_NAME, Endpoint, PROTOCOL_VERSION};
+pub use endpoint::{CLIENT_NAME, CoverArtRequest, Endpoint, PROTOCOL_VERSION};
 pub use error::{Error, ServerErrorCode};
 pub use id::{AlbumId, ArtistId, CoverArtId, PlaylistId, SongId};
 pub use response::{

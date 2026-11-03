@@ -19,6 +19,10 @@ pub const ALBUM_PAGE_SIZE: u32 = 500;
 pub enum Error {
     #[error("`{0}` is not a usable server address; use an http or https URL")]
     InvalidServerUrl(String),
+    #[error(
+        "`{0}` is not a usable server address; leave out any user name, password, `?` or `#` part"
+    )]
+    ServerUrlHasExtras(String),
     #[error("could not reach the server")]
     Network(#[source] net::Error),
     #[error("the server answered with HTTP {0}")]
@@ -69,6 +73,15 @@ pub fn server_url(address: &str) -> Result<Url, Error> {
     let parsed = Url::parse(address).map_err(|_| invalid())?;
     if !matches!(parsed.scheme(), "http" | "https") || parsed.cannot_be_a_base() {
         return Err(invalid());
+    }
+    // Requests add their own query to the address, and credentials go in
+    // them separately; anything there would be sent along or lost.
+    if !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(Error::ServerUrlHasExtras(address.to_owned()));
     }
     Ok(parsed)
 }
@@ -237,6 +250,17 @@ mod tests {
         let credentials = Credentials::api_key("k");
         assert!(Server::new("music.example.com", credentials.clone()).is_err());
         assert!(Server::new("ftp://music.example.com", credentials.clone()).is_err());
+        assert!(Server::new("https://example.com/navidrome/", credentials.clone()).is_ok());
+        for address in [
+            "https://alice:secret@music.example.com",
+            "https://music.example.com/?id=a",
+            "https://music.example.com/#top",
+        ] {
+            assert!(matches!(
+                Server::new(address, credentials.clone()),
+                Err(Error::ServerUrlHasExtras(_))
+            ));
+        }
         assert!(Server::new("https://music.example.com", credentials).is_ok());
     }
 }

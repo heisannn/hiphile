@@ -47,8 +47,11 @@ app and the CLI and kept after signing out. The app shows it at once and
 updates it in the background when the server reports a change or the copy is
 a day old; Library > Refresh Library fetches everything again. A sync removes
 what the server no longer has only after it completes, and not while the
-server is scanning. The cache holds no credentials, and a version of it the
-app cannot read is emptied and filled again.
+server is scanning. Cover art is kept beside each library once downloaded
+and fetched again once it is 30 days old, up to 512 MiB in all; past that,
+the images used longest ago are removed.
+The cache holds no credentials, and a version of it the app cannot read is
+emptied and filled again.
 
 ## CLI
 

@@ -6673,6 +6673,8 @@ dependencies = [
  "gpui-kit",
  "net",
  "subsonic",
+ "tempfile",
+ "url",
 ]
 
 [[package]]
