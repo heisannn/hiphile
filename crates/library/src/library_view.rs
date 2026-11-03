@@ -1,37 +1,46 @@
 use std::sync::Arc;
 
-use actions::PlaySongs;
+use actions::{EnqueueSongs, Placement, PlaySongs};
 use catalog::{Mode, Outcome};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, Selectable as _, Sizable as _, StyledExt as _,
-    button::Button,
+    button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
     list::ListItem,
-    resizable::{h_resizable, resizable_panel},
+    menu::{ContextMenuExt as _, DropdownMenu as _},
+    resizable::{ResizableState, h_resizable, resizable_panel},
     scroll::Scrollbar,
     spinner::Spinner,
     v_flex,
 };
 use gpui_kit::{
     AnyElement, AppContext as _, AsyncApp, Context, ElementId, Entity, FocusHandle,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollStrategy, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, UniformListScrollHandle,
-    WeakEntity, Window, div, prelude::FluentBuilder as _, uniform_list,
+    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, ScrollStrategy,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
+    UniformListScrollHandle, WeakEntity, Window, div, prelude::FluentBuilder as _, uniform_list,
 };
 use subsonic::{Album, AlbumId, AlbumWithSongs, Song, SongId};
+use ui::list_navigation::{
+    Motion, SelectFirst, SelectLast, SelectNext, SelectPageDown, SelectPageUp, SelectPrevious,
+    page_rows,
+};
 use ui::{CoverArt, format_duration};
 
 use crate::filter::matching_albums;
 use crate::{
-    ALBUMS_CONTEXT, Back, FocusFilter, LIBRARY_CONTEXT, Open, Refresh, SONGS_CONTEXT, SelectFirst,
-    SelectLast, SelectNext, SelectPageDown, SelectPageUp, SelectPrevious,
+    ALBUMS_CONTEXT, AddToQueue, Back, FocusFilter, LIBRARY_CONTEXT, Open, PlayNext, Refresh,
+    SONGS_CONTEXT,
 };
 
 /// Pixel size requested for the detail cover: twice its on-screen size, for
 /// high-density displays.
 const COVER_PIXELS: u32 = 512;
+/// The album list's width when first shown, in rem.
+const ALBUMS_WIDTH: f32 = 20.;
+/// The narrowest the album detail goes, in rem.
+const DETAIL_MIN_WIDTH: f32 = 26.;
 
 /// The album browser: a filterable album list beside the selected album's
 /// songs. Owns the album data, the selection, and both lists' focus.
@@ -50,6 +59,8 @@ pub struct Library {
     songs_focus: FocusHandle,
     albums_scroll: UniformListScrollHandle,
     songs_scroll: UniformListScrollHandle,
+    /// The split between the album list and the detail.
+    panes: Entity<ResizableState>,
     _albums_task: Task<()>,
     _album_task: Task<()>,
     _subscriptions: Vec<Subscription>,
@@ -131,6 +142,7 @@ impl Library {
             songs_focus,
             albums_scroll: UniformListScrollHandle::new(),
             songs_scroll: UniformListScrollHandle::new(),
+            panes: cx.new(|_| ResizableState::default()),
             _albums_task: Task::ready(()),
             _album_task: Task::ready(()),
             _subscriptions: subscriptions,
@@ -303,6 +315,21 @@ impl Library {
         }
     }
 
+    /// The narrowest the library can be while showing its album list at its
+    /// current width beside the detail.
+    pub fn min_width(&self, window: &Window, cx: &gpui_kit::App) -> gpui_kit::Pixels {
+        let rem = window.rem_size();
+        let albums = self
+            .panes
+            .read(cx)
+            .sizes()
+            .first()
+            .copied()
+            .filter(|width| !gpui_kit::IsZero::is_zero(width))
+            .unwrap_or(rem * ALBUMS_WIDTH);
+        albums + rem * DETAIL_MIN_WIDTH
+    }
+
     /// Marks `song` in the song list, or clears the mark.
     pub fn set_now_playing(&mut self, song: Option<SongId>, playing: bool, cx: &mut Context<Self>) {
         let now_playing = song.map(|song| NowPlaying { song, playing });
@@ -369,6 +396,30 @@ impl Library {
     fn play_from(&self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(songs) = self.loaded_songs().filter(|songs| ix < songs.len()) {
             window.dispatch_action(Box::new(PlaySongs::new(songs.clone(), ix)), cx);
+        }
+    }
+
+    /// Queues the whole of the album on show.
+    fn enqueue_album(&self, placement: Placement, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(songs) = self.loaded_songs().filter(|songs| !songs.is_empty()) {
+            window.dispatch_action(Box::new(EnqueueSongs::new(songs.clone(), placement)), cx);
+        }
+    }
+
+    fn enqueue_selected_song(
+        &self,
+        placement: Placement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let song = self
+            .selected_song_ix()
+            .and_then(|ix| self.loaded_songs()?.get(ix).cloned());
+        if let Some(song) = song {
+            window.dispatch_action(
+                Box::new(EnqueueSongs::new(Arc::from([song]), placement)),
+                cx,
+            );
         }
     }
 
@@ -485,6 +536,12 @@ impl Library {
                 cx.listener(|this, _: &SelectPageUp, _, cx| this.move_album(Motion::Pages(-1), cx)),
             )
             .on_action(cx.listener(|this, _: &Open, window, cx| this.open_album(window, cx)))
+            .on_action(cx.listener(|this, _: &PlayNext, window, cx| {
+                this.enqueue_album(Placement::Next, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &AddToQueue, window, cx| {
+                this.enqueue_album(Placement::Last, window, cx)
+            }))
             .child(self.render_album_rows(window, cx))
             .into_any_element()
     }
@@ -604,6 +661,12 @@ impl Library {
                     this.play_from(ix, window, cx);
                 }
             }))
+            .on_action(cx.listener(|this, _: &PlayNext, window, cx| {
+                this.enqueue_selected_song(Placement::Next, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &AddToQueue, window, cx| {
+                this.enqueue_selected_song(Placement::Last, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &Back, window, cx| {
                 this.albums_focus.focus(window, cx);
             }))
@@ -680,20 +743,42 @@ impl Library {
                                     .child(summary),
                             )
                             .child(
-                                h_flex().pt_3().child(
-                                    Button::new("play-album")
-                                        .icon(IconName::Play)
-                                        .label("Play")
-                                        .disabled(loaded.songs.is_empty())
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.play_from(0, window, cx)
-                                        })),
-                                ),
+                                h_flex()
+                                    .pt_3()
+                                    .gap_2()
+                                    .child(
+                                        Button::new("play-album")
+                                            .icon(IconName::Play)
+                                            .label("Play")
+                                            .disabled(loaded.songs.is_empty())
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.play_from(0, window, cx)
+                                            })),
+                                    )
+                                    .child(self.render_album_menu(loaded)),
                             ),
                     ),
             )
             .child(self.render_songs(loaded, window, cx))
             .into_any_element()
+    }
+
+    /// The album's commands besides Play.
+    ///
+    /// The album list's commands act on the album on show, so the menu
+    /// dispatches them there, whichever list has focus.
+    fn render_album_menu(&self, loaded: &LoadedAlbum) -> impl IntoElement {
+        let albums_focus = self.albums_focus.clone();
+        Button::new("album-menu")
+            .ghost()
+            .icon(IconName::Ellipsis)
+            .accessibility_label("More")
+            .disabled(loaded.songs.is_empty())
+            .dropdown_menu(move |menu, _, _| {
+                menu.action_context(albums_focus.clone())
+                    .menu("Play Next", Box::new(PlayNext))
+                    .menu("Add to Queue", Box::new(AddToQueue))
+            })
     }
 
     fn render_songs(
@@ -713,6 +798,7 @@ impl Library {
         let muted_foreground = cx.theme().muted_foreground;
         let primary = cx.theme().primary;
         let owner = cx.entity().downgrade();
+        let songs_focus = self.songs_focus.clone();
         div()
             .id("songs")
             .relative()
@@ -750,6 +836,7 @@ impl Library {
                                 None => title.clone(),
                             };
                             let owner = owner.clone();
+                            let songs_focus = songs_focus.clone();
                             Some(
                                 ListItem::new(ElementId::Name(format!("song-{id}").into()))
                                     .selected(is_selected)
@@ -805,16 +892,35 @@ impl Library {
                                                     .child(duration),
                                             ),
                                     )
-                                    .on_click(move |event, window, cx| {
+                                    .on_click({
+                                        let owner = owner.clone();
+                                        move |event, window, cx| {
+                                            owner
+                                                .update(cx, |this, cx| {
+                                                    this.songs_focus.focus(window, cx);
+                                                    this.select_song(ix, cx);
+                                                    if event.click_count() >= 2 {
+                                                        this.play_from(ix, window, cx);
+                                                    }
+                                                })
+                                                .ok();
+                                        }
+                                    })
+                                    // The menu acts on the selection, so the
+                                    // row under the pointer becomes it first.
+                                    .on_mouse_down(MouseButton::Right, move |_, window, cx| {
                                         owner
                                             .update(cx, |this, cx| {
                                                 this.songs_focus.focus(window, cx);
                                                 this.select_song(ix, cx);
-                                                if event.click_count() >= 2 {
-                                                    this.play_from(ix, window, cx);
-                                                }
                                             })
                                             .ok();
+                                    })
+                                    .context_menu(move |menu, _, _| {
+                                        menu.action_context(songs_focus.clone())
+                                            .menu("Play", Box::new(Open))
+                                            .menu("Play Next", Box::new(PlayNext))
+                                            .menu("Add to Queue", Box::new(AddToQueue))
                                     }),
                             )
                         })
@@ -842,16 +948,17 @@ impl Render for Library {
             .on_action(cx.listener(|this, _: &Refresh, _, cx| this.refresh_library(cx)))
             .child(
                 h_resizable("library-panes")
+                    .with_state(&self.panes)
                     .child(
                         resizable_panel()
-                            .size(rem * 20.)
+                            .size(rem * ALBUMS_WIDTH)
                             .size_range(rem * 14. ..rem * 32.)
                             .fixed()
                             .child(self.render_albums(window, cx)),
                     )
                     .child(
                         resizable_panel()
-                            .size_range(rem * 30. ..rem * 200.)
+                            .size_range(rem * DETAIL_MIN_WIDTH..rem * 200.)
                             .child(self.render_detail(window, cx)),
                     ),
             )
@@ -966,73 +1073,4 @@ fn failure(
         )
         .child(h_flex().child(retry))
         .into_any_element()
-}
-
-/// A keyboard move within a list.
-#[derive(Clone, Copy)]
-enum Motion {
-    By(isize),
-    Pages(isize),
-    First,
-    Last,
-}
-
-impl Motion {
-    /// The position to select in a list of `len` rows with `page` rows in
-    /// view, starting from `current`. With nothing selected, a move starts
-    /// at the first row, or the last for [`Motion::Last`].
-    fn apply(self, current: Option<usize>, len: usize, page: usize) -> Option<usize> {
-        let last = len.checked_sub(1)?;
-        let Some(current) = current else {
-            return Some(if matches!(self, Self::Last) { last } else { 0 });
-        };
-        Some(match self {
-            Self::By(delta) => current.saturating_add_signed(delta).min(last),
-            Self::Pages(pages) => current
-                .saturating_add_signed(pages.saturating_mul(page as isize))
-                .min(last),
-            Self::First => 0,
-            Self::Last => last,
-        })
-    }
-}
-
-/// Rows that fit in a list's viewport, at least one, from its last layout.
-///
-/// Reads the handle's public state, which the list writes while it lays
-/// out; should that be under way, a page is one row rather than a panic.
-fn page_rows(scroll: &UniformListScrollHandle) -> usize {
-    let Ok(state) = scroll.0.try_borrow() else {
-        return 1;
-    };
-    let viewport = state.base_handle.bounds().size.height;
-    let row = state.last_item_size.map(|size| size.item.height);
-    match row {
-        Some(row) if row > gpui_kit::px(0.) => ((viewport / row).floor() as usize).max(1),
-        _ => 1,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Motion;
-
-    #[test]
-    fn motions_stay_within_the_list() {
-        assert_eq!(Motion::By(1).apply(Some(9), 10, 4), Some(9));
-        assert_eq!(Motion::By(-1).apply(Some(0), 10, 4), Some(0));
-        assert_eq!(Motion::Pages(1).apply(Some(2), 10, 4), Some(6));
-        assert_eq!(Motion::Pages(1).apply(Some(8), 10, 4), Some(9));
-        assert_eq!(Motion::Pages(-1).apply(Some(2), 10, 4), Some(0));
-        assert_eq!(Motion::First.apply(Some(5), 10, 4), Some(0));
-        assert_eq!(Motion::Last.apply(Some(5), 10, 4), Some(9));
-    }
-
-    #[test]
-    fn a_motion_from_no_selection_starts_at_an_end() {
-        assert_eq!(Motion::By(1).apply(None, 10, 4), Some(0));
-        assert_eq!(Motion::Pages(-1).apply(None, 10, 4), Some(0));
-        assert_eq!(Motion::Last.apply(None, 10, 4), Some(9));
-        assert_eq!(Motion::By(1).apply(None, 0, 4), None);
-    }
 }

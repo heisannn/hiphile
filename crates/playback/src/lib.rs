@@ -3,7 +3,7 @@
 mod queue;
 mod song_cache;
 
-pub use queue::{Queue, RepeatMode};
+pub use queue::{Entry, EntryId, Placement, Queue, RepeatMode};
 pub use song_cache::SongCache;
 
 use subsonic::Song;

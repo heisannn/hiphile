@@ -16,7 +16,7 @@ use player::{
 
 use app_shell::{AppShell, WORKSPACE_CONTEXT};
 
-actions!(hiphile, [Quit, SignOut]);
+actions!(hiphile, [Quit, SignOut, ToggleQueue]);
 
 fn main() {
     gpui_kit::application()
@@ -50,17 +50,24 @@ fn main() {
 fn install_app_commands(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
     // Bind keys before `set_menus`: menus read the keymap when they are built.
-    let quit = if cx.platform_info().is_mac() {
-        "cmd-q"
+    let (quit, toggle_queue) = if cx.platform_info().is_mac() {
+        ("cmd-q", "cmd-alt-u")
     } else {
-        "ctrl-q"
+        ("ctrl-q", "ctrl-alt-u")
     };
     cx.bind_keys([
         KeyBinding::new(quit, Quit, None),
+        KeyBinding::new(toggle_queue, ToggleQueue, Some(WORKSPACE_CONTEXT)),
         // Space toggles playback from the lists, never from a text field.
         KeyBinding::new("space", TogglePlayback, Some(library::ALBUMS_CONTEXT)),
         KeyBinding::new("space", TogglePlayback, Some(library::SONGS_CONTEXT)),
     ]);
+}
+
+/// Builds the menu bar; `queue_shown` checks View > Queue. The app shell
+/// calls it, once the keys above are bound (menus read the keymap when they
+/// are built), and again when that changes.
+pub(crate) fn set_menus(queue_shown: bool, cx: &mut App) {
     cx.set_menus([
         Menu::new("hiphile").items([
             MenuItem::action("Sign Out", SignOut),
@@ -68,6 +75,7 @@ fn install_app_commands(cx: &mut App) {
             MenuItem::action("Quit hiphile", Quit),
         ]),
         Menu::new("Library").items([MenuItem::action("Refresh Library", library::Refresh)]),
+        Menu::new("View").items([MenuItem::action("Queue", ToggleQueue).checked(queue_shown)]),
         Menu::new("Controls").items([
             MenuItem::action("Play/Pause", TogglePlayback),
             MenuItem::action("Next", NextSong),

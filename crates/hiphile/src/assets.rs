@@ -10,6 +10,7 @@ gpui_kit::assets::icon_assets!(
     [
         AudioLines,
         Disc3,
+        ListMusic,
         SkipBack,
         SkipForward,
         Volume1,

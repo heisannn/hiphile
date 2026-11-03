@@ -2,10 +2,14 @@
 
 mod format;
 mod player;
+mod queue_view;
 
 use gpui_kit::{App, Global, KeyBinding, actions};
+use ui::list_navigation::bind_list_navigation;
 
+pub use playback::Placement;
 pub use player::{Player, PlayerEvent};
+pub use queue_view::{QUEUE_CONTEXT, QueueView};
 
 actions!(
     player,
@@ -77,5 +81,17 @@ pub fn init(context: &'static str, cx: &mut App) {
         KeyBinding::new(up, VolumeUp, Some(context)),
         KeyBinding::new(down, VolumeDown, Some(context)),
         KeyBinding::new(mute, ToggleMute, Some(context)),
+    ]);
+
+    bind_list_navigation(QUEUE_CONTEXT, cx);
+    cx.bind_keys([
+        KeyBinding::new("enter", queue_view::Play, Some(QUEUE_CONTEXT)),
+        KeyBinding::new("alt-enter", queue_view::PlayNext, Some(QUEUE_CONTEXT)),
+        KeyBinding::new("delete", queue_view::Remove, Some(QUEUE_CONTEXT)),
+        KeyBinding::new("backspace", queue_view::Remove, Some(QUEUE_CONTEXT)),
+        KeyBinding::new("alt-up", queue_view::MoveUp, Some(QUEUE_CONTEXT)),
+        KeyBinding::new("alt-down", queue_view::MoveDown, Some(QUEUE_CONTEXT)),
+        // Space toggles playback from the list, never from a text field.
+        KeyBinding::new("space", TogglePlayback, Some(QUEUE_CONTEXT)),
     ]);
 }

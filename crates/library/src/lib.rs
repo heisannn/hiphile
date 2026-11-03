@@ -1,13 +1,14 @@
 //! Feature: browsing albums and their songs.
 //!
 //! Shows the server's library saved on this computer at once and brings it
-//! up to date in the background. Dispatches `actions::PlaySongs`; the app
-//! shell routes it to the player.
+//! up to date in the background. Dispatches `actions::PlaySongs` and
+//! `actions::EnqueueSongs`; the app shell routes them to the player.
 
 mod filter;
 mod library_view;
 
 use gpui_kit::{App, KeyBinding, actions};
+use ui::list_navigation::bind_list_navigation;
 
 pub use library_view::Library;
 
@@ -20,14 +21,14 @@ const LIBRARY_CONTEXT: &str = "Library";
 actions!(
     library,
     [
-        SelectNext,
-        SelectPrevious,
-        SelectFirst,
-        SelectLast,
-        SelectPageDown,
-        SelectPageUp,
         /// Albums: move to the album's songs. Songs: play from the selection.
         Open,
+        /// Albums: queue the album right after the current song. Songs: the
+        /// selected song.
+        PlayNext,
+        /// Albums: queue the album after every other song. Songs: the
+        /// selected song.
+        AddToQueue,
         /// Songs: return to the album list.
         Back,
         FocusFilter,
@@ -44,21 +45,15 @@ pub fn init(cx: &mut App) {
         ("ctrl-f", "ctrl-r")
     };
     for context in [ALBUMS_CONTEXT, SONGS_CONTEXT] {
+        bind_list_navigation(context, cx);
         cx.bind_keys([
-            KeyBinding::new("home", SelectFirst, Some(context)),
-            KeyBinding::new("end", SelectLast, Some(context)),
-            KeyBinding::new("pagedown", SelectPageDown, Some(context)),
-            KeyBinding::new("pageup", SelectPageUp, Some(context)),
+            KeyBinding::new("enter", Open, Some(context)),
+            KeyBinding::new("alt-enter", PlayNext, Some(context)),
+            KeyBinding::new("shift-enter", AddToQueue, Some(context)),
         ]);
     }
     cx.bind_keys([
-        KeyBinding::new("down", SelectNext, Some(ALBUMS_CONTEXT)),
-        KeyBinding::new("up", SelectPrevious, Some(ALBUMS_CONTEXT)),
-        KeyBinding::new("enter", Open, Some(ALBUMS_CONTEXT)),
         KeyBinding::new("right", Open, Some(ALBUMS_CONTEXT)),
-        KeyBinding::new("down", SelectNext, Some(SONGS_CONTEXT)),
-        KeyBinding::new("up", SelectPrevious, Some(SONGS_CONTEXT)),
-        KeyBinding::new("enter", Open, Some(SONGS_CONTEXT)),
         KeyBinding::new("left", Back, Some(SONGS_CONTEXT)),
         KeyBinding::new("escape", Back, Some(SONGS_CONTEXT)),
         KeyBinding::new(find, FocusFilter, Some(LIBRARY_CONTEXT)),

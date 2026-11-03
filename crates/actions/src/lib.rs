@@ -30,3 +30,35 @@ impl PlaySongs {
         self.start_ix
     }
 }
+
+/// Where [`EnqueueSongs`] adds its songs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Placement {
+    /// Right after the current song.
+    Next,
+    /// After every other song.
+    Last,
+}
+
+/// Add `songs` to the play queue at `placement`, starting them when nothing
+/// is playing.
+#[derive(Clone, Debug, PartialEq, Action)]
+#[action(namespace = hiphile, no_json)]
+pub struct EnqueueSongs {
+    songs: Arc<[Song]>,
+    placement: Placement,
+}
+
+impl EnqueueSongs {
+    pub fn new(songs: Arc<[Song]>, placement: Placement) -> Self {
+        Self { songs, placement }
+    }
+
+    pub fn songs(&self) -> &Arc<[Song]> {
+        &self.songs
+    }
+
+    pub fn placement(&self) -> Placement {
+        self.placement
+    }
+}

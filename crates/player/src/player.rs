@@ -13,7 +13,7 @@ use gpui_kit::{
     AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render,
     SharedString, Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _,
 };
-use playback::Queue;
+use playback::{EntryId, Placement, Queue};
 use subsonic::{Song, SongId};
 use ui::{CoverArt, format_duration};
 
@@ -32,13 +32,16 @@ const VOLUME_STEP: f32 = 0.1;
 /// Pixel size requested for the bar's cover: twice its on-screen size.
 const COVER_PIXELS: u32 = 96;
 
-/// What the player is on, for views that mark it.
 pub enum PlayerEvent {
+    /// What the player is on, for views that mark it.
     NowPlaying {
         song: Option<SongId>,
         /// Whether it is playing or about to, rather than paused or stopped.
         playing: bool,
     },
+    /// Entries were added, removed, or moved. A change of the current entry
+    /// alone comes as [`PlayerEvent::NowPlaying`].
+    QueueChanged,
 }
 
 /// The play queue, the audio engine, and the now-playing bar that controls
@@ -191,7 +194,76 @@ impl Player {
     /// Replaces the queue with `songs` and plays from `start_ix`.
     pub fn play(&mut self, songs: &[Song], start_ix: usize, cx: &mut Context<Self>) {
         self.queue.replace(songs.to_vec(), start_ix);
+        self.queue_changed(cx);
         self.play_current(cx);
+    }
+
+    /// Adds `songs` to the queue at `placement`. When nothing is playing or
+    /// paused, playback starts: from the first of them if there was no
+    /// current song, otherwise from the entry after the current one, so
+    /// that songs already waiting are not skipped. The current one is
+    /// stopped only after it failed.
+    pub fn enqueue(&mut self, songs: &[Song], placement: Placement, cx: &mut Context<Self>) {
+        let had_current = self.has_song();
+        if self.queue.insert(songs.to_vec(), placement).is_none() {
+            return;
+        }
+        self.queue_changed(cx);
+        if self.state != State::Stopped {
+            return;
+        }
+        // Without a current song, the first one added has become it.
+        if !had_current || self.queue.advance().is_some() {
+            self.play_current(cx);
+        }
+    }
+
+    pub(crate) fn queue(&self) -> &Queue<Song> {
+        &self.queue
+    }
+
+    /// Whether the current song is playing or about to, rather than paused
+    /// or stopped.
+    pub(crate) fn is_playing(&self) -> bool {
+        matches!(self.state, State::Playing | State::Opening)
+    }
+
+    /// Plays the entry from its start.
+    pub(crate) fn play_entry(&mut self, id: EntryId, cx: &mut Context<Self>) {
+        if self.queue.jump_to(id).is_some() {
+            self.play_current(cx);
+        }
+    }
+
+    /// Removes the entry, unless it is the current one.
+    pub(crate) fn remove_entry(&mut self, id: EntryId, cx: &mut Context<Self>) {
+        if self.queue.remove(id) {
+            self.queue_changed(cx);
+        }
+    }
+
+    pub(crate) fn move_entry(&mut self, id: EntryId, to_ix: usize, cx: &mut Context<Self>) {
+        if self.queue.move_entry(id, to_ix) {
+            self.queue_changed(cx);
+        }
+    }
+
+    /// Moves the entry to right after the current one.
+    pub(crate) fn move_entry_to_next(&mut self, id: EntryId, cx: &mut Context<Self>) {
+        if self.queue.move_to_next(id) {
+            self.queue_changed(cx);
+        }
+    }
+
+    /// Removes every entry but the current one.
+    pub(crate) fn clear_queue(&mut self, cx: &mut Context<Self>) {
+        self.queue.clear();
+        self.queue_changed(cx);
+    }
+
+    fn queue_changed(&mut self, cx: &mut Context<Self>) {
+        cx.emit(PlayerEvent::QueueChanged);
+        cx.notify();
     }
 
     pub fn toggle_playback(&mut self, cx: &mut Context<Self>) {
