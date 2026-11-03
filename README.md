@@ -47,6 +47,13 @@ Settings… also sets the song cache's limit, `song_cache_gib`, which
 `HIPHILE_SONG_CACHE_GIB` overrides, shows how much the cache takes, and clears
 it.
 
+## Home
+
+The app opens on the songs played last and the albums added last, both asked of
+the server: Subsonic has no method for the songs, so they come from the albums
+played last, whose songs say when each was played. Plays from other clients show
+the next time the list loads, which is on signing in and after each play.
+
 ## Scrobbling
 
 Once half of a song has been listened to, or four minutes of a long one, the

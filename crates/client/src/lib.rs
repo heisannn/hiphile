@@ -130,6 +130,22 @@ impl Client {
         Ok(envelope.into_payload().into_albums())
     }
 
+    /// The `size` albums added to the library last, newest first.
+    pub async fn newest_albums(&self, size: u32) -> Result<Vec<Album>, Error> {
+        let envelope = self
+            .call::<GetAlbumList2>(&Endpoint::newest_albums(size))
+            .await?;
+        Ok(envelope.into_payload().into_albums())
+    }
+
+    /// The `size` albums played last by the user, most recent first.
+    pub async fn recently_played_albums(&self, size: u32) -> Result<Vec<Album>, Error> {
+        let envelope = self
+            .call::<GetAlbumList2>(&Endpoint::recently_played_albums(size))
+            .await?;
+        Ok(envelope.into_payload().into_albums())
+    }
+
     /// One page of every song in the library, in an order that stays the
     /// same between pages while the library does not change.
     pub async fn songs_page(&self, size: u32, offset: u32) -> Result<Vec<Song>, Error> {

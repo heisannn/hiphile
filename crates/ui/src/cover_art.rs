@@ -13,6 +13,7 @@ use gpui_kit::{
 pub struct CoverArt {
     url: Option<SharedString>,
     size: Size,
+    fill: bool,
 }
 
 impl CoverArt {
@@ -20,7 +21,14 @@ impl CoverArt {
         Self {
             url,
             size: Size::Medium,
+            fill: false,
         }
+    }
+
+    /// Takes the width of its parent, and as much height, instead of a size.
+    pub fn fill(mut self) -> Self {
+        self.fill = true;
+        self
     }
 }
 
@@ -33,8 +41,8 @@ impl Sizable for CoverArt {
 
 impl RenderOnce for CoverArt {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let large = matches!(self.size, Size::Large);
-        let radius = if large {
+        let large = self.fill || matches!(self.size, Size::Large);
+        let radius = if matches!(self.size, Size::Large) {
             cx.theme().radius_lg
         } else {
             cx.theme().radius
@@ -58,6 +66,7 @@ impl RenderOnce for CoverArt {
         };
         let frame = div().flex_none().overflow_hidden().rounded(radius);
         let frame = match self.size {
+            _ if self.fill => frame.w_full().aspect_square(),
             Size::XSmall | Size::Small => frame.size_10(),
             Size::Medium | Size::Size(_) => frame.size_16(),
             Size::Large => frame.size_48(),

@@ -16,9 +16,9 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, AppContext as _, AsyncApp, Context, ElementId, Entity, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, ScrollStrategy,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
+    AnyElement, AppContext as _, AsyncApp, Context, ElementId, Entity, EventEmitter, FocusHandle,
+    Focusable, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render,
+    ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
     UniformListScrollHandle, WeakEntity, Window, div, prelude::FluentBuilder as _, uniform_list,
 };
 use subsonic::{Album, AlbumId, AlbumWithSongs, Song, SongId};
@@ -42,6 +42,11 @@ const ALBUMS_WIDTH: f32 = 20.;
 /// The narrowest the album detail goes, in rem.
 const DETAIL_MIN_WIDTH: f32 = 26.;
 
+pub enum LibraryEvent {
+    /// A sync brought the album list up to date with the server.
+    AlbumsSynced,
+}
+
 /// The album browser: a filterable album list beside the selected album's
 /// songs. Owns the album data, the selection, and both lists' focus.
 pub struct Library {
@@ -51,6 +56,9 @@ pub struct Library {
     /// Positions in the loaded albums that match the filter.
     visible: Arc<Vec<usize>>,
     selected_album: Option<AlbumId>,
+    /// The selected album, when it was asked to show before the list had it.
+    /// It stays selected and comes into view once a sync brings it.
+    revealing: Option<AlbumId>,
     detail: Detail,
     selected_song: Option<SongId>,
     now_playing: Option<NowPlaying>,
@@ -105,6 +113,8 @@ struct LoadedAlbum {
     cover_url: Option<SharedString>,
 }
 
+impl EventEmitter<LibraryEvent> for Library {}
+
 impl Library {
     pub fn new(session: session::Session, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter albums"));
@@ -128,6 +138,7 @@ impl Library {
             sync: SyncState::Idle,
             visible: Arc::default(),
             selected_album: None,
+            revealing: None,
             detail: Detail::None,
             selected_song: None,
             now_playing: None,
@@ -183,17 +194,24 @@ impl Library {
         };
         if again {
             self.refresh_library(cx);
+        } else {
+            self.revealing = None;
         }
         cx.notify();
     }
 
     /// Replaces the album list, keeping the selection while the album is
-    /// still there.
+    /// still there or a sync may yet bring it.
     fn set_albums(&mut self, albums: Vec<Album>, cx: &mut Context<Self>) {
-        let keeps_selection = self
-            .selected_album
+        let keeps_selection = self.revealing.is_some()
+            || self
+                .selected_album
+                .as_ref()
+                .is_some_and(|selected| albums.iter().any(|album| album.id() == selected));
+        let revealed = self
+            .revealing
             .as_ref()
-            .is_some_and(|selected| albums.iter().any(|album| album.id() == selected));
+            .is_some_and(|revealing| albums.iter().any(|album| album.id() == revealing));
         self.albums = Albums::Loaded(Arc::new(albums));
         self.apply_filter(cx);
         if !keeps_selection {
@@ -203,7 +221,18 @@ impl Library {
                 self.select_album(first, cx);
             }
         }
+        if revealed {
+            self.revealing = None;
+            self.scroll_to_selected_album();
+        }
         cx.notify();
+    }
+
+    fn scroll_to_selected_album(&self) {
+        if let Some(position) = self.selected_position() {
+            self.albums_scroll
+                .scroll_to_item(position, ScrollStrategy::Nearest);
+        }
     }
 
     fn loaded_albums(&self) -> Option<&Arc<Vec<Album>>> {
@@ -240,6 +269,7 @@ impl Library {
         if self.selected_album.as_ref() == Some(&album) {
             return;
         }
+        self.revealing = None;
         if let Some(position) = self.visible.iter().position(|ix| {
             self.loaded_albums()
                 .and_then(|albums| albums.get(*ix))
@@ -288,25 +318,21 @@ impl Library {
     }
 
     /// Selects `album` and brings it into view in the album list, clearing a
-    /// filter that hides it.
+    /// filter that hides it. An album the list does not have yet, as during
+    /// the first sync, comes into view once a sync brings it.
     pub fn reveal_album(&mut self, album: AlbumId, window: &mut Window, cx: &mut Context<Self>) {
-        let hidden = self.loaded_albums().is_some_and(|albums| {
-            !self
-                .visible
-                .iter()
-                .any(|ix| albums.get(*ix).is_some_and(|listed| listed.id() == &album))
-        });
-        if hidden {
+        let position = self
+            .loaded_albums()
+            .and_then(|albums| albums.iter().position(|listed| listed.id() == &album));
+        if position.is_some_and(|position| !self.visible.contains(&position)) {
             self.filter
                 .update(cx, |filter, cx| filter.set_value("", window, cx));
             self.apply_filter(cx);
         }
-        self.select_album(album, cx);
+        self.select_album(album.clone(), cx);
+        self.revealing = position.is_none().then_some(album);
         // Selecting the album already selected does not scroll.
-        if let Some(position) = self.selected_position() {
-            self.albums_scroll
-                .scroll_to_item(position, ScrollStrategy::Nearest);
-        }
+        self.scroll_to_selected_album();
         self.albums_focus.focus(window, cx);
     }
 
@@ -1002,7 +1028,11 @@ async fn run_sync(
         |error: catalog::Error| SharedString::from(session::describe_catalog(&error));
     let Some(catalog) = session.catalog().cloned() else {
         let albums = client.albums_by_name().await.map_err(describe)?;
-        this.update(cx, |this, cx| this.set_albums(albums, cx)).ok();
+        this.update(cx, |this, cx| {
+            this.set_albums(albums, cx);
+            cx.emit(LibraryEvent::AlbumsSynced);
+        })
+        .ok();
         return Ok(());
     };
 
@@ -1039,7 +1069,13 @@ async fn run_sync(
         Outcome::UpToDate | Outcome::Busy => None,
     };
     if let Some(albums) = albums {
-        this.update(cx, |this, cx| this.set_albums(albums, cx)).ok();
+        this.update(cx, |this, cx| {
+            this.set_albums(albums, cx);
+            if matches!(outcome, Outcome::Synced { .. } | Outcome::Unsettled { .. }) {
+                cx.emit(LibraryEvent::AlbumsSynced);
+            }
+        })
+        .ok();
     }
 
     cx.background_spawn(async move { catalog::sync_songs(&catalog, &client, mode).await })
@@ -1189,6 +1225,72 @@ mod tests {
 
         cx.update(|window, cx| {
             assert!(library.read(cx).albums_focus.is_focused(window));
+        });
+    }
+
+    fn set_albums(library: &Entity<Library>, albums: Vec<Album>, cx: &mut VisualTestContext) {
+        cx.update(|_, cx| {
+            library.update(cx, |library, cx| library.set_albums(albums, cx));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn an_album_revealed_before_the_list_has_it_stays_selected_until_it_arrives(
+        cx: &mut TestAppContext,
+    ) {
+        let (library, cx) = library(cx);
+        set_filter(&library, "Alpha", cx);
+
+        reveal(&library, "c", cx);
+        set_albums(&library, vec![album("a", "Alpha"), album("b", "Beta")], cx);
+
+        cx.update(|_, cx| {
+            let library = library.read(cx);
+            assert_eq!(library.filter.read(cx).value(), "Alpha");
+            assert_eq!(library.selected_album, Some(AlbumId::new("c")));
+            assert_eq!(library.revealing, Some(AlbumId::new("c")));
+        });
+
+        set_albums(
+            &library,
+            vec![album("a", "Alpha"), album("c", "Alpha Two")],
+            cx,
+        );
+
+        cx.update(|_, cx| {
+            let library = library.read(cx);
+            assert_eq!(library.selected_album, Some(AlbumId::new("c")));
+            assert_eq!(library.revealing, None);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn selecting_another_album_gives_up_on_one_being_revealed(cx: &mut TestAppContext) {
+        let (library, cx) = library(cx);
+        reveal(&library, "c", cx);
+
+        cx.update(|_, cx| {
+            library.update(cx, |library, cx| {
+                library.select_album(AlbumId::new("a"), cx);
+            });
+        });
+
+        cx.update(|_, cx| assert_eq!(library.read(cx).revealing, None));
+    }
+
+    #[gpui_kit::test]
+    fn the_end_of_a_sync_gives_up_on_an_album_being_revealed(cx: &mut TestAppContext) {
+        let (library, cx) = library(cx);
+        reveal(&library, "c", cx);
+
+        cx.update(|_, cx| {
+            library.update(cx, |library, cx| library.finish_sync(Ok(()), cx));
+        });
+        cx.update(|_, cx| assert_eq!(library.read(cx).revealing, None));
+
+        set_albums(&library, vec![album("a", "Alpha"), album("b", "Beta")], cx);
+        cx.update(|_, cx| {
+            assert_eq!(library.read(cx).selected_album, Some(AlbumId::new("a")));
         });
     }
 }

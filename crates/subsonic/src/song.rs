@@ -29,6 +29,8 @@ pub struct Song {
     sampling_rate: Option<u32>,
     bit_depth: Option<u32>,
     channel_count: Option<u32>,
+    /// When the user last played it, in RFC 3339.
+    played: Option<String>,
 }
 
 impl Song {
@@ -100,5 +102,11 @@ impl Song {
     /// OpenSubsonic servers only.
     pub fn channel_count(&self) -> Option<u32> {
         self.channel_count
+    }
+
+    /// When the user last played it, in RFC 3339. `None` if they never have,
+    /// or the server does not say.
+    pub fn played(&self) -> Option<&str> {
+        self.played.as_deref()
     }
 }

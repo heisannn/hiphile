@@ -129,17 +129,19 @@ impl Scrobbles {
     }
 
     /// Sends the kept plays to `target`, oldest first, forgetting each one
-    /// the server has dealt with. On a failure the rest wait for the next
-    /// submission, which is why the error can be ignored.
+    /// the server has dealt with, and says how many it was. On a failure the
+    /// rest wait for the next submission, which is why the error can be
+    /// ignored.
     ///
     /// Does nothing while another submission of these plays is running. That
     /// one sends a play kept meanwhile, unless it was just finishing; such a
     /// play waits for the next submission too.
-    pub async fn submit(&self, target: &impl ScrobbleTarget) -> Result<(), Error> {
+    pub async fn submit(&self, target: &impl ScrobbleTarget) -> Result<usize, Error> {
         if self.inner.submitting.swap(true, Ordering::Acquire) {
-            return Ok(());
+            return Ok(0);
         }
         let _submitting = Submitting(&self.inner.submitting);
+        let mut submitted = 0;
         while let Some((id, song, played_at)) = self.oldest()? {
             match target.scrobble(&song, played_at).await {
                 Ok(()) => {}
@@ -147,8 +149,9 @@ impl Scrobbles {
                 Err(error) => return Err(error.into()),
             }
             self.forget(id)?;
+            submitted += 1;
         }
-        Ok(())
+        Ok(submitted)
     }
 
     fn oldest(&self) -> Result<Option<(i64, SongId, SystemTime)>, Error> {
@@ -279,8 +282,8 @@ mod tests {
         scrobbles.record(&SongId::new("b"), at(200)).unwrap();
 
         let target = Fake::default();
-        block_on(scrobbles.submit(&target)).unwrap();
-        block_on(scrobbles.submit(&target)).unwrap();
+        assert_eq!(block_on(scrobbles.submit(&target)).unwrap(), 2);
+        assert_eq!(block_on(scrobbles.submit(&target)).unwrap(), 0);
 
         assert_eq!(
             *target.received.lock().unwrap(),

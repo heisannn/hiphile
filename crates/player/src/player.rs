@@ -42,6 +42,9 @@ pub enum PlayerEvent {
     /// Entries were added, removed, or moved. A change of the current entry
     /// alone comes as [`PlayerEvent::NowPlaying`].
     QueueChanged,
+    /// A play of a song has been reported to the server, as far as it could
+    /// be, so what the server says was played last may have changed.
+    Played,
 }
 
 /// The play queue, the audio engine, and the now-playing bar that controls
@@ -138,8 +141,13 @@ impl Player {
         // Plays from before that the server has yet to hear of.
         if let Some(scrobbles) = session.scrobbles().cloned() {
             let client = session.client().clone();
-            cx.background_spawn(async move { scrobbles.submit(&client).await.ok() })
-                .detach();
+            let sent = cx.background_spawn(async move { scrobbles.submit(&client).await });
+            cx.spawn(async move |this, cx| {
+                if matches!(sent.await, Ok(1..)) {
+                    this.update(cx, |_, cx| cx.emit(PlayerEvent::Played)).ok();
+                }
+            })
+            .detach();
         }
 
         let store = config::Store::user().ok();
@@ -426,7 +434,7 @@ impl Player {
         let played_at = SystemTime::now();
         let client = self.session.client().clone();
         let scrobbles = self.session.scrobbles().cloned();
-        cx.background_spawn(async move {
+        let sent = cx.background_spawn(async move {
             match scrobbles {
                 Some(scrobbles) if scrobbles.record(&song, played_at).is_ok() => {
                     scrobbles.submit(&client).await.ok();
@@ -435,6 +443,10 @@ impl Player {
                     client.scrobble(&song, played_at).await.ok();
                 }
             }
+        });
+        cx.spawn(async move |this, cx| {
+            sent.await;
+            this.update(cx, |_, cx| cx.emit(PlayerEvent::Played)).ok();
         })
         .detach();
     }

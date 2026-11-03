@@ -15,7 +15,7 @@ use gpui_kit::{
     Subscription, Window, div, prelude::FluentBuilder as _,
 };
 use home::Home;
-use library::{Library, Refresh};
+use library::{Library, LibraryEvent, Refresh};
 use player::{
     NextSong, Player, PlayerEvent, PreviousSong, QueueView, SeekBackward, SeekForward, ToggleMute,
     TogglePlayback, VolumeDown, VolumeUp,
@@ -94,6 +94,7 @@ struct Workspace {
     /// Holds the session's decoded covers, so signing out frees them.
     covers: Entity<CoverCache>,
     _player_events: Subscription,
+    _library_events: Subscription,
     _output_changes: Subscription,
     _focus_lost: Subscription,
 }
@@ -164,26 +165,45 @@ impl AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let home = cx.new(Home::new);
+        let home = cx.new(|cx| Home::new(session.clone(), window, cx));
         let library = cx.new(|cx| Library::new(session.clone(), window, cx));
         let audio_settings = settings::audio_settings(cx);
         let output = audio_settings.read(cx).output().clone();
         let player = cx.new(|cx| Player::new(session.clone(), output, window, cx));
         let queue = cx.new(|cx| QueueView::new(player.clone(), window, cx));
         let covers = CoverCache::new(cx);
-        // The library marks the song the player is on; the shell also
-        // re-renders, which updates which commands are available.
+        // The home screen and the library mark the song the player is on; the
+        // shell also re-renders, which updates which commands are available.
         let player_events = cx.subscribe(&player, {
+            let home = home.downgrade();
             let library = library.downgrade();
             move |_, _, event, cx| {
-                if let PlayerEvent::NowPlaying { song, playing } = event {
-                    library
-                        .update(cx, |library, cx| {
-                            library.set_now_playing(song.clone(), *playing, cx)
+                match event {
+                    PlayerEvent::NowPlaying { song, playing } => {
+                        home.update(cx, |home, cx| {
+                            home.set_now_playing(song.clone(), *playing, cx)
                         })
                         .ok();
+                        library
+                            .update(cx, |library, cx| {
+                                library.set_now_playing(song.clone(), *playing, cx)
+                            })
+                            .ok();
+                    }
+                    PlayerEvent::Played => {
+                        home.update(cx, |home, cx| home.reload_recently_played(cx))
+                            .ok();
+                    }
+                    PlayerEvent::QueueChanged => {}
                 }
                 cx.notify();
+            }
+        });
+        let library_events = cx.subscribe(&library, {
+            let home = home.downgrade();
+            move |_, _, event, cx| {
+                let LibraryEvent::AlbumsSynced = event;
+                home.update(cx, |home, cx| home.reload_new_albums(cx)).ok();
             }
         });
         let output_changes = cx.subscribe(&audio_settings, {
@@ -205,7 +225,7 @@ impl AppShell {
         let workspace = Workspace {
             session,
             profile,
-            destination: Destination::Library,
+            destination: Destination::Home,
             home,
             library,
             player,
@@ -213,6 +233,7 @@ impl AppShell {
             panes: cx.new(|_| ResizableState::default()),
             covers,
             _player_events: player_events,
+            _library_events: library_events,
             _output_changes: output_changes,
             _focus_lost: focus_lost,
         };

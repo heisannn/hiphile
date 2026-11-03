@@ -10,7 +10,7 @@ mod library_view;
 use gpui_kit::{App, KeyBinding, actions};
 use ui::list_navigation::bind_list_navigation;
 
-pub use library_view::Library;
+pub use library_view::{Library, LibraryEvent};
 
 /// Key context of the focused album list.
 pub const ALBUMS_CONTEXT: &str = "LibraryAlbums";

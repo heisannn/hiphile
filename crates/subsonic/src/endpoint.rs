@@ -40,6 +40,20 @@ impl Endpoint {
             .param("offset", offset.to_string())
     }
 
+    /// The albums added to the library last, newest first.
+    pub fn newest_albums(size: u32) -> Self {
+        Self::new("getAlbumList2")
+            .param("type", "newest")
+            .param("size", size.to_string())
+    }
+
+    /// The albums played last by the user, most recent first.
+    pub fn recently_played_albums(size: u32) -> Self {
+        Self::new("getAlbumList2")
+            .param("type", "recent")
+            .param("size", size.to_string())
+    }
+
     /// The artist index, sent only if it changed after `since` (milliseconds
     /// since the Unix epoch). Either way the response says when the library
     /// last changed.

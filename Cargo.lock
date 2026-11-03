@@ -3759,7 +3759,15 @@ dependencies = [
 name = "home"
 version = "0.1.0"
 dependencies = [
+ "actions",
+ "client",
+ "futures",
  "gpui-kit",
+ "net",
+ "serde_json",
+ "session",
+ "subsonic",
+ "ui",
 ]
 
 [[package]]

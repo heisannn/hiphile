@@ -28,6 +28,7 @@ fn main() {
             let net = net::Client::new(user_agent).expect("failed to start the network runtime");
             session::init(net.clone(), cx);
 
+            home::init(cx);
             library::init(cx);
             player::init(WORKSPACE_CONTEXT, cx);
             settings::init(cx);
