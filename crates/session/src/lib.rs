@@ -26,21 +26,25 @@ pub struct Session {
     client: client::Client,
     server: ServerInfo,
     catalog: Option<catalog::Catalog>,
+    scrobbles: Option<catalog::Scrobbles>,
     cover_urls: Arc<Mutex<HashMap<(CoverArtId, u32), SharedString>>>,
 }
 
 impl Session {
     /// `catalog` is the server's cached library; without one, views load
-    /// everything from the server.
+    /// everything from the server. `scrobbles` keeps the user's plays until
+    /// the server has them; without it, a play that fails to send is lost.
     pub fn new(
         client: client::Client,
         server: ServerInfo,
         catalog: Option<catalog::Catalog>,
+        scrobbles: Option<catalog::Scrobbles>,
     ) -> Self {
         Self {
             client,
             server,
             catalog,
+            scrobbles,
             cover_urls: Arc::default(),
         }
     }
@@ -67,6 +71,10 @@ impl Session {
 
     pub fn catalog(&self) -> Option<&catalog::Catalog> {
         self.catalog.as_ref()
+    }
+
+    pub fn scrobbles(&self) -> Option<&catalog::Scrobbles> {
+        self.scrobbles.as_ref()
     }
 
     pub fn server(&self) -> &ServerInfo {

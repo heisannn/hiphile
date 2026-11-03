@@ -47,6 +47,18 @@ Settings… also sets the song cache's limit, `song_cache_gib`, which
 `HIPHILE_SONG_CACHE_GIB` overrides, shows how much the cache takes, and clears
 it.
 
+## Scrobbling
+
+Once half of a song has been listened to, or four minutes of a long one, the
+app tells the server with `scrobble`, which updates the song's play count and
+last played time, and forwards the play to Last.fm if the server is set up to.
+Parts skipped by seeking do not count. Plays wait in `scrobbles.sqlite` in the
+system data directory (`~/Library/Application Support/hiphile/` on macOS) until
+the server has them, so those made without the network are sent with the next
+play or launch. The app also tells the server when a song starts or resumes,
+which shows it as now playing there without counting a play. The CLI does
+neither.
+
 ## Library cache
 
 Each server's albums and songs are kept in a SQLite database in the system

@@ -88,6 +88,23 @@ impl Endpoint {
             .param("artistCount", "0")
     }
 
+    /// Tells the server `song` was listened to at `played_at` (milliseconds
+    /// since the Unix epoch), which updates its play count and last played
+    /// time.
+    pub fn scrobble(song: &crate::SongId, played_at: u64) -> Self {
+        Self::new("scrobble")
+            .param("id", song.as_str())
+            .param("time", played_at.to_string())
+            .param("submission", "true")
+    }
+
+    /// Tells the server `song` is playing now, without counting it as played.
+    pub fn now_playing(song: &crate::SongId) -> Self {
+        Self::new("scrobble")
+            .param("id", song.as_str())
+            .param("submission", "false")
+    }
+
     /// Original file bytes (`format=raw`), so the client decodes the source itself.
     pub fn stream_original(song: &crate::SongId) -> Self {
         Self::new("stream")
@@ -252,6 +269,29 @@ mod tests {
         let printed = format!("{:?}", CoverArtRequest::parse(&url).unwrap());
         assert!(!printed.contains("secret"), "{printed}");
         assert!(!printed.contains("alice"), "{printed}");
+    }
+
+    #[test]
+    fn scrobble_submits_the_play_with_its_time() {
+        let base = Url::parse("https://music.example.com").unwrap();
+        let song = crate::SongId::new("s1");
+        let url =
+            Endpoint::scrobble(&song, 1_700_000_000_123).url(&base, &Credentials::api_key("k"));
+        assert_eq!(url.path(), "/rest/scrobble");
+        assert_eq!(query(&url, "id").as_deref(), Some("s1"));
+        assert_eq!(query(&url, "time").as_deref(), Some("1700000000123"));
+        assert_eq!(query(&url, "submission").as_deref(), Some("true"));
+    }
+
+    #[test]
+    fn now_playing_does_not_submit_a_play() {
+        let base = Url::parse("https://music.example.com").unwrap();
+        let song = crate::SongId::new("s1");
+        let url = Endpoint::now_playing(&song).url(&base, &Credentials::api_key("k"));
+        assert_eq!(url.path(), "/rest/scrobble");
+        assert_eq!(query(&url, "id").as_deref(), Some("s1"));
+        assert_eq!(query(&url, "submission").as_deref(), Some("false"));
+        assert_eq!(query(&url, "time"), None);
     }
 
     #[test]

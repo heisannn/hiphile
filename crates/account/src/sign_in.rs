@@ -207,14 +207,21 @@ impl SignIn {
         self._attempt = cx.spawn(async move |this, cx| {
             let result = client.ping().await;
             // Without its cached library the workspace loads everything
-            // from the server, so failing to open it is not shown.
-            let catalog = match &result {
+            // from the server, and without somewhere to keep plays it sends
+            // them right away, so failing to open either is not shown.
+            let (catalog, scrobbles) = match &result {
                 Ok(_) => {
                     let server = client.server().base_url().clone();
-                    cx.background_spawn(async move { catalog::Catalog::open_server(&server).ok() })
-                        .await
+                    let username = username.clone();
+                    cx.background_spawn(async move {
+                        (
+                            catalog::Catalog::open_server(&server).ok(),
+                            catalog::Scrobbles::user(&server, &username).ok(),
+                        )
+                    })
+                    .await
                 }
-                Err(_) => None,
+                Err(_) => (None, None),
             };
             this.update(cx, |this, cx| {
                 match result {
@@ -223,7 +230,7 @@ impl SignIn {
                         let profile = config::Profile::new(address, username);
                         this.remember(&profile, password, cx);
                         cx.emit(SignInEvent::SignedIn {
-                            session: Session::new(client, info, catalog),
+                            session: Session::new(client, info, catalog, scrobbles),
                             profile,
                         });
                     }

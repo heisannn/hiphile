@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use audio::{Engine, Event, EventKind, LoadId, OutputSettings, PlaybackFormat};
 use gpui_kit::assets::IconName;
@@ -13,7 +13,7 @@ use gpui_kit::{
     AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render,
     SharedString, Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _,
 };
-use playback::{EntryId, Placement, Queue};
+use playback::{EntryId, Placement, PlayTally, Queue};
 use subsonic::{Song, SongId};
 use ui::{CoverArt, format_duration};
 
@@ -62,6 +62,8 @@ pub struct Player {
     format: Option<PlaybackFormat>,
     /// Where the stopped song picks back up, after its output failed.
     resume: Option<Resume>,
+    /// How much of this play of the current song has been listened to.
+    tally: PlayTally,
     cover_url: Option<SharedString>,
     error: Option<SharedString>,
     /// The position as a fraction of the song.
@@ -75,6 +77,7 @@ pub struct Player {
     volume: Entity<SliderState>,
     muted: bool,
     _open: Task<()>,
+    _now_playing: Task<()>,
     _events: Task<()>,
     _refresh: Task<()>,
     /// The volume to save once the save in progress is done.
@@ -132,6 +135,13 @@ impl Player {
             }
         });
 
+        // Plays from before that the server has yet to hear of.
+        if let Some(scrobbles) = session.scrobbles().cloned() {
+            let client = session.client().clone();
+            cx.background_spawn(async move { scrobbles.submit(&client).await.ok() })
+                .detach();
+        }
+
         let store = config::Store::user().ok();
         let level = store
             .as_ref()
@@ -184,6 +194,7 @@ impl Player {
             state: State::Stopped,
             format: None,
             resume: None,
+            tally: PlayTally::default(),
             cover_url: None,
             error: None,
             position,
@@ -192,6 +203,7 @@ impl Player {
             volume,
             muted: false,
             _open: Task::ready(()),
+            _now_playing: Task::ready(()),
             _events: events,
             _refresh: refresh,
             unsaved_volume: None,
@@ -299,6 +311,7 @@ impl Player {
             State::Paused => {
                 self.engine.resume();
                 self.set_state(State::Playing, cx);
+                self.announce_current(cx);
             }
             State::Stopped if self.resume.is_some() => self.open_current(false, cx),
             State::Stopped if self.has_song() => self.play_current(cx),
@@ -391,6 +404,9 @@ impl Player {
 
     fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let position = self.position_now();
+        if self.state == State::Playing && self.tally.observe(position, self.duration()) {
+            self.scrobble_current(cx);
+        }
         if self.scrub.is_none() {
             self.show_position(position, window, cx);
         }
@@ -398,6 +414,43 @@ impl Player {
             self.refreshed_position = position;
             cx.notify();
         }
+    }
+
+    /// Tells the server the current song was played. The play is kept first,
+    /// so that it still gets there if it cannot be sent now; failing to send
+    /// it is not shown, as nothing about playback depends on it.
+    fn scrobble_current(&self, cx: &mut Context<Self>) {
+        let Some(song) = self.queue.current().map(|song| song.id().clone()) else {
+            return;
+        };
+        let played_at = SystemTime::now();
+        let client = self.session.client().clone();
+        let scrobbles = self.session.scrobbles().cloned();
+        cx.background_spawn(async move {
+            match scrobbles {
+                Some(scrobbles) if scrobbles.record(&song, played_at).is_ok() => {
+                    scrobbles.submit(&client).await.ok();
+                }
+                _ => {
+                    client.scrobble(&song, played_at).await.ok();
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Tells the server the current song is playing now, also after a pause,
+    /// which the server may have taken for the end of it. Replaces a notice
+    /// still on its way, which is out of date, and is not sent again if it
+    /// fails: by then it would be out of date too.
+    fn announce_current(&mut self, cx: &mut Context<Self>) {
+        let Some(song) = self.queue.current().map(|song| song.id().clone()) else {
+            return;
+        };
+        let client = self.session.client().clone();
+        self._now_playing = cx.background_spawn(async move {
+            client.now_playing(&song).await.ok();
+        });
     }
 
     /// Moves the position slider, unless it is there already.
@@ -477,6 +530,7 @@ impl Player {
 
     fn play_current(&mut self, cx: &mut Context<Self>) {
         self.resume = None;
+        self.tally = PlayTally::default();
         self.open_current(false, cx);
     }
 
@@ -550,6 +604,9 @@ impl Player {
                     State::Playing
                 };
                 self.set_state(state, cx);
+                if !paused {
+                    self.announce_current(cx);
+                }
             }
             EventKind::OutputChanged(format) => {
                 self.format = Some(format);

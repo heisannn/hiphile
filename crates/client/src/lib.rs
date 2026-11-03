@@ -165,6 +165,22 @@ impl Client {
         Ok(envelope.into_payload().into_album())
     }
 
+    /// Tells the server `song` was listened to at `played_at`.
+    pub async fn scrobble(&self, song: &SongId, played_at: SystemTime) -> Result<(), Error> {
+        let played_at = played_at.duration_since(UNIX_EPOCH).map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        });
+        self.call::<Ping>(&Endpoint::scrobble(song, played_at))
+            .await?;
+        Ok(())
+    }
+
+    /// Tells the server `song` is playing now, without counting it as played.
+    pub async fn now_playing(&self, song: &SongId) -> Result<(), Error> {
+        self.call::<Ping>(&Endpoint::now_playing(song)).await?;
+        Ok(())
+    }
+
     /// URL of a cover art image, authenticated like any other request.
     ///
     /// Each call yields a different URL (a fresh salt), so keep the result

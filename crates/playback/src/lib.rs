@@ -1,8 +1,10 @@
 //! Play queue and playback helpers shared by the GUI and the CLI.
 
+mod play_tally;
 mod queue;
 mod song_cache;
 
+pub use play_tally::PlayTally;
 pub use queue::{Entry, EntryId, Placement, Queue, RepeatMode};
 pub use song_cache::SongCache;
 

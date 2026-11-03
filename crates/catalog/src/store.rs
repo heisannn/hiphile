@@ -22,7 +22,7 @@ const DATABASE: &str = "catalog.sqlite";
 const SYNC_LOCK: &str = "sync.lock";
 /// How long a write by another connection, such as the CLI's, may hold up
 /// this one.
-const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// `json` holds the item as the server sent it; the other columns repeat
 /// what is sorted or looked up by. `generation` is the sync that last saw
@@ -488,7 +488,7 @@ fn schema_version(connection: &Connection) -> Result<i32, Error> {
     Ok(connection.pragma_query_value(None, "user_version", |row| row.get(0))?)
 }
 
-fn remove_database(path: &Path) -> Result<(), Error> {
+pub(crate) fn remove_database(path: &Path) -> Result<(), Error> {
     for suffix in ["", "-wal", "-shm"] {
         let mut file = path.as_os_str().to_owned();
         file.push(suffix);

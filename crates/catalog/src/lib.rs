@@ -12,14 +12,19 @@
 //! It is a cache: a database written by another version of the schema, or
 //! one that cannot be read, is emptied and filled again by the next sync.
 //! Credentials are never stored.
+//!
+//! [`Scrobbles`] is the exception: plays the server has yet to hear of, which
+//! nothing could fetch again, are kept apart from the cache.
 
 mod blobs;
 mod covers;
+mod scrobbles;
 mod songs;
 mod store;
 mod sync;
 
 pub use covers::{COVER_CAPACITY, COVER_REFRESH_AFTER, CoverStore, KeptCover};
+pub use scrobbles::{ScrobbleTarget, Scrobbles};
 pub use songs::{KeptSong, SONG_CAPACITY, SongStore};
 pub use store::Catalog;
 pub use sync::{Mode, Outcome, STALE_AFTER, Source, sync_albums, sync_songs};
@@ -30,6 +35,8 @@ use std::path::PathBuf;
 pub enum Error {
     #[error("the system has no cache directory, so there is nowhere to keep the library")]
     NoCacheDir,
+    #[error("the system has no data directory, so there is nowhere to keep plays")]
+    NoDataDir,
     #[error("could not use {}: {source}", path.display())]
     Io {
         path: PathBuf,
