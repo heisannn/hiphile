@@ -11,40 +11,46 @@ const RESAMPLE_CHUNK: usize = 1024;
 
 /// Converts decoded samples from the source spec to the output spec.
 pub(crate) struct Converter {
-    source_channels: usize,
-    output_channels: usize,
+    source: Spec,
+    output: Spec,
     resampler: Option<RateConverter>,
     mapped: Vec<f32>,
 }
 
 impl Converter {
     pub(crate) fn new(source: Spec, output: Spec) -> Result<Self, Error> {
-        let resampler = (source.rate != output.rate)
-            .then(|| RateConverter::new(source.rate, output.rate, usize::from(output.channels)))
-            .transpose()?;
         Ok(Self {
-            source_channels: usize::from(source.channels),
-            output_channels: usize::from(output.channels),
-            resampler,
+            source,
+            output,
+            resampler: Self::resampler(source, output)?,
             mapped: Vec::new(),
         })
     }
 
+    fn resampler(source: Spec, output: Spec) -> Result<Option<RateConverter>, Error> {
+        (source.rate != output.rate)
+            .then(|| RateConverter::new(source.rate, output.rate, usize::from(output.channels)))
+            .transpose()
+    }
+
+    /// Forgets buffered input, for a jump to another point in the track.
+    pub(crate) fn reset(&mut self) -> Result<(), Error> {
+        self.resampler = Self::resampler(self.source, self.output)?;
+        Ok(())
+    }
+
     /// Appends the converted form of `input` to `out`.
     pub(crate) fn process(&mut self, input: &[f32], out: &mut Vec<f32>) -> Result<(), Error> {
+        let from = usize::from(self.source.channels);
+        let to = usize::from(self.output.channels);
         match &mut self.resampler {
             None => {
-                map_channels(input, self.source_channels, self.output_channels, out);
+                map_channels(input, from, to, out);
                 Ok(())
             }
             Some(resampler) => {
                 self.mapped.clear();
-                map_channels(
-                    input,
-                    self.source_channels,
-                    self.output_channels,
-                    &mut self.mapped,
-                );
+                map_channels(input, from, to, &mut self.mapped);
                 resampler.push(&self.mapped, out)
             }
         }

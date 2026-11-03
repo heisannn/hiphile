@@ -6,33 +6,47 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    progress::Progress,
+    slider::{Slider, SliderEvent, SliderState},
     v_flex,
 };
 use gpui_kit::{
-    Context, IntoElement, ParentElement as _, Render, SharedString, Styled as _, Subscription,
-    Task, Window, div, prelude::FluentBuilder as _,
+    AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render,
+    SharedString, Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _,
 };
 use playback::Queue;
-use subsonic::Song;
+use subsonic::{Song, SongId};
 use ui::{CoverArt, format_duration};
 
 use crate::format;
-use crate::{NextSong, PreviousSong, TogglePlayback};
+use crate::{NextSong, PreviousSong, ToggleMute, TogglePlayback};
 
 /// How often the position redraws while playing.
 const POSITION_REFRESH: Duration = Duration::from_millis(250);
 /// Within this much of a song's start, Previous goes to the previous song;
 /// later, it restarts the current one.
 const RESTART_THRESHOLD: Duration = Duration::from_secs(3);
+/// How far Seek Forward and Seek Backward jump.
+const SEEK_STEP: Duration = Duration::from_secs(10);
+/// How much Volume Up and Volume Down change the volume.
+const VOLUME_STEP: f32 = 0.1;
 /// Pixel size requested for the bar's cover: twice its on-screen size.
 const COVER_PIXELS: u32 = 96;
+
+/// What the player is on, for views that mark it.
+pub enum PlayerEvent {
+    NowPlaying {
+        song: Option<SongId>,
+        /// Whether it is playing or about to, rather than paused or stopped.
+        playing: bool,
+    },
+}
 
 /// The play queue, the audio engine, and the now-playing bar that controls
 /// them. Dropping it, or quitting the app, stops playback and returns the
 /// output device to its sample rate from before.
 pub struct Player {
     session: session::Session,
+    store: Option<config::Store>,
     engine: Engine,
     /// The engine load of the current song, once it has one. Events about
     /// any other load are stale.
@@ -42,10 +56,24 @@ pub struct Player {
     format: Option<PlaybackFormat>,
     cover_url: Option<SharedString>,
     error: Option<SharedString>,
+    /// The position as a fraction of the song.
+    position: Entity<SliderState>,
+    /// While the position is being dragged, the fraction under the pointer.
+    scrub: Option<f32>,
+    /// The position at the last refresh, to redraw when it moves while
+    /// paused, as after a seek.
+    refreshed_position: Duration,
+    /// From `0.0` to `1.0`, as the slider shows it.
+    volume: Entity<SliderState>,
+    muted: bool,
     _open: Task<()>,
     _events: Task<()>,
     _refresh: Task<()>,
-    _quit: Subscription,
+    /// The volume to save once the save in progress is done.
+    unsaved_volume: Option<f32>,
+    saving_volume: bool,
+    _save_volume: Task<()>,
+    _subscriptions: Vec<Subscription>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,8 +85,10 @@ enum State {
     Paused,
 }
 
+impl EventEmitter<PlayerEvent> for Player {}
+
 impl Player {
-    pub fn new(session: session::Session, cx: &mut Context<Self>) -> Self {
+    pub fn new(session: session::Session, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (engine, events) = Engine::spawn();
         let events = cx.spawn(async move |this, cx| {
             while let Ok(event) = events.recv().await {
@@ -70,14 +100,63 @@ impl Player {
                 }
             }
         });
-        // Quitting may not drop entities, and dropping the engine does not wait
-        // for it, so shut it down here, while the process still runs.
-        let quit = cx.on_app_quit(|this, _| {
-            this.engine.shutdown();
-            async {}
+        let refresh = cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(POSITION_REFRESH).await;
+                if this
+                    .update_in(cx, |this, window, cx| this.refresh(window, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
         });
+
+        let store = config::Store::user().ok();
+        let level = store
+            .as_ref()
+            .and_then(|store| store.volume().ok().flatten())
+            .unwrap_or(1.0);
+        engine.set_volume(gain(level, false));
+        let position = cx.new(|_| SliderState::new().min(0.).max(1.).step(0.001));
+        let volume = cx.new(|_| {
+            SliderState::new()
+                .min(0.)
+                .max(1.)
+                .step(0.01)
+                .default_value(level)
+        });
+        let subscriptions = vec![
+            cx.subscribe_in(
+                &position,
+                window,
+                |this, _, event, window, cx| match event {
+                    SliderEvent::Change(value) => {
+                        this.scrub = Some(value.end());
+                        cx.notify();
+                    }
+                    SliderEvent::Release(value) => {
+                        this.scrub = None;
+                        if let Some(duration) = this.duration() {
+                            this.seek_to(duration.mul_f32(value.end()), window, cx);
+                        }
+                    }
+                },
+            ),
+            cx.subscribe(&volume, |this, _, event, cx| match event {
+                SliderEvent::Change(value) => this.apply_volume(value.end(), cx),
+                SliderEvent::Release(value) => this.save_volume(value.end(), cx),
+            }),
+            // Quitting may not drop entities, and dropping the engine does not
+            // wait for it, so shut it down here, while the process still runs.
+            cx.on_app_quit(|this, _| {
+                this.engine.shutdown();
+                async {}
+            }),
+        ];
         Self {
             session,
+            store,
             engine,
             load: None,
             queue: Queue::new(),
@@ -85,11 +164,24 @@ impl Player {
             format: None,
             cover_url: None,
             error: None,
+            position,
+            scrub: None,
+            refreshed_position: Duration::ZERO,
+            volume,
+            muted: false,
             _open: Task::ready(()),
             _events: events,
-            _refresh: Task::ready(()),
-            _quit: quit,
+            _refresh: refresh,
+            unsaved_volume: None,
+            saving_volume: false,
+            _save_volume: Task::ready(()),
+            _subscriptions: subscriptions,
         }
+    }
+
+    /// Whether there is a song to play, pause, or skip.
+    pub fn has_song(&self) -> bool {
+        self.queue.current().is_some()
     }
 
     /// Replaces the queue with `songs` and plays from `start_ix`.
@@ -108,13 +200,13 @@ impl Player {
                 self.engine.resume();
                 self.set_state(State::Playing, cx);
             }
-            State::Stopped if self.queue.current().is_some() => self.play_current(cx),
+            State::Stopped if self.has_song() => self.play_current(cx),
             State::Stopped | State::Opening => {}
         }
     }
 
     pub fn next(&mut self, cx: &mut Context<Self>) {
-        if self.queue.current().is_none() {
+        if !self.has_song() {
             return;
         }
         if self.queue.advance().is_some() {
@@ -125,15 +217,144 @@ impl Player {
     }
 
     pub fn previous(&mut self, cx: &mut Context<Self>) {
-        if self.queue.current().is_none() {
+        if !self.has_song() {
             return;
         }
-        let restart = matches!(self.state, State::Playing | State::Paused)
-            && self.engine.position() > RESTART_THRESHOLD;
+        let restart = self.is_started() && self.engine.position() > RESTART_THRESHOLD;
         if !restart {
             self.queue.retreat();
         }
         self.play_current(cx);
+    }
+
+    pub fn seek_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let target = self.engine.position().saturating_add(SEEK_STEP);
+        self.seek_to(target, window, cx);
+    }
+
+    pub fn seek_backward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let target = self.engine.position().saturating_sub(SEEK_STEP);
+        self.seek_to(target, window, cx);
+    }
+
+    pub fn volume_up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.step_volume(VOLUME_STEP, window, cx);
+    }
+
+    pub fn volume_down(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.step_volume(-VOLUME_STEP, window, cx);
+    }
+
+    pub fn toggle_mute(&mut self, cx: &mut Context<Self>) {
+        self.muted = !self.muted;
+        let level = self.level(cx);
+        self.engine.set_volume(gain(level, self.muted));
+        cx.notify();
+    }
+
+    fn is_started(&self) -> bool {
+        matches!(self.state, State::Playing | State::Paused)
+    }
+
+    fn duration(&self) -> Option<Duration> {
+        self.format
+            .as_ref()
+            .and_then(PlaybackFormat::duration)
+            .or_else(|| self.queue.current().and_then(Song::duration))
+            .filter(|duration| !duration.is_zero())
+    }
+
+    /// Jumps to `target` in the current song; at or past its end, moves on
+    /// to the next one.
+    fn seek_to(&mut self, target: Duration, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(duration) = self.duration().filter(|_| self.is_started()) else {
+            return;
+        };
+        if target >= duration {
+            self.next(cx);
+            return;
+        }
+        self.engine.seek(target);
+        self.show_position(target, window, cx);
+        cx.notify();
+    }
+
+    fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let position = if self.is_started() {
+            self.engine.position()
+        } else {
+            Duration::ZERO
+        };
+        if self.scrub.is_none() {
+            self.show_position(position, window, cx);
+        }
+        if position != self.refreshed_position {
+            self.refreshed_position = position;
+            cx.notify();
+        }
+    }
+
+    /// Moves the position slider, unless it is there already.
+    fn show_position(&self, position: Duration, window: &mut Window, cx: &mut Context<Self>) {
+        let fraction = self.duration().map_or(0.0, |duration| {
+            (position.as_secs_f32() / duration.as_secs_f32()).min(1.0)
+        });
+        if self.position.read(cx).value().end() != fraction {
+            self.position
+                .update(cx, |slider, cx| slider.set_value(fraction, window, cx));
+        }
+    }
+
+    fn level(&self, cx: &Context<Self>) -> f32 {
+        self.volume.read(cx).value().end()
+    }
+
+    fn apply_volume(&mut self, level: f32, cx: &mut Context<Self>) {
+        // Moving the volume up is a way to unmute.
+        if level > 0.0 {
+            self.muted = false;
+        }
+        self.engine.set_volume(gain(level, self.muted));
+        cx.notify();
+    }
+
+    fn step_volume(&mut self, delta: f32, window: &mut Window, cx: &mut Context<Self>) {
+        let level = (self.level(cx) + delta).clamp(0.0, 1.0);
+        self.volume
+            .update(cx, |slider, cx| slider.set_value(level, window, cx));
+        self.apply_volume(level, cx);
+        self.save_volume(level, cx);
+    }
+
+    /// Remembers the volume for the next launch. A failure only means the
+    /// next launch starts at the old volume, so it is not shown.
+    ///
+    /// One write at a time, so a held volume key cannot leave an older
+    /// value on disk; the latest value is written when the current write
+    /// finishes.
+    fn save_volume(&mut self, level: f32, cx: &mut Context<Self>) {
+        let Some(store) = self.store.clone() else {
+            return;
+        };
+        self.unsaved_volume = Some(level);
+        if self.saving_volume {
+            return;
+        }
+        self.saving_volume = true;
+        self._save_volume = cx.spawn(async move |this, cx| {
+            while let Ok(Some(level)) = this.update(cx, |this, _| {
+                let level = this.unsaved_volume.take();
+                this.saving_volume = level.is_some();
+                level
+            }) {
+                let store = store.clone();
+                cx.background_executor()
+                    .spawn(async move {
+                        store.save_volume(level).ok();
+                    })
+                    .await;
+            }
+        });
     }
 
     fn stop(&mut self, cx: &mut Context<Self>) {
@@ -141,7 +362,7 @@ impl Player {
         self.engine.stop();
         self.load = None;
         self.format = None;
-        if self.queue.current().is_none() {
+        if !self.has_song() {
             self.cover_url = None;
         }
         self.set_state(State::Stopped, cx);
@@ -158,6 +379,7 @@ impl Player {
         self.load = None;
         self.format = None;
         self.error = None;
+        self.scrub = None;
         self.cover_url = song
             .cover_art()
             .map(|cover_art| self.session.cover_art_url(cover_art, COVER_PIXELS));
@@ -169,7 +391,7 @@ impl Player {
             let track = playback::open_track(&client, &song).await;
             this.update(cx, |this, cx| match track {
                 Ok(track) => this.load = Some(this.engine.load(track)),
-                Err(error) => this.fail(&song, &error.to_string(), cx),
+                Err(error) => this.fail(&song, &session::describe(&error), cx),
             })
             .ok();
         });
@@ -194,7 +416,7 @@ impl Player {
             }
             EventKind::Failed(error) => {
                 if let Some(song) = self.queue.current().cloned() {
-                    self.fail(&song, &error.to_string(), cx);
+                    self.fail(&song, &describe(&error), cx);
                 }
             }
         }
@@ -205,24 +427,16 @@ impl Player {
         self.engine.stop();
         self.load = None;
         self.format = None;
-        self.error = Some(format!("Couldn't play “{}”: {reason}.", song.title()).into());
+        self.error = Some(format!("Couldn't play “{}”. {reason}", song.title()).into());
         self.set_state(State::Stopped, cx);
     }
 
     fn set_state(&mut self, state: State, cx: &mut Context<Self>) {
         self.state = state;
-        self._refresh = if state == State::Playing {
-            cx.spawn(async move |this, cx| {
-                loop {
-                    cx.background_executor().timer(POSITION_REFRESH).await;
-                    if this.update(cx, |_, cx| cx.notify()).is_err() {
-                        break;
-                    }
-                }
-            })
-        } else {
-            Task::ready(())
-        };
+        cx.emit(PlayerEvent::NowPlaying {
+            song: self.queue.current().map(|song| song.id().clone()),
+            playing: matches!(state, State::Playing | State::Opening),
+        });
         cx.notify();
     }
 
@@ -245,22 +459,26 @@ impl Player {
             .flex_1()
             .min_w_0()
             .gap_3()
-            .child(CoverArt::new(self.cover_url.clone()).small())
-            .child(
-                v_flex()
-                    .min_w_0()
-                    .child(div().text_sm().truncate().child(match song {
-                        Some(song) => SharedString::from(song.title().to_owned()),
-                        None => "Not playing".into(),
-                    }))
-                    .when_some(secondary, |this, (text, color)| {
-                        this.child(div().text_xs().truncate().text_color(color).child(text))
-                    }),
-            )
+            .when_some(song, |this, song| {
+                this.child(CoverArt::new(self.cover_url.clone()).small())
+                    .child(
+                        v_flex()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .truncate()
+                                    .child(SharedString::from(song.title().to_owned())),
+                            )
+                            .when_some(secondary, |this, (text, color)| {
+                                this.child(div().text_xs().truncate().text_color(color).child(text))
+                            }),
+                    )
+            })
     }
 
     fn render_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let has_song = self.queue.current().is_some();
+        let has_song = self.has_song();
         let playing = matches!(self.state, State::Playing | State::Opening);
         let (icon, label) = if playing {
             (IconName::Pause, "Pause")
@@ -299,61 +517,91 @@ impl Player {
             )
     }
 
-    fn render_position(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let song = self.queue.current();
-        let started = matches!(self.state, State::Playing | State::Paused);
-        let position = if started {
-            self.engine.position()
-        } else {
-            Duration::ZERO
+    fn render_position(&self) -> impl IntoElement {
+        let duration = self.duration();
+        let seekable = self.is_started() && duration.is_some();
+        let position = match (self.scrub, duration) {
+            (Some(fraction), Some(duration)) => duration.mul_f32(fraction),
+            _ if self.is_started() => self.engine.position(),
+            _ => Duration::ZERO,
         };
-        let duration = self
-            .format
-            .as_ref()
-            .and_then(PlaybackFormat::duration)
-            .or_else(|| song.and_then(Song::duration));
-        let percent = match duration {
-            Some(duration) if !duration.is_zero() => {
-                (position.as_secs_f32() / duration.as_secs_f32() * 100.0).min(100.0)
-            }
-            _ => 0.0,
-        };
-        let format_text = self
-            .format
-            .as_ref()
-            .map(|format| format::describe(format, song.and_then(Song::suffix)));
-        let muted_foreground = cx.theme().muted_foreground;
         h_flex()
-            .flex_1()
-            .min_w_0()
-            .justify_end()
+            .flex_none()
             .gap_3()
-            .text_xs()
-            .text_color(muted_foreground)
-            .when(song.is_some(), |this| {
-                this.child(div().flex_none().child(format_duration(position)))
-                    .child(
-                        div().w_48().child(
-                            Progress::new("song-position")
-                                .small()
-                                .value(percent)
-                                .accessibility_label("Position"),
-                        ),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .child(duration.map(format_duration).unwrap_or_default()),
-                    )
-            })
-            .when_some(format_text, |this, text| {
-                this.child(div().flex_none().child(text))
-            })
+            .child(div().flex_none().child(format_duration(position)))
+            .child(
+                div().w_48().child(
+                    Slider::new(&self.position)
+                        .disabled(!seekable)
+                        .accessibility_label("Position"),
+                ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .child(duration.map(format_duration).unwrap_or_default()),
+            )
+    }
+
+    fn render_volume(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let level = self.level(cx);
+        let (icon, label) = if self.muted || level == 0.0 {
+            (IconName::VolumeX, "Unmute")
+        } else if level < 0.5 {
+            (IconName::Volume1, "Mute")
+        } else {
+            (IconName::Volume2, "Mute")
+        };
+        h_flex()
+            .flex_none()
+            .gap_1()
+            .child(
+                Button::new("toggle-mute")
+                    .ghost()
+                    .small()
+                    .icon(icon)
+                    .accessibility_label(label)
+                    .tooltip_with_action(label, &ToggleMute, None)
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_mute(cx))),
+            )
+            .child(
+                div()
+                    .w_20()
+                    .child(Slider::new(&self.volume).accessibility_label("Volume")),
+            )
+    }
+}
+
+/// The engine gain for a volume slider at `level`. Squared, so equal slider
+/// steps sound like roughly equal changes in loudness.
+fn gain(level: f32, muted: bool) -> f32 {
+    if muted { 0.0 } else { level * level }
+}
+
+/// Why the engine could not play, as a sentence that says what to try.
+fn describe(error: &audio::Error) -> String {
+    match error {
+        audio::Error::NoOutputDevice => {
+            "No audio output device is available. Connect one and press Play.".to_owned()
+        }
+        audio::Error::UnsupportedOutputFormat | audio::Error::Resample(_) => {
+            "The output device can't play this audio. Try another output device.".to_owned()
+        }
+        audio::Error::Output(_) => "The audio output stopped. Press Play to try again.".to_owned(),
+        audio::Error::UnsupportedFormat(_) => "hiphile can't play this file format.".to_owned(),
+        audio::Error::Decode(_) | audio::Error::Read(_) => {
+            "The file couldn't be read. Press Play to try again.".to_owned()
+        }
     }
 }
 
 impl Render for Player {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let format_text = self
+            .format
+            .as_ref()
+            .map(|format| format::describe(format, self.queue.current().and_then(Song::suffix)));
+        let muted_foreground = cx.theme().muted_foreground;
         h_flex()
             .flex_none()
             .h_16()
@@ -364,6 +612,31 @@ impl Render for Player {
             .bg(cx.theme().background)
             .child(self.render_song(cx))
             .child(self.render_controls(cx))
-            .child(self.render_position(cx))
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .justify_end()
+                    .gap_4()
+                    .text_xs()
+                    .text_color(muted_foreground)
+                    .when(self.has_song(), |this| this.child(self.render_position()))
+                    .child(self.render_volume(cx))
+                    .when_some(format_text, |this, text| {
+                        this.child(div().flex_none().child(text))
+                    }),
+            )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::gain;
+
+    #[test]
+    fn gain_follows_the_square_of_the_level() {
+        assert_eq!(gain(1.0, false), 1.0);
+        assert_eq!(gain(0.5, false), 0.25);
+        assert_eq!(gain(1.0, true), 0.0);
     }
 }

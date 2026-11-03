@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 audio.workspace = true
 client.workspace = true
+config.workspace = true
 gpui-kit.workspace = true
 playback.workspace = true
 session.workspace = true

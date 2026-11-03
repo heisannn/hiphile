@@ -5301,6 +5301,7 @@ version = "0.1.0"
 dependencies = [
  "audio",
  "client",
+ "config 0.1.0",
  "gpui-kit",
  "playback",
  "session",

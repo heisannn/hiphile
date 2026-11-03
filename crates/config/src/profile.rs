@@ -1,4 +1,6 @@
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::Deserialize;
 
@@ -7,6 +9,12 @@ use crate::Error;
 /// Environment variables with this prefix override the file, so
 /// `HIPHILE_SERVER` replaces `server`.
 const ENV_PREFIX: &str = "HIPHILE";
+
+/// Held while `config.toml` is read, changed and written back, so two saves
+/// in this process never interleave and lose one's change.
+static EDITING: Mutex<()> = Mutex::new(());
+/// Numbers temporary files, so no two writes ever share one.
+static TEMPORARY: AtomicU64 = AtomicU64::new(0);
 
 /// The server and user last signed in to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,6 +45,7 @@ impl Profile {
 struct Settings {
     server: Option<String>,
     username: Option<String>,
+    volume: Option<f32>,
 }
 
 /// The settings directory and its `config.toml`:
@@ -44,6 +53,7 @@ struct Settings {
 /// ```toml
 /// server = "https://music.example.com"
 /// username = "alice"
+/// volume = 0.8
 /// ```
 #[derive(Clone, Debug)]
 pub struct Store {
@@ -76,16 +86,30 @@ impl Store {
     /// `HIPHILE_USERNAME` taking precedence over the file. `None` until both
     /// are known.
     pub fn last_profile(&self) -> Result<Option<Profile>, Error> {
-        self.load(config_rs::Environment::with_prefix(ENV_PREFIX))
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        Ok(settings
+            .server
+            .zip(settings.username)
+            .map(|(server, username)| Profile::new(server, username)))
     }
 
-    fn load(&self, environment: config_rs::Environment) -> Result<Option<Profile>, Error> {
+    /// The playback volume from `0.0` to `1.0`, if one was saved.
+    /// `HIPHILE_VOLUME` takes precedence over the file.
+    pub fn volume(&self) -> Result<Option<f32>, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        Ok(settings
+            .volume
+            .filter(|volume| volume.is_finite())
+            .map(|volume| volume.clamp(0.0, 1.0)))
+    }
+
+    fn read(&self, environment: config_rs::Environment) -> Result<Settings, Error> {
         let path = self.config_path();
         let read_error = |source| Error::Read {
             path: path.clone(),
             source,
         };
-        let settings: Settings = config_rs::Config::builder()
+        config_rs::Config::builder()
             .add_source(
                 config_rs::File::from(path.as_path())
                     .format(config_rs::FileFormat::Toml)
@@ -94,20 +118,33 @@ impl Store {
             .add_source(environment)
             .build()
             .and_then(config_rs::Config::try_deserialize)
-            .map_err(read_error)?;
-        Ok(settings
-            .server
-            .zip(settings.username)
-            .map(|(server, username)| Profile::new(server, username)))
+            .map_err(read_error)
     }
 
     /// Records `profile` in `config.toml`, keeping the file's other keys and
     /// comments.
     pub fn save_profile(&self, profile: &Profile) -> Result<(), Error> {
+        self.edit(|document| {
+            document["server"] = toml_edit::value(profile.server());
+            document["username"] = toml_edit::value(profile.username());
+        })
+    }
+
+    /// Records the playback volume, like [`Self::save_profile`].
+    pub fn save_volume(&self, volume: f32) -> Result<(), Error> {
+        // Two decimals are plenty, and keep the file readable.
+        let volume = (f64::from(volume.clamp(0.0, 1.0)) * 100.0).round() / 100.0;
+        self.edit(|document| document["volume"] = toml_edit::value(volume))
+    }
+
+    fn edit(&self, change: impl FnOnce(&mut toml_edit::DocumentMut)) -> Result<(), Error> {
         let io_error = |path: &Path| {
             let path = path.to_owned();
             move |source| Error::Io { path, source }
         };
+        let _editing = EDITING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let path = self.config_path();
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
@@ -119,12 +156,15 @@ impl Store {
                 path: path.clone(),
                 source,
             })?;
-        document["server"] = toml_edit::value(profile.server());
-        document["username"] = toml_edit::value(profile.username());
+        change(&mut document);
 
         std::fs::create_dir_all(&self.dir).map_err(io_error(&self.dir))?;
         // Write then rename, so a crash never leaves a half-written file.
-        let temporary = path.with_extension("toml.tmp");
+        let temporary = path.with_extension(format!(
+            "toml.{}.{}.tmp",
+            std::process::id(),
+            TEMPORARY.fetch_add(1, Ordering::Relaxed)
+        ));
         std::fs::write(&temporary, document.to_string()).map_err(io_error(&temporary))?;
         std::fs::rename(&temporary, &path).map_err(io_error(&path))
     }
@@ -142,14 +182,22 @@ mod tests {
     }
 
     /// Reads without the process environment, so tests do not depend on it.
-    fn load(store: &Store, env: &[(&str, &str)]) -> Option<Profile> {
+    fn read(store: &Store, env: &[(&str, &str)]) -> Settings {
         let env = env
             .iter()
             .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
             .collect();
         store
-            .load(config_rs::Environment::with_prefix(ENV_PREFIX).source(Some(env)))
+            .read(config_rs::Environment::with_prefix(ENV_PREFIX).source(Some(env)))
             .unwrap()
+    }
+
+    fn load(store: &Store, env: &[(&str, &str)]) -> Option<Profile> {
+        let settings = read(store, env);
+        settings
+            .server
+            .zip(settings.username)
+            .map(|(server, username)| Profile::new(server, username))
     }
 
     #[test]
@@ -226,12 +274,58 @@ mod tests {
     }
 
     #[test]
+    fn volume_round_trips_next_to_the_profile() {
+        let store = temporary_store("volume");
+        let profile = Profile::new("https://music.example.com", "alice");
+        store.save_profile(&profile).unwrap();
+        store.save_volume(0.123).unwrap();
+        assert_eq!(read(&store, &[]).volume, Some(0.12));
+        assert_eq!(load(&store, &[]), Some(profile));
+        assert_eq!(read(&store, &[("HIPHILE_VOLUME", "0.5")]).volume, Some(0.5));
+    }
+
+    #[test]
+    fn concurrent_saves_keep_every_change() {
+        let store = temporary_store("concurrent");
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..20 {
+                        if i == 0 {
+                            store
+                                .save_profile(&Profile::new("https://music.example.com", "alice"))
+                                .unwrap();
+                        } else {
+                            store.save_volume(0.5).unwrap();
+                        }
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let settings = read(&store, &[]);
+        assert_eq!(settings.volume, Some(0.5));
+        assert_eq!(
+            settings.server.as_deref(),
+            Some("https://music.example.com")
+        );
+        let leftovers = std::fs::read_dir(store.dir())
+            .unwrap()
+            .filter(|entry| entry.as_ref().unwrap().path() != store.config_path())
+            .count();
+        assert_eq!(leftovers, 0, "temporary files were left behind");
+    }
+
+    #[test]
     fn invalid_toml_is_reported_and_left_alone() {
         let store = temporary_store("invalid");
         std::fs::create_dir_all(store.dir()).unwrap();
         std::fs::write(store.config_path(), "server = ").unwrap();
         assert!(matches!(
-            store.load(
+            store.read(
                 config_rs::Environment::with_prefix(ENV_PREFIX).source(Some(Default::default()))
             ),
             Err(Error::Read { .. })

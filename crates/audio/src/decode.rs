@@ -1,10 +1,11 @@
 use std::time::Duration;
 
 use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
-use symphonia::core::errors::Error as Symphonia;
-use symphonia::core::formats::{FormatOptions, FormatReader, TrackType};
+use symphonia::core::errors::{Error as Symphonia, SeekErrorKind};
+use symphonia::core::formats::{FormatOptions, FormatReader, SeekMode, SeekTo, TrackType};
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
+use symphonia::core::units::{Time, TimeBase};
 
 use crate::output::Spec;
 use crate::{Error, Track};
@@ -14,14 +15,28 @@ pub(crate) struct Decoder {
     format: Box<dyn FormatReader>,
     decoder: Box<dyn AudioDecoder>,
     track_id: u32,
+    time_base: Option<TimeBase>,
     spec: Spec,
     duration: Option<Duration>,
     /// Samples decoded while discovering the spec, returned first.
     pending: Vec<f32>,
+    /// Frames still to drop after a seek: the format reader lands on the
+    /// packet before the requested time, and those frames are not wanted.
+    skip_frames: u64,
+    seek_mode: SeekMode,
 }
 
 impl Decoder {
     pub(crate) fn open(track: Track) -> Result<Self, Error> {
+        // Only MP3 tells the modes apart: an accurate seek reads every frame
+        // before the target, which for a download means waiting for them.
+        // With the length known, a coarse seek jumps to where the target
+        // should be by bytes and lands within a frame or so.
+        let seek_mode = if track.source.byte_len().is_some() {
+            SeekMode::Coarse
+        } else {
+            SeekMode::Accurate
+        };
         let stream = MediaSourceStream::new(track.source, Default::default());
         let format = symphonia::default::get_probe().probe(
             &track.hint,
@@ -43,18 +58,22 @@ impl Decoder {
             .sample_rate
             .zip(params.channels.as_ref().map(|channels| channels.count()));
         let track_id = audio.id;
+        let time_base = audio.time_base;
         let num_frames = audio.num_frames;
 
         let mut decoder = Self {
             format,
             decoder,
             track_id,
+            time_base,
             spec: Spec {
                 rate: 0,
                 channels: 0,
             },
             duration: None,
             pending: Vec::new(),
+            skip_frames: 0,
+            seek_mode,
         };
         decoder.spec = match declared {
             Some((rate, channels)) => Spec {
@@ -87,21 +106,75 @@ impl Decoder {
         self.duration
     }
 
+    /// Moves to `to`, so the next samples decoded are the ones at that time.
+    /// Returns where playback resumes, which is `to` unless the format can
+    /// only seek to its packets, or `None` if `to` is past the end.
+    ///
+    /// A source that is still downloading may block until the data at `to`
+    /// arrives.
+    pub(crate) fn seek(&mut self, to: Duration) -> Result<Option<Duration>, Error> {
+        let time = Time::try_from_nanos_u128(to.as_nanos())
+            .ok_or_else(|| Error::Decode("the seek position is out of range".to_owned()))?;
+        let seeked = match self.format.seek(
+            self.seek_mode,
+            SeekTo::Time {
+                time,
+                track_id: Some(self.track_id),
+            },
+        ) {
+            Ok(seeked) => seeked,
+            // The length known before decoding, such as the server's, can
+            // be a little longer than the audio.
+            Err(Symphonia::SeekError(SeekErrorKind::OutOfRange)) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        self.decoder.reset();
+        self.pending.clear();
+        let seconds = |ts| {
+            self.time_base
+                .and_then(|time_base| time_base.calc_time(ts))
+                .map(|time| time.as_secs_f64().max(0.0))
+        };
+        let (Some(actual), Some(required)) =
+            (seconds(seeked.actual_ts), seconds(seeked.required_ts))
+        else {
+            self.skip_frames = 0;
+            return Ok(Some(to));
+        };
+        let rate = f64::from(self.spec.rate);
+        self.skip_frames = ((required - actual).max(0.0) * rate).round() as u64;
+        // A coarse seek may land just after the target.
+        Ok(Some(Duration::from_secs_f64(required.max(actual))))
+    }
+
     /// Appends the next packet's samples. Returns `false` at the end.
     pub(crate) fn decode_into(&mut self, out: &mut Vec<f32>) -> Result<bool, Error> {
         if !self.pending.is_empty() {
             out.append(&mut self.pending);
             return Ok(true);
         }
-        let Some(spec) = self.decode_packet(out)? else {
-            return Ok(false);
-        };
-        if spec != self.spec {
-            return Err(Error::UnsupportedFormat(
-                "the sample layout changes mid-stream".to_owned(),
-            ));
+        loop {
+            let start = out.len();
+            let Some(spec) = self.decode_packet(out)? else {
+                return Ok(false);
+            };
+            if spec != self.spec {
+                return Err(Error::UnsupportedFormat(
+                    "the sample layout changes mid-stream".to_owned(),
+                ));
+            }
+            if self.skip_frames == 0 {
+                return Ok(true);
+            }
+            let channels = usize::from(self.spec.channels);
+            let frames = ((out.len() - start) / channels) as u64;
+            let skipped = self.skip_frames.min(frames);
+            self.skip_frames -= skipped;
+            out.drain(start..start + skipped as usize * channels);
+            if out.len() > start {
+                return Ok(true);
+            }
         }
-        Ok(true)
     }
 
     fn decode_packet(&mut self, out: &mut Vec<f32>) -> Result<Option<Spec>, Error> {
@@ -168,6 +241,40 @@ mod tests {
         let samples = decode_all(&mut decoder);
         assert_eq!(samples.len(), 48_000);
         assert!((samples[0] - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn seeks_to_the_requested_frame() {
+        // Each sample holds its frame number, so the first one decoded after
+        // the seek says where decoding resumed.
+        let bytes = crate::test_wav::wav_counting(8_000, 1, 8_000);
+        let mut decoder = Decoder::open(Track::new(Cursor::new(bytes)).extension("wav")).unwrap();
+        let resumed = decoder.seek(Duration::from_millis(500)).unwrap();
+        assert_eq!(resumed, Some(Duration::from_millis(500)));
+        let samples = decode_all(&mut decoder);
+        assert_eq!(samples.len(), 4_000);
+        assert_eq!(crate::test_wav::counting_frame(samples[0]), 4_000);
+    }
+
+    #[test]
+    fn seeks_to_the_requested_frame_when_the_length_is_known() {
+        let bytes = crate::test_wav::wav_counting(8_000, 1, 8_000);
+        let len = bytes.len() as u64;
+        let mut decoder =
+            Decoder::open(Track::with_known_len(Cursor::new(bytes), len).extension("wav")).unwrap();
+        assert_eq!(
+            decoder.seek(Duration::from_millis(500)).unwrap(),
+            Some(Duration::from_millis(500))
+        );
+        let samples = decode_all(&mut decoder);
+        assert_eq!(crate::test_wav::counting_frame(samples[0]), 4_000);
+    }
+
+    #[test]
+    fn a_seek_past_the_end_reports_it() {
+        let bytes = crate::test_wav::wav_counting(8_000, 1, 8_000);
+        let mut decoder = Decoder::open(Track::new(Cursor::new(bytes)).extension("wav")).unwrap();
+        assert_eq!(decoder.seek(Duration::from_secs(2)).unwrap(), None);
     }
 
     #[test]

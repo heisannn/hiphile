@@ -20,6 +20,10 @@ actions!(
     [
         SelectNext,
         SelectPrevious,
+        SelectFirst,
+        SelectLast,
+        SelectPageDown,
+        SelectPageUp,
         /// Albums: move to the album's songs. Songs: play from the selection.
         Open,
         /// Songs: return to the album list.
@@ -35,6 +39,14 @@ pub fn init(cx: &mut App) {
     } else {
         "ctrl-f"
     };
+    for context in [ALBUMS_CONTEXT, SONGS_CONTEXT] {
+        cx.bind_keys([
+            KeyBinding::new("home", SelectFirst, Some(context)),
+            KeyBinding::new("end", SelectLast, Some(context)),
+            KeyBinding::new("pagedown", SelectPageDown, Some(context)),
+            KeyBinding::new("pageup", SelectPageUp, Some(context)),
+        ]);
+    }
     cx.bind_keys([
         KeyBinding::new("down", SelectNext, Some(ALBUMS_CONTEXT)),
         KeyBinding::new("up", SelectPrevious, Some(ALBUMS_CONTEXT)),

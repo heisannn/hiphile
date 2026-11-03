@@ -107,6 +107,7 @@ enum Command {
     Load(Generation, Track),
     Pause,
     Resume,
+    Seek(Duration),
     Stop,
     OutputFailed(Generation, String),
     Shutdown,
@@ -213,17 +214,32 @@ impl Engine {
         self.send(Command::Resume);
     }
 
+    /// Jumps within the current track. Keeps it paused if it is.
+    ///
+    /// The position reads `to` right away and the old audio goes silent; the
+    /// new audio starts once the track's data at `to` is available, which
+    /// for a download may mean waiting for it to arrive. A track that cannot
+    /// seek fails with [`EventKind::Failed`].
+    pub fn seek(&self, to: Duration) {
+        self.send(Command::Seek(to));
+    }
+
     pub fn stop(&self) {
         self.shared.supersede(None);
         self.send(Command::Stop);
     }
 
-    /// Linear gain, applied immediately. At `1.0` samples reach the device
-    /// unchanged.
+    /// Linear gain from `0.0` to `1.0`, applied immediately. At `1.0`
+    /// samples reach the device unchanged; NaN counts as silence.
     pub fn set_volume(&self, volume: f32) {
+        let volume = if volume.is_nan() {
+            0.0
+        } else {
+            volume.clamp(0.0, 1.0)
+        };
         self.shared
             .volume
-            .store(volume.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+            .store(volume.to_bits(), Ordering::Relaxed);
     }
 
     /// How much of the current track the device has played.
@@ -298,6 +314,8 @@ fn serve(
     };
     let mut current: Option<Playback> = None;
     let mut idle_since: Option<Instant> = None;
+    // A command that arrived behind a run of seeks.
+    let mut deferred: Option<Command> = None;
     loop {
         if current.is_some() {
             idle_since = None;
@@ -312,16 +330,34 @@ fn serve(
                 .filter(|_| restore.is_some())
                 .map(|since| RESTORE_DELAY.saturating_sub(since.elapsed()))
         };
-        let command = match timeout {
-            Some(timeout) => match commands.recv_timeout(timeout) {
+        let command = match (deferred.take(), timeout) {
+            (Some(command), _) => Some(command),
+            (None, Some(timeout)) => match commands.recv_timeout(timeout) {
                 Ok(command) => Some(command),
                 Err(mpsc::RecvTimeoutError::Timeout) => None,
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
             },
-            None => match commands.recv() {
+            (None, None) => match commands.recv() {
                 Ok(command) => Some(command),
                 Err(_) => return,
             },
+        };
+        // Each seek may wait on the network; of seeks queued meanwhile, only
+        // the last matters.
+        let command = match command {
+            Some(Command::Seek(mut to)) => {
+                while let Ok(next) = commands.try_recv() {
+                    match next {
+                        Command::Seek(later) => to = later,
+                        other => {
+                            deferred = Some(other);
+                            break;
+                        }
+                    }
+                }
+                Some(Command::Seek(to))
+            }
+            command => command,
         };
         if command.is_none() && current.is_none() {
             // Nothing has played for `RESTORE_DELAY`; no next track is coming.
@@ -367,6 +403,11 @@ fn serve(
                     .resume()
                     .map_err(|error| (playback.generation, error))
             }),
+            Some(Command::Seek(to)) => current.as_mut().map_or(Ok(()), |playback| {
+                playback
+                    .seek(to, shared)
+                    .map_err(|error| (playback.generation, error))
+            }),
             Some(Command::Stop) => {
                 current = None;
                 Ok(())
@@ -387,7 +428,10 @@ fn serve(
             if let Some(playback) = current.take() {
                 shared.release(playback.generation);
             }
-            emit(generation, EventKind::Failed(error));
+            // A superseded track was canceled on purpose; stay silent.
+            if shared.is_current(generation) {
+                emit(generation, EventKind::Failed(error));
+            }
             continue;
         }
 
@@ -535,6 +579,11 @@ struct Playback {
     sounding: Arc<AtomicBool>,
     /// When the ring buffer ran empty after the last sample was decoded.
     emptied_at: Option<Instant>,
+    /// Samples ever written to the ring buffer.
+    written: u64,
+    /// The audio callback drops samples numbered below this instead of
+    /// playing them: what was buffered before a seek.
+    flush_until: Arc<AtomicU64>,
     stream: cpal::Stream,
 }
 
@@ -590,14 +639,16 @@ impl Playback {
         shared.frames_played.store(0, Ordering::Relaxed);
         shared.output_rate.store(output.rate, Ordering::Relaxed);
         let sounding = Arc::new(AtomicBool::new(false));
+        let flush_until = Arc::new(AtomicU64::new(0));
         let stream = device.build_output_stream(
             config,
             output_callback(
                 consumer,
                 channels,
                 output.rate,
-                shared.clone(),
-                sounding.clone(),
+                Arc::clone(shared),
+                Arc::clone(&sounding),
+                Arc::clone(&flush_until),
             ),
             {
                 let commands = commands.clone();
@@ -634,6 +685,8 @@ impl Playback {
             generation,
             sounding,
             emptied_at: None,
+            written: 0,
+            flush_until,
             stream,
         };
         // Start with a full buffer so the first callbacks are not silent.
@@ -654,6 +707,27 @@ impl Playback {
         Ok(())
     }
 
+    fn seek(&mut self, to: Duration, shared: &Shared) -> Result<(), Error> {
+        let rate = f64::from(self.format.output_rate);
+        let frames = |time: Duration| (time.as_secs_f64() * rate) as u64;
+        // Silence what is buffered at once; the seek may wait for data.
+        self.flush_until.store(self.written, Ordering::Release);
+        shared.frames_played.store(frames(to), Ordering::Relaxed);
+        let resumed = self.decoder.seek(to)?;
+        if let Some(resumed) = resumed {
+            shared
+                .frames_played
+                .store(frames(resumed), Ordering::Relaxed);
+        }
+        self.converter.reset()?;
+        self.pending.clear();
+        self.pending_ix = 0;
+        // Past the end, the track ends once the device has played out.
+        self.finished = resumed.is_none();
+        self.emptied_at = None;
+        Ok(())
+    }
+
     /// Tops the ring buffer up; returns whether the track has fully played.
     fn fill(&mut self) -> Result<Fill, Error> {
         loop {
@@ -668,7 +742,9 @@ impl Playback {
                     .producer
                     .write_chunk_uninit(len)
                     .expect("`len` is at most the free slots");
-                self.pending_ix += chunk.fill_from_iter(samples[..len].iter().copied());
+                let written = chunk.fill_from_iter(samples[..len].iter().copied());
+                self.pending_ix += written;
+                self.written += written as u64;
                 continue;
             }
             if self.finished {
@@ -700,17 +776,30 @@ impl Playback {
 ///
 /// `sounding` is true from the moment samples go to the device until a later
 /// callback starts after the device's predicted time for playing the last of
-/// them.
+/// them. Samples numbered below `flush_until` are dropped unplayed.
 fn output_callback(
     mut consumer: rtrb::Consumer<f32>,
     channels: usize,
     rate: u32,
     shared: Arc<Shared>,
     sounding: Arc<AtomicBool>,
+    flush_until: Arc<AtomicU64>,
 ) -> impl FnMut(&mut [f32], &cpal::OutputCallbackInfo) + Send + 'static {
     // When the device will have played the last sample written so far.
     let mut played_by: Option<cpal::StreamInstant> = None;
+    // Samples taken out of the ring buffer, played or dropped.
+    let mut read: u64 = 0;
     move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
+        let stale = flush_until.load(Ordering::Acquire).saturating_sub(read);
+        if stale > 0 {
+            let len = usize::try_from(stale)
+                .unwrap_or(usize::MAX)
+                .min(consumer.slots());
+            if let Ok(chunk) = consumer.read_chunk(len) {
+                chunk.commit_all();
+                read += len as u64;
+            }
+        }
         let timestamp = info.timestamp();
         let available = consumer.slots().min(data.len());
         // Whole frames only, so an underrun never shifts the channel order.
@@ -721,6 +810,7 @@ fn output_callback(
             data[..first.len()].copy_from_slice(first);
             data[first.len()..first.len() + second.len()].copy_from_slice(second);
             written = first.len() + second.len();
+            read += written as u64;
             if written > 0 {
                 let frames = (written / channels) as f64;
                 played_by = timestamp
@@ -785,6 +875,19 @@ mod tests {
         assert!(matches!(next_event(&events).kind, EventKind::Ended));
         assert!(started.elapsed() >= Duration::from_millis(450));
         assert!(engine.position() >= Duration::from_millis(450));
+    }
+
+    #[test]
+    #[ignore = "needs an audio output device"]
+    fn a_seek_past_the_end_ends_the_track() {
+        let (engine, events) = Engine::spawn();
+        let rate = default_device_rate();
+        engine.load(Track::new(Cursor::new(wav(rate, 2, rate * 10, 0))));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        let sought = Instant::now();
+        engine.seek(Duration::from_secs(20));
+        assert!(matches!(next_event(&events).kind, EventKind::Ended));
+        assert!(sought.elapsed() < Duration::from_secs(5));
     }
 
     /// 384 kHz is beyond typical devices, so this exercises resampling.
@@ -910,7 +1013,14 @@ mod tests {
         let shared = Arc::new(Shared::new());
         let sounding = Arc::new(AtomicBool::new(false));
         // 1 kHz stereo: one frame per millisecond.
-        let mut callback = output_callback(consumer, 2, 1_000, shared.clone(), sounding.clone());
+        let mut callback = output_callback(
+            consumer,
+            2,
+            1_000,
+            shared.clone(),
+            sounding.clone(),
+            Arc::default(),
+        );
         for sample in [0.5; 8] {
             producer.push(sample).unwrap();
         }
@@ -931,12 +1041,45 @@ mod tests {
         assert_eq!(data, [0.0; 16]);
     }
 
+    /// After a seek, what was buffered before it is dropped, not played.
+    #[test]
+    fn samples_before_a_seek_are_dropped() {
+        let (mut producer, consumer) = rtrb::RingBuffer::new(64);
+        let shared = Arc::new(Shared::new());
+        let flush_until = Arc::new(AtomicU64::new(0));
+        let mut callback = output_callback(
+            consumer,
+            2,
+            1_000,
+            shared.clone(),
+            Arc::default(),
+            flush_until.clone(),
+        );
+        for sample in [0.1; 6] {
+            producer.push(sample).unwrap();
+        }
+        let mut data = [1.0; 2];
+        callback(&mut data, &callback_info(0, 10));
+        assert_eq!(data, [0.1, 0.1]);
+
+        // Seek: six samples were written so far; the next two are new.
+        flush_until.store(6, Ordering::Release);
+        for sample in [0.9; 2] {
+            producer.push(sample).unwrap();
+        }
+        let mut data = [1.0; 4];
+        callback(&mut data, &callback_info(2, 10));
+        assert_eq!(data, [0.9, 0.9, 0.0, 0.0]);
+        assert_eq!(shared.frames_played.load(Ordering::Relaxed), 2);
+    }
+
     #[test]
     fn an_underrun_keeps_whole_frames() {
         let (mut producer, consumer) = rtrb::RingBuffer::new(64);
         let shared = Arc::new(Shared::new());
         let sounding = Arc::new(AtomicBool::new(false));
-        let mut callback = output_callback(consumer, 2, 1_000, shared.clone(), sounding);
+        let mut callback =
+            output_callback(consumer, 2, 1_000, shared.clone(), sounding, Arc::default());
         for sample in [0.1, 0.2, 0.3] {
             producer.push(sample).unwrap();
         }

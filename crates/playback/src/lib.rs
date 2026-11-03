@@ -16,7 +16,17 @@ pub async fn open_track(
     let download = client.open_stream(song.id()).await?;
     let content_type = download.content_type().map(str::to_owned);
     let handle = download.handle();
-    let mut track = audio::Track::new(download).cancel_with(move || handle.cancel());
+    // When the end of the file is a range request away, letting the decoder
+    // know the length costs little and lets it seek MP3 and Ogg by position
+    // instead of reading every page before the target.
+    let len = download
+        .content_length()
+        .filter(|_| download.is_random_access());
+    let track = match len {
+        Some(len) => audio::Track::with_known_len(download, len),
+        None => audio::Track::new(download),
+    };
+    let mut track = track.cancel_with(move || handle.cancel());
     if let Some(content_type) = &content_type {
         track = track.mime_type(content_type);
     }

@@ -5,7 +5,18 @@ use gpui_kit::{AssetSource, Result, SharedString};
 // Icons used by the features beyond GPUI Kit's default set. An icon missing
 // here renders as nothing, so add every new `gpui_kit::assets::IconName` the
 // features start using.
-gpui_kit::assets::icon_assets!(ExtraIcons, [Disc3, SkipBack, SkipForward]);
+gpui_kit::assets::icon_assets!(
+    ExtraIcons,
+    [
+        AudioLines,
+        Disc3,
+        SkipBack,
+        SkipForward,
+        Volume1,
+        Volume2,
+        VolumeX
+    ]
+);
 
 /// GPUI Kit's default assets plus the extra icons.
 pub struct Assets;

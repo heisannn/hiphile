@@ -67,3 +67,32 @@ impl Session {
             .unwrap_or_default()
     }
 }
+
+/// What went wrong talking to the server, as a sentence for the user that
+/// says what to try next.
+pub fn describe(error: &client::Error) -> String {
+    match error {
+        client::Error::Network(_) => {
+            "Couldn't reach the server. Check your connection and try again.".to_owned()
+        }
+        client::Error::HttpStatus(status) => {
+            format!("The server answered with HTTP {status}. Try again later.")
+        }
+        client::Error::Protocol(subsonic::Error::Server { code, .. })
+            if code.is_authentication() =>
+        {
+            "The server no longer accepts your sign-in. Sign out and sign in again.".to_owned()
+        }
+        client::Error::Protocol(subsonic::Error::Server { message, .. }) => {
+            let message = message.trim().trim_end_matches('.');
+            format!("The server refused the request: {message}.")
+        }
+        client::Error::Protocol(subsonic::Error::InvalidResponse(_)) => {
+            "The server sent a response hiphile doesn't understand.".to_owned()
+        }
+        client::Error::NotAudio(_) => "The server sent something other than audio.".to_owned(),
+        client::Error::InvalidServerUrl(_) => {
+            "The server address is not usable. Sign out and check it.".to_owned()
+        }
+    }
+}

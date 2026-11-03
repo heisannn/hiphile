@@ -7,7 +7,10 @@ use gpui_kit::{
     prelude::FluentBuilder as _,
 };
 use library::Library;
-use player::{NextSong, Player, PreviousSong, TogglePlayback};
+use player::{
+    NextSong, Player, PlayerEvent, PreviousSong, SeekBackward, SeekForward, ToggleMute,
+    TogglePlayback, VolumeDown, VolumeUp,
+};
 use session::Session;
 use ui::CoverCache;
 
@@ -23,8 +26,10 @@ pub struct AppShell {
     /// `None` where the system has no credential store; signing in then
     /// always asks for the password.
     keychain: Option<config::Keychain>,
-    /// Keeps a focus target in the window, so menu and keyboard commands
-    /// always reach this view's handlers.
+    /// A focus target for the sign-in screen while it has no focused field,
+    /// so menu commands still reach this view. Signed in, the library's
+    /// lists hold focus instead: a click on empty space then leaves focus
+    /// where it was rather than moving it here.
     focus: FocusHandle,
     screen: Screen,
 }
@@ -45,6 +50,7 @@ struct Workspace {
     player: Entity<Player>,
     /// Holds the session's decoded covers, so signing out frees them.
     covers: Entity<CoverCache>,
+    _player_events: Subscription,
 }
 
 impl AppShell {
@@ -92,14 +98,29 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         let library = cx.new(|cx| Library::new(session.clone(), window, cx));
-        let player = cx.new(|cx| Player::new(session.clone(), cx));
+        let player = cx.new(|cx| Player::new(session.clone(), window, cx));
         let covers = CoverCache::new(cx);
+        // The library marks the song the player is on; the shell also
+        // re-renders, which updates which commands are available.
+        let player_events = cx.subscribe(&player, {
+            let library = library.downgrade();
+            move |_, _, event, cx| {
+                let PlayerEvent::NowPlaying { song, playing } = event;
+                library
+                    .update(cx, |library, cx| {
+                        library.set_now_playing(song.clone(), *playing, cx)
+                    })
+                    .ok();
+                cx.notify();
+            }
+        });
         self.screen = Screen::Workspace(Box::new(Workspace {
             session,
             profile,
             library,
             player,
             covers,
+            _player_events: player_events,
         }));
         cx.notify();
     }
@@ -129,11 +150,12 @@ impl AppShell {
 
     fn update_player(
         &self,
+        window: &mut Window,
         cx: &mut Context<Self>,
-        update: impl FnOnce(&mut Player, &mut Context<Player>),
+        update: impl FnOnce(&mut Player, &mut Window, &mut Context<Player>),
     ) {
         if let Some(player) = self.player() {
-            player.update(cx, update);
+            player.update(cx, |player, cx| update(player, window, cx));
         }
     }
 
@@ -188,30 +210,57 @@ impl Render for AppShell {
             Screen::Workspace(workspace) => Some(workspace.covers.clone()),
             Screen::SignIn { .. } => None,
         };
+        let signed_in = matches!(self.screen, Screen::Workspace(_));
+        let has_song = self
+            .player()
+            .is_some_and(|player| player.read(cx).has_song());
+        // Commands are registered only where they do something, so menus and
+        // shortcuts are disabled otherwise.
         v_flex()
             .when_some(covers, |this, covers| this.image_cache(covers))
             .id("app-shell")
             .key_context(WORKSPACE_CONTEXT)
-            .track_focus(&self.focus)
+            .when(!signed_in, |this| this.track_focus(&self.focus))
             .size_full()
             .min_h_0()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .on_action(cx.listener(|this, _: &SignOut, window, cx| this.sign_out(window, cx)))
-            .on_action(cx.listener(|this, action: &PlaySongs, _, cx| {
-                this.update_player(cx, |player, cx| {
-                    player.play(action.songs(), action.start_ix(), cx)
-                });
-            }))
-            .on_action(cx.listener(|this, _: &TogglePlayback, _, cx| {
-                this.update_player(cx, Player::toggle_playback);
-            }))
-            .on_action(cx.listener(|this, _: &NextSong, _, cx| {
-                this.update_player(cx, Player::next);
-            }))
-            .on_action(cx.listener(|this, _: &PreviousSong, _, cx| {
-                this.update_player(cx, Player::previous);
-            }))
+            .when(signed_in, |this| {
+                this.on_action(
+                    cx.listener(|this, _: &SignOut, window, cx| this.sign_out(window, cx)),
+                )
+                .on_action(cx.listener(|this, action: &PlaySongs, window, cx| {
+                    this.update_player(window, cx, |player, _, cx| {
+                        player.play(action.songs(), action.start_ix(), cx)
+                    });
+                }))
+                .on_action(cx.listener(|this, _: &VolumeUp, window, cx| {
+                    this.update_player(window, cx, Player::volume_up);
+                }))
+                .on_action(cx.listener(|this, _: &VolumeDown, window, cx| {
+                    this.update_player(window, cx, Player::volume_down);
+                }))
+                .on_action(cx.listener(|this, _: &ToggleMute, window, cx| {
+                    this.update_player(window, cx, |player, _, cx| player.toggle_mute(cx));
+                }))
+            })
+            .when(has_song, |this| {
+                this.on_action(cx.listener(|this, _: &TogglePlayback, window, cx| {
+                    this.update_player(window, cx, |player, _, cx| player.toggle_playback(cx));
+                }))
+                .on_action(cx.listener(|this, _: &NextSong, window, cx| {
+                    this.update_player(window, cx, |player, _, cx| player.next(cx));
+                }))
+                .on_action(cx.listener(|this, _: &PreviousSong, window, cx| {
+                    this.update_player(window, cx, |player, _, cx| player.previous(cx));
+                }))
+                .on_action(cx.listener(|this, _: &SeekForward, window, cx| {
+                    this.update_player(window, cx, Player::seek_forward);
+                }))
+                .on_action(cx.listener(|this, _: &SeekBackward, window, cx| {
+                    this.update_player(window, cx, Player::seek_backward);
+                }))
+            })
             .child(self.render_title_bar(cx))
             .child(div().flex_1().min_h_0().child(content))
             .when_some(self.player().cloned(), |this, player| this.child(player))

@@ -24,8 +24,8 @@ use ui::{CoverArt, format_duration};
 
 use crate::filter::matching_albums;
 use crate::{
-    ALBUMS_CONTEXT, Back, FocusFilter, LIBRARY_CONTEXT, Open, SONGS_CONTEXT, SelectNext,
-    SelectPrevious,
+    ALBUMS_CONTEXT, Back, FocusFilter, LIBRARY_CONTEXT, Open, SONGS_CONTEXT, SelectFirst,
+    SelectLast, SelectNext, SelectPageDown, SelectPageUp, SelectPrevious,
 };
 
 /// Pixel size requested for the detail cover: twice its on-screen size, for
@@ -42,6 +42,7 @@ pub struct Library {
     selected_album: Option<AlbumId>,
     detail: Detail,
     selected_song: Option<SongId>,
+    now_playing: Option<NowPlaying>,
     filter: Entity<InputState>,
     albums_focus: FocusHandle,
     songs_focus: FocusHandle,
@@ -63,6 +64,13 @@ enum Detail {
     Loading,
     Loaded(LoadedAlbum),
     Failed(SharedString),
+}
+
+/// The song the player is on, marked in the song list.
+#[derive(Clone, PartialEq, Eq)]
+struct NowPlaying {
+    song: SongId,
+    playing: bool,
 }
 
 struct LoadedAlbum {
@@ -87,6 +95,11 @@ impl Library {
             cx.on_blur(&albums_focus, window, |_, _, cx| cx.notify()),
             cx.on_focus(&songs_focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&songs_focus, window, |_, _, cx| cx.notify()),
+            // A focused control that goes away, such as Retry once loading
+            // starts, would leave no focus and no working shortcuts.
+            cx.on_focus_lost(window, |this, window, cx| {
+                this.albums_focus.focus(window, cx)
+            }),
         ];
         albums_focus.focus(window, cx);
         let mut this = Self {
@@ -96,6 +109,7 @@ impl Library {
             selected_album: None,
             detail: Detail::None,
             selected_song: None,
+            now_playing: None,
             filter,
             albums_focus,
             songs_focus,
@@ -129,7 +143,7 @@ impl Library {
                         }
                     }
                     Err(error) => {
-                        this.albums = Albums::Failed(format!("{error}.").into());
+                        this.albums = Albums::Failed(session::describe(&error).into());
                     }
                 }
                 cx.notify();
@@ -179,7 +193,7 @@ impl Library {
                 .is_some_and(|candidate| candidate.id() == &album)
         }) {
             self.albums_scroll
-                .scroll_to_item(position, ScrollStrategy::Center);
+                .scroll_to_item(position, ScrollStrategy::Nearest);
         }
         self.selected_album = Some(album.clone());
         self.selected_song = None;
@@ -204,7 +218,7 @@ impl Library {
                             cover_url,
                         })
                     }
-                    Err(error) => Detail::Failed(format!("{error}.").into()),
+                    Err(error) => Detail::Failed(session::describe(&error).into()),
                 };
                 cx.notify();
             })
@@ -219,15 +233,20 @@ impl Library {
         }
     }
 
-    fn move_album(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if self.visible.is_empty() {
-            return;
+    /// Marks `song` in the song list, or clears the mark.
+    pub fn set_now_playing(&mut self, song: Option<SongId>, playing: bool, cx: &mut Context<Self>) {
+        let now_playing = song.map(|song| NowPlaying { song, playing });
+        if self.now_playing != now_playing {
+            self.now_playing = now_playing;
+            cx.notify();
         }
-        let position = match self.selected_position() {
-            Some(position) => position
-                .saturating_add_signed(delta)
-                .min(self.visible.len() - 1),
-            None => 0,
+    }
+
+    fn move_album(&mut self, motion: Motion, cx: &mut Context<Self>) {
+        let page = page_rows(&self.albums_scroll);
+        let Some(position) = motion.apply(self.selected_position(), self.visible.len(), page)
+        else {
+            return;
         };
         if let Some(album) = self.visible_album(position).map(|album| album.id().clone()) {
             self.select_album(album, cx);
@@ -253,22 +272,17 @@ impl Library {
             return;
         };
         self.selected_song = Some(song.id().clone());
-        self.songs_scroll.scroll_to_item(ix, ScrollStrategy::Center);
+        self.songs_scroll
+            .scroll_to_item(ix, ScrollStrategy::Nearest);
         cx.notify();
     }
 
-    fn move_song(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let Some(len) = self.loaded_songs().map(|songs| songs.len()) else {
-            return;
-        };
-        if len == 0 {
-            return;
+    fn move_song(&mut self, motion: Motion, cx: &mut Context<Self>) {
+        let len = self.loaded_songs().map_or(0, |songs| songs.len());
+        let page = page_rows(&self.songs_scroll);
+        if let Some(ix) = motion.apply(self.selected_song_ix(), len, page) {
+            self.select_song(ix, cx);
         }
-        let ix = match self.selected_song_ix() {
-            Some(ix) => ix.saturating_add_signed(delta).min(len - 1),
-            None => 0,
-        };
-        self.select_song(ix, cx);
     }
 
     /// Moves keyboard focus to the songs, selecting the first one if none is.
@@ -336,8 +350,24 @@ impl Library {
             .flex_col()
             .track_focus(&self.albums_focus)
             .key_context(ALBUMS_CONTEXT)
-            .on_action(cx.listener(|this, _: &SelectNext, _, cx| this.move_album(1, cx)))
-            .on_action(cx.listener(|this, _: &SelectPrevious, _, cx| this.move_album(-1, cx)))
+            .on_action(
+                cx.listener(|this, _: &SelectNext, _, cx| this.move_album(Motion::By(1), cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &SelectPrevious, _, cx| this.move_album(Motion::By(-1), cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &SelectFirst, _, cx| this.move_album(Motion::First, cx)),
+            )
+            .on_action(cx.listener(|this, _: &SelectLast, _, cx| this.move_album(Motion::Last, cx)))
+            .on_action(
+                cx.listener(|this, _: &SelectPageDown, _, cx| {
+                    this.move_album(Motion::Pages(1), cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &SelectPageUp, _, cx| this.move_album(Motion::Pages(-1), cx)),
+            )
             .on_action(cx.listener(|this, _: &Open, window, cx| this.open_album(window, cx)))
             .child(self.render_album_rows(window, cx))
             .into_any_element()
@@ -352,7 +382,10 @@ impl Library {
                     error.clone(),
                     Button::new("retry-albums")
                         .label("Retry")
-                        .on_click(cx.listener(|this, _, _, cx| this.load_albums(cx))),
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.albums_focus.focus(window, cx);
+                            this.load_albums(cx);
+                        })),
                     cx,
                 );
             }
@@ -436,8 +469,20 @@ impl Library {
             .min_h_0()
             .track_focus(&self.songs_focus)
             .key_context(SONGS_CONTEXT)
-            .on_action(cx.listener(|this, _: &SelectNext, _, cx| this.move_song(1, cx)))
-            .on_action(cx.listener(|this, _: &SelectPrevious, _, cx| this.move_song(-1, cx)))
+            .on_action(cx.listener(|this, _: &SelectNext, _, cx| this.move_song(Motion::By(1), cx)))
+            .on_action(
+                cx.listener(|this, _: &SelectPrevious, _, cx| this.move_song(Motion::By(-1), cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &SelectFirst, _, cx| this.move_song(Motion::First, cx)),
+            )
+            .on_action(cx.listener(|this, _: &SelectLast, _, cx| this.move_song(Motion::Last, cx)))
+            .on_action(
+                cx.listener(|this, _: &SelectPageDown, _, cx| this.move_song(Motion::Pages(1), cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &SelectPageUp, _, cx| this.move_song(Motion::Pages(-1), cx)),
+            )
             .on_action(cx.listener(|this, _: &Open, window, cx| {
                 if let Some(ix) = this.selected_song_ix() {
                     this.play_from(ix, window, cx);
@@ -460,7 +505,10 @@ impl Library {
                     error.clone(),
                     Button::new("retry-album")
                         .label("Retry")
-                        .on_click(cx.listener(|this, _, _, cx| this.retry_album(cx))),
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.songs_focus.focus(window, cx);
+                            this.retry_album(cx);
+                        })),
                     cx,
                 );
             }
@@ -544,8 +592,10 @@ impl Library {
         let songs = loaded.songs.clone();
         let album_artist = loaded.album.artist().map(str::to_owned);
         let selected = self.selected_song.clone();
+        let now_playing = self.now_playing.clone();
         let focused = self.songs_focus.is_focused(window);
         let muted_foreground = cx.theme().muted_foreground;
+        let primary = cx.theme().primary;
         let owner = cx.entity().downgrade();
         div()
             .id("songs")
@@ -572,6 +622,17 @@ impl Library {
                                 .map(|track| track.to_string())
                                 .unwrap_or_default();
                             let duration = song.duration().map(format_duration).unwrap_or_default();
+                            // The playing song shows a sound icon in place of its
+                            // number, dimmed while paused.
+                            let marker = now_playing
+                                .as_ref()
+                                .filter(|now| now.song == id)
+                                .map(|now| now.playing);
+                            let label = match marker {
+                                Some(true) => format!("{title}, playing").into(),
+                                Some(false) => format!("{title}, paused").into(),
+                                None => title.clone(),
+                            };
                             let owner = owner.clone();
                             Some(
                                 ListItem::new(ElementId::Name(format!("song-{id}").into()))
@@ -580,7 +641,7 @@ impl Library {
                                     .h_10()
                                     .px_6()
                                     .w_full()
-                                    .accessibility_label(title.clone())
+                                    .accessibility_label(label)
                                     .child(
                                         h_flex()
                                             .w_full()
@@ -588,12 +649,23 @@ impl Library {
                                             .gap_4()
                                             .text_sm()
                                             .child(
-                                                div()
+                                                h_flex()
                                                     .w_6()
                                                     .flex_none()
-                                                    .text_right()
+                                                    .justify_end()
                                                     .text_color(muted_foreground)
-                                                    .child(number),
+                                                    .map(|this| match marker {
+                                                        Some(playing) => this.child(
+                                                            Icon::new(IconName::AudioLines)
+                                                                .small()
+                                                                .text_color(if playing {
+                                                                    primary
+                                                                } else {
+                                                                    muted_foreground
+                                                                }),
+                                                        ),
+                                                        None => this.child(number),
+                                                    }),
                                             )
                                             .child(
                                                 h_flex()
@@ -717,4 +789,73 @@ fn failure(
         )
         .child(h_flex().child(retry))
         .into_any_element()
+}
+
+/// A keyboard move within a list.
+#[derive(Clone, Copy)]
+enum Motion {
+    By(isize),
+    Pages(isize),
+    First,
+    Last,
+}
+
+impl Motion {
+    /// The position to select in a list of `len` rows with `page` rows in
+    /// view, starting from `current`. With nothing selected, a move starts
+    /// at the first row, or the last for [`Motion::Last`].
+    fn apply(self, current: Option<usize>, len: usize, page: usize) -> Option<usize> {
+        let last = len.checked_sub(1)?;
+        let Some(current) = current else {
+            return Some(if matches!(self, Self::Last) { last } else { 0 });
+        };
+        Some(match self {
+            Self::By(delta) => current.saturating_add_signed(delta).min(last),
+            Self::Pages(pages) => current
+                .saturating_add_signed(pages.saturating_mul(page as isize))
+                .min(last),
+            Self::First => 0,
+            Self::Last => last,
+        })
+    }
+}
+
+/// Rows that fit in a list's viewport, at least one, from its last layout.
+///
+/// Reads the handle's public state, which the list writes while it lays
+/// out; should that be under way, a page is one row rather than a panic.
+fn page_rows(scroll: &UniformListScrollHandle) -> usize {
+    let Ok(state) = scroll.0.try_borrow() else {
+        return 1;
+    };
+    let viewport = state.base_handle.bounds().size.height;
+    let row = state.last_item_size.map(|size| size.item.height);
+    match row {
+        Some(row) if row > gpui_kit::px(0.) => ((viewport / row).floor() as usize).max(1),
+        _ => 1,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Motion;
+
+    #[test]
+    fn motions_stay_within_the_list() {
+        assert_eq!(Motion::By(1).apply(Some(9), 10, 4), Some(9));
+        assert_eq!(Motion::By(-1).apply(Some(0), 10, 4), Some(0));
+        assert_eq!(Motion::Pages(1).apply(Some(2), 10, 4), Some(6));
+        assert_eq!(Motion::Pages(1).apply(Some(8), 10, 4), Some(9));
+        assert_eq!(Motion::Pages(-1).apply(Some(2), 10, 4), Some(0));
+        assert_eq!(Motion::First.apply(Some(5), 10, 4), Some(0));
+        assert_eq!(Motion::Last.apply(Some(5), 10, 4), Some(9));
+    }
+
+    #[test]
+    fn a_motion_from_no_selection_starts_at_an_end() {
+        assert_eq!(Motion::By(1).apply(None, 10, 4), Some(0));
+        assert_eq!(Motion::Pages(-1).apply(None, 10, 4), Some(0));
+        assert_eq!(Motion::Last.apply(None, 10, 4), Some(9));
+        assert_eq!(Motion::By(1).apply(None, 0, 4), None);
+    }
 }

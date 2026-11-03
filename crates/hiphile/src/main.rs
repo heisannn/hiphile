@@ -9,7 +9,10 @@ use gpui_kit::{
     App, AppContext as _, KeyBinding, Menu, MenuItem, WindowBounds, WindowOptions, actions, px,
     size,
 };
-use player::{NextSong, PreviousSong, TogglePlayback};
+use player::{
+    NextSong, PreviousSong, SeekBackward, SeekForward, ToggleMute, TogglePlayback, VolumeDown,
+    VolumeUp,
+};
 
 use app_shell::{AppShell, WORKSPACE_CONTEXT};
 
@@ -68,6 +71,13 @@ fn install_app_commands(cx: &mut App) {
             MenuItem::action("Play/Pause", TogglePlayback),
             MenuItem::action("Next", NextSong),
             MenuItem::action("Previous", PreviousSong),
+            MenuItem::separator(),
+            MenuItem::action("Seek Forward", SeekForward),
+            MenuItem::action("Seek Backward", SeekBackward),
+            MenuItem::separator(),
+            MenuItem::action("Volume Up", VolumeUp),
+            MenuItem::action("Volume Down", VolumeDown),
+            MenuItem::action("Mute", ToggleMute),
         ]),
     ]);
 }

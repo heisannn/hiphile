@@ -130,7 +130,7 @@ impl Client {
         // the runtime's context.
         self.inner
             .runtime
-            .spawn(async move { download::run(http.get(url).send(), sender).await });
+            .spawn(async move { download::run(http, url, sender).await });
         async move { receiver.await.unwrap_or(Err(Error::Canceled)) }
     }
 
