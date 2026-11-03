@@ -14,9 +14,9 @@ use player::{
     VolumeUp,
 };
 
-use app_shell::{AppShell, WORKSPACE_CONTEXT};
+use app_shell::{AppShell, Destination, WORKSPACE_CONTEXT};
 
-actions!(hiphile, [Quit, SignOut, ToggleQueue]);
+actions!(hiphile, [Quit, SignOut, ToggleQueue, ShowHome, ShowLibrary]);
 
 fn main() {
     gpui_kit::application()
@@ -51,24 +51,29 @@ fn main() {
 fn install_app_commands(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
     // Bind keys before `set_menus`: menus read the keymap when they are built.
-    let (quit, toggle_queue) = if cx.platform_info().is_mac() {
-        ("cmd-q", "cmd-alt-u")
+    let [quit, toggle_queue, show_home, show_library, refresh] = if cx.platform_info().is_mac() {
+        ["cmd-q", "cmd-alt-u", "cmd-1", "cmd-2", "cmd-r"]
     } else {
-        ("ctrl-q", "ctrl-alt-u")
+        ["ctrl-q", "ctrl-alt-u", "ctrl-1", "ctrl-2", "ctrl-r"]
     };
     cx.bind_keys([
         KeyBinding::new(quit, Quit, None),
         KeyBinding::new(toggle_queue, ToggleQueue, Some(WORKSPACE_CONTEXT)),
+        KeyBinding::new(show_home, ShowHome, Some(WORKSPACE_CONTEXT)),
+        KeyBinding::new(show_library, ShowLibrary, Some(WORKSPACE_CONTEXT)),
+        KeyBinding::new(refresh, library::Refresh, Some(WORKSPACE_CONTEXT)),
         // Space toggles playback from the lists, never from a text field.
+        KeyBinding::new("space", TogglePlayback, Some(home::HOME_CONTEXT)),
         KeyBinding::new("space", TogglePlayback, Some(library::ALBUMS_CONTEXT)),
         KeyBinding::new("space", TogglePlayback, Some(library::SONGS_CONTEXT)),
     ]);
 }
 
-/// Builds the menu bar; `queue_shown` checks View > Queue. The app shell
-/// calls it, once the keys above are bound (menus read the keymap when they
-/// are built), and again when that changes.
-pub(crate) fn set_menus(queue_shown: bool, cx: &mut App) {
+/// Builds the menu bar; `queue_shown` checks View > Queue, and `destination`
+/// the screen showing, if any. The app shell calls it, once the keys above are
+/// bound (menus read the keymap when they are built), and again when that
+/// changes.
+pub(crate) fn set_menus(queue_shown: bool, destination: Option<Destination>, cx: &mut App) {
     cx.set_menus([
         Menu::new("hiphile").items([
             MenuItem::action("Settings…", settings::OpenSettings),
@@ -78,7 +83,13 @@ pub(crate) fn set_menus(queue_shown: bool, cx: &mut App) {
             MenuItem::action("Quit hiphile", Quit),
         ]),
         Menu::new("Library").items([MenuItem::action("Refresh Library", library::Refresh)]),
-        Menu::new("View").items([MenuItem::action("Queue", ToggleQueue).checked(queue_shown)]),
+        Menu::new("View").items([
+            MenuItem::action("Home", ShowHome).checked(destination == Some(Destination::Home)),
+            MenuItem::action("Library", ShowLibrary)
+                .checked(destination == Some(Destination::Library)),
+            MenuItem::separator(),
+            MenuItem::action("Queue", ToggleQueue).checked(queue_shown),
+        ]),
         Menu::new("Controls").items([
             MenuItem::action("Play/Pause", TogglePlayback),
             MenuItem::action("Next", NextSong),

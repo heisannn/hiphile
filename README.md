@@ -17,7 +17,7 @@ and configuration crates do not depend on GPUI, so the GUI and the CLI share the
 | Layer | Crates |
 | --- | --- |
 | Binaries | `hiphile` (GUI shell), `hiphile-cli` |
-| GUI features | `account`, `library`, `player`, `search`, `settings` |
+| GUI features | `account`, `home`, `library`, `player`, `search`, `settings` |
 | GUI shared | `session`, `actions`, `ui` |
 | GPUI-independent | `subsonic`, `net`, `client`, `playback`, `audio`, `catalog`, `config` |
 

@@ -16,7 +16,7 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, AppContext as _, AsyncApp, Context, ElementId, Entity, FocusHandle,
+    AnyElement, AppContext as _, AsyncApp, Context, ElementId, Entity, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, ScrollStrategy,
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
     UniformListScrollHandle, WeakEntity, Window, div, prelude::FluentBuilder as _, uniform_list,
@@ -121,13 +121,7 @@ impl Library {
             cx.on_blur(&albums_focus, window, |_, _, cx| cx.notify()),
             cx.on_focus(&songs_focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&songs_focus, window, |_, _, cx| cx.notify()),
-            // A focused control that goes away, such as Retry once loading
-            // starts, would leave no focus and no working shortcuts.
-            cx.on_focus_lost(window, |this, window, cx| {
-                this.albums_focus.focus(window, cx)
-            }),
         ];
-        albums_focus.focus(window, cx);
         let mut this = Self {
             session,
             albums: Albums::Loading,
@@ -152,7 +146,7 @@ impl Library {
     }
 
     /// Fetches the whole library from the server again.
-    fn refresh_library(&mut self, cx: &mut Context<Self>) {
+    pub fn refresh_library(&mut self, cx: &mut Context<Self>) {
         self.sync_library(Mode::Always, cx);
     }
 
@@ -291,6 +285,29 @@ impl Library {
             .ok();
         });
         cx.notify();
+    }
+
+    /// Selects `album` and brings it into view in the album list, clearing a
+    /// filter that hides it.
+    pub fn reveal_album(&mut self, album: AlbumId, window: &mut Window, cx: &mut Context<Self>) {
+        let hidden = self.loaded_albums().is_some_and(|albums| {
+            !self
+                .visible
+                .iter()
+                .any(|ix| albums.get(*ix).is_some_and(|listed| listed.id() == &album))
+        });
+        if hidden {
+            self.filter
+                .update(cx, |filter, cx| filter.set_value("", window, cx));
+            self.apply_filter(cx);
+        }
+        self.select_album(album, cx);
+        // Selecting the album already selected does not scroll.
+        if let Some(position) = self.selected_position() {
+            self.albums_scroll
+                .scroll_to_item(position, ScrollStrategy::Nearest);
+        }
+        self.albums_focus.focus(window, cx);
     }
 
     fn show_album(&mut self, id: &AlbumId, loaded: AlbumWithSongs, cx: &mut Context<Self>) {
@@ -934,6 +951,12 @@ impl Library {
     }
 }
 
+impl Focusable for Library {
+    fn focus_handle(&self, _: &gpui_kit::App) -> FocusHandle {
+        self.albums_focus.clone()
+    }
+}
+
 impl Render for Library {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let rem = window.rem_size();
@@ -1073,4 +1096,99 @@ fn failure(
         )
         .child(h_flex().child(retry))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui_kit::{TestAppContext, VisualTestContext};
+    use serde_json::json;
+    use subsonic::Credentials;
+
+    use super::*;
+
+    fn album(id: &str, name: &str) -> Album {
+        serde_json::from_value(json!({ "id": id, "name": name })).unwrap()
+    }
+
+    /// A library with two albums, whose server cannot be reached.
+    fn library(cx: &mut TestAppContext) -> (Entity<Library>, &mut VisualTestContext) {
+        // The failing requests wake the test from the network's own thread.
+        cx.executor().allow_parking();
+        cx.update(gpui_kit::init);
+        let net = net::Client::new("hiphile-test").unwrap();
+        let server = client::Server::new("http://127.0.0.1:9", Credentials::api_key("k")).unwrap();
+        let info = serde_json::from_value(json!({ "version": "1.16.1" })).unwrap();
+        let session = session::Session::new(client::Client::new(net, server), info, None, None);
+        let (library, cx) = cx.add_window_view(|window, cx| Library::new(session, window, cx));
+        cx.update(|_, cx| {
+            library.update(cx, |library, cx| {
+                library.set_albums(vec![album("a", "Alpha"), album("b", "Beta")], cx);
+            });
+        });
+        (library, cx)
+    }
+
+    fn set_filter(library: &Entity<Library>, query: &str, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            library.update(cx, |library, cx| {
+                library
+                    .filter
+                    .update(cx, |filter, cx| filter.set_value(query, window, cx));
+                library.apply_filter(cx);
+            });
+        });
+    }
+
+    fn reveal(library: &Entity<Library>, id: &str, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            library.update(cx, |library, cx| {
+                library.reveal_album(AlbumId::new(id), window, cx);
+            });
+        });
+    }
+
+    #[gpui_kit::test]
+    fn revealing_an_album_the_filter_hides_clears_the_filter(cx: &mut TestAppContext) {
+        let (library, cx) = library(cx);
+        set_filter(&library, "Alpha", cx);
+
+        reveal(&library, "b", cx);
+
+        cx.update(|_, cx| {
+            let library = library.read(cx);
+            assert_eq!(library.filter.read(cx).value(), "");
+            assert_eq!(library.visible.len(), 2);
+            assert_eq!(library.selected_album, Some(AlbumId::new("b")));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn revealing_an_album_the_filter_shows_keeps_the_filter(cx: &mut TestAppContext) {
+        let (library, cx) = library(cx);
+        set_filter(&library, "Beta", cx);
+
+        reveal(&library, "b", cx);
+
+        cx.update(|_, cx| {
+            let library = library.read(cx);
+            assert_eq!(library.filter.read(cx).value(), "Beta");
+            assert_eq!(library.visible.len(), 1);
+            assert_eq!(library.selected_album, Some(AlbumId::new("b")));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn revealing_an_album_moves_focus_to_the_album_list(cx: &mut TestAppContext) {
+        let (library, cx) = library(cx);
+        cx.update(|window, cx| {
+            let songs_focus = library.read(cx).songs_focus.clone();
+            songs_focus.focus(window, cx);
+        });
+
+        reveal(&library, "a", cx);
+
+        cx.update(|window, cx| {
+            assert!(library.read(cx).albums_focus.is_focused(window));
+        });
+    }
 }

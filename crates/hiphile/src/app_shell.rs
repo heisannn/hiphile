@@ -1,27 +1,30 @@
 use account::{SignIn, SignInEvent, Start};
-use actions::{EnqueueSongs, PlaySongs};
+use actions::{EnqueueSongs, PlaySongs, ShowAlbum};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, StyledExt as _, TitleBar,
     button::{Button, ButtonVariants as _},
     h_flex,
     resizable::{ResizableState, h_resizable, resizable_panel},
+    tab::{Tab, TabBar},
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div,
-    prelude::FluentBuilder as _,
+    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable as _,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString, Styled as _,
+    Subscription, Window, div, prelude::FluentBuilder as _,
 };
-use library::Library;
+use home::Home;
+use library::{Library, Refresh};
 use player::{
     NextSong, Player, PlayerEvent, PreviousSong, QueueView, SeekBackward, SeekForward, ToggleMute,
     TogglePlayback, VolumeDown, VolumeUp,
 };
 use session::Session;
+use subsonic::AlbumId;
 use ui::CoverCache;
 
-use crate::{SignOut, ToggleQueue};
+use crate::{ShowHome, ShowLibrary, SignOut, ToggleQueue};
 
 /// The queue's width when first shown, in rem.
 const QUEUE_WIDTH: f32 = 20.;
@@ -37,9 +40,9 @@ pub struct AppShell {
     /// always asks for the password.
     keychain: Option<config::Keychain>,
     /// A focus target for the sign-in screen while it has no focused field,
-    /// so menu commands still reach this view. Signed in, the library's
-    /// lists hold focus instead: a click on empty space then leaves focus
-    /// where it was rather than moving it here.
+    /// so menu commands still reach this view. Signed in, the screen showing
+    /// holds focus instead: a click on empty space then leaves focus where it
+    /// was rather than moving it here.
     focus: FocusHandle,
     screen: Screen,
     /// Whether the queue shows beside the library when the window is wide
@@ -56,10 +59,33 @@ enum Screen {
     Workspace(Box<Workspace>),
 }
 
+/// The screen beside the queue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Destination {
+    Home,
+    Library,
+}
+
+impl Destination {
+    /// In the order the title bar shows them.
+    const ALL: [Self; 2] = [Self::Home, Self::Library];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Home => "Home",
+            Self::Library => "Library",
+        }
+    }
+}
+
 /// Everything that exists only while signed in.
 struct Workspace {
     session: Session,
     profile: config::Profile,
+    destination: Destination,
+    home: Entity<Home>,
+    /// Kept while another screen shows, along with its selection and the sync
+    /// it runs.
     library: Entity<Library>,
     player: Entity<Player>,
     queue: Entity<QueueView>,
@@ -69,6 +95,18 @@ struct Workspace {
     covers: Entity<CoverCache>,
     _player_events: Subscription,
     _output_changes: Subscription,
+    _focus_lost: Subscription,
+}
+
+impl Workspace {
+    /// Gives focus to the screen showing, whose shortcuts then work.
+    fn focus_destination(&self, window: &mut Window, cx: &mut App) {
+        let focus = match self.destination {
+            Destination::Home => self.home.focus_handle(cx),
+            Destination::Library => self.library.focus_handle(cx),
+        };
+        focus.focus(window, cx);
+    }
 }
 
 impl AppShell {
@@ -78,7 +116,7 @@ impl AppShell {
         let keychain = config::Keychain::system().ok();
         let screen = Self::sign_in(&net, keychain.clone(), Start::Resume, window, cx);
         let queue_shown = true;
-        crate::set_menus(queue_shown, cx);
+        crate::set_menus(queue_shown, None, cx);
         let song_cache_changes = cx.subscribe(
             &settings::song_cache_settings(cx),
             |_, song_cache, _: &settings::SongCacheChanged, cx| {
@@ -126,6 +164,7 @@ impl AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let home = cx.new(Home::new);
         let library = cx.new(|cx| Library::new(session.clone(), window, cx));
         let audio_settings = settings::audio_settings(cx);
         let output = audio_settings.read(cx).output().clone();
@@ -156,9 +195,18 @@ impl AppShell {
                     .ok();
             }
         });
-        self.screen = Screen::Workspace(Box::new(Workspace {
+        // A focused control that goes away, such as Retry once loading starts,
+        // would leave no focus and no working shortcuts.
+        let focus_lost = cx.on_focus_lost(window, |this, window, cx| {
+            if let Screen::Workspace(workspace) = &this.screen {
+                workspace.focus_destination(window, cx);
+            }
+        });
+        let workspace = Workspace {
             session,
             profile,
+            destination: Destination::Library,
+            home,
             library,
             player,
             queue,
@@ -166,8 +214,60 @@ impl AppShell {
             covers,
             _player_events: player_events,
             _output_changes: output_changes,
-        }));
+            _focus_lost: focus_lost,
+        };
+        workspace.focus_destination(window, cx);
+        self.screen = Screen::Workspace(Box::new(workspace));
+        self.update_menus(cx);
         cx.notify();
+    }
+
+    fn destination(&self) -> Option<Destination> {
+        match &self.screen {
+            Screen::Workspace(workspace) => Some(workspace.destination),
+            Screen::SignIn { .. } => None,
+        }
+    }
+
+    fn update_menus(&self, cx: &mut App) {
+        crate::set_menus(self.queue_shown, self.destination(), cx);
+    }
+
+    fn show_destination(
+        &mut self,
+        destination: Destination,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Screen::Workspace(workspace) = &mut self.screen else {
+            return;
+        };
+        if workspace.destination == destination {
+            return;
+        }
+        workspace.destination = destination;
+        workspace.focus_destination(window, cx);
+        self.update_menus(cx);
+        cx.notify();
+    }
+
+    /// Shows `album` in the library, whichever screen is showing.
+    fn show_album(&mut self, album: &AlbumId, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_destination(Destination::Library, window, cx);
+        if let Screen::Workspace(workspace) = &self.screen {
+            workspace.library.update(cx, |library, cx| {
+                library.reveal_album(album.clone(), window, cx)
+            });
+        }
+    }
+
+    /// Fetches the library again for the screens that do not run it themselves.
+    fn refresh_library(&self, cx: &mut Context<Self>) {
+        if let Screen::Workspace(workspace) = &self.screen {
+            workspace
+                .library
+                .update(cx, |library, cx| library.refresh_library(cx));
+        }
     }
 
     /// Drops the workspace, which stops playback, forgets the saved
@@ -183,6 +283,7 @@ impl AppShell {
         }
         self.focus.focus(window, cx);
         self.screen = Self::sign_in(&self.net, self.keychain.clone(), Start::Fresh, window, cx);
+        self.update_menus(cx);
         cx.notify();
     }
 
@@ -206,7 +307,7 @@ impl AppShell {
 
     fn toggle_queue(&mut self, cx: &mut Context<Self>) {
         self.queue_shown = !self.queue_shown;
-        crate::set_menus(self.queue_shown, cx);
+        self.update_menus(cx);
         cx.notify();
     }
 
@@ -230,7 +331,9 @@ impl AppShell {
         window.viewport_size().width >= library + queue
     }
 
-    /// The library and, when shown, the queue to its right.
+    /// The screen showing and, when shown, the queue to its right. Every
+    /// screen takes the library's minimum width, so that going from one to
+    /// another does not open or close the queue.
     fn render_workspace(
         &self,
         workspace: &Workspace,
@@ -242,11 +345,12 @@ impl AppShell {
         let library_min = workspace.library.read(cx).min_width(window, cx);
         h_resizable("workspace-panes")
             .with_state(&workspace.panes)
-            .child(
-                resizable_panel()
-                    .size_range(library_min..rem * 240.)
-                    .child(workspace.library.clone()),
-            )
+            .child(resizable_panel().size_range(library_min..rem * 240.).child(
+                match workspace.destination {
+                    Destination::Home => workspace.home.clone().into_any_element(),
+                    Destination::Library => workspace.library.clone().into_any_element(),
+                },
+            ))
             .child(
                 resizable_panel()
                     .size(rem * QUEUE_WIDTH)
@@ -268,6 +372,9 @@ impl AppShell {
             Screen::Workspace(workspace) => Some(&workspace.session),
             Screen::SignIn { .. } => None,
         };
+        let destination_ix = self
+            .destination()
+            .and_then(|current| Destination::ALL.iter().position(|d| *d == current));
         TitleBar::new()
             .child(
                 h_flex()
@@ -298,6 +405,24 @@ impl AppShell {
                                     .child(software),
                             )
                         })
+                        .child(
+                            div().flex_none().ml_3().child(
+                                TabBar::new("destinations")
+                                    .segmented()
+                                    .small()
+                                    .selected_index(destination_ix.unwrap_or_default())
+                                    .on_click(cx.listener(|this, ix: &usize, window, cx| {
+                                        if let Some(destination) = Destination::ALL.get(*ix) {
+                                            this.show_destination(*destination, window, cx);
+                                        }
+                                    }))
+                                    .children(
+                                        Destination::ALL.map(|destination| {
+                                            Tab::new().label(destination.label())
+                                        }),
+                                    ),
+                            ),
+                        )
                         .child(div().flex_1())
                         .child(
                             Button::new("toggle-queue")
@@ -355,6 +480,16 @@ impl Render for AppShell {
                 this.on_action(
                     cx.listener(|this, _: &SignOut, window, cx| this.sign_out(window, cx)),
                 )
+                .on_action(cx.listener(|this, _: &ShowHome, window, cx| {
+                    this.show_destination(Destination::Home, window, cx);
+                }))
+                .on_action(cx.listener(|this, _: &ShowLibrary, window, cx| {
+                    this.show_destination(Destination::Library, window, cx);
+                }))
+                .on_action(cx.listener(|this, action: &ShowAlbum, window, cx| {
+                    this.show_album(action.album(), window, cx);
+                }))
+                .on_action(cx.listener(|this, _: &Refresh, _, cx| this.refresh_library(cx)))
                 .on_action(cx.listener(|this, action: &PlaySongs, window, cx| {
                     this.update_player(window, cx, |player, _, cx| {
                         player.play(action.songs(), action.start_ix(), cx)

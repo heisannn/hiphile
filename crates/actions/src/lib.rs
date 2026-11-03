@@ -7,7 +7,24 @@
 use std::sync::Arc;
 
 use gpui_kit::Action;
-use subsonic::Song;
+use subsonic::{AlbumId, Song};
+
+/// Show `album` in the library.
+#[derive(Clone, Debug, PartialEq, Action)]
+#[action(namespace = hiphile, no_json)]
+pub struct ShowAlbum {
+    album: AlbumId,
+}
+
+impl ShowAlbum {
+    pub fn new(album: AlbumId) -> Self {
+        Self { album }
+    }
+
+    pub fn album(&self) -> &AlbumId {
+        &self.album
+    }
+}
 
 /// Replace the play queue with `songs` and start playing at `start_ix`.
 #[derive(Clone, Debug, PartialEq, Action)]

@@ -16,6 +16,7 @@ audio = { path = "crates/audio" }
 catalog = { path = "crates/catalog" }
 client = { path = "crates/client" }
 config = { path = "crates/config" }
+home = { path = "crates/home" }
 library = { path = "crates/library" }
 net = { path = "crates/net" }
 playback = { path = "crates/playback" }
