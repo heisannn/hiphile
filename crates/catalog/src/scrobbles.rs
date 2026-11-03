@@ -190,16 +190,17 @@ fn connect(path: &Path) -> Result<Connection, Error> {
     Ok(connection)
 }
 
-/// Whether the server read the request and turned down this play, such as
-/// for a song it no longer has. Sending it again would only hold up the plays
-/// behind it. Credentials that stopped working are no fault of the play.
+/// Whether the server turned down this play for good: it no longer has the
+/// song. Sending it again would only hold up the plays behind it. Any other
+/// error may pass, and says nothing against the play, so it must not cost one.
 fn is_refusal(error: &client::Error) -> bool {
-    match error {
-        client::Error::Protocol(subsonic::Error::Server { code, .. }) => {
-            !code.is_authentication() && *code != ServerErrorCode::NOT_AUTHORIZED
-        }
-        _ => false,
-    }
+    matches!(
+        error,
+        client::Error::Protocol(subsonic::Error::Server {
+            code: ServerErrorCode::NOT_FOUND,
+            ..
+        })
+    )
 }
 
 #[cfg(test)]
@@ -328,8 +329,9 @@ mod tests {
     }
 
     #[test]
-    fn plays_wait_while_the_credentials_do_not_work() {
+    fn plays_wait_through_any_other_server_error() {
         for code in [
+            ServerErrorCode::GENERIC,
             ServerErrorCode::WRONG_CREDENTIALS,
             ServerErrorCode::NOT_AUTHORIZED,
         ] {
