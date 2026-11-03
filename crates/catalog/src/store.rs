@@ -15,7 +15,9 @@ use crate::Error;
 
 /// Bump when the tables or the stored JSON change meaning. A database with
 /// another version is emptied, and the next sync fills it again.
-const SCHEMA_VERSION: i32 = 1;
+///
+/// 2: songs keep their file size.
+const SCHEMA_VERSION: i32 = 2;
 const DATABASE: &str = "catalog.sqlite";
 const SYNC_LOCK: &str = "sync.lock";
 /// How long a write by another connection, such as the CLI's, may hold up

@@ -1,14 +1,13 @@
-use std::fs::{self, File};
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, SystemTime};
+use std::sync::Arc;
+use std::time::Duration;
 
-use md5::{Digest, Md5};
 use subsonic::CoverArtRequest;
 
 use crate::Error;
-use crate::store::{directory_name, servers_dir};
+use crate::blobs::Blobs;
+use crate::store::servers_dir;
 
 /// How much cover art may stay on disk, across every server. When a write
 /// goes over, the images used longest ago go until a quarter is free.
@@ -17,15 +16,6 @@ pub const COVER_CAPACITY: u64 = 512 << 20;
 /// that change an image without changing its ID.
 pub const COVER_REFRESH_AFTER: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const COVERS: &str = "covers";
-const TEMPORARY_SUFFIX: &str = ".tmp";
-/// How long an image may go without its use being recorded. Recording each
-/// use would write to the disk on every read.
-const TOUCH_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
-/// A temporary file this old belongs to no write still running.
-const ABANDONED_AFTER: Duration = Duration::from_secs(10 * 60);
-
-/// Numbers temporary files, so no two writes in this process share one.
-static TEMPORARY: AtomicU64 = AtomicU64::new(0);
 
 /// Cover art images kept on disk, beside each server's library, so an
 /// image is downloaded once rather than once per session.
@@ -41,21 +31,8 @@ pub struct CoverStore {
 }
 
 struct Inner {
-    root: PathBuf,
-    capacity: u64,
+    blobs: Blobs,
     refresh_after: Duration,
-    usage: Mutex<Usage>,
-}
-
-#[derive(Default)]
-struct Usage {
-    /// Bytes kept, once counted.
-    kept: Option<u64>,
-    /// Whether a write is counting the images or removing some. Both touch
-    /// every image, so they run without the lock and other writes go on.
-    walking: bool,
-    /// Bytes written while the images were being walked.
-    added_while_walking: u64,
 }
 
 /// An image found on disk.
@@ -95,10 +72,8 @@ impl CoverStore {
     pub fn at(root: impl AsRef<Path>, capacity: u64, refresh_after: Duration) -> Self {
         Self {
             inner: Arc::new(Inner {
-                root: root.as_ref().to_owned(),
-                capacity,
+                blobs: Blobs::new(root.as_ref(), COVERS, capacity),
                 refresh_after,
-                usage: Mutex::default(),
             }),
         }
     }
@@ -121,171 +96,38 @@ impl CoverStore {
             .and_then(|metadata| metadata.created().ok())
             .and_then(|created| created.elapsed().ok());
         let fresh = age.is_none_or(|age| age < self.inner.refresh_after);
-        // The modification time records the last use, which decides what
-        // goes first when the images take too much space. Windows changes it
-        // only through a handle opened for writing.
-        let unused_for = metadata
-            .and_then(|metadata| metadata.modified().ok())
-            .and_then(|modified| modified.elapsed().ok());
-        if unused_for.is_none_or(|unused| unused >= TOUCH_AFTER) {
-            File::options()
-                .write(true)
-                .open(&path)
-                .and_then(|file| file.set_modified(SystemTime::now()))
-                .ok();
+        if let Some(metadata) = &metadata {
+            self.inner.blobs.touch(&path, metadata);
         }
         Some(KeptCover { bytes, fresh })
     }
 
     /// Keeps `bytes` as the image `request` asks for.
     pub fn put(&self, request: &CoverArtRequest, bytes: &[u8]) -> Result<(), Error> {
-        let path = self.path(request);
-        let dir = path.parent().unwrap_or(&self.inner.root);
-        fs::create_dir_all(dir).map_err(|source| Error::Io {
-            path: dir.to_owned(),
-            source,
-        })?;
-        // Written whole beside the image, then moved over it, so a reader
-        // never sees part of one.
-        let mut temporary = path.clone().into_os_string();
-        temporary.push(format!(
-            ".{}-{}{TEMPORARY_SUFFIX}",
-            std::process::id(),
-            TEMPORARY.fetch_add(1, Ordering::Relaxed)
-        ));
-        let temporary = PathBuf::from(temporary);
-        let written = fs::write(&temporary, bytes).and_then(|()| fs::rename(&temporary, &path));
-        if let Err(source) = written {
-            fs::remove_file(&temporary).ok();
-            return Err(Error::Io { path, source });
-        }
-        self.record(bytes.len() as u64);
-        Ok(())
-    }
-
-    /// Counts `added` bytes, and counts every image or removes some when
-    /// that is due.
-    fn record(&self, added: u64) {
-        {
-            let mut usage = self.usage();
-            if usage.walking {
-                usage.added_while_walking += added;
-                return;
-            }
-            if let Some(kept) = &mut usage.kept {
-                // An image written over is counted twice until the next walk.
-                *kept += added;
-                if *kept <= self.inner.capacity {
-                    return;
-                }
-            }
-            // The first count includes what was just written.
-            usage.walking = true;
-        }
-        let kept = self.walk();
-        let mut usage = self.usage();
-        usage.kept = Some(kept + std::mem::take(&mut usage.added_while_walking));
-        usage.walking = false;
-    }
-
-    /// Counts the images and, when they take more than the capacity, removes
-    /// those used longest ago until a quarter of it is free. Returns how
-    /// many bytes are kept.
-    fn walk(&self) -> u64 {
-        let mut images = self.images();
-        let mut kept: u64 = images.iter().map(|image| image.len).sum();
-        if kept <= self.inner.capacity {
-            return kept;
-        }
-        let target = self.inner.capacity / 4 * 3;
-        images.sort_by_key(|image| image.used);
-        for image in images {
-            if kept <= target {
-                break;
-            }
-            if fs::remove_file(&image.path).is_ok() {
-                kept -= image.len;
-            }
-        }
-        kept
-    }
-
-    fn usage(&self) -> MutexGuard<'_, Usage> {
-        self.inner
-            .usage
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
+        self.inner.blobs.put(&self.path(request), bytes)
     }
 
     fn path(&self, request: &CoverArtRequest) -> PathBuf {
         let size = request
             .size()
             .map_or_else(|| "original".to_owned(), |size| size.to_string());
-        // IDs are opaque and may hold any character, so they are hashed
-        // into names every file system accepts.
-        let name = hex::encode(Md5::digest(request.id().as_str().as_bytes()));
         self.inner
-            .root
-            .join(directory_name(request.server()))
-            .join(COVERS)
-            .join(size)
-            .join(name)
+            .blobs
+            .path(request.server(), &size, request.id().as_str())
     }
-
-    /// Every image kept for every server. Removes temporary files that
-    /// were abandoned, by a crash for example.
-    fn images(&self) -> Vec<Image> {
-        let mut images = Vec::new();
-        for server in entries(&self.inner.root) {
-            for size in entries(&server.join(COVERS)) {
-                for path in entries(&size) {
-                    let Ok(metadata) = fs::metadata(&path) else {
-                        continue;
-                    };
-                    let used = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                    if path.to_string_lossy().ends_with(TEMPORARY_SUFFIX) {
-                        if used.elapsed().is_ok_and(|age| age >= ABANDONED_AFTER) {
-                            fs::remove_file(&path).ok();
-                        }
-                        continue;
-                    }
-                    if metadata.is_file() {
-                        images.push(Image {
-                            path,
-                            len: metadata.len(),
-                            used,
-                        });
-                    }
-                }
-            }
-        }
-        images
-    }
-}
-
-struct Image {
-    path: PathBuf,
-    len: u64,
-    used: SystemTime,
-}
-
-/// The entries of `dir`, or none when it cannot be read.
-fn entries(dir: &Path) -> Vec<PathBuf> {
-    fs::read_dir(dir)
-        .map(|entries| {
-            entries
-                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
+    use std::time::SystemTime;
+
     use subsonic::{CoverArtId, Credentials, Endpoint};
     use url::Url;
 
     use super::*;
+    use crate::blobs::TOUCH_AFTER;
+    use crate::store::directory_name;
 
     fn request(server: &str, id: &str, size: Option<u32>) -> CoverArtRequest {
         let base = Url::parse(server).unwrap();
@@ -388,27 +230,5 @@ mod tests {
         assert!(store.get(&covers[1]).is_none());
         assert!(store.get(&covers[2]).is_none());
         assert!(store.get(&newest).is_some());
-    }
-
-    #[test]
-    fn abandoned_temporary_files_are_removed_and_not_counted() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = store(&dir);
-        let cover = request("https://music.example.com", "al-1", Some(80));
-        store.put(&cover, b"image").unwrap();
-        let abandoned = PathBuf::from(format!(
-            "{}.1-1{TEMPORARY_SUFFIX}",
-            store.path(&cover).display()
-        ));
-        fs::write(&abandoned, [0; 50]).unwrap();
-        File::options()
-            .write(true)
-            .open(&abandoned)
-            .unwrap()
-            .set_modified(SystemTime::now() - ABANDONED_AFTER * 2)
-            .unwrap();
-        let images = store.images();
-        assert_eq!(images.len(), 1);
-        assert!(!abandoned.exists());
     }
 }

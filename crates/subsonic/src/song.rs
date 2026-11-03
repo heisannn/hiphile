@@ -22,6 +22,8 @@ pub struct Song {
     cover_art: Option<CoverArtId>,
     /// Seconds.
     duration: Option<u64>,
+    /// Bytes in the original file.
+    size: Option<u64>,
     suffix: Option<String>,
     content_type: Option<String>,
     sampling_rate: Option<u32>,
@@ -68,6 +70,11 @@ impl Song {
 
     pub fn duration(&self) -> Option<Duration> {
         self.duration.map(Duration::from_secs)
+    }
+
+    /// The original file's length in bytes, which `stream` sends untranscoded.
+    pub fn size(&self) -> Option<u64> {
+        self.size
     }
 
     /// File extension of the original file, e.g. `flac`.

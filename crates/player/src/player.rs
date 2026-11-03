@@ -18,7 +18,7 @@ use subsonic::{Song, SongId};
 use ui::{CoverArt, format_duration};
 
 use crate::format;
-use crate::{NextSong, PreviousSong, ToggleMute, TogglePlayback};
+use crate::{GlobalSongCache, NextSong, PreviousSong, ToggleMute, TogglePlayback};
 
 /// How often the position redraws while playing.
 const POSITION_REFRESH: Duration = Duration::from_millis(250);
@@ -51,6 +51,9 @@ pub struct Player {
     /// The engine load of the current song, once it has one. Events about
     /// any other load are stale.
     load: Option<LoadId>,
+    /// Whether that load plays the song's kept file, which a failure may
+    /// show to be damaged.
+    loaded_kept: bool,
     queue: Queue<Song>,
     state: State,
     format: Option<PlaybackFormat>,
@@ -159,6 +162,7 @@ impl Player {
             store,
             engine,
             load: None,
+            loaded_kept: false,
             queue: Queue::new(),
             state: State::Stopped,
             format: None,
@@ -369,6 +373,12 @@ impl Player {
     }
 
     fn play_current(&mut self, cx: &mut Context<Self>) {
+        self.open_current(false, cx);
+    }
+
+    /// Plays the current song from its start; with `forget_kept`, from the
+    /// server after removing its kept file.
+    fn open_current(&mut self, forget_kept: bool, cx: &mut Context<Self>) {
         let Some(song) = self.queue.current().cloned() else {
             self.stop(cx);
             return;
@@ -386,11 +396,30 @@ impl Player {
         self.set_state(State::Opening, cx);
 
         let client = self.session.client().clone();
+        let song_cache = cx
+            .try_global::<GlobalSongCache>()
+            .map(|song_cache| song_cache.0.clone());
         // Replacing the task drops an earlier open, and with it its download.
         self._open = cx.spawn(async move |this, cx| {
-            let track = playback::open_track(&client, &song).await;
-            this.update(cx, |this, cx| match track {
-                Ok(track) => this.load = Some(this.engine.load(track)),
+            // Removing and opening a kept song read and write the disk.
+            let opened = cx
+                .background_spawn({
+                    let song = song.clone();
+                    async move {
+                        // A file that cannot be removed would fail again, so
+                        // the song then comes from the server uncached.
+                        let song_cache = song_cache.filter(|song_cache| {
+                            !forget_kept || song_cache.forget(&client, song.id()).is_ok()
+                        });
+                        playback::open_track(&client, song_cache.as_ref(), &song).await
+                    }
+                })
+                .await;
+            this.update(cx, |this, cx| match opened {
+                Ok(opened) => {
+                    this.loaded_kept = opened.is_kept();
+                    this.load = Some(this.engine.load(opened.into_track()));
+                }
                 Err(error) => this.fail(&song, &session::describe(&error), cx),
             })
             .ok();
@@ -413,6 +442,11 @@ impl Player {
                 } else {
                     self.stop(cx);
                 }
+            }
+            // The song fetched again plays from a download, not a kept
+            // file, so a song is fetched again at most once per play.
+            EventKind::Failed(error) if self.loaded_kept && error.is_track_error() => {
+                self.open_current(true, cx);
             }
             EventKind::Failed(error) => {
                 if let Some(song) = self.queue.current().cloned() {

@@ -16,6 +16,17 @@ pub enum Error {
     Resample(String),
 }
 
+impl Error {
+    /// Whether the track's bytes are at fault, a damaged or unsupported
+    /// file, rather than the output device or the resampler.
+    pub fn is_track_error(&self) -> bool {
+        matches!(
+            self,
+            Self::UnsupportedFormat(_) | Self::Decode(_) | Self::Read(_)
+        )
+    }
+}
+
 impl From<cpal::Error> for Error {
     fn from(error: cpal::Error) -> Self {
         Self::Output(error.to_string())

@@ -5340,8 +5340,14 @@ name = "playback"
 version = "0.1.0"
 dependencies = [
  "audio",
+ "catalog",
  "client",
+ "futures",
+ "net",
+ "serde_json",
  "subsonic",
+ "tempfile",
+ "url",
 ]
 
 [[package]]

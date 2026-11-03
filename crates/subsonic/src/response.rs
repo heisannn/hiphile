@@ -288,11 +288,12 @@ mod tests {
 
     #[test]
     fn parses_search3_songs() {
-        let body = br#"{"subsonic-response":{"status":"ok","version":"1.16.1","searchResult3":{"song":[{"id":"s1","isDir":false,"title":"Song","artist":"Artist","duration":215,"samplingRate":96000,"bitDepth":24,"channelCount":2,"suffix":"flac"}]}}}"#;
+        let body = br#"{"subsonic-response":{"status":"ok","version":"1.16.1","searchResult3":{"song":[{"id":"s1","isDir":false,"title":"Song","artist":"Artist","duration":215,"samplingRate":96000,"bitDepth":24,"channelCount":2,"suffix":"flac","size":31457280}]}}}"#;
         let songs = parse::<Search3>(body).unwrap().into_payload().into_songs();
         assert_eq!(songs.len(), 1);
         assert_eq!(songs[0].id().as_str(), "s1");
         assert_eq!(songs[0].sampling_rate(), Some(96000));
+        assert_eq!(songs[0].size(), Some(31_457_280));
         assert_eq!(songs[0].duration().map(|d| d.as_secs()), Some(215));
     }
 

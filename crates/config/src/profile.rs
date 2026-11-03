@@ -46,6 +46,7 @@ struct Settings {
     server: Option<String>,
     username: Option<String>,
     volume: Option<f32>,
+    song_cache_gib: Option<f64>,
 }
 
 /// The settings directory and its `config.toml`:
@@ -54,6 +55,7 @@ struct Settings {
 /// server = "https://music.example.com"
 /// username = "alice"
 /// volume = 0.8
+/// song_cache_gib = 8
 /// ```
 #[derive(Clone, Debug)]
 pub struct Store {
@@ -101,6 +103,28 @@ impl Store {
             .volume
             .filter(|volume| volume.is_finite())
             .map(|volume| volume.clamp(0.0, 1.0)))
+    }
+
+    /// How many bytes of songs may be kept on this computer, if the file
+    /// says: `song_cache_gib`, in GiB, where `0` keeps none.
+    /// `HIPHILE_SONG_CACHE_GIB` takes precedence over the file. A negative
+    /// number is an error, not a reason to keep the default.
+    pub fn song_cache_capacity(&self) -> Result<Option<u64>, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        self.song_cache_bytes(settings.song_cache_gib)
+    }
+
+    fn song_cache_bytes(&self, gib: Option<f64>) -> Result<Option<u64>, Error> {
+        let Some(gib) = gib else {
+            return Ok(None);
+        };
+        bytes_in_gib(gib)
+            .map(Some)
+            .ok_or_else(|| Error::InvalidSetting {
+                path: self.config_path(),
+                key: "song_cache_gib",
+                expected: "a number of GiB, 0 or more",
+            })
     }
 
     fn read(&self, environment: config_rs::Environment) -> Result<Settings, Error> {
@@ -168,6 +192,13 @@ impl Store {
         std::fs::write(&temporary, document.to_string()).map_err(io_error(&temporary))?;
         std::fs::rename(&temporary, &path).map_err(io_error(&path))
     }
+}
+
+/// Bytes in `gib` GiB; `None` for a negative number or one that is not.
+fn bytes_in_gib(gib: f64) -> Option<u64> {
+    (gib.is_finite() && gib >= 0.0)
+        // Saturates for sizes no disk has.
+        .then(|| (gib * f64::from(1u32 << 30)) as u64)
 }
 
 #[cfg(test)]
@@ -282,6 +313,27 @@ mod tests {
         assert_eq!(read(&store, &[]).volume, Some(0.12));
         assert_eq!(load(&store, &[]), Some(profile));
         assert_eq!(read(&store, &[("HIPHILE_VOLUME", "0.5")]).volume, Some(0.5));
+    }
+
+    #[test]
+    fn song_cache_capacity_is_read_in_gib() {
+        let store = temporary_store("song-cache");
+        let capacity = |env: &[(&str, &str)]| {
+            store
+                .song_cache_bytes(read(&store, env).song_cache_gib)
+                .map_err(|error| error.to_string())
+        };
+        assert_eq!(capacity(&[]), Ok(None));
+        std::fs::create_dir_all(store.dir()).unwrap();
+        std::fs::write(store.config_path(), "song_cache_gib = 2\n").unwrap();
+        assert_eq!(capacity(&[]), Ok(Some(2 << 30)));
+        assert_eq!(
+            capacity(&[("HIPHILE_SONG_CACHE_GIB", "0.5")]),
+            Ok(Some(512 << 20))
+        );
+        assert_eq!(capacity(&[("HIPHILE_SONG_CACHE_GIB", "0")]), Ok(Some(0)));
+        let negative = capacity(&[("HIPHILE_SONG_CACHE_GIB", "-1")]).unwrap_err();
+        assert!(negative.contains("HIPHILE_SONG_CACHE_GIB"), "{negative}");
     }
 
     #[test]

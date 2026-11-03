@@ -273,9 +273,10 @@ fn play(args: ServerArgs, ids: Vec<String>, query: Option<String>) -> anyhow::Re
     let mut queue = playback::Queue::new();
     queue.replace(songs, 0);
     let (engine, events) = audio::Engine::spawn();
+    let song_cache = song_cache();
     let mut failures = 0;
     while let Some(song) = queue.current().cloned() {
-        if let Err(error) = play_song(&client, &engine, &events, &song) {
+        if let Err(error) = play_song(&client, song_cache.as_ref(), &engine, &events, &song) {
             eprintln!("{song}: {error:#}");
             failures += 1;
         }
@@ -285,17 +286,59 @@ fn play(args: ServerArgs, ids: Vec<String>, query: Option<String>) -> anyhow::Re
     Ok(())
 }
 
+/// The songs kept on this computer, shared with the app, unless the
+/// settings keep none. Settings that cannot be read keep none either.
+fn song_cache() -> Option<playback::SongCache> {
+    let capacity = match config::Store::user() {
+        Ok(store) => store.song_cache_capacity(),
+        // Without a home directory there are no settings to follow.
+        Err(_) => Ok(None),
+    };
+    let song_cache = capacity
+        .map_err(anyhow::Error::from)
+        .and_then(|capacity| Ok(playback::SongCache::user(capacity)?));
+    match song_cache {
+        Ok(song_cache) => song_cache,
+        Err(error) => {
+            eprintln!("warning: songs will not be kept on this computer: {error:#}");
+            None
+        }
+    }
+}
+
 fn play_song(
     client: &client::Client,
+    song_cache: Option<&playback::SongCache>,
     engine: &audio::Engine,
     events: &async_channel::Receiver<audio::Event>,
     id: &SongId,
 ) -> anyhow::Result<()> {
     let song = block_on(client.song(id))?;
-    let track = block_on(playback::open_track(client, &song))?;
-    let load = engine.load(track);
-
     println!("{}", describe(&song));
+    let opened = block_on(playback::open_track(client, song_cache, &song))?;
+    let kept = opened.is_kept();
+    match play_track(engine, events, &song, opened.into_track())? {
+        // The kept file may be damaged: remove it and fetch the song again.
+        // One that cannot be removed would fail again, so the song then
+        // comes from the server uncached.
+        Err(error) if kept && error.is_track_error() => {
+            let song_cache = song_cache.filter(|song_cache| song_cache.forget(client, id).is_ok());
+            let opened = block_on(playback::open_track(client, song_cache, &song))?;
+            Ok(play_track(engine, events, &song, opened.into_track())??)
+        }
+        played => Ok(played?),
+    }
+}
+
+/// Plays `track` to its end, showing the position. The inner result is the
+/// track's own failure; the outer one, the engine's.
+fn play_track(
+    engine: &audio::Engine,
+    events: &async_channel::Receiver<audio::Event>,
+    song: &Song,
+    track: audio::Track,
+) -> anyhow::Result<Result<(), audio::Error>> {
+    let load = engine.load(track);
     let mut duration = song.duration();
     loop {
         match events.try_recv() {
@@ -312,14 +355,14 @@ fn play_song(
                 ..
             }) => {
                 eprintln!();
-                return Ok(());
+                return Ok(Ok(()));
             }
             Ok(audio::Event {
                 kind: audio::EventKind::Failed(error),
                 ..
             }) => {
                 eprintln!();
-                return Err(error.into());
+                return Ok(Err(error));
             }
             Err(async_channel::TryRecvError::Empty) => {
                 let total = duration.map(clock).unwrap_or_else(|| "?".to_owned());

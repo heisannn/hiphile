@@ -33,6 +33,12 @@ pub enum Error {
         #[source]
         source: toml_edit::TomlError,
     },
+    #[error("`{key}` must be {expected}; check {} and HIPHILE_{}", path.display(), key.to_ascii_uppercase())]
+    InvalidSetting {
+        path: PathBuf,
+        key: &'static str,
+        expected: &'static str,
+    },
     #[error("the system keychain failed: {0}")]
     Keychain(#[source] keyring_core::Error),
 }

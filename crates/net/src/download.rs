@@ -51,12 +51,12 @@ const MAX_RANDOM_ACCESS_LEN: u64 = 4 << 30;
 ///
 /// Use it from a thread that may block (a decoder thread, the CLI), never
 /// from a UI executor. The whole body is kept in memory. Dropping it cancels
-/// the download.
+/// the download unless the body has all arrived; see
+/// [`DownloadHandle::completed`].
 pub struct Download {
     shared: Arc<Shared>,
     pos: u64,
     content_type: Option<String>,
-    content_length: Option<u64>,
     finished: Option<oneshot::Receiver<()>>,
 }
 
@@ -71,6 +71,38 @@ impl DownloadHandle {
     pub fn cancel(&self) {
         self.shared.cancel();
     }
+
+    /// Waits for the download to end, then hands over the whole body if it
+    /// arrived whole and as long as the `Content-Length` header said.
+    ///
+    /// `None` when the download was canceled or failed, including when its
+    /// [`Download`] was dropped first, or when the server sent no length.
+    /// The future keeps the body in memory until it is dropped. It needs no
+    /// particular executor and does not block.
+    pub fn completed(&self) -> impl Future<Output = Option<Bytes>> + Send + 'static {
+        let shared = self.shared.clone();
+        async move {
+            loop {
+                // Created before the check, so a finish between the two
+                // still wakes it.
+                let finished = shared.finished.notified();
+                {
+                    let state = shared.lock();
+                    match &state.outcome {
+                        Some(Ok(())) => {
+                            return state
+                                .body
+                                .clone()
+                                .filter(|body| shared.content_length == Some(body.len() as u64));
+                        }
+                        Some(Err(_)) => return None,
+                        None => {}
+                    }
+                }
+                finished.await;
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -82,6 +114,10 @@ struct Shared {
     cancel: Notify,
     /// Asks the network task to fetch [`State::wanted`] next.
     retarget: Notify,
+    /// Wakes [`DownloadHandle::completed`] once the outcome is set.
+    finished: Notify,
+    /// The `Content-Length` header, when the server sent one.
+    content_length: Option<u64>,
     /// The body's length, when the server sent ranges of it on request at
     /// the start and the whole body is allocated.
     len: Option<u64>,
@@ -90,8 +126,12 @@ struct Shared {
 #[derive(Default)]
 struct State {
     /// Indexed by position in the body. A ranged download allocates the
-    /// whole body up front; bytes not yet received are zero.
+    /// whole body up front; bytes not yet received are zero. Moved to
+    /// `body` once every byte has arrived.
     bytes: Vec<u8>,
+    /// The whole body, once the download has succeeded. Never written to,
+    /// so it can be handed over without a copy.
+    body: Option<Bytes>,
     /// The parts of `bytes` received: sorted, disjoint and never touching.
     received: Vec<Range<u64>>,
     /// What the current response is sending: from the next byte to arrive
@@ -149,6 +189,11 @@ impl State {
         self.received.splice(first..last, [merged]);
     }
 
+    /// The body, as much of it as has arrived.
+    fn bytes(&self) -> &[u8] {
+        self.body.as_deref().unwrap_or(&self.bytes)
+    }
+
     /// Copies what has arrived from `pos` into `buf`; `None` if `pos` has
     /// not arrived.
     fn copy(&self, pos: u64, buf: &mut [u8]) -> Option<usize> {
@@ -157,7 +202,7 @@ impl State {
             .filter(|run| run.start <= pos)?;
         let start = pos as usize;
         let len = buf.len().min((run.end - pos) as usize);
-        buf[..len].copy_from_slice(&self.bytes[start..start + len]);
+        buf[..len].copy_from_slice(&self.bytes()[start..start + len]);
         Some(len)
     }
 
@@ -215,10 +260,15 @@ impl Shared {
     fn finish(&self, outcome: Result<(), String>) {
         let mut state = self.lock();
         if state.outcome.is_none() {
+            if outcome.is_ok() {
+                let bytes = std::mem::take(&mut state.bytes);
+                state.body = Some(Bytes::from(bytes));
+            }
             state.outcome = Some(outcome);
         }
         drop(state);
         self.changed.notify_all();
+        self.finished.notify_waiters();
     }
 
     fn cancel(&self) {
@@ -235,7 +285,7 @@ impl Download {
 
     /// The `Content-Length` header, when the server sent one.
     pub fn content_length(&self) -> Option<u64> {
-        self.content_length
+        self.shared.content_length
     }
 
     /// Whether a read anywhere in the body is about as quick as a read where
@@ -258,7 +308,10 @@ impl Download {
         }
         let state = self.shared.lock();
         match &state.outcome {
-            Some(Ok(())) => Ok(Bytes::copy_from_slice(&state.bytes)),
+            Some(Ok(())) => Ok(state
+                .body
+                .clone()
+                .unwrap_or_else(|| Bytes::copy_from_slice(state.bytes()))),
             Some(Err(message)) => Err(Error::Interrupted(message.clone())),
             None => Err(Error::Canceled),
         }
@@ -266,13 +319,13 @@ impl Download {
 
     /// Total length: the header if present, otherwise known once complete.
     fn wait_for_len(&self) -> io::Result<u64> {
-        if let Some(len) = self.content_length {
+        if let Some(len) = self.shared.content_length {
             return Ok(len);
         }
         let mut state = self.shared.lock();
         loop {
             match &state.outcome {
-                Some(Ok(())) => return Ok(state.bytes.len() as u64),
+                Some(Ok(())) => return Ok(state.bytes().len() as u64),
                 Some(Err(message)) => return Err(io::Error::other(message.clone())),
                 None => state = self.shared.wait(state),
             }
@@ -375,6 +428,7 @@ pub(crate) async fn run(
     });
     let shared = Arc::new(Shared {
         len,
+        content_length: response.content_length(),
         ..Shared::default()
     });
     {
@@ -400,7 +454,6 @@ pub(crate) async fn run(
             .get(header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned),
-        content_length: response.content_length(),
         finished: Some(finished_receiver),
     };
     if headers.send(Ok(download)).is_err() {
@@ -786,7 +839,6 @@ mod tests {
             shared: shared.clone(),
             pos: 0,
             content_type: None,
-            content_length: None,
             finished: None,
         };
         (download, shared)
@@ -1291,6 +1343,69 @@ mod tests {
             header::HeaderValue::from_static("Wed, 04 Nov 2026 00:00:00 GMT"),
         );
         assert!(version.differs(&later));
+    }
+
+    #[test]
+    fn a_whole_body_is_handed_over_once_it_arrives() {
+        use futures::FutureExt as _;
+
+        let body = song_body();
+        // The first response stalls after its head, so the body arrives
+        // only once a read far ahead asks for the rest.
+        let (url, _ranges) = ranged_server(body.clone(), Behaviour::new(&body));
+        let client = crate::Client::new("test").unwrap();
+        let download = start(&client, url);
+        // Waiting from before the body arrives, as the song cache does.
+        let mut completed = Box::pin(download.handle().completed());
+        assert!((&mut completed).now_or_never().is_none());
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            sender.send(futures::executor::block_on(completed)).ok();
+        });
+        assert_reads(
+            &body,
+            1_500_000,
+            read_at_then_all(download, 1_500_000, 1000),
+        );
+        let completed = receiver.recv_timeout(WAIT).expect("still waiting");
+        assert!(completed.is_some_and(|completed| completed == body[..]));
+    }
+
+    #[test]
+    fn a_canceled_download_hands_over_nothing() {
+        let (url, _closed) = stalling_server();
+        let client = crate::Client::new("test").unwrap();
+        let download = start(&client, url);
+        let handle = download.handle();
+        drop(download);
+        assert!(futures::executor::block_on(handle.completed()).is_none());
+    }
+
+    #[test]
+    fn a_body_of_unknown_length_is_not_handed_over() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = url::Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap() > 2 {
+                line.clear();
+            }
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: audio/flac\r\nConnection: close\r\n\r\nabc",
+                )
+                .unwrap();
+        });
+        let client = crate::Client::new("test").unwrap();
+        let download = start(&client, url);
+        let handle = download.handle();
+        assert_eq!(
+            futures::executor::block_on(download.into_body()).unwrap(),
+            &b"abc"[..]
+        );
+        assert!(futures::executor::block_on(handle.completed()).is_none());
     }
 
     #[test]
