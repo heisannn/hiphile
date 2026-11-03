@@ -1,6 +1,8 @@
 //! Feature: browsing albums and their songs.
 //!
-//! Dispatches `actions::PlaySongs`; the app shell routes it to the player.
+//! Shows the server's library saved on this computer at once and brings it
+//! up to date in the background. Dispatches `actions::PlaySongs`; the app
+//! shell routes it to the player.
 
 mod filter;
 mod library_view;
@@ -28,16 +30,18 @@ actions!(
         Open,
         /// Songs: return to the album list.
         Back,
-        FocusFilter
+        FocusFilter,
+        /// Fetches the whole library from the server again.
+        Refresh
     ]
 );
 
 /// Registers key bindings. Call before building the menu bar.
 pub fn init(cx: &mut App) {
-    let find = if cx.platform_info().is_mac() {
-        "cmd-f"
+    let (find, refresh) = if cx.platform_info().is_mac() {
+        ("cmd-f", "cmd-r")
     } else {
-        "ctrl-f"
+        ("ctrl-f", "ctrl-r")
     };
     for context in [ALBUMS_CONTEXT, SONGS_CONTEXT] {
         cx.bind_keys([
@@ -58,5 +62,6 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("left", Back, Some(SONGS_CONTEXT)),
         KeyBinding::new("escape", Back, Some(SONGS_CONTEXT)),
         KeyBinding::new(find, FocusFilter, Some(LIBRARY_CONTEXT)),
+        KeyBinding::new(refresh, Refresh, Some(LIBRARY_CONTEXT)),
     ]);
 }

@@ -17,5 +17,8 @@ pub use auth::Credentials;
 pub use endpoint::{CLIENT_NAME, Endpoint, PROTOCOL_VERSION};
 pub use error::{Error, ServerErrorCode};
 pub use id::{AlbumId, ArtistId, CoverArtId, PlaylistId, SongId};
-pub use response::{Envelope, GetAlbum, GetAlbumList2, GetSong, Ping, Search3, ServerInfo, parse};
+pub use response::{
+    Envelope, GetAlbum, GetAlbumList2, GetIndexes, GetScanStatus, GetSong, Ping, ScanStatus,
+    Search3, ServerInfo, parse,
+};
 pub use song::Song;

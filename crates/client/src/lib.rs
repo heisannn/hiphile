@@ -2,15 +2,18 @@
 //!
 //! Runtime-agnostic: its futures can be awaited from GPUI or the CLI.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use serde::de::DeserializeOwned;
 use subsonic::{
     Album, AlbumId, AlbumWithSongs, CoverArtId, Credentials, Endpoint, Envelope, GetAlbum,
-    GetAlbumList2, GetSong, Ping, Search3, ServerInfo, Song, SongId,
+    GetAlbumList2, GetIndexes, GetScanStatus, GetSong, Ping, ScanStatus, Search3, ServerInfo, Song,
+    SongId,
 };
+use url::Url;
 
 /// Largest page `getAlbumList2` returns.
-const ALBUM_PAGE_SIZE: u32 = 500;
-use url::Url;
+pub const ALBUM_PAGE_SIZE: u32 = 500;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -44,13 +47,8 @@ pub struct Server {
 
 impl Server {
     pub fn new(base_url: &str, credentials: Credentials) -> Result<Self, Error> {
-        let invalid = || Error::InvalidServerUrl(base_url.to_owned());
-        let parsed = Url::parse(base_url).map_err(|_| invalid())?;
-        if !matches!(parsed.scheme(), "http" | "https") || parsed.cannot_be_a_base() {
-            return Err(invalid());
-        }
         Ok(Self {
-            base_url: parsed,
+            base_url: server_url(base_url)?,
             credentials,
         })
     }
@@ -62,6 +60,17 @@ impl Server {
     pub fn url(&self, endpoint: &Endpoint) -> Url {
         endpoint.url(&self.base_url, &self.credentials)
     }
+}
+
+/// Parses a server address the way [`Server::new`] does, for uses that need
+/// no credentials, such as finding the server's cached library.
+pub fn server_url(address: &str) -> Result<Url, Error> {
+    let invalid = || Error::InvalidServerUrl(address.to_owned());
+    let parsed = Url::parse(address).map_err(|_| invalid())?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.cannot_be_a_base() {
+        return Err(invalid());
+    }
+    Ok(parsed)
 }
 
 /// Cheap to clone; clones share the transport.
@@ -90,17 +99,52 @@ impl Client {
         let mut albums = Vec::new();
         loop {
             let offset = u32::try_from(albums.len()).unwrap_or(u32::MAX);
-            let page = self
-                .call::<GetAlbumList2>(&Endpoint::albums_by_name(ALBUM_PAGE_SIZE, offset))
-                .await?
-                .into_payload()
-                .into_albums();
+            let page = self.albums_page(ALBUM_PAGE_SIZE, offset).await?;
             let last = page.len() < ALBUM_PAGE_SIZE as usize;
             albums.extend(page);
             if last {
                 return Ok(albums);
             }
         }
+    }
+
+    /// One page of the albums sorted by name; `size` is at most
+    /// [`ALBUM_PAGE_SIZE`].
+    pub async fn albums_page(&self, size: u32, offset: u32) -> Result<Vec<Album>, Error> {
+        let envelope = self
+            .call::<GetAlbumList2>(&Endpoint::albums_by_name(size, offset))
+            .await?;
+        Ok(envelope.into_payload().into_albums())
+    }
+
+    /// One page of every song in the library, in an order that stays the
+    /// same between pages while the library does not change.
+    pub async fn songs_page(&self, size: u32, offset: u32) -> Result<Vec<Song>, Error> {
+        let envelope = self
+            .call::<Search3>(&Endpoint::all_songs(size, offset))
+            .await?;
+        Ok(envelope.into_payload().into_songs())
+    }
+
+    pub async fn scan_status(&self) -> Result<ScanStatus, Error> {
+        let envelope = self.call::<GetScanStatus>(&Endpoint::scan_status()).await?;
+        Ok(envelope.into_payload().into_status())
+    }
+
+    /// When the library last changed, in milliseconds since the Unix epoch,
+    /// if the server says. Navidrome reports its last scan.
+    pub async fn library_modified(&self) -> Result<Option<u64>, Error> {
+        // The index of every artist is sent only if it changed after the
+        // time asked about; asking about now leaves just the time it changed.
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| {
+                u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+            });
+        let envelope = self
+            .call::<GetIndexes>(&Endpoint::indexes_modified_since(now))
+            .await?;
+        Ok(envelope.into_payload().last_modified())
     }
 
     pub async fn album(&self, album: &AlbumId) -> Result<AlbumWithSongs, Error> {

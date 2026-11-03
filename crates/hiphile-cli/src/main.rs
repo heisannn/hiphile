@@ -21,6 +21,20 @@ enum Command {
     Ping(ServerArgs),
     /// List audio output devices.
     Devices,
+    /// Fetch the whole library into the copy kept on this computer.
+    Sync(ServerArgs),
+    /// List the albums kept on this computer, updating them first when the
+    /// server reports a change or the copy is a day old.
+    Albums {
+        #[command(flatten)]
+        server: ServerArgs,
+        /// Fetch every album from the server first.
+        #[arg(long, conflicts_with = "offline")]
+        refresh: bool,
+        /// List the saved albums without contacting the server.
+        #[arg(long)]
+        offline: bool,
+    },
     /// Search songs and print their IDs.
     Search {
         #[command(flatten)]
@@ -63,15 +77,29 @@ struct ServerArgs {
     api_key: Option<String>,
 }
 
+fn last_profile() -> Option<config::Profile> {
+    config::Store::user()
+        .ok()
+        .and_then(|store| store.last_profile().ok().flatten())
+}
+
 impl ServerArgs {
+    fn address(&self) -> anyhow::Result<String> {
+        self.server
+            .clone()
+            .or_else(|| last_profile().map(|profile| profile.server().to_owned()))
+            .context("pass --server (or set HIPHILE_SERVER), or sign in once in the app")
+    }
+
+    /// The server's library saved on this computer.
+    fn catalog(&self) -> anyhow::Result<catalog::Catalog> {
+        let url = client::server_url(&self.address()?)?;
+        Ok(catalog::Catalog::open_server(&url)?)
+    }
+
     fn client(self) -> anyhow::Result<client::Client> {
-        let profile = config::Store::user()
-            .ok()
-            .and_then(|store| store.last_profile().ok().flatten());
-        let address = self
-            .server
-            .or_else(|| profile.as_ref().map(|profile| profile.server().to_owned()))
-            .context("pass --server (or set HIPHILE_SERVER), or sign in once in the app")?;
+        let profile = last_profile();
+        let address = self.address()?;
         let credentials = match self.api_key {
             Some(key) => Credentials::api_key(key),
             None => {
@@ -114,6 +142,12 @@ fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::Ping(args) => ping(args),
         Command::Devices => devices(),
+        Command::Sync(args) => sync(args),
+        Command::Albums {
+            server,
+            refresh,
+            offline,
+        } => albums(server, refresh, offline),
         Command::Search {
             server,
             query,
@@ -156,6 +190,63 @@ fn devices() -> anyhow::Result<()> {
             .map(|rate| format!("{rate} Hz"))
             .unwrap_or_else(|| "unknown rate".to_owned());
         println!("{marker} {} ({rate})", device.name());
+    }
+    Ok(())
+}
+
+fn sync(args: ServerArgs) -> anyhow::Result<()> {
+    let catalog = args.catalog()?;
+    let client = args.client()?;
+    let albums = block_on(catalog::sync_albums(
+        &catalog,
+        &client,
+        catalog::Mode::Always,
+    ))?;
+    report("albums", albums)?;
+    let songs = block_on(catalog::sync_songs(
+        &catalog,
+        &client,
+        catalog::Mode::Always,
+    ))?;
+    report("songs", songs)?;
+    println!("saved in {}", catalog.dir().display());
+    Ok(())
+}
+
+fn report(items: &str, outcome: catalog::Outcome) -> anyhow::Result<()> {
+    match outcome {
+        catalog::Outcome::Synced { count } => println!("{count} {items}"),
+        catalog::Outcome::Unsettled { count } => println!(
+            "{count} {items}; the server was scanning, so {items} it removed are kept until the next sync"
+        ),
+        catalog::Outcome::UpToDate => println!("{items} are up to date"),
+        catalog::Outcome::Busy => {
+            anyhow::bail!("another hiphile is updating this library; try again when it is done")
+        }
+    }
+    Ok(())
+}
+
+fn albums(args: ServerArgs, refresh: bool, offline: bool) -> anyhow::Result<()> {
+    let catalog = args.catalog()?;
+    if !offline {
+        let mode = if refresh {
+            catalog::Mode::Always
+        } else {
+            catalog::Mode::IfStale
+        };
+        let client = args.client()?;
+        // Another process updating the copy leaves it as it is for now.
+        block_on(catalog::sync_albums(&catalog, &client, mode))?;
+    }
+    for album in catalog.albums()? {
+        let details = match (album.artist(), album.year()) {
+            (Some(artist), Some(year)) => format!("{artist} - {} ({year})", album.name()),
+            (Some(artist), None) => format!("{artist} - {}", album.name()),
+            (None, Some(year)) => format!("{} ({year})", album.name()),
+            (None, None) => album.name().to_owned(),
+        };
+        println!("{}\t{details}", album.id());
     }
     Ok(())
 }

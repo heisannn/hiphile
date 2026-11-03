@@ -40,6 +40,17 @@ impl Endpoint {
             .param("offset", offset.to_string())
     }
 
+    /// The artist index, sent only if it changed after `since` (milliseconds
+    /// since the Unix epoch). Either way the response says when the library
+    /// last changed.
+    pub fn indexes_modified_since(since: u64) -> Self {
+        Self::new("getIndexes").param("ifModifiedSince", since.to_string())
+    }
+
+    pub fn scan_status() -> Self {
+        Self::new("getScanStatus")
+    }
+
     pub fn album(album: &crate::AlbumId) -> Self {
         Self::new("getAlbum").param("id", album.as_str())
     }
@@ -62,6 +73,17 @@ impl Endpoint {
         Self::new("search3")
             .param("query", query)
             .param("songCount", count.to_string())
+            .param("albumCount", "0")
+            .param("artistCount", "0")
+    }
+
+    /// One page of every song: OpenSubsonic servers return the whole library
+    /// for an empty query, for clients that keep a copy of it.
+    pub fn all_songs(count: u32, offset: u32) -> Self {
+        Self::new("search3")
+            .param("query", "")
+            .param("songCount", count.to_string())
+            .param("songOffset", offset.to_string())
             .param("albumCount", "0")
             .param("artistCount", "0")
     }

@@ -39,6 +39,17 @@ file: signing in saves the password to the system keychain (Keychain on macOS,
 Credential Manager on Windows, the Secret Service elsewhere), the next launch
 signs in with it, and signing out deletes it.
 
+## Library cache
+
+Each server's albums and songs are kept in a SQLite database in the system
+cache directory (`~/Library/Caches/hiphile/servers/` on macOS), shared by the
+app and the CLI and kept after signing out. The app shows it at once and
+updates it in the background when the server reports a change or the copy is
+a day old; Library > Refresh Library fetches everything again. A sync removes
+what the server no longer has only after it completes, and not while the
+server is scanning. The cache holds no credentials, and a version of it the
+app cannot read is emptied and filled again.
+
 ## CLI
 
 The CLI uses the app's last sign-in by default: its server, its user, and the
@@ -50,6 +61,9 @@ cargo run -p hiphile-cli -- ping --server https://music.example.com --username a
 # The password is read from --password, HIPHILE_PASSWORD, or the keychain;
 # --api-key or HIPHILE_API_KEY also works.
 cargo run -p hiphile-cli -- devices
+cargo run -p hiphile-cli -- sync                 # fetch every album and song into the cache
+cargo run -p hiphile-cli -- albums               # list cached albums, updating them when stale
+cargo run -p hiphile-cli -- albums --offline     # list them without contacting the server
 cargo run -p hiphile-cli -- search "blue in green"   # prints song IDs
 cargo run -p hiphile-cli -- play <SONG_ID>...
 cargo run -p hiphile-cli -- play --search "kind of blue"

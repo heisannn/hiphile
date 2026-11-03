@@ -22,14 +22,22 @@ pub fn init(net: net::Client, cx: &mut App) {
 pub struct Session {
     client: client::Client,
     server: ServerInfo,
+    catalog: Option<catalog::Catalog>,
     cover_urls: Arc<Mutex<HashMap<(CoverArtId, u32), SharedString>>>,
 }
 
 impl Session {
-    pub fn new(client: client::Client, server: ServerInfo) -> Self {
+    /// `catalog` is the server's cached library; without one, views load
+    /// everything from the server.
+    pub fn new(
+        client: client::Client,
+        server: ServerInfo,
+        catalog: Option<catalog::Catalog>,
+    ) -> Self {
         Self {
             client,
             server,
+            catalog,
             cover_urls: Arc::default(),
         }
     }
@@ -54,6 +62,10 @@ impl Session {
         &self.client
     }
 
+    pub fn catalog(&self) -> Option<&catalog::Catalog> {
+        self.catalog.as_ref()
+    }
+
     pub fn server(&self) -> &ServerInfo {
         &self.server
     }
@@ -65,6 +77,22 @@ impl Session {
             .base_url()
             .host_str()
             .unwrap_or_default()
+    }
+}
+
+/// What went wrong updating the cached library, as [`describe`] does for
+/// the server.
+pub fn describe_catalog(error: &catalog::Error) -> String {
+    if let Some(error) = error.server_error() {
+        describe(error)
+    } else if error.is_busy() {
+        "Another hiphile is updating the saved library. Try again in a moment.".to_owned()
+    } else if error.is_unreadable() {
+        "The library saved on this computer can't be read. Choose Refresh Library to fetch it again."
+            .to_owned()
+    } else {
+        "The library couldn't be saved on this computer. Check that the disk has free space, then try again."
+            .to_owned()
     }
 }
 

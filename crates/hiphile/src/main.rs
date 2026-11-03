@@ -67,6 +67,7 @@ fn install_app_commands(cx: &mut App) {
             MenuItem::separator(),
             MenuItem::action("Quit hiphile", Quit),
         ]),
+        Menu::new("Library").items([MenuItem::action("Refresh Library", library::Refresh)]),
         Menu::new("Controls").items([
             MenuItem::action("Play/Pause", TogglePlayback),
             MenuItem::action("Next", NextSong),

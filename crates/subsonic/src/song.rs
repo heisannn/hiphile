@@ -1,11 +1,14 @@
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{AlbumId, ArtistId, CoverArtId, SongId};
 
 /// A song (`Child` with `isDir: false`).
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+///
+/// Serializes to the server's own JSON form, so a stored copy reads back
+/// like a response.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Song {
     id: SongId,

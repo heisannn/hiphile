@@ -86,6 +86,73 @@ impl GetAlbumList2 {
     }
 }
 
+/// Payload of `getIndexes`; only when the library last changed is read.
+#[derive(Debug, Deserialize)]
+pub struct GetIndexes {
+    #[serde(default)]
+    indexes: Indexes,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Indexes {
+    last_modified: Option<u64>,
+}
+
+impl GetIndexes {
+    /// When the library last changed, in milliseconds since the Unix epoch.
+    /// Navidrome reports its last scan.
+    pub fn last_modified(&self) -> Option<u64> {
+        self.indexes.last_modified
+    }
+}
+
+/// Payload of `getScanStatus`.
+#[derive(Debug, Deserialize)]
+pub struct GetScanStatus {
+    #[serde(rename = "scanStatus")]
+    status: ScanStatus,
+}
+
+impl GetScanStatus {
+    pub fn into_status(self) -> ScanStatus {
+        self.status
+    }
+}
+
+/// Whether the server is scanning its media, how many items it counted, and
+/// when its last scan ran.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanStatus {
+    scanning: bool,
+    count: Option<u64>,
+    last_scan: Option<String>,
+}
+
+impl ScanStatus {
+    pub fn new(scanning: bool, count: Option<u64>, last_scan: Option<String>) -> Self {
+        Self {
+            scanning,
+            count,
+            last_scan,
+        }
+    }
+
+    pub fn is_scanning(&self) -> bool {
+        self.scanning
+    }
+
+    pub fn count(&self) -> Option<u64> {
+        self.count
+    }
+
+    /// When the last scan ran, as the server writes it. Navidrome only.
+    pub fn last_scan(&self) -> Option<&str> {
+        self.last_scan.as_deref()
+    }
+}
+
 /// Payload of `getAlbum`.
 #[derive(Debug, Deserialize)]
 pub struct GetAlbum {
@@ -289,6 +356,43 @@ mod tests {
         assert_eq!(album.album().id().as_str(), "a1");
         assert_eq!(album.songs().len(), 2);
         assert_eq!(album.songs()[1].track(), Some(2));
+    }
+
+    #[test]
+    fn parses_indexes_last_modified_without_artists() {
+        let body = br#"{"subsonic-response":{"status":"ok","version":"1.16.1","indexes":{"lastModified":1730000000000,"ignoredArticles":"The"}}}"#;
+        let indexes = parse::<GetIndexes>(body).unwrap().into_payload();
+        assert_eq!(indexes.last_modified(), Some(1_730_000_000_000));
+    }
+
+    #[test]
+    fn parses_scan_status() {
+        let body = br#"{"subsonic-response":{"status":"ok","version":"1.16.1","scanStatus":{"scanning":false,"count":1234,"lastScan":"2026-11-01T10:00:00Z"}}}"#;
+        let status = parse::<GetScanStatus>(body)
+            .unwrap()
+            .into_payload()
+            .into_status();
+        assert_eq!(
+            status,
+            ScanStatus::new(false, Some(1234), Some("2026-11-01T10:00:00Z".to_owned()))
+        );
+    }
+
+    #[test]
+    fn stored_album_and_song_read_back() {
+        let album: Album = serde_json::from_str(
+            r#"{"id":"a1","name":"Kind of Blue","artist":"Miles Davis","year":1959}"#,
+        )
+        .unwrap();
+        let again: Album = serde_json::from_str(&serde_json::to_string(&album).unwrap()).unwrap();
+        assert_eq!(again.name(), "Kind of Blue");
+        assert_eq!(again.year(), Some(1959));
+
+        let song: Song =
+            serde_json::from_str(r#"{"id":"s1","isDir":false,"title":"So What","track":1}"#)
+                .unwrap();
+        let again: Song = serde_json::from_str(&serde_json::to_string(&song).unwrap()).unwrap();
+        assert_eq!(again, song);
     }
 
     #[test]

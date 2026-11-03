@@ -6,6 +6,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+catalog.workspace = true
 client.workspace = true
 config.workspace = true
 gpui-kit.workspace = true

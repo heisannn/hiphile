@@ -1,0 +1,635 @@
+use std::fs::{self, File, TryLockError};
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use md5::{Digest, Md5};
+use rusqlite::{
+    Connection, ErrorCode, OptionalExtension as _, Transaction, TransactionBehavior, params,
+};
+use subsonic::{Album, AlbumId, AlbumWithSongs, Song};
+use url::Url;
+
+use crate::Error;
+
+/// Bump when the tables or the stored JSON change meaning. A database with
+/// another version is emptied, and the next sync fills it again.
+const SCHEMA_VERSION: i32 = 1;
+const DATABASE: &str = "catalog.sqlite";
+const SYNC_LOCK: &str = "sync.lock";
+/// How long a write by another connection, such as the CLI's, may hold up
+/// this one.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// `json` holds the item as the server sent it; the other columns repeat
+/// what is sorted or looked up by. `generation` is the sync that last saw
+/// the row: a sync that completes removes the rows it did not see.
+const SCHEMA: &str = "
+CREATE TABLE meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+) WITHOUT ROWID;
+
+CREATE TABLE albums (
+    id           TEXT PRIMARY KEY,
+    -- Position in the server's name order, which ignores articles and
+    -- follows sort names, so it cannot be redone locally.
+    ord          INTEGER NOT NULL,
+    name         TEXT NOT NULL,
+    artist       TEXT,
+    json         TEXT NOT NULL,
+    generation   INTEGER NOT NULL,
+    -- Whether the songs table holds this album's songs.
+    songs_cached INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX albums_by_ord ON albums (ord);
+
+CREATE TABLE songs (
+    id         TEXT PRIMARY KEY,
+    album_id   TEXT,
+    disc       INTEGER,
+    track      INTEGER,
+    title      TEXT NOT NULL,
+    artist     TEXT,
+    json       TEXT NOT NULL,
+    generation INTEGER NOT NULL
+);
+CREATE INDEX songs_by_album ON songs (album_id, disc, track);
+";
+
+/// A collection that is synced as a whole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Albums,
+    Songs,
+}
+
+impl Kind {
+    fn table(self) -> &'static str {
+        match self {
+            Self::Albums => "albums",
+            Self::Songs => "songs",
+        }
+    }
+
+    fn meta_key(self, name: &str) -> String {
+        format!("{}.{name}", self.table())
+    }
+}
+
+/// One server's library on disk. Cheap to clone; clones share one
+/// connection.
+///
+/// Every method blocks on the disk: call them from a thread that may block,
+/// never from a UI executor.
+#[derive(Clone)]
+pub struct Catalog {
+    inner: Arc<Inner>,
+}
+
+struct Inner {
+    dir: PathBuf,
+    connection: Mutex<Connection>,
+}
+
+/// Held while a sync runs, by whichever process runs it.
+pub(crate) struct SyncLock {
+    _file: File,
+}
+
+impl Catalog {
+    /// The library of the server at `server`, in the system cache directory
+    /// (`~/Library/Caches/hiphile` on macOS). Created if there is none.
+    pub fn open_server(server: &Url) -> Result<Self, Error> {
+        let cache = dirs::cache_dir().ok_or(Error::NoCacheDir)?;
+        Self::open(
+            cache
+                .join("hiphile")
+                .join("servers")
+                .join(directory_name(server)),
+        )
+    }
+
+    /// The library kept in `dir`. Created if there is none.
+    pub fn open(dir: impl AsRef<Path>) -> Result<Self, Error> {
+        Self::open_with(dir.as_ref(), BUSY_TIMEOUT)
+    }
+
+    fn open_with(dir: &Path, busy_timeout: Duration) -> Result<Self, Error> {
+        let dir = dir.to_owned();
+        fs::create_dir_all(&dir).map_err(|source| Error::Io {
+            path: dir.clone(),
+            source,
+        })?;
+        let path = dir.join(DATABASE);
+        let connection = match connect(&path, busy_timeout) {
+            Ok(connection) => connection,
+            // A file SQLite cannot read holds nothing worth keeping. Any
+            // other failure, such as another process holding a write, leaves
+            // the files alone: removing a database in use corrupts it.
+            Err(error) if is_damaged(&error) => {
+                remove_database(&path)?;
+                connect(&path, busy_timeout)?
+            }
+            Err(error) => return Err(error),
+        };
+        Ok(Self {
+            inner: Arc::new(Inner {
+                dir,
+                connection: Mutex::new(connection),
+            }),
+        })
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.inner.dir
+    }
+
+    /// Every album, in the server's name order.
+    pub fn albums(&self) -> Result<Vec<Album>, Error> {
+        let connection = self.connection();
+        let mut statement =
+            connection.prepare_cached("SELECT json FROM albums ORDER BY ord, id")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|json| Ok(serde_json::from_str(&json?)?)).collect()
+    }
+
+    /// The album with its songs, or `None` when its songs have not been
+    /// fetched yet.
+    pub fn album(&self, id: &AlbumId) -> Result<Option<AlbumWithSongs>, Error> {
+        let connection = self.connection();
+        let album = connection
+            .prepare_cached("SELECT json FROM albums WHERE id = ?1 AND songs_cached")?
+            .query_row([id.as_str()], |row| row.get::<_, String>(0))
+            .optional()?;
+        let Some(album) = album else {
+            return Ok(None);
+        };
+        let album: Album = serde_json::from_str(&album)?;
+        let mut statement = connection.prepare_cached(
+            "SELECT json FROM songs WHERE album_id = ?1
+             ORDER BY disc IS NULL, disc, track IS NULL, track, title, id",
+        )?;
+        let songs = statement
+            .query_map([id.as_str()], |row| row.get::<_, String>(0))?
+            .map(|json| Ok(serde_json::from_str(&json?)?))
+            .collect::<Result<Vec<Song>, Error>>()?;
+        Ok(Some(AlbumWithSongs::new(album, songs)))
+    }
+
+    /// Every song, in no particular order.
+    pub fn songs(&self) -> Result<Vec<Song>, Error> {
+        let connection = self.connection();
+        let mut statement = connection.prepare_cached("SELECT json FROM songs")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|json| Ok(serde_json::from_str(&json?)?)).collect()
+    }
+
+    pub fn album_count(&self) -> Result<usize, Error> {
+        self.count(Kind::Albums)
+    }
+
+    pub fn song_count(&self) -> Result<usize, Error> {
+        self.count(Kind::Songs)
+    }
+
+    /// When the collection was last synced completely.
+    pub fn albums_synced_at(&self) -> Result<Option<SystemTime>, Error> {
+        self.synced_at(Kind::Albums)
+    }
+
+    pub fn songs_synced_at(&self) -> Result<Option<SystemTime>, Error> {
+        self.synced_at(Kind::Songs)
+    }
+
+    /// Keeps an album fetched on its own, replacing the songs kept for it.
+    /// An album the catalog does not list is ignored: the next album sync
+    /// decides whether it exists.
+    pub fn put_album(&self, album: &AlbumWithSongs) -> Result<(), Error> {
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        let id = album.album().id();
+        let updated = transaction.execute(
+            "UPDATE albums SET name = ?2, artist = ?3, json = ?4, songs_cached = 1 WHERE id = ?1",
+            params![
+                id.as_str(),
+                album.album().name(),
+                album.album().artist(),
+                serde_json::to_string(album.album())?,
+            ],
+        )?;
+        if updated == 0 {
+            return Ok(());
+        }
+        // The generation a running song sync writes, so it keeps these.
+        let generation = generation(&transaction, Kind::Songs)?;
+        transaction.execute("DELETE FROM songs WHERE album_id = ?1", [id.as_str()])?;
+        insert_songs(&transaction, generation, album.songs(), Some(id))?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// `None` while another sync of this library holds the lock.
+    pub(crate) fn try_lock_sync(&self) -> Result<Option<SyncLock>, Error> {
+        let path = self.inner.dir.join(SYNC_LOCK);
+        let io_error = |source| Error::Io {
+            path: path.clone(),
+            source,
+        };
+        let file = File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(io_error)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(SyncLock { _file: file })),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Error(source)) => Err(io_error(source)),
+        }
+    }
+
+    /// Whether `kind` needs a sync: it never completed one, one started
+    /// since did not complete, the server's library changed since
+    /// (`modified`, when the server says), or the last one is older than
+    /// `max_age`.
+    pub(crate) fn is_stale(
+        &self,
+        kind: Kind,
+        modified: Option<u64>,
+        now: SystemTime,
+        max_age: Duration,
+    ) -> Result<bool, Error> {
+        let Some(synced_at) = self.synced_at(kind)? else {
+            return Ok(true);
+        };
+        if get_meta(&self.connection(), &kind.meta_key("unfinished"))?.is_some() {
+            return Ok(true);
+        }
+        if let Some(modified) = modified {
+            let seen = get_meta(&self.connection(), &kind.meta_key("modified"))?;
+            if seen != Some(modified.to_string()) {
+                return Ok(true);
+            }
+        }
+        // A clock set back since counts as stale.
+        Ok(match now.duration_since(synced_at) {
+            Ok(age) => age >= max_age,
+            Err(_) => true,
+        })
+    }
+
+    /// Starts a sync of `kind` and returns the generation it writes. The
+    /// copy counts as stale until [`Self::finish`]: a sync that fails or
+    /// does not settle may have missed items.
+    pub(crate) fn begin(&self, kind: Kind) -> Result<i64, Error> {
+        let mut connection = self.connection();
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let next = generation(&transaction, kind)? + 1;
+        set_meta(
+            &transaction,
+            &kind.meta_key("generation"),
+            &next.to_string(),
+        )?;
+        set_meta(&transaction, &kind.meta_key("unfinished"), "1")?;
+        transaction.commit()?;
+        Ok(next)
+    }
+
+    /// Keeps a page of albums that starts at `offset` in the name order.
+    pub(crate) fn store_albums(
+        &self,
+        generation: i64,
+        offset: u32,
+        albums: &[Album],
+    ) -> Result<(), Error> {
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        {
+            let mut statement = transaction.prepare_cached(
+                "INSERT INTO albums (id, ord, name, artist, json, generation)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT (id) DO UPDATE SET
+                     ord = excluded.ord, name = excluded.name, artist = excluded.artist,
+                     json = excluded.json, generation = excluded.generation",
+            )?;
+            for (album, ord) in albums.iter().zip(i64::from(offset)..) {
+                statement.execute(params![
+                    album.id().as_str(),
+                    ord,
+                    album.name(),
+                    album.artist(),
+                    serde_json::to_string(album)?,
+                    generation,
+                ])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn store_songs(&self, generation: i64, songs: &[Song]) -> Result<(), Error> {
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        insert_songs(&transaction, generation, songs, None)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Completes a sync of `kind`: removes what it did not see and records
+    /// when it ran.
+    pub(crate) fn finish(
+        &self,
+        kind: Kind,
+        generation: i64,
+        modified: Option<u64>,
+        started: SystemTime,
+    ) -> Result<(), Error> {
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            &format!("DELETE FROM {} WHERE generation < ?1", kind.table()),
+            [generation],
+        )?;
+        transaction.execute(
+            "DELETE FROM meta WHERE key = ?1",
+            [kind.meta_key("unfinished")],
+        )?;
+        if kind == Kind::Songs {
+            transaction.execute(
+                "UPDATE albums SET songs_cached =
+                     EXISTS (SELECT 1 FROM songs WHERE songs.album_id = albums.id)",
+                [],
+            )?;
+        }
+        let seconds = started
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        set_meta(
+            &transaction,
+            &kind.meta_key("synced_at"),
+            &seconds.to_string(),
+        )?;
+        match modified {
+            Some(modified) => set_meta(
+                &transaction,
+                &kind.meta_key("modified"),
+                &modified.to_string(),
+            )?,
+            None => {
+                transaction.execute(
+                    "DELETE FROM meta WHERE key = ?1",
+                    [kind.meta_key("modified")],
+                )?;
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    fn count(&self, kind: Kind) -> Result<usize, Error> {
+        let count: i64 = self.connection().query_row(
+            &format!("SELECT count(*) FROM {}", kind.table()),
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(usize::try_from(count).unwrap_or_default())
+    }
+
+    fn synced_at(&self, kind: Kind) -> Result<Option<SystemTime>, Error> {
+        let value = get_meta(&self.connection(), &kind.meta_key("synced_at"))?;
+        Ok(value
+            .and_then(|value| value.parse().ok())
+            .map(|seconds| UNIX_EPOCH + Duration::from_secs(seconds)))
+    }
+
+    fn connection(&self) -> MutexGuard<'_, Connection> {
+        self.inner
+            .connection
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn execute(&self, sql: &str) {
+        self.connection().execute_batch(sql).unwrap();
+    }
+}
+
+/// `host-hash`: readable, and different for servers on one host under
+/// different paths or ports.
+fn directory_name(server: &Url) -> String {
+    let address = server.as_str().trim_end_matches('/');
+    let digest = hex::encode(Md5::digest(address.as_bytes()));
+    let host: String = server
+        .host_str()
+        .unwrap_or("server")
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{host}-{}", &digest[..12])
+}
+
+/// Whether `error` says the file is not a database SQLite can read.
+pub(crate) fn is_damaged(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Database(rusqlite::Error::SqliteFailure(failure, _))
+            if matches!(failure.code, ErrorCode::NotADatabase | ErrorCode::DatabaseCorrupt)
+    )
+}
+
+/// Whether `error` is another connection holding the database too long.
+pub(crate) fn is_busy(error: &Error) -> bool {
+    matches!(
+        error,
+        Error::Database(rusqlite::Error::SqliteFailure(failure, _))
+            if matches!(failure.code, ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+    )
+}
+
+fn connect(path: &Path, busy_timeout: Duration) -> Result<Connection, Error> {
+    let mut connection = Connection::open(path)?;
+    connection.busy_timeout(busy_timeout)?;
+    // Readers never wait for a sync's writes, and the GUI and the CLI can
+    // share the file.
+    connection
+        .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0))?;
+    if schema_version(&connection)? != SCHEMA_VERSION {
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // Another process may have just done this.
+        if schema_version(&transaction)? != SCHEMA_VERSION {
+            let tables = transaction
+                .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")?
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            for table in tables {
+                transaction.execute_batch(&format!("DROP TABLE \"{table}\""))?;
+            }
+            transaction.execute_batch(SCHEMA)?;
+            transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        }
+        transaction.commit()?;
+    }
+    Ok(connection)
+}
+
+fn schema_version(connection: &Connection) -> Result<i32, Error> {
+    Ok(connection.pragma_query_value(None, "user_version", |row| row.get(0))?)
+}
+
+fn remove_database(path: &Path) -> Result<(), Error> {
+    for suffix in ["", "-wal", "-shm"] {
+        let mut file = path.as_os_str().to_owned();
+        file.push(suffix);
+        let file = PathBuf::from(file);
+        match fs::remove_file(&file) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(source) => return Err(Error::Io { path: file, source }),
+        }
+    }
+    Ok(())
+}
+
+fn generation(connection: &Connection, kind: Kind) -> Result<i64, Error> {
+    Ok(get_meta(connection, &kind.meta_key("generation"))?
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0))
+}
+
+fn get_meta(connection: &Connection, key: &str) -> Result<Option<String>, Error> {
+    Ok(connection
+        .prepare_cached("SELECT value FROM meta WHERE key = ?1")?
+        .query_row([key], |row| row.get(0))
+        .optional()?)
+}
+
+fn set_meta(connection: &Connection, key: &str, value: &str) -> Result<(), Error> {
+    connection
+        .prepare_cached(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        )?
+        .execute([key, value])?;
+    Ok(())
+}
+
+/// Keeps `songs`; `album`, when given, is the album they were fetched as.
+fn insert_songs(
+    transaction: &Transaction<'_>,
+    generation: i64,
+    songs: &[Song],
+    album: Option<&AlbumId>,
+) -> Result<(), Error> {
+    let mut statement = transaction.prepare_cached(
+        "INSERT INTO songs (id, album_id, disc, track, title, artist, json, generation)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT (id) DO UPDATE SET
+             album_id = excluded.album_id, disc = excluded.disc, track = excluded.track,
+             title = excluded.title, artist = excluded.artist, json = excluded.json,
+             generation = excluded.generation",
+    )?;
+    for song in songs {
+        statement.execute(params![
+            song.id().as_str(),
+            album.or(song.album_id()).map(AlbumId::as_str),
+            song.disc_number(),
+            song.track(),
+            song.title(),
+            song.artist(),
+            serde_json::to_string(song)?,
+            generation,
+        ])?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn directory_names_tell_servers_apart_and_ignore_a_trailing_slash() {
+        let name = |address| directory_name(&Url::parse(address).unwrap());
+        assert_eq!(
+            name("https://music.example.com"),
+            name("https://music.example.com/")
+        );
+        assert_ne!(
+            name("https://example.com/navidrome"),
+            name("https://example.com/other")
+        );
+        assert_ne!(
+            name("https://music.example.com"),
+            name("https://music.example.com:4533")
+        );
+        assert!(name("https://music.example.com").starts_with("music.example.com-"));
+        assert!(name("http://[::1]:4533").starts_with("___1_-"));
+    }
+
+    #[test]
+    fn another_schema_version_is_emptied() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(dir.path()).unwrap();
+        catalog.execute(
+            "INSERT INTO albums (id, ord, name, json, generation)
+             VALUES ('a1', 0, 'A', '{\"id\":\"a1\",\"name\":\"A\"}', 1);
+             PRAGMA user_version = 99;",
+        );
+        drop(catalog);
+        let catalog = Catalog::open(dir.path()).unwrap();
+        assert_eq!(catalog.album_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn an_unreadable_database_is_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join(DATABASE),
+            b"not a database, just some bytes",
+        )
+        .unwrap();
+        let catalog = Catalog::open(dir.path()).unwrap();
+        assert_eq!(catalog.album_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_database_another_process_holds_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(dir.path()).unwrap();
+        // Another version holds a write, so opening must wait to reset it.
+        catalog.execute(
+            "INSERT INTO albums (id, ord, name, json, generation)
+             VALUES ('a1', 0, 'A', '{\"id\":\"a1\",\"name\":\"A\"}', 1);
+             PRAGMA user_version = 99;
+             BEGIN IMMEDIATE;",
+        );
+        let error = Catalog::open_with(dir.path(), Duration::from_millis(50))
+            .err()
+            .unwrap();
+        assert!(is_busy(&error), "{error}");
+        catalog.execute("COMMIT;");
+        assert_eq!(catalog.album_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn only_one_sync_holds_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(dir.path()).unwrap();
+        let other = Catalog::open(dir.path()).unwrap();
+        let lock = catalog.try_lock_sync().unwrap();
+        assert!(lock.is_some());
+        assert!(other.try_lock_sync().unwrap().is_none());
+        drop(lock);
+        assert!(other.try_lock_sync().unwrap().is_some());
+    }
+}
