@@ -2,7 +2,7 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use actions::{EnqueueSongs, Placement, PlaySongs, ShowAlbum};
+use actions::{AlbumAction, EnqueueSongs, Placement, PlaySongs, ShowAlbum};
 use futures::future::join_all;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
@@ -144,16 +144,6 @@ enum Part {
     NewAlbumsStatus,
     /// The albums at these positions on this shelf.
     AlbumRow(AlbumShelf, Range<usize>),
-}
-
-/// What to do with an album's songs once they have been fetched.
-#[derive(Clone)]
-enum AlbumAction {
-    Play,
-    Enqueue(Placement),
-    /// Add them to this playlist, or to a new one for `None`.
-    AddToPlaylist(Option<PlaylistId>),
-    ChoosePlaylist,
 }
 
 impl Home {
@@ -667,45 +657,16 @@ impl Home {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let client = self.session.client().clone();
-        let catalog = self.session.catalog().cloned();
+        let session = self.session.clone();
         self._album_task = cx.spawn_in(window, async move |_, cx| {
-            let saved = match catalog {
-                Some(catalog) => {
-                    let id = album.clone();
-                    cx.background_spawn(async move { catalog.album(&id) })
-                        .await
-                        .ok()
-                        .flatten()
-                }
-                None => None,
-            };
-            let loaded = match saved {
-                Some(saved) => Ok(saved),
-                None => {
-                    cx.background_spawn(async move { client.album(&album).await })
-                        .await
-                }
-            };
+            let loaded = cx
+                .background_spawn(async move { session.album(&album).await })
+                .await;
             cx.update(|window, cx| match loaded {
                 Ok(loaded) => {
-                    let songs: Arc<[Song]> = loaded.into_parts().1.into();
-                    if songs.is_empty() {
-                        return;
+                    if let Some(command) = action.command(loaded.into_parts().1.into()) {
+                        window.dispatch_action(command, cx);
                     }
-                    let command: Box<dyn gpui_kit::Action> = match action {
-                        AlbumAction::Play => Box::new(PlaySongs::new(songs, 0)),
-                        AlbumAction::Enqueue(placement) => {
-                            Box::new(EnqueueSongs::new(songs, placement))
-                        }
-                        AlbumAction::AddToPlaylist(playlist) => {
-                            actions::add_songs_command(songs)(playlist.as_ref())
-                        }
-                        AlbumAction::ChoosePlaylist => {
-                            Box::new(actions::ChoosePlaylist::new(songs))
-                        }
-                    };
-                    window.dispatch_action(command, cx);
                 }
                 Err(error) => {
                     let message =

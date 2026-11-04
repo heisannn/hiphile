@@ -1,15 +1,17 @@
 use std::sync::Arc;
 
-use actions::{EnqueueSongs, Placement, PlaySongs};
+use actions::{AlbumAction, EnqueueSongs, Placement, PlaySongs};
 use catalog::{Mode, Outcome};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, Selectable as _, Sizable as _, StyledExt as _,
+    WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
     list::ListItem,
     menu::{ContextMenuExt as _, DropdownMenu as _},
+    notification::NotificationType,
     resizable::{ResizableState, h_resizable, resizable_panel},
     scroll::Scrollbar,
     spinner::Spinner,
@@ -21,7 +23,7 @@ use gpui_kit::{
     ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
     UniformListScrollHandle, WeakEntity, Window, div, prelude::FluentBuilder as _, uniform_list,
 };
-use subsonic::{Album, AlbumId, AlbumWithSongs, Song, SongId};
+use subsonic::{Album, AlbumId, AlbumWithSongs, PlaylistId, Song, SongId};
 use ui::list_navigation::{
     Motion, SelectFirst, SelectLast, SelectNext, SelectPageDown, SelectPageUp, SelectPrevious,
     page_rows,
@@ -30,8 +32,8 @@ use ui::{CoverArt, format_duration};
 
 use crate::filter::matching_albums;
 use crate::{
-    ALBUMS_CONTEXT, AddToPlaylist, AddToQueue, Back, FocusFilter, LIBRARY_CONTEXT, Open, PlayNext,
-    Refresh, SONGS_CONTEXT,
+    ALBUMS_CONTEXT, AddAlbumToPlaylist, AddToPlaylist, AddToQueue, Back, FocusFilter,
+    LIBRARY_CONTEXT, Open, Play, PlayNext, Refresh, SONGS_CONTEXT,
 };
 
 /// Pixel size requested for the detail cover: twice its on-screen size, for
@@ -71,6 +73,7 @@ pub struct Library {
     panes: Entity<ResizableState>,
     _albums_task: Task<()>,
     _album_task: Task<()>,
+    _album_action_task: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -150,6 +153,7 @@ impl Library {
             panes: cx.new(|_| ResizableState::default()),
             _albums_task: Task::ready(()),
             _album_task: Task::ready(()),
+            _album_action_task: Task::ready(()),
             _subscriptions: subscriptions,
         };
         this.sync_library(Mode::IfStale, cx);
@@ -446,11 +450,39 @@ impl Library {
         }
     }
 
-    /// Queues the whole of the album on show.
-    fn enqueue_album(&self, placement: Placement, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(songs) = self.loaded_songs().filter(|songs| !songs.is_empty()) {
-            window.dispatch_action(Box::new(EnqueueSongs::new(songs.clone(), placement)), cx);
+    /// Does `action` to the whole of the selected album, once its songs are
+    /// there if they are still loading. Replaces an action still waiting for
+    /// its songs: the latest one counts.
+    fn act_on_album(&mut self, action: AlbumAction, window: &mut Window, cx: &mut Context<Self>) {
+        self._album_action_task = Task::ready(());
+        if let Some(songs) = self.loaded_songs() {
+            if let Some(command) = action.command(songs.clone()) {
+                window.dispatch_action(command, cx);
+            }
+            return;
         }
+        let Some(album) = self.selected_album.clone() else {
+            return;
+        };
+        let session = self.session.clone();
+        self._album_action_task = cx.spawn_in(window, async move |_, cx| {
+            let loaded = cx
+                .background_spawn(async move { session.album(&album).await })
+                .await;
+            cx.update(|window, cx| match loaded {
+                Ok(loaded) => {
+                    if let Some(command) = action.command(loaded.into_parts().1.into()) {
+                        window.dispatch_action(command, cx);
+                    }
+                }
+                Err(error) => {
+                    let message =
+                        format!("Couldn't load this album. {}", session::describe(&error));
+                    window.push_notification((NotificationType::Error, message), cx);
+                }
+            })
+            .ok();
+        });
     }
 
     fn enqueue_selected_song(
@@ -467,13 +499,6 @@ impl Library {
                 Box::new(EnqueueSongs::new(Arc::from([song]), placement)),
                 cx,
             );
-        }
-    }
-
-    /// Asks which playlist to add the whole of the album on show to.
-    fn choose_playlist_for_album(&self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(songs) = self.loaded_songs().filter(|songs| !songs.is_empty()) {
-            window.dispatch_action(Box::new(actions::ChoosePlaylist::new(songs.clone())), cx);
         }
     }
 
@@ -602,14 +627,23 @@ impl Library {
                 cx.listener(|this, _: &SelectPageUp, _, cx| this.move_album(Motion::Pages(-1), cx)),
             )
             .on_action(cx.listener(|this, _: &Open, window, cx| this.open_album(window, cx)))
+            .on_action(cx.listener(|this, _: &Play, window, cx| {
+                this.act_on_album(AlbumAction::Play, window, cx)
+            }))
             .on_action(cx.listener(|this, _: &PlayNext, window, cx| {
-                this.enqueue_album(Placement::Next, window, cx)
+                this.act_on_album(AlbumAction::Enqueue(Placement::Next), window, cx)
             }))
             .on_action(cx.listener(|this, _: &AddToQueue, window, cx| {
-                this.enqueue_album(Placement::Last, window, cx)
+                this.act_on_album(AlbumAction::Enqueue(Placement::Last), window, cx)
             }))
+            .on_action(
+                cx.listener(|this, action: &AddAlbumToPlaylist, window, cx| {
+                    let action = AlbumAction::AddToPlaylist(action.playlist.clone());
+                    this.act_on_album(action, window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &AddToPlaylist, window, cx| {
-                this.choose_playlist_for_album(window, cx)
+                this.act_on_album(AlbumAction::ChoosePlaylist, window, cx)
             }))
             .child(self.render_album_rows(window, cx))
             .into_any_element()
@@ -645,6 +679,7 @@ impl Library {
         let focused = self.albums_focus.is_focused(window);
         let muted_foreground = cx.theme().muted_foreground;
         let owner = cx.entity().downgrade();
+        let albums_focus = self.albums_focus.clone();
         div()
             .id("album-list")
             .relative()
@@ -660,7 +695,10 @@ impl Library {
                             let is_selected = selected.as_ref() == Some(&id);
                             let name = SharedString::from(album.name().to_owned());
                             let details = album_details(album);
-                            let owner = owner.clone();
+                            let on_click = owner.clone();
+                            let on_right_click = owner.clone();
+                            let click_id = id.clone();
+                            let albums_focus = albums_focus.clone();
                             Some(
                                 ListItem::new(ElementId::Name(format!("album-{id}").into()))
                                     .selected(is_selected)
@@ -683,12 +721,36 @@ impl Library {
                                             ),
                                     )
                                     .on_click(move |_, window, cx| {
-                                        owner
+                                        on_click
+                                            .update(cx, |this, cx| {
+                                                this.albums_focus.focus(window, cx);
+                                                this.select_album(click_id.clone(), cx);
+                                            })
+                                            .ok();
+                                    })
+                                    // The menu acts on the selection, so the
+                                    // row under the pointer becomes it first.
+                                    .on_mouse_down(MouseButton::Right, move |_, window, cx| {
+                                        on_right_click
                                             .update(cx, |this, cx| {
                                                 this.albums_focus.focus(window, cx);
                                                 this.select_album(id.clone(), cx);
                                             })
                                             .ok();
+                                    })
+                                    .context_menu(move |menu, window, cx| {
+                                        let menu = menu
+                                            .action_context(albums_focus.clone())
+                                            .menu("Play", Box::new(Play))
+                                            .menu("Play Next", Box::new(PlayNext))
+                                            .menu("Add to Queue", Box::new(AddToQueue))
+                                            .separator();
+                                        actions::add_to_playlist_submenu(
+                                            menu,
+                                            add_album_command,
+                                            window,
+                                            cx,
+                                        )
                                     }),
                             )
                         })
@@ -1063,6 +1125,14 @@ impl Render for Library {
     }
 }
 
+/// What a choice in an album row's Add to Playlist menu runs: the album's
+/// songs may still be loading when the menu opens.
+fn add_album_command(playlist: Option<&PlaylistId>) -> Box<dyn gpui_kit::Action> {
+    Box::new(AddAlbumToPlaylist {
+        playlist: playlist.cloned(),
+    })
+}
+
 /// Brings `this` up to date with the server, through the saved library
 /// when there is one. Errors are sentences for the user.
 async fn run_sync(
@@ -1195,6 +1265,13 @@ fn failure(
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::io::{BufRead as _, BufReader, Write as _};
+    use std::net::TcpListener;
+    use std::rc::Rc;
+    use std::time::Duration;
+
+    use actions::NewPlaylist;
     use gpui_kit::{TestAppContext, VisualTestContext};
     use serde_json::json;
     use subsonic::Credentials;
@@ -1207,11 +1284,19 @@ mod tests {
 
     /// A library with two albums, whose server cannot be reached.
     fn library(cx: &mut TestAppContext) -> (Entity<Library>, &mut VisualTestContext) {
+        library_on("http://127.0.0.1:9", cx)
+    }
+
+    /// [`library`] with its server at `url`.
+    fn library_on<'a>(
+        url: &str,
+        cx: &'a mut TestAppContext,
+    ) -> (Entity<Library>, &'a mut VisualTestContext) {
         // The failing requests wake the test from the network's own thread.
         cx.executor().allow_parking();
         cx.update(gpui_kit::init);
         let net = net::Client::new("hiphile-test").unwrap();
-        let server = client::Server::new("http://127.0.0.1:9", Credentials::api_key("k")).unwrap();
+        let server = client::Server::new(url, Credentials::api_key("k")).unwrap();
         let info = serde_json::from_value(json!({ "version": "1.16.1" })).unwrap();
         let session = session::Session::new(
             client::Client::new(net, server),
@@ -1227,6 +1312,44 @@ mod tests {
             });
         });
         (library, cx)
+    }
+
+    fn album_a_json() -> serde_json::Value {
+        json!({
+            "id": "a",
+            "name": "Alpha",
+            "song": [
+                { "id": "a1", "title": "One" },
+                { "id": "a2", "title": "Two" },
+            ],
+        })
+    }
+
+    /// Shows album `a` and its songs, with focus on the album list.
+    fn show_album_a(library: &Entity<Library>, cx: &mut VisualTestContext) {
+        cx.update(|window, cx| {
+            library.update(cx, |library, cx| {
+                let album = serde_json::from_value(album_a_json()).unwrap();
+                library.show_album(&AlbumId::new("a"), album, cx);
+                library.albums_focus.focus(window, cx);
+            });
+        });
+        cx.run_until_parked();
+    }
+
+    /// The `A`s that dispatching `command` from the focused element results in.
+    fn dispatched<A: gpui_kit::Action + Clone>(
+        command: impl gpui_kit::Action,
+        cx: &mut VisualTestContext,
+    ) -> Vec<A> {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        cx.update(|_, cx| {
+            let seen = seen.clone();
+            cx.on_action(move |action: &A, _| seen.borrow_mut().push(action.clone()));
+        });
+        cx.dispatch_action(command);
+        cx.run_until_parked();
+        seen.take()
     }
 
     fn set_filter(library: &Entity<Library>, query: &str, cx: &mut VisualTestContext) {
@@ -1357,5 +1480,130 @@ mod tests {
         cx.update(|_, cx| {
             assert_eq!(library.read(cx).selected_album, Some(AlbumId::new("a")));
         });
+    }
+
+    fn song_ids(songs: &[Song]) -> Vec<&str> {
+        songs.iter().map(|song| song.id().as_str()).collect()
+    }
+
+    #[gpui_kit::test]
+    fn play_on_an_album_plays_it_from_the_first_song(cx: &mut TestAppContext) {
+        let (library, cx) = library(cx);
+        show_album_a(&library, cx);
+
+        let plays = dispatched::<PlaySongs>(Play, cx);
+
+        assert_eq!(plays.len(), 1);
+        assert_eq!(song_ids(plays[0].songs()), ["a1", "a2"]);
+        assert_eq!(plays[0].start_ix(), 0);
+    }
+
+    #[gpui_kit::test]
+    fn an_album_goes_to_the_queue_where_asked(cx: &mut TestAppContext) {
+        let (library, cx) = library(cx);
+        show_album_a(&library, cx);
+
+        let next = dispatched::<EnqueueSongs>(PlayNext, cx);
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].placement(), Placement::Next);
+        assert_eq!(song_ids(next[0].songs()), ["a1", "a2"]);
+
+        let last = dispatched::<EnqueueSongs>(AddToQueue, cx);
+        assert_eq!(last.last().unwrap().placement(), Placement::Last);
+    }
+
+    #[gpui_kit::test]
+    fn an_album_goes_to_the_playlist_chosen_in_its_menu(cx: &mut TestAppContext) {
+        let (library, cx) = library(cx);
+        show_album_a(&library, cx);
+        let playlist = PlaylistId::new("p");
+
+        let added = dispatched::<actions::AddToPlaylist>(
+            AddAlbumToPlaylist {
+                playlist: Some(playlist.clone()),
+            },
+            cx,
+        );
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].playlist(), &playlist);
+        assert_eq!(song_ids(added[0].songs()), ["a1", "a2"]);
+
+        let created = dispatched::<NewPlaylist>(AddAlbumToPlaylist { playlist: None }, cx);
+        assert_eq!(created.len(), 1);
+        assert_eq!(song_ids(created[0].songs()), ["a1", "a2"]);
+    }
+
+    /// A server that answers every request with album `a`, returning its URL.
+    fn server_of_album_a() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut request = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                while request.read_line(&mut line).is_ok_and(|read| read > 2) {
+                    line.clear();
+                }
+                let body = json!({ "subsonic-response": {
+                    "status": "ok",
+                    "version": "1.16.1",
+                    "album": album_a_json(),
+                }})
+                .to_string();
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len(),
+                );
+                stream.write_all(head.as_bytes()).ok();
+                stream.write_all(body.as_bytes()).ok();
+            }
+        });
+        url
+    }
+
+    #[gpui_kit::test]
+    fn an_action_on_an_album_still_loading_waits_for_its_songs(cx: &mut TestAppContext) {
+        let url = server_of_album_a();
+        let (library, cx) = library_on(&url, cx);
+        let plays = Rc::new(RefCell::new(Vec::new()));
+        cx.update(|window, cx| {
+            let seen = plays.clone();
+            cx.on_action(move |action: &PlaySongs, _| seen.borrow_mut().push(action.clone()));
+            library.update(cx, |library, cx| {
+                library._album_task = Task::ready(());
+                library.detail = Detail::Loading;
+                library.albums_focus.focus(window, cx);
+            });
+        });
+
+        cx.dispatch_action(Play);
+        // The answer arrives from the network's own thread.
+        for _ in 0..500 {
+            cx.run_until_parked();
+            if !plays.borrow().is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let plays = plays.borrow();
+        assert_eq!(plays.len(), 1);
+        assert_eq!(song_ids(plays[0].songs()), ["a1", "a2"]);
+    }
+
+    #[gpui_kit::test]
+    fn an_album_without_songs_is_not_played(cx: &mut TestAppContext) {
+        let (library, cx) = library(cx);
+        cx.update(|window, cx| {
+            library.update(cx, |library, cx| {
+                let empty = serde_json::from_value(json!({ "id": "a", "name": "a" })).unwrap();
+                library.show_album(&AlbumId::new("a"), empty, cx);
+                library.albums_focus.focus(window, cx);
+            });
+        });
+
+        assert!(dispatched::<PlaySongs>(Play, cx).is_empty());
     }
 }

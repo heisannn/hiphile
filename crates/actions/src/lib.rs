@@ -128,6 +128,31 @@ pub fn add_to_playlist_submenu(
     })
 }
 
+/// What to do with an album's songs once they have been fetched.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AlbumAction {
+    Play,
+    Enqueue(Placement),
+    /// Add them to this playlist, or to a new one for `None`.
+    AddToPlaylist(Option<PlaylistId>),
+    ChoosePlaylist,
+}
+
+impl AlbumAction {
+    /// The command that does this to `songs`, unless there are none.
+    pub fn command(self, songs: Arc<[Song]>) -> Option<Box<dyn Action>> {
+        if songs.is_empty() {
+            return None;
+        }
+        Some(match self {
+            Self::Play => Box::new(PlaySongs::new(songs, 0)),
+            Self::Enqueue(placement) => Box::new(EnqueueSongs::new(songs, placement)),
+            Self::AddToPlaylist(playlist) => add_songs_command(songs)(playlist.as_ref()),
+            Self::ChoosePlaylist => Box::new(ChoosePlaylist::new(songs)),
+        })
+    }
+}
+
 /// Show `album` in the library.
 #[derive(Clone, Debug, PartialEq, Action)]
 #[action(namespace = hiphile, no_json)]

@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use gpui_kit::{App, SharedString};
-use subsonic::{CoverArtId, ServerInfo};
+use subsonic::{AlbumId, AlbumWithSongs, CoverArtId, ServerInfo};
 
 /// Installs the shared transport, which keeps cover art on disk when the
 /// system has a cache directory. Call once at startup, after
@@ -75,6 +75,18 @@ impl Session {
     /// Who signed in.
     pub fn username(&self) -> &str {
         &self.username
+    }
+
+    /// An album and its songs: the saved ones when there are any, otherwise
+    /// the server's. Blocks on the saved library, so await it off the UI thread.
+    pub async fn album(&self, id: &AlbumId) -> Result<AlbumWithSongs, client::Error> {
+        let saved = self
+            .catalog()
+            .and_then(|catalog| catalog.album(id).ok().flatten());
+        match saved {
+            Some(saved) => Ok(saved),
+            None => self.client().album(id).await,
+        }
     }
 
     pub fn catalog(&self) -> Option<&catalog::Catalog> {

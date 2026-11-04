@@ -23,6 +23,8 @@ actions!(
     [
         /// Albums: move to the album's songs. Songs: play from the selection.
         Open,
+        /// Albums: plays the selected album.
+        Play,
         /// Albums: queue the album right after the current song. Songs: the
         /// selected song.
         PlayNext,
@@ -40,12 +42,19 @@ actions!(
     ]
 );
 
+/// Adds the selected album to `playlist`, or to a new one for `None`.
+#[derive(Clone, Debug, PartialEq, gpui_kit::Action)]
+#[action(namespace = library, no_json)]
+struct AddAlbumToPlaylist {
+    playlist: Option<subsonic::PlaylistId>,
+}
+
 /// Registers key bindings. Call before building the menu bar.
 pub fn init(cx: &mut App) {
-    let (find, refresh, add_to_playlist) = if cx.platform_info().is_mac() {
-        ("cmd-f", "cmd-r", "cmd-shift-p")
+    let (find, refresh, add_to_playlist, play) = if cx.platform_info().is_mac() {
+        ("cmd-f", "cmd-r", "cmd-shift-p", "cmd-enter")
     } else {
-        ("ctrl-f", "ctrl-r", "ctrl-shift-p")
+        ("ctrl-f", "ctrl-r", "ctrl-shift-p", "ctrl-enter")
     };
     for context in [ALBUMS_CONTEXT, SONGS_CONTEXT] {
         bind_list_navigation(context, cx);
@@ -58,6 +67,7 @@ pub fn init(cx: &mut App) {
     }
     cx.bind_keys([
         KeyBinding::new("right", Open, Some(ALBUMS_CONTEXT)),
+        KeyBinding::new(play, Play, Some(ALBUMS_CONTEXT)),
         KeyBinding::new("left", Back, Some(SONGS_CONTEXT)),
         KeyBinding::new("escape", Back, Some(SONGS_CONTEXT)),
         KeyBinding::new(find, FocusFilter, Some(LIBRARY_CONTEXT)),
