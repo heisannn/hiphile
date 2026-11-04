@@ -9,6 +9,8 @@ pub mod list_navigation;
 mod load_state;
 mod master_detail;
 mod now_playing;
+mod reorder;
+mod row_list;
 mod row_text;
 mod sample_rate;
 
@@ -20,5 +22,7 @@ pub use duration::format_duration;
 pub use load_state::{LoadFailure, centered, muted_text};
 pub use master_detail::{DetailHeader, ListFilter, ListPaneHeader, MasterDetail, RefreshFailure};
 pub use now_playing::{NowPlaying, PlayState, PlayStateIcon};
+pub use reorder::ReorderExt;
+pub use row_list::row_list;
 pub use row_text::RowText;
 pub use sample_rate::format_sample_rate;

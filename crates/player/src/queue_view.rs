@@ -4,22 +4,20 @@ use gpui_kit::component::{
     h_flex,
     list::ListItem,
     menu::ContextMenuExt as _,
-    scroll::Scrollbar,
     v_flex,
 };
-use std::cmp::Ordering;
 use std::sync::Arc;
 
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, ElementId, Entity, FocusHandle,
-    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, ScrollStrategy,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
-    UniformListScrollHandle, Window, actions, div, prelude::FluentBuilder as _, uniform_list,
+    AnyElement, App, Context, ElementId, Entity, FocusHandle, InteractiveElement as _, IntoElement,
+    MouseButton, ParentElement as _, Render, RenderOnce, ScrollStrategy, SharedString, Styled as _,
+    Subscription, UniformListScrollHandle, WeakEntity, Window, actions, div,
+    prelude::FluentBuilder as _,
 };
 use playback::EntryId;
 use subsonic::Song;
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
-use ui::{DragPreview, PlayState, PlayStateIcon, RowText, format_duration};
+use ui::{PlayState, PlayStateIcon, ReorderExt as _, RowText, format_duration, row_list};
 
 use crate::{Player, SaveQueue};
 
@@ -323,168 +321,34 @@ impl QueueView {
         let current_ix = queue.current_ix();
         let playing = player.is_playing();
         let selected = self.selected;
-        let focused = self.focus.is_focused(window);
-        let muted_foreground = cx.theme().muted_foreground;
+        let is_focused = self.focus.is_focused(window);
         let focus = self.focus.clone();
         let owner = cx.entity().downgrade();
-        div()
-            .id("queue-list")
-            .relative()
-            .size_full()
-            .role(gpui_kit::Role::List)
-            .aria_label("Queue")
-            .child(
-                uniform_list("queue-rows", entries.len(), move |range, _, _| {
-                    range
-                        .filter_map(|ix| {
-                            let entry = entries.get(ix)?;
-                            let id = entry.id();
-                            let song = entry.item();
-                            let is_selected = selected == Some(id);
-                            let is_current = current_ix == Some(ix);
-                            // With nothing current, playback ran off the end.
-                            let played = current_ix.is_none_or(|current| ix < current);
-                            let title = SharedString::from(song.title().to_owned());
-                            let state = is_current.then(|| PlayState::new(playing));
-                            let label = if !is_current && played {
-                                format!("{title}, played").into()
-                            } else {
-                                PlayState::row_label(&title, state)
-                            };
-                            let owner = owner.clone();
-                            let focus = focus.clone();
-                            let title_for_drag = title.clone();
-                            let menu_song = song.clone();
-                            Some(
-                                ListItem::new(ElementId::NamedInteger(
-                                    "queue-entry".into(),
-                                    id.get(),
-                                ))
-                                .selected(is_selected)
-                                .secondary_selected(focused && is_selected)
-                                .h_12()
-                                .px_4()
-                                .w_full()
-                                .accessibility_label(label)
-                                .child(render_entry(song, title, state, played, muted_foreground))
-                                .on_click({
-                                    let owner = owner.clone();
-                                    move |event, window, cx| {
-                                        owner
-                                            .update(cx, |this, cx| {
-                                                this.focus.focus(window, cx);
-                                                this.select_entry(id, cx);
-                                                if event.click_count() >= 2 {
-                                                    this.play_selected(cx);
-                                                }
-                                            })
-                                            .ok();
-                                    }
-                                })
-                                // The menu acts on the selection, so the row
-                                // under the pointer becomes it first.
-                                .on_mouse_down(MouseButton::Right, {
-                                    let owner = owner.clone();
-                                    move |_, window, cx| {
-                                        owner
-                                            .update(cx, |this, cx| {
-                                                this.focus.focus(window, cx);
-                                                this.select_entry(id, cx);
-                                            })
-                                            .ok();
-                                    }
-                                })
-                                .on_drag(
-                                    DraggedEntry {
-                                        id,
-                                        from_ix: ix,
-                                        title: title_for_drag,
-                                    },
-                                    |dragged, offset, _, cx| {
-                                        cx.new(|_| DragPreview::new(dragged.title.clone(), offset))
-                                    },
-                                )
-                                // A line on the edge the entry would land beside.
-                                .drag_over::<DraggedEntry>(move |style, dragged, _, cx| {
-                                    let line = cx.theme().drag_border;
-                                    match dragged.from_ix.cmp(&ix) {
-                                        Ordering::Less => style.border_b_2().border_color(line),
-                                        Ordering::Greater => style.border_t_2().border_color(line),
-                                        Ordering::Equal => style,
-                                    }
-                                })
-                                .on_drop({
-                                    let owner = owner.clone();
-                                    move |dragged: &DraggedEntry, window, cx| {
-                                        owner
-                                            .update(cx, |this, cx| {
-                                                this.drop_entry(dragged.id, id, window, cx)
-                                            })
-                                            .ok();
-                                    }
-                                })
-                                // Built when it opens, so it reads the queue
-                                // as it is then.
-                                .context_menu(
-                                    move |menu, window, cx| {
-                                        let commands = owner
-                                            .upgrade()
-                                            .map(|this| this.read(cx).entry_commands(id, cx))
-                                            .unwrap_or_default();
-                                        let songs = Arc::from([menu_song.clone()]);
-                                        let menu = menu
-                                            .action_context(focus.clone())
-                                            .menu("Play", Box::new(Play))
-                                            .menu_with_disabled(
-                                                "Play Next",
-                                                Box::new(PlayNext),
-                                                !commands.play_next,
-                                            )
-                                            .separator()
-                                            .menu_with_disabled(
-                                                "Move Up",
-                                                Box::new(MoveUp),
-                                                !commands.move_up,
-                                            )
-                                            .menu_with_disabled(
-                                                "Move Down",
-                                                Box::new(MoveDown),
-                                                !commands.move_down,
-                                            )
-                                            .separator();
-                                        actions::add_to_playlist_submenu(
-                                            menu,
-                                            actions::add_songs_command(songs),
-                                            window,
-                                            cx,
-                                        )
-                                        .separator()
-                                        .menu_with_disabled(
-                                            "Remove",
-                                            Box::new(Remove),
-                                            !commands.remove,
-                                        )
-                                    },
-                                ),
-                            )
-                        })
-                        .collect()
+        row_list(
+            "queue-list",
+            "Queue",
+            entries.len(),
+            &self.scroll,
+            move |ix| {
+                let entry = entries.get(ix)?;
+                let is_current = current_ix == Some(ix);
+                Some(EntryRow {
+                    id: entry.id(),
+                    song: entry.item().clone(),
+                    ix,
+                    state: is_current.then(|| PlayState::new(playing)),
+                    // With nothing current, playback ran off the end.
+                    is_played: current_ix.is_none_or(|current| ix < current),
+                    is_selected: selected == Some(entry.id()),
+                    is_focused,
+                    owner: owner.clone(),
+                    focus: focus.clone(),
                 })
-                .size_full()
-                .track_scroll(&self.scroll),
-            )
-            .child(Scrollbar::vertical(&self.scroll))
-            .into_any_element()
+            },
+        )
+        .size_full()
+        .into_any_element()
     }
-}
-
-/// An entry being dragged to a new place in the queue.
-struct DraggedEntry {
-    id: EntryId,
-    /// Where it was when the drag started, which tells the rows under the
-    /// pointer which side it would land on.
-    from_ix: usize,
-    title: SharedString,
 }
 
 /// The commands an entry's context menu enables.
@@ -496,38 +360,131 @@ struct EntryCommands {
     remove: bool,
 }
 
-/// A row's content. `state` is there on the current entry.
-fn render_entry(
-    song: &Song,
-    title: SharedString,
+/// An entry of the queue, whose commands act on the selection.
+#[derive(IntoElement)]
+struct EntryRow {
+    id: EntryId,
+    song: Song,
+    ix: usize,
+    /// There on the current entry.
     state: Option<PlayState>,
-    played: bool,
-    muted_foreground: gpui_kit::Hsla,
-) -> impl IntoElement {
-    let artist = song
-        .artist()
-        .map(|artist| SharedString::from(artist.to_owned()));
-    let duration = song.duration().map(format_duration).unwrap_or_default();
-    h_flex()
-        .w_full()
-        .min_w_0()
-        .gap_3()
-        // The marker's lane stays when it is empty, so titles line up.
-        .child(
-            h_flex()
-                .w_4()
-                .flex_none()
-                .justify_center()
-                .when_some(state, |this, state| this.child(PlayStateIcon::new(state))),
-        )
-        .child(RowText::new(title).details(artist).dimmed(played))
-        .child(
-            div()
-                .flex_none()
-                .text_xs()
-                .text_color(muted_foreground)
-                .child(duration),
-        )
+    is_played: bool,
+    is_selected: bool,
+    is_focused: bool,
+    owner: WeakEntity<QueueView>,
+    focus: FocusHandle,
+}
+
+impl RenderOnce for EntryRow {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        let Self {
+            id,
+            song,
+            ix,
+            state,
+            is_played,
+            is_selected,
+            is_focused,
+            owner,
+            focus,
+        } = self;
+        let muted_foreground = cx.theme().muted_foreground;
+        let title = SharedString::from(song.title().to_owned());
+        let label = if state.is_none() && is_played {
+            format!("{title}, played").into()
+        } else {
+            PlayState::row_label(&title, state)
+        };
+        let artist = song
+            .artist()
+            .map(|artist| SharedString::from(artist.to_owned()));
+        let duration = song.duration().map(format_duration).unwrap_or_default();
+        let on_click = owner.clone();
+        let on_right_click = owner.clone();
+        let on_drop = owner.clone();
+        ListItem::new(ElementId::NamedInteger("queue-entry".into(), id.get()))
+            .selected(is_selected)
+            .secondary_selected(is_focused && is_selected)
+            .h_12()
+            .px_4()
+            .w_full()
+            .accessibility_label(label)
+            .child(
+                h_flex()
+                    .w_full()
+                    .min_w_0()
+                    .gap_3()
+                    // The marker's lane stays when it is empty, so titles line up.
+                    .child(
+                        h_flex()
+                            .w_4()
+                            .flex_none()
+                            .justify_center()
+                            .when_some(state, |this, state| this.child(PlayStateIcon::new(state))),
+                    )
+                    .child(
+                        RowText::new(title.clone())
+                            .details(artist)
+                            .dimmed(is_played),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_xs()
+                            .text_color(muted_foreground)
+                            .child(duration),
+                    ),
+            )
+            .on_click(move |event, window, cx| {
+                on_click
+                    .update(cx, |this, cx| {
+                        this.focus.focus(window, cx);
+                        this.select_entry(id, cx);
+                        if event.click_count() >= 2 {
+                            this.play_selected(cx);
+                        }
+                    })
+                    .ok();
+            })
+            // The menu acts on the selection, so the row under the pointer
+            // becomes it first.
+            .on_mouse_down(MouseButton::Right, move |_, window, cx| {
+                on_right_click
+                    .update(cx, |this, cx| {
+                        this.focus.focus(window, cx);
+                        this.select_entry(id, cx);
+                    })
+                    .ok();
+            })
+            .reorderable(id, ix, title, move |dragged, window, cx| {
+                on_drop
+                    .update(cx, |this, cx| this.drop_entry(dragged, id, window, cx))
+                    .ok();
+            })
+            // Built when it opens, so it reads the queue as it is then.
+            .context_menu(move |menu, window, cx| {
+                let commands = owner
+                    .upgrade()
+                    .map(|this| this.read(cx).entry_commands(id, cx))
+                    .unwrap_or_default();
+                let menu = menu
+                    .action_context(focus.clone())
+                    .menu("Play", Box::new(Play))
+                    .menu_with_disabled("Play Next", Box::new(PlayNext), !commands.play_next)
+                    .separator()
+                    .menu_with_disabled("Move Up", Box::new(MoveUp), !commands.move_up)
+                    .menu_with_disabled("Move Down", Box::new(MoveDown), !commands.move_down)
+                    .separator();
+                actions::add_to_playlist_submenu(
+                    menu,
+                    actions::add_songs_command(Arc::from([song.clone()])),
+                    window,
+                    cx,
+                )
+                .separator()
+                .menu_with_disabled("Remove", Box::new(Remove), !commands.remove)
+            })
+    }
 }
 
 impl Render for QueueView {

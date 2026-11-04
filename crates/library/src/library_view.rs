@@ -4,31 +4,34 @@ use actions::{AlbumAction, EnqueueSongs, Placement, PlaySongs};
 use catalog::{Mode, Outcome};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Disableable as _, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
-    h_flex,
     input::{InputEvent, InputState},
-    list::ListItem,
-    menu::{ContextMenuExt as _, DropdownMenu as _},
+    menu::DropdownMenu as _,
     notification::NotificationType,
     resizable::ResizableState,
-    scroll::Scrollbar,
     spinner::Spinner,
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, AppContext as _, AsyncApp, Context, ElementId, Entity, EventEmitter, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render,
-    ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
-    UniformListScrollHandle, WeakEntity, Window, div, prelude::FluentBuilder as _, uniform_list,
+    AnyElement, AppContext as _, AsyncApp, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollStrategy, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, UniformListScrollHandle,
+    WeakEntity, Window, div, prelude::FluentBuilder as _,
 };
 use subsonic::{Album, AlbumId, AlbumWithSongs, PlaylistId, Song, SongId};
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
 use ui::{
-    DetailHeader, ListFilter, ListPaneHeader, LoadFailure, MasterDetail, NowPlaying, PlayState,
-    PlayStateIcon, RefreshFailure, RowText, centered, format_duration, format_song_count,
-    join_details, muted_text,
+    DetailHeader, ListFilter, ListPaneHeader, LoadFailure, MasterDetail, NowPlaying,
+    RefreshFailure, centered, format_duration, format_song_count, join_details, muted_text,
+    row_list,
 };
+
+mod album_row;
+mod song_row;
+
+use album_row::AlbumRow;
+use song_row::SongRow;
 
 use crate::filter::matching_albums;
 use crate::{
@@ -593,78 +596,27 @@ impl Library {
 
         let visible = self.visible.clone();
         let selected = self.selected_album.clone();
-        let focused = self.albums_focus.is_focused(window);
+        let is_focused = self.albums_focus.is_focused(window);
         let owner = cx.entity().downgrade();
         let albums_focus = self.albums_focus.clone();
-        div()
-            .id("album-list")
-            .relative()
-            .size_full()
-            .role(gpui_kit::Role::List)
-            .aria_label("Albums")
-            .child(
-                uniform_list("album-rows", visible.len(), move |range, _, _| {
-                    range
-                        .filter_map(|position| {
-                            let album = albums.get(*visible.get(position)?)?;
-                            let id = album.id().clone();
-                            let is_selected = selected.as_ref() == Some(&id);
-                            let name = SharedString::from(album.name().to_owned());
-                            let details = album_details(album);
-                            let on_click = owner.clone();
-                            let on_right_click = owner.clone();
-                            let click_id = id.clone();
-                            let albums_focus = albums_focus.clone();
-                            Some(
-                                ListItem::new(ElementId::Name(format!("album-{id}").into()))
-                                    .selected(is_selected)
-                                    .secondary_selected(focused && is_selected)
-                                    .h_12()
-                                    .px_4()
-                                    .w_full()
-                                    .accessibility_label(name.clone())
-                                    .child(RowText::new(name).details(details))
-                                    .on_click(move |_, window, cx| {
-                                        on_click
-                                            .update(cx, |this, cx| {
-                                                this.albums_focus.focus(window, cx);
-                                                this.select_album(click_id.clone(), cx);
-                                            })
-                                            .ok();
-                                    })
-                                    // The menu acts on the selection, so the
-                                    // row under the pointer becomes it first.
-                                    .on_mouse_down(MouseButton::Right, move |_, window, cx| {
-                                        on_right_click
-                                            .update(cx, |this, cx| {
-                                                this.albums_focus.focus(window, cx);
-                                                this.select_album(id.clone(), cx);
-                                            })
-                                            .ok();
-                                    })
-                                    .context_menu(move |menu, window, cx| {
-                                        let menu = menu
-                                            .action_context(albums_focus.clone())
-                                            .menu("Play", Box::new(Play))
-                                            .menu("Play Next", Box::new(PlayNext))
-                                            .menu("Add to Queue", Box::new(AddToQueue))
-                                            .separator();
-                                        actions::add_to_playlist_submenu(
-                                            menu,
-                                            add_album_command,
-                                            window,
-                                            cx,
-                                        )
-                                    }),
-                            )
-                        })
-                        .collect()
-                })
-                .size_full()
-                .track_scroll(&self.albums_scroll),
-            )
-            .child(Scrollbar::vertical(&self.albums_scroll))
-            .into_any_element()
+        row_list(
+            "album-list",
+            "Albums",
+            visible.len(),
+            &self.albums_scroll,
+            move |position| {
+                let album = albums.get(*visible.get(position)?)?;
+                Some(AlbumRow::new(
+                    album,
+                    selected.as_ref() == Some(album.id()),
+                    is_focused,
+                    owner.clone(),
+                    albums_focus.clone(),
+                ))
+            },
+        )
+        .size_full()
+        .into_any_element()
     }
 
     /// The detail pane is the songs' focus target in every state, for the
@@ -789,143 +741,34 @@ impl Library {
             return centered(muted_text("This album has no songs.", cx)).into_any_element();
         }
         let songs = loaded.songs.clone();
-        let album_artist = loaded.album.artist().map(str::to_owned);
+        let album_artist = loaded.album.artist().map(Arc::from);
         let selected = self.selected_song.clone();
         let now_playing = self.now_playing.clone();
-        let focused = self.songs_focus.is_focused(window);
-        let muted_foreground = cx.theme().muted_foreground;
+        let is_focused = self.songs_focus.is_focused(window);
         let owner = cx.entity().downgrade();
         let songs_focus = self.songs_focus.clone();
-        div()
-            .id("songs")
-            .relative()
-            .flex_1()
-            .min_h_0()
-            .role(gpui_kit::Role::List)
-            .aria_label("Songs")
-            .child(
-                uniform_list("song-rows", songs.len(), move |range, _, _| {
-                    range
-                        .filter_map(|ix| {
-                            let song = songs.get(ix)?;
-                            let id = song.id().clone();
-                            let is_selected = selected.as_ref() == Some(&id);
-                            let title = SharedString::from(song.title().to_owned());
-                            // Name the performer only where it differs from the album's.
-                            let artist = song
-                                .artist()
-                                .filter(|artist| album_artist.as_deref() != Some(*artist))
-                                .map(|artist| SharedString::from(artist.to_owned()));
-                            let number = song
-                                .track()
-                                .map(|track| track.to_string())
-                                .unwrap_or_default();
-                            let duration = song.duration().map(format_duration).unwrap_or_default();
-                            // The playing song shows a sound icon in place of its
-                            // number.
-                            let marker = now_playing.as_ref().and_then(|now| now.state_of(&id));
-                            let label = PlayState::row_label(&title, marker);
-                            let owner = owner.clone();
-                            let songs_focus = songs_focus.clone();
-                            let menu_song = song.clone();
-                            Some(
-                                ListItem::new(ElementId::Name(format!("song-{id}").into()))
-                                    .selected(is_selected)
-                                    .secondary_selected(focused && is_selected)
-                                    .h_10()
-                                    .px_6()
-                                    .w_full()
-                                    .accessibility_label(label)
-                                    .child(
-                                        h_flex()
-                                            .w_full()
-                                            .min_w_0()
-                                            .gap_4()
-                                            .text_sm()
-                                            .child(
-                                                h_flex()
-                                                    .w_6()
-                                                    .flex_none()
-                                                    .justify_end()
-                                                    .text_color(muted_foreground)
-                                                    .map(|this| match marker {
-                                                        Some(state) => {
-                                                            this.child(PlayStateIcon::new(state))
-                                                        }
-                                                        None => this.child(number),
-                                                    }),
-                                            )
-                                            .child(
-                                                h_flex()
-                                                    .flex_1()
-                                                    .min_w_0()
-                                                    .gap_2()
-                                                    .child(div().truncate().child(title))
-                                                    .when_some(artist, |this, artist| {
-                                                        this.child(
-                                                            div()
-                                                                .truncate()
-                                                                .text_color(muted_foreground)
-                                                                .child(artist),
-                                                        )
-                                                    }),
-                                            )
-                                            .child(
-                                                div()
-                                                    .flex_none()
-                                                    .text_color(muted_foreground)
-                                                    .child(duration),
-                                            ),
-                                    )
-                                    .on_click({
-                                        let owner = owner.clone();
-                                        move |event, window, cx| {
-                                            owner
-                                                .update(cx, |this, cx| {
-                                                    this.songs_focus.focus(window, cx);
-                                                    this.select_song(ix, cx);
-                                                    if event.click_count() >= 2 {
-                                                        this.play_from(ix, window, cx);
-                                                    }
-                                                })
-                                                .ok();
-                                        }
-                                    })
-                                    // The menu acts on the selection, so the
-                                    // row under the pointer becomes it first.
-                                    .on_mouse_down(MouseButton::Right, move |_, window, cx| {
-                                        owner
-                                            .update(cx, |this, cx| {
-                                                this.songs_focus.focus(window, cx);
-                                                this.select_song(ix, cx);
-                                            })
-                                            .ok();
-                                    })
-                                    .context_menu(move |menu, window, cx| {
-                                        let menu = menu
-                                            .action_context(songs_focus.clone())
-                                            .menu("Play", Box::new(Open))
-                                            .menu("Play Next", Box::new(PlayNext))
-                                            .menu("Add to Queue", Box::new(AddToQueue))
-                                            .separator();
-                                        actions::add_to_playlist_submenu(
-                                            menu,
-                                            actions::add_songs_command(Arc::from([
-                                                menu_song.clone()
-                                            ])),
-                                            window,
-                                            cx,
-                                        )
-                                    }),
-                            )
-                        })
-                        .collect()
+        row_list(
+            "songs",
+            "Songs",
+            songs.len(),
+            &self.songs_scroll,
+            move |ix| {
+                let song = songs.get(ix)?;
+                Some(SongRow {
+                    song: song.clone(),
+                    ix,
+                    album_artist: album_artist.clone(),
+                    state: now_playing.as_ref().and_then(|now| now.state_of(song.id())),
+                    is_selected: selected.as_ref() == Some(song.id()),
+                    is_focused,
+                    owner: owner.clone(),
+                    songs_focus: songs_focus.clone(),
                 })
-                .size_full()
-                .track_scroll(&self.songs_scroll),
-            )
-            .child(Scrollbar::vertical(&self.songs_scroll))
-            .into_any_element()
+            },
+        )
+        .flex_1()
+        .min_h_0()
+        .into_any_element()
     }
 }
 
@@ -1041,14 +884,6 @@ async fn run_sync(
         .await
         .map_err(describe_catalog)?;
     Ok(())
-}
-
-/// The second line of an album row.
-fn album_details(album: &Album) -> SharedString {
-    join_details([
-        album.artist().map(str::to_owned),
-        album.year().map(|year| year.to_string()),
-    ])
 }
 
 #[cfg(test)]
