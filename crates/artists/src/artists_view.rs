@@ -13,10 +13,10 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement as _,
-    IntoElement, ListAlignment, ListOffset, ListState, ParentElement as _, Pixels, Render,
-    ScrollStrategy, SharedString, Styled as _, Subscription, Task, UniformListScrollHandle, Window,
-    div, prelude::FluentBuilder as _, px,
+    AnyElement, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, ListAlignment, ListOffset, ListState, ParentElement as _,
+    Pixels, Render, ScrollStrategy, SharedString, Styled as _, Subscription, Task,
+    UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px,
 };
 use subsonic::{Album, Artist, ArtistId, CoverArtId, PlaylistId, Song, SongId};
 use ui::card_grid::GridMotion;
@@ -53,6 +53,11 @@ const ALBUMS_AT_ONCE: usize = 8;
 /// How far past the edges of the detail to lay out, in pixels: about a row of
 /// cards, so that scrolling does not show them arriving.
 const DETAIL_OVERDRAW: f32 = 300.;
+
+pub enum ArtistsEvent {
+    /// The user chose another artist over this one.
+    LeftArtist(ArtistId),
+}
 
 /// The artists' screen: a filterable list beside the selected artist's detail.
 /// Owns the list, the selection in it and in the detail, and both's focus.
@@ -118,6 +123,8 @@ struct ShownArtist {
     /// which `top_songs` then holds in place of what the server ranks.
     is_only_on_songs: bool,
 }
+
+impl EventEmitter<ArtistsEvent> for Artists {}
 
 impl Artists {
     pub fn new(session: session::Session, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -305,6 +312,19 @@ impl Artists {
                 .unwrap_or_default(),
         );
         cx.notify();
+    }
+
+    pub fn selected_artist(&self) -> Option<&ArtistId> {
+        self.selected_artist.as_ref()
+    }
+
+    /// Selects the artist the user chose. Moving through the list does not
+    /// count: it would leave every artist it passes to go back to.
+    fn choose_artist(&mut self, artist: ArtistId, cx: &mut Context<Self>) {
+        if let Some(left) = self.selected_artist.clone().filter(|left| *left != artist) {
+            cx.emit(ArtistsEvent::LeftArtist(left));
+        }
+        self.select_artist(artist, cx);
     }
 
     fn select_artist(&mut self, artist: ArtistId, cx: &mut Context<Self>) {

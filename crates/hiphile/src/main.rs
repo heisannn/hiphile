@@ -3,6 +3,7 @@
 
 mod app_shell;
 mod assets;
+mod navigation;
 
 use gpui_kit::component::TitleBar;
 use gpui_kit::{
@@ -26,7 +27,9 @@ actions!(
         ShowAlbums,
         ShowArtists,
         ShowSongs,
-        ShowPlaylists
+        ShowPlaylists,
+        GoBack,
+        GoForward
     ]
 );
 
@@ -78,6 +81,8 @@ fn install_app_commands(cx: &mut App) {
         show_playlists,
         refresh,
         new_playlist,
+        go_back,
+        go_forward,
     ] = if cx.platform_info().is_mac() {
         [
             "cmd-q",
@@ -89,6 +94,8 @@ fn install_app_commands(cx: &mut App) {
             "cmd-5",
             "cmd-r",
             "cmd-n",
+            "cmd-[",
+            "cmd-]",
         ]
     } else {
         [
@@ -101,6 +108,8 @@ fn install_app_commands(cx: &mut App) {
             "ctrl-5",
             "ctrl-r",
             "ctrl-n",
+            "alt-left",
+            "alt-right",
         ]
     };
     cx.bind_keys([
@@ -111,6 +120,8 @@ fn install_app_commands(cx: &mut App) {
         KeyBinding::new(show_albums, ShowAlbums, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new(show_songs, ShowSongs, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new(show_playlists, ShowPlaylists, Some(WORKSPACE_CONTEXT)),
+        KeyBinding::new(go_back, GoBack, Some(WORKSPACE_CONTEXT)),
+        KeyBinding::new(go_forward, GoForward, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new(refresh, library::Refresh, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new(
             new_playlist,
@@ -149,6 +160,9 @@ pub(crate) fn set_menus(queue_shown: bool, destination: Option<Destination>, cx:
             MenuItem::action("Save Queue as Playlist…", SaveQueue),
         ]),
         Menu::new("View").items([
+            MenuItem::action("Back", GoBack),
+            MenuItem::action("Forward", GoForward),
+            MenuItem::separator(),
             MenuItem::action("Home", ShowHome).checked(destination == Some(Destination::Home)),
             MenuItem::action("Artists", ShowArtists)
                 .checked(destination == Some(Destination::Artists)),

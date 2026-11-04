@@ -69,7 +69,7 @@ impl RenderOnce for AlbumRow {
                 on_click
                     .update(cx, |this, cx| {
                         this.albums_focus.focus(window, cx);
-                        this.select_album(click_id.clone(), cx);
+                        this.choose_album(click_id.clone(), cx);
                     })
                     .ok();
             })

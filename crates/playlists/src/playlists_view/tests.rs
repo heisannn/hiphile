@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -1059,4 +1059,76 @@ fn the_page_keys_move_by_the_songs_in_view(cx: &mut TestAppContext) {
     cx.update(|_, cx| assert_eq!(view.read(cx).selected_entry_ix(), Some(page)));
     cx.simulate_keystrokes("pageup");
     cx.update(|_, cx| assert_eq!(view.read(cx).selected_entry_ix(), Some(0)));
+}
+
+fn reveal_playlist(view: &Entity<Playlists>, id: &str, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| {
+        view.update(cx, |this, cx| {
+            this.reveal_playlist(PlaylistId::new(id), window, cx);
+        });
+    });
+}
+
+#[gpui_kit::test]
+fn choosing_another_playlist_says_which_was_left(cx: &mut TestAppContext) {
+    let (view, cx) = playlists(cx);
+    let left = Rc::new(RefCell::new(Vec::new()));
+    cx.update(|_, cx| {
+        let left = left.clone();
+        cx.subscribe(&view, move |_, event, _| {
+            if let PlaylistsEvent::LeftPlaylist(playlist) = event {
+                left.borrow_mut().push(playlist.clone());
+            }
+        })
+        .detach();
+    });
+
+    cx.update(|window, cx| {
+        view.update(cx, |this, cx| {
+            this.choose(PlaylistId::new("a"), window, cx);
+            this.choose(PlaylistId::new("b"), window, cx);
+        });
+    });
+    cx.run_until_parked();
+    assert_eq!(*left.borrow(), vec![PlaylistId::new("a")]);
+
+    select_playlist(&view, "a", cx);
+    reveal_playlist(&view, "b", cx);
+    cx.run_until_parked();
+    assert_eq!(*left.borrow(), vec![PlaylistId::new("a")]);
+}
+
+#[gpui_kit::test]
+fn revealing_a_playlist_the_filter_hides_clears_the_filter(cx: &mut TestAppContext) {
+    let (view, cx) = playlists(cx);
+    cx.update(|window, cx| {
+        view.update(cx, |this, cx| {
+            this.filter
+                .update(cx, |filter, cx| filter.set_value("alpha", window, cx));
+            this.apply_filter(cx);
+        });
+    });
+
+    reveal_playlist(&view, "b", cx);
+
+    cx.update(|window, cx| {
+        let this = view.read(cx);
+        assert_eq!(this.filter.read(cx).value(), "");
+        assert_eq!(this.selected_playlist_id(), Some(&PlaylistId::new("b")));
+        assert!(this.list_focus.is_focused(window));
+    });
+}
+
+#[gpui_kit::test]
+fn revealing_a_playlist_that_has_gone_keeps_the_selection(cx: &mut TestAppContext) {
+    let (view, cx) = playlists(cx);
+
+    reveal_playlist(&view, "gone", cx);
+
+    cx.update(|_, cx| {
+        assert_eq!(
+            view.read(cx).selected_playlist_id(),
+            Some(&PlaylistId::new("a"))
+        );
+    });
 }

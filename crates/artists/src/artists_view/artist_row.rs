@@ -68,7 +68,7 @@ impl RenderOnce for ArtistRow {
                 on_click
                     .update(cx, |this, cx| {
                         this.list_focus.focus(window, cx);
-                        this.select_artist(click_id.clone(), cx);
+                        this.choose_artist(click_id.clone(), cx);
                     })
                     .ok();
             })

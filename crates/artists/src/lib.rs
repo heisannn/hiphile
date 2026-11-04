@@ -12,7 +12,7 @@ mod list;
 use gpui_kit::{App, KeyBinding, actions};
 use ui::list_navigation::bind_list_navigation;
 
-pub use artists_view::Artists;
+pub use artists_view::{Artists, ArtistsEvent};
 
 /// Key context of the focused list of artists.
 pub const ARTISTS_CONTEXT: &str = "Artists";

@@ -413,6 +413,7 @@ fn count_events(library: &Entity<Library>, cx: &mut VisualTestContext) -> Rc<Ref
                 LibraryEvent::AlbumsSynced => 0,
                 LibraryEvent::SongsSynced => 1,
                 LibraryEvent::SyncFailed(_) => 2,
+                LibraryEvent::LeftAlbum(_) => return,
             };
             seen.borrow_mut()[ix] += 1;
         })
@@ -529,4 +530,67 @@ fn the_page_keys_move_by_the_albums_in_view(cx: &mut TestAppContext) {
     cx.update(|_, cx| assert_eq!(library.read(cx).selected_position(), Some(page)));
     cx.simulate_keystrokes("pageup");
     cx.update(|_, cx| assert_eq!(library.read(cx).selected_position(), Some(0)));
+}
+
+/// The albums [`LibraryEvent::LeftAlbum`] says were left, as they are left.
+fn left_albums(library: &Entity<Library>, cx: &mut VisualTestContext) -> Rc<RefCell<Vec<AlbumId>>> {
+    let left = Rc::new(RefCell::new(Vec::new()));
+    cx.update(|_, cx| {
+        let left = left.clone();
+        cx.subscribe(library, move |_, event, _| {
+            if let LibraryEvent::LeftAlbum(album) = event {
+                left.borrow_mut().push(album.clone());
+            }
+        })
+        .detach();
+    });
+    left
+}
+
+#[gpui_kit::test]
+fn choosing_another_album_says_which_was_left(cx: &mut TestAppContext) {
+    let (library, cx) = library(cx);
+    let left = left_albums(&library, cx);
+    let selected = cx.update(|_, cx| library.read(cx).selected_album().cloned().unwrap());
+    let other = AlbumId::new(if selected == AlbumId::new("a") {
+        "b"
+    } else {
+        "a"
+    });
+
+    cx.update(|_, cx| {
+        library.update(cx, |library, cx| library.choose_album(other.clone(), cx));
+    });
+    cx.run_until_parked();
+
+    assert_eq!(*left.borrow(), vec![selected]);
+    cx.update(|_, cx| assert_eq!(library.read(cx).selected_album(), Some(&other)));
+}
+
+#[gpui_kit::test]
+fn choosing_the_selected_album_leaves_nothing(cx: &mut TestAppContext) {
+    let (library, cx) = library(cx);
+    let left = left_albums(&library, cx);
+    let selected = cx.update(|_, cx| library.read(cx).selected_album().cloned().unwrap());
+
+    cx.update(|_, cx| {
+        library.update(cx, |library, cx| library.choose_album(selected, cx));
+    });
+    cx.run_until_parked();
+
+    assert!(left.borrow().is_empty());
+}
+
+#[gpui_kit::test]
+fn revealing_and_moving_to_an_album_leave_nothing(cx: &mut TestAppContext) {
+    let (library, cx) = library(cx);
+    let left = left_albums(&library, cx);
+
+    reveal(&library, "b", cx);
+    cx.update(|_, cx| {
+        library.update(cx, |library, cx| library.move_album(Motion::First, cx));
+    });
+    cx.run_until_parked();
+
+    assert!(left.borrow().is_empty());
 }

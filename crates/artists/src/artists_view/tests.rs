@@ -1265,3 +1265,37 @@ fn play_shows_it_is_fetching_until_the_songs_arrive(cx: &mut TestAppContext) {
 
     wait_until(&view, cx, |view| view.artist_being_fetched.is_none());
 }
+
+#[gpui_kit::test]
+fn choosing_another_artist_says_which_was_left(cx: &mut TestAppContext) {
+    let (view, cx) = view(cx);
+    let left = Rc::new(RefCell::new(Vec::new()));
+    cx.update(|_, cx| {
+        let left = left.clone();
+        cx.subscribe(&view, move |_, event: &ArtistsEvent, _| {
+            let ArtistsEvent::LeftArtist(artist) = event;
+            left.borrow_mut().push(artist.clone());
+        })
+        .detach();
+    });
+
+    // Nothing selected yet: nothing to leave.
+    update(&view, cx, |this, cx| {
+        this.choose_artist(ArtistId::new("a"), cx);
+    });
+    assert!(left.borrow().is_empty());
+
+    update(&view, cx, |this, cx| {
+        this.choose_artist(ArtistId::new("a"), cx);
+        this.choose_artist(ArtistId::new("b"), cx);
+    });
+    assert_eq!(*left.borrow(), vec![ArtistId::new("a")]);
+
+    update(&view, cx, |this, cx| {
+        this.select_artist(ArtistId::new("c"), cx);
+    });
+    assert_eq!(*left.borrow(), vec![ArtistId::new("a")]);
+    cx.update(|_, cx| {
+        assert_eq!(view.read(cx).selected_artist(), Some(&ArtistId::new("c")));
+    });
+}

@@ -55,6 +55,8 @@ pub enum PlaylistsEvent {
     CreatedEmpty,
     /// The choice of playlist asked for from the keyboard opened or closed.
     ChooserChanged,
+    /// The user chose another playlist over this one.
+    LeftPlaylist(PlaylistId),
 }
 
 /// The server's playlists beside the songs of the selected one. Owns the
@@ -294,15 +296,57 @@ impl Playlists {
         cx.notify();
     }
 
+    pub fn selected_playlist_id(&self) -> Option<&PlaylistId> {
+        self.selected.as_ref()
+    }
+
+    /// Selects `playlist` and brings it into view in the list, clearing a
+    /// filter that hides it. One that has gone leaves the selection as it is.
+    pub fn reveal_playlist(
+        &mut self,
+        playlist: PlaylistId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(position) = self
+            .loaded_list()
+            .and_then(|playlists| playlists.iter().position(|listed| listed.id() == &playlist))
+        else {
+            return;
+        };
+        if !self.visible.contains(&position) {
+            self.filter
+                .update(cx, |filter, cx| filter.set_value("", window, cx));
+            self.apply_filter(cx);
+        }
+        self.select(playlist, window, cx);
+        // Selecting the playlist already selected does not scroll.
+        self.scroll_to_selected();
+        self.list_focus.focus(window, cx);
+    }
+
+    fn scroll_to_selected(&self) {
+        if let Some(position) = self.selected_position() {
+            self.list_scroll
+                .scroll_to_item(position, ScrollStrategy::Nearest);
+        }
+    }
+
+    /// Selects the playlist the user chose. Moving through the list does not
+    /// count: it would leave every playlist it passes to go back to.
+    fn choose(&mut self, playlist: PlaylistId, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(left) = self.selected.clone().filter(|left| *left != playlist) {
+            cx.emit(PlaylistsEvent::LeftPlaylist(left));
+        }
+        self.select(playlist, window, cx);
+    }
+
     fn select(&mut self, playlist: PlaylistId, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected.as_ref() == Some(&playlist) {
             return;
         }
         self.selected = Some(playlist.clone());
-        if let Some(position) = self.selected_position() {
-            self.list_scroll
-                .scroll_to_item(position, ScrollStrategy::Nearest);
-        }
+        self.scroll_to_selected();
         self.selected_entry = None;
         self.after_load = None;
         self.diverged = false;

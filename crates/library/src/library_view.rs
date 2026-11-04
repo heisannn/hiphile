@@ -49,6 +49,8 @@ pub enum LibraryEvent {
     SongsSynced,
     /// A sync the user asked for failed, for why.
     SyncFailed(SharedString),
+    /// The user chose another album over this one.
+    LeftAlbum(AlbumId),
 }
 
 /// The album browser: a filterable album list beside the selected album's
@@ -270,6 +272,19 @@ impl Library {
                 .unwrap_or_default(),
         );
         cx.notify();
+    }
+
+    pub fn selected_album(&self) -> Option<&AlbumId> {
+        self.selected_album.as_ref()
+    }
+
+    /// Selects the album the user chose. Moving through the list does not
+    /// count: it would leave every album it passes to go back to.
+    fn choose_album(&mut self, album: AlbumId, cx: &mut Context<Self>) {
+        if let Some(left) = self.selected_album.clone().filter(|left| *left != album) {
+            cx.emit(LibraryEvent::LeftAlbum(left));
+        }
+        self.select_album(album, cx);
     }
 
     fn select_album(&mut self, album: AlbumId, cx: &mut Context<Self>) {

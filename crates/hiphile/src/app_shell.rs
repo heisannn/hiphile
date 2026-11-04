@@ -2,7 +2,7 @@ use account::{SignIn, SignInEvent, Start};
 use actions::{
     AddToPlaylist, ChoosePlaylist, EnqueueSongs, NewPlaylist, PlaySongs, ShowAlbum, ShowArtist,
 };
-use artists::Artists;
+use artists::{Artists, ArtistsEvent};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, StyledExt as _, TitleBar,
@@ -15,9 +15,10 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable as _,
-    InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString,
-    Styled as _, Subscription, Window, div, prelude::FluentBuilder as _,
+    AnyElement, App, AppContext as _, Context, Div, Entity, FocusHandle, Focusable as _,
+    InteractiveElement as _, IntoElement, MouseButton, NavigationDirection, ParentElement as _,
+    Pixels, Render, SharedString, Stateful, Styled as _, Subscription, Window, div,
+    prelude::FluentBuilder as _,
 };
 use home::Home;
 use library::{Library, LibraryEvent, Refresh};
@@ -31,7 +32,11 @@ use songs::Songs;
 use subsonic::{AlbumId, ArtistId};
 use ui::CoverCache;
 
-use crate::{ShowAlbums, ShowArtists, ShowHome, ShowPlaylists, ShowSongs, SignOut, ToggleQueue};
+use crate::navigation::{History, Location};
+use crate::{
+    GoBack, GoForward, ShowAlbums, ShowArtists, ShowHome, ShowPlaylists, ShowSongs, SignOut,
+    ToggleQueue,
+};
 
 /// The queue's width when first shown, in rem.
 const QUEUE_WIDTH: f32 = 20.;
@@ -104,6 +109,8 @@ struct Workspace {
     session: Session,
     profile: config::Profile,
     destination: Destination,
+    /// Where going back and forward leads.
+    history: History<Location>,
     home: Entity<Home>,
     /// Kept while another screen shows, along with its selection and the sync
     /// it runs.
@@ -124,6 +131,7 @@ struct Workspace {
     covers: Entity<CoverCache>,
     _player_events: Subscription,
     _library_events: Subscription,
+    _artists_events: Subscription,
     _playlists_events: Subscription,
     _output_changes: Subscription,
     _cover_key_changes: Subscription,
@@ -131,6 +139,23 @@ struct Workspace {
 }
 
 impl Workspace {
+    /// The screen showing and what is selected on it.
+    fn location(&self, cx: &App) -> Location {
+        match self.destination {
+            Destination::Home => Location::Home,
+            Destination::Artists => {
+                Location::Artists(self.artists.read(cx).selected_artist().cloned())
+            }
+            Destination::Albums => {
+                Location::Albums(self.library.read(cx).selected_album().cloned())
+            }
+            Destination::Songs => Location::Songs,
+            Destination::Playlists => {
+                Location::Playlists(self.playlists.read(cx).selected_playlist_id().cloned())
+            }
+        }
+    }
+
     /// Gives focus to the screen showing, whose shortcuts then work.
     fn focus_destination(&self, window: &mut Window, cx: &mut App) {
         let focus = match self.destination {
@@ -285,30 +310,11 @@ impl AppShell {
                 cx.notify();
             }
         });
-        let library_events = cx.subscribe_in(&library, window, {
-            let home = home.downgrade();
-            let artists = artists.downgrade();
-            let songs = songs.downgrade();
-            move |this, _, event, window, cx| match event {
-                LibraryEvent::AlbumsSynced => {
-                    home.update(cx, |home, cx| home.library_synced(cx)).ok();
-                    artists.update(cx, |artists, cx| artists.refresh(cx)).ok();
-                }
-                LibraryEvent::SongsSynced => {
-                    songs.update(cx, |songs, cx| songs.songs_synced(cx)).ok();
-                    artists
-                        .update(cx, |artists, cx| artists.songs_synced(cx))
-                        .ok();
-                }
-                LibraryEvent::SyncFailed(error) => {
-                    // The albums' screen says so itself.
-                    if let Screen::Workspace(workspace) = &this.screen
-                        && workspace.destination != Destination::Albums
-                    {
-                        let message = format!("Couldn't refresh the library. {error}");
-                        window.push_notification((NotificationType::Error, message), cx);
-                    }
-                }
+        let library_events =
+            Self::subscribe_to_library(&library, &home, &artists, &songs, window, cx);
+        let artists_events = cx.subscribe(&artists, |this, _, event, cx| match event {
+            ArtistsEvent::LeftArtist(artist) => {
+                this.remember(Location::Artists(Some(artist.clone())), cx);
             }
         });
         let playlists_events =
@@ -320,6 +326,9 @@ impl AppShell {
                         this.show_destination(Destination::Playlists, window, cx);
                     }
                     PlaylistsEvent::ChooserChanged => cx.notify(),
+                    PlaylistsEvent::LeftPlaylist(playlist) => {
+                        this.remember(Location::Playlists(Some(playlist.clone())), cx);
+                    }
                 },
             );
         let output_changes = cx.subscribe(&audio_settings, {
@@ -351,6 +360,7 @@ impl AppShell {
             session,
             profile,
             destination: Destination::Home,
+            history: History::new(),
             home,
             library,
             artists,
@@ -362,6 +372,7 @@ impl AppShell {
             covers,
             _player_events: player_events,
             _library_events: library_events,
+            _artists_events: artists_events,
             _playlists_events: playlists_events,
             _output_changes: output_changes,
             _cover_key_changes: cover_key_changes,
@@ -371,6 +382,45 @@ impl AppShell {
         self.screen = Screen::Workspace(Box::new(workspace));
         self.update_menus(cx);
         cx.notify();
+    }
+
+    fn subscribe_to_library(
+        library: &Entity<Library>,
+        home: &Entity<Home>,
+        artists: &Entity<Artists>,
+        songs: &Entity<Songs>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Subscription {
+        cx.subscribe_in(library, window, {
+            let home = home.downgrade();
+            let artists = artists.downgrade();
+            let songs = songs.downgrade();
+            move |this, _, event, window, cx| match event {
+                LibraryEvent::AlbumsSynced => {
+                    home.update(cx, |home, cx| home.library_synced(cx)).ok();
+                    artists.update(cx, |artists, cx| artists.refresh(cx)).ok();
+                }
+                LibraryEvent::SongsSynced => {
+                    songs.update(cx, |songs, cx| songs.songs_synced(cx)).ok();
+                    artists
+                        .update(cx, |artists, cx| artists.songs_synced(cx))
+                        .ok();
+                }
+                LibraryEvent::SyncFailed(error) => {
+                    // The albums' screen says so itself.
+                    if let Screen::Workspace(workspace) = &this.screen
+                        && workspace.destination != Destination::Albums
+                    {
+                        let message = format!("Couldn't refresh the library. {error}");
+                        window.push_notification((NotificationType::Error, message), cx);
+                    }
+                }
+                LibraryEvent::LeftAlbum(album) => {
+                    this.remember(Location::Albums(Some(album.clone())), cx);
+                }
+            }
+        })
     }
 
     fn destination(&self) -> Option<Destination> {
@@ -384,7 +434,25 @@ impl AppShell {
         crate::set_menus(self.queue_shown, self.destination(), cx);
     }
 
+    /// Goes to `destination`; going back returns to where this leaves.
     fn show_destination(
+        &mut self,
+        destination: Destination,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Screen::Workspace(workspace) = &mut self.screen else {
+            return;
+        };
+        if workspace.destination != destination {
+            let left = workspace.location(cx);
+            workspace.history.visit(left);
+            self.enter_destination(destination, window, cx);
+        }
+    }
+
+    /// Makes `destination` the screen showing.
+    fn enter_destination(
         &mut self,
         destination: Destination,
         window: &mut Window,
@@ -418,21 +486,89 @@ impl AppShell {
 
     /// Shows `artist` on the artists' screen, whichever screen is showing.
     fn show_artist(&mut self, artist: &ArtistId, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_destination(Destination::Artists, window, cx);
-        if let Screen::Workspace(workspace) = &self.screen {
-            workspace.artists.update(cx, |artists, cx| {
-                artists.reveal_artist(artist.clone(), window, cx)
-            });
-        }
+        self.leave_for(&Location::Artists(Some(artist.clone())), cx);
+        self.go_to(Location::Artists(Some(artist.clone())), window, cx);
     }
 
     /// Shows `album` on the albums' screen, whichever screen is showing.
     fn show_album(&mut self, album: &AlbumId, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_destination(Destination::Albums, window, cx);
-        if let Screen::Workspace(workspace) = &self.screen {
-            workspace.library.update(cx, |library, cx| {
-                library.reveal_album(album.clone(), window, cx)
-            });
+        self.leave_for(&Location::Albums(Some(album.clone())), cx);
+        self.go_to(Location::Albums(Some(album.clone())), window, cx);
+    }
+
+    /// Records leaving for `next` when going back should return here.
+    fn leave_for(&mut self, next: &Location, cx: &mut Context<Self>) {
+        if let Screen::Workspace(workspace) = &mut self.screen {
+            let here = workspace.location(cx);
+            if here.is_worth_returning_to_from(next) {
+                workspace.history.visit(here);
+            }
+        }
+    }
+
+    /// Records that a screen moved on from `left` by itself.
+    fn remember(&mut self, left: Location, cx: &mut Context<Self>) {
+        if let Screen::Workspace(workspace) = &mut self.screen {
+            workspace.history.visit(left);
+            cx.notify();
+        }
+    }
+
+    /// Shows `location`, leaving the history as it is.
+    fn go_to(&mut self, location: Location, window: &mut Window, cx: &mut Context<Self>) {
+        self.enter_destination(location.destination(), window, cx);
+        let Screen::Workspace(workspace) = &self.screen else {
+            return;
+        };
+        match location {
+            Location::Artists(Some(artist)) => workspace
+                .artists
+                .update(cx, |artists, cx| artists.reveal_artist(artist, window, cx)),
+            Location::Albums(Some(album)) => workspace
+                .library
+                .update(cx, |library, cx| library.reveal_album(album, window, cx)),
+            Location::Playlists(Some(playlist)) => {
+                workspace.playlists.update(cx, |playlists, cx| {
+                    playlists.reveal_playlist(playlist, window, cx)
+                })
+            }
+            Location::Home
+            | Location::Artists(None)
+            | Location::Albums(None)
+            | Location::Songs
+            | Location::Playlists(None) => {}
+        }
+        cx.notify();
+    }
+
+    fn go_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Screen::Workspace(workspace) = &mut self.screen else {
+            return;
+        };
+        let here = workspace.location(cx);
+        if let Some(previous) = workspace.history.back(here) {
+            self.go_to(previous, window, cx);
+        }
+    }
+
+    fn go_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Screen::Workspace(workspace) = &mut self.screen else {
+            return;
+        };
+        let here = workspace.location(cx);
+        if let Some(next) = workspace.history.forward(here) {
+            self.go_to(next, window, cx);
+        }
+    }
+
+    /// Whether going back and going forward lead anywhere.
+    fn history_available(&self) -> (bool, bool) {
+        match &self.screen {
+            Screen::Workspace(workspace) => (
+                workspace.history.can_go_back(),
+                workspace.history.can_go_forward(),
+            ),
+            Screen::SignIn { .. } => (false, false),
         }
     }
 
@@ -526,6 +662,28 @@ impl AppShell {
         window.viewport_size().width >= workspace.screen_min_width(window, cx) + queue
     }
 
+    /// Makes `root` go back and forward, by the commands wherever they lead
+    /// somewhere, and by what mice and trackpads send for it.
+    fn handle_navigation(&self, root: Stateful<Div>, cx: &mut Context<Self>) -> Stateful<Div> {
+        let (can_go_back, can_go_forward) = self.history_available();
+        root.on_mouse_down(
+            MouseButton::Navigate(NavigationDirection::Back),
+            cx.listener(|this, _, window, cx| this.go_back(window, cx)),
+        )
+        .on_mouse_down(
+            MouseButton::Navigate(NavigationDirection::Forward),
+            cx.listener(|this, _, window, cx| this.go_forward(window, cx)),
+        )
+        .when(can_go_back, |this| {
+            this.on_action(cx.listener(|this, _: &GoBack, window, cx| this.go_back(window, cx)))
+        })
+        .when(can_go_forward, |this| {
+            this.on_action(
+                cx.listener(|this, _: &GoForward, window, cx| this.go_forward(window, cx)),
+            )
+        })
+    }
+
     /// The screen showing and, when shown, the queue to its right.
     fn render_workspace(
         &self,
@@ -571,6 +729,7 @@ impl AppShell {
         let destination_ix = self
             .destination()
             .and_then(|current| Destination::ALL.iter().position(|d| *d == current));
+        let (can_go_back, can_go_forward) = self.history_available();
         TitleBar::new()
             .child(
                 h_flex()
@@ -588,6 +747,34 @@ impl AppShell {
                             _ => None,
                         };
                         this.child(
+                            h_flex()
+                                .flex_none()
+                                .child(
+                                    Button::new("go-back")
+                                        .ghost()
+                                        .small()
+                                        .icon(IconName::ChevronLeft)
+                                        .disabled(!can_go_back)
+                                        .accessibility_label("Back")
+                                        .tooltip_with_action("Back", &GoBack, None)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.go_back(window, cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new("go-forward")
+                                        .ghost()
+                                        .small()
+                                        .icon(IconName::ChevronRight)
+                                        .disabled(!can_go_forward)
+                                        .accessibility_label("Forward")
+                                        .tooltip_with_action("Forward", &GoForward, None)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.go_forward(window, cx);
+                                        })),
+                                ),
+                        )
+                        .child(
                             div()
                                 .text_sm()
                                 .font_medium()
@@ -775,6 +962,7 @@ impl Render for AppShell {
                     this.update_player(window, cx, Player::seek_backward);
                 }))
             })
+            .when(signed_in, |this| self.handle_navigation(this, cx))
             .child(self.render_title_bar(queue_visible, queue_fits, cx))
             .child(div().flex_1().min_h_0().child(content))
             .when_some(self.player().cloned(), |this, player| this.child(player))

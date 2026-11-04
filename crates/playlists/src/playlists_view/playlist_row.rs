@@ -73,7 +73,7 @@ impl RenderOnce for PlaylistRow {
                 on_click
                     .update(cx, |this, cx| {
                         this.list_focus.focus(window, cx);
-                        this.select(click_id.clone(), window, cx);
+                        this.choose(click_id.clone(), window, cx);
                     })
                     .ok();
             })
