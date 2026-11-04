@@ -16,12 +16,21 @@ pub(crate) fn columns_for(width: f32) -> usize {
     ((room / (CARD_MIN_WIDTH + CARD_GAP)) as usize).max(1)
 }
 
+/// A shelf of album cards.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AlbumShelf {
+    Recommended,
+    MostPlayed,
+    New,
+}
+
 /// Something on the screen that can be selected, by identity, so that the
-/// selection survives a reload.
+/// selection survives a reload. An album can be on more than one shelf, and
+/// each of its cards is an item of its own.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Item {
     Song(SongId),
-    Album(AlbumId),
+    Album(AlbumShelf, AlbumId),
 }
 
 /// A keyboard move among the items.
@@ -81,7 +90,7 @@ mod tests {
     }
 
     fn album(id: &str) -> Item {
-        Item::Album(AlbumId::new(id))
+        Item::Album(AlbumShelf::New, AlbumId::new(id))
     }
 
     /// Two songs above two rows of albums, the second one short.
@@ -180,6 +189,20 @@ mod tests {
         assert_eq!(page("s8", Motion::PageDown), Some(song("s9")));
         assert_eq!(page("s5", Motion::PageUp), Some(song("s1")));
         assert_eq!(page("s2", Motion::PageUp), Some(song("s0")));
+    }
+
+    #[test]
+    fn an_album_on_two_shelves_does_not_hold_up_a_move() {
+        let on = |shelf| Item::Album(shelf, AlbumId::new("a"));
+        let rows = [vec![on(AlbumShelf::MostPlayed)], vec![on(AlbumShelf::New)]];
+        assert_eq!(
+            step(&rows, Some(&on(AlbumShelf::MostPlayed)), Motion::Down),
+            Some(on(AlbumShelf::New))
+        );
+        assert_eq!(
+            step(&rows, Some(&on(AlbumShelf::New)), Motion::Up),
+            Some(on(AlbumShelf::MostPlayed))
+        );
     }
 
     #[test]

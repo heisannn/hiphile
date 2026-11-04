@@ -22,7 +22,7 @@ use ui::list_navigation::{
 };
 use ui::{CoverArt, format_duration};
 
-use crate::layout::{Item, Motion, columns_for, step};
+use crate::layout::{AlbumShelf, Item, Motion, columns_for, step};
 use crate::recent::most_recent;
 use crate::recommend::{Recommendations, fetch_recommended, today};
 use crate::{
@@ -32,6 +32,8 @@ use crate::{
 
 /// How many of the songs played last show.
 const RECENT_SONGS: usize = 8;
+/// How many of the albums played most to fetch, for the widest window.
+const MOST_PLAYED: u32 = 12;
 /// How many rows of the albums added last show.
 const NEW_ALBUM_ROWS: usize = 2;
 /// How many of the albums added last to fetch, for the widest window.
@@ -48,8 +50,9 @@ const RECOMMENDED_RETRY_AFTER: Duration = Duration::from_secs(10 * 60);
 /// The group of an album card, for the hover outline over its cover.
 const CARD_GROUP: &str = "home-album-card";
 
-/// The home screen: albums to try, the songs played last and the albums added
-/// last. Owns those lists, the selection among them, and the focus.
+/// The home screen: albums to try, the songs played last, the albums played
+/// most and the albums added last. Owns those lists, the selection among them,
+/// and the focus.
 ///
 /// The lists come from the server, which alone knows every play. An item stays
 /// on show while a reload that replaces it is on its way or fails.
@@ -69,6 +72,7 @@ pub struct Home {
     /// When a pick that went wrong may be made again.
     recommended_retry: Option<Instant>,
     recent: Shelf<Song>,
+    most_played: Shelf<Album>,
     new_albums: Shelf<Album>,
     selection: Option<Item>,
     now_playing: Option<NowPlaying>,
@@ -76,6 +80,7 @@ pub struct Home {
     columns: usize,
     _recommended_task: Task<()>,
     _recent_task: Task<()>,
+    _most_played_task: Task<()>,
     _new_albums_task: Task<()>,
     _album_task: Task<()>,
     _subscriptions: Vec<Subscription>,
@@ -126,18 +131,19 @@ enum Part {
     RecommendedHeading,
     /// A spinner or a failure.
     RecommendedStatus,
-    /// The albums at these positions.
-    RecommendedRow(Range<usize>),
     RecentHeading,
     /// A spinner or a failure.
     RecentStatus,
     /// The song at this position.
     Song(usize),
+    MostPlayedHeading,
+    /// A spinner or a failure.
+    MostPlayedStatus,
     NewAlbumsHeading,
     /// A spinner, a failure, or word of there being no albums.
     NewAlbumsStatus,
-    /// The albums at these positions.
-    AlbumRow(Range<usize>),
+    /// The albums at these positions on this shelf.
+    AlbumRow(AlbumShelf, Range<usize>),
 }
 
 /// What to do with an album's songs once they have been fetched.
@@ -169,18 +175,21 @@ impl Home {
             recommending: false,
             recommended_retry: None,
             recent: Shelf::Loading,
+            most_played: Shelf::Loading,
             new_albums: Shelf::Loading,
             selection: None,
             now_playing: None,
             columns: 4,
             _recommended_task: Task::ready(()),
             _recent_task: Task::ready(()),
+            _most_played_task: Task::ready(()),
             _new_albums_task: Task::ready(()),
             _album_task: Task::ready(()),
             _subscriptions: subscriptions,
         };
         this.load_recommended(cx);
         this.reload_recently_played(cx);
+        this.reload_most_played(cx);
         this.reload_new_albums(cx);
         this
     }
@@ -207,7 +216,7 @@ impl Home {
                 if let Some(kept) = kept {
                     this.recommended_day = Some(kept.day);
                     this.recommended.finish(Ok(kept.albums));
-                    this.keep_new_albums_off_recommended();
+                    this.keep_shelves_off_recommended();
                     cx.notify();
                 }
                 this.renew_recommended(cx);
@@ -237,7 +246,7 @@ impl Home {
         let client = self.session.client().clone();
         let day = today();
         self._recommended_task = cx.spawn(async move |this, cx| {
-            let result = fetch_recommended(&client, NEW_ALBUMS).await;
+            let result = fetch_recommended(&client, NEW_ALBUMS, MOST_PLAYED).await;
             this.update(cx, |this, cx| {
                 let result = result.map_err(|error| session::describe(&error).into());
                 this.finish_recommended(result, day, cx);
@@ -277,7 +286,7 @@ impl Home {
                 self.recommended.finish(Err(error));
             }
         }
-        self.keep_new_albums_off_recommended();
+        self.keep_shelves_off_recommended();
         cx.notify();
     }
 
@@ -295,6 +304,7 @@ impl Home {
     /// Asks again what the server has after a library sync, which may also
     /// give a library that had nothing to pick from something to recommend.
     pub fn library_synced(&mut self, cx: &mut Context<Self>) {
+        self.reload_most_played(cx);
         self.reload_new_albums(cx);
         if self.recommended.items().is_empty() {
             self.recommended_day = None;
@@ -302,24 +312,50 @@ impl Home {
         self.renew_recommended(cx);
     }
 
-    /// An album shows once, also when it arrives after the day's pick.
-    fn keep_new_albums_off_recommended(&mut self) {
-        let is_new = |album: &Album| {
-            self.new_albums
-                .items()
+    /// A recommendation is something the other album shelves do not show,
+    /// also when an album gets there after the day's pick.
+    fn keep_shelves_off_recommended(&mut self) {
+        let is_shelved = |album: &Album| {
+            [&self.most_played, &self.new_albums]
                 .iter()
-                .any(|new| new.id() == album.id())
+                .flat_map(|shelf| shelf.items())
+                .any(|shelved| shelved.id() == album.id())
         };
         if let Shelf::Loaded(albums) = &self.recommended
-            && albums.iter().any(is_new)
+            && albums.iter().any(is_shelved)
         {
-            let others = albums.iter().filter(|album| !is_new(album)).cloned();
+            let others = albums.iter().filter(|album| !is_shelved(album)).cloned();
             self.recommended = Shelf::Loaded(others.collect());
         }
     }
 
+    /// Takes in a play the server has heard of, which can change what was
+    /// played last and most.
+    pub fn song_played(&mut self, cx: &mut Context<Self>) {
+        self.reload_recently_played(cx);
+        self.reload_most_played(cx);
+        self.renew_recommended(cx);
+    }
+
+    /// Asks the server again what was played most.
+    fn reload_most_played(&mut self, cx: &mut Context<Self>) {
+        self.most_played.begin();
+        let client = self.session.client().clone();
+        self._most_played_task = cx.spawn(async move |this, cx| {
+            let result = client.frequent_albums(MOST_PLAYED).await;
+            this.update(cx, |this, cx| {
+                this.most_played
+                    .finish(result.map_err(|error| session::describe(&error).into()));
+                this.keep_shelves_off_recommended();
+                cx.notify();
+            })
+            .ok();
+        });
+        cx.notify();
+    }
+
     /// Asks the server again what was played last, as after a play.
-    pub fn reload_recently_played(&mut self, cx: &mut Context<Self>) {
+    fn reload_recently_played(&mut self, cx: &mut Context<Self>) {
         self.recent.begin();
         let client = self.session.client().clone();
         self._recent_task = cx.spawn(async move |this, cx| {
@@ -353,7 +389,7 @@ impl Home {
             this.update(cx, |this, cx| {
                 this.new_albums
                     .finish(result.map_err(|error| session::describe(&error).into()));
-                this.keep_new_albums_off_recommended();
+                this.keep_shelves_off_recommended();
                 cx.notify();
             })
             .ok();
@@ -370,7 +406,7 @@ impl Home {
         }
     }
 
-    /// The children of the scrolling list. A shelf of songs or recommendations
+    /// The children of the scrolling list. A shelf other than the new albums
     /// with nothing to show goes away, as a server with no plays or albums yet
     /// has nothing to say about it.
     fn parts(&self) -> Vec<Part> {
@@ -379,7 +415,8 @@ impl Home {
             Shelf::Loaded(albums) if albums.is_empty() => {}
             Shelf::Loaded(albums) => {
                 parts.push(Part::RecommendedHeading);
-                parts.push(Part::RecommendedRow(
+                parts.push(Part::AlbumRow(
+                    AlbumShelf::Recommended,
                     0..albums.len().min(self.columns.max(1)),
                 ));
             }
@@ -397,6 +434,19 @@ impl Home {
                 parts.extend([Part::RecentHeading, Part::RecentStatus]);
             }
         }
+        match &self.most_played {
+            Shelf::Loaded(albums) if albums.is_empty() => {}
+            Shelf::Loaded(albums) => {
+                parts.push(Part::MostPlayedHeading);
+                parts.push(Part::AlbumRow(
+                    AlbumShelf::MostPlayed,
+                    0..albums.len().min(self.columns.max(1)),
+                ));
+            }
+            Shelf::Loading | Shelf::Failed(_) => {
+                parts.extend([Part::MostPlayedHeading, Part::MostPlayedStatus]);
+            }
+        }
         parts.push(Part::NewAlbumsHeading);
         let albums = self.new_albums.items().len();
         if albums == 0 {
@@ -405,12 +455,20 @@ impl Home {
             let columns = self.columns.max(1);
             let shown = albums.min(columns * NEW_ALBUM_ROWS);
             parts.extend(
-                (0..shown)
-                    .step_by(columns)
-                    .map(|start| Part::AlbumRow(start..(start + columns).min(shown))),
+                (0..shown).step_by(columns).map(|start| {
+                    Part::AlbumRow(AlbumShelf::New, start..(start + columns).min(shown))
+                }),
             );
         }
         parts
+    }
+
+    fn albums(&self, shelf: AlbumShelf) -> &[Album] {
+        match shelf {
+            AlbumShelf::Recommended => self.recommended.items(),
+            AlbumShelf::MostPlayed => self.most_played.items(),
+            AlbumShelf::New => self.new_albums.items(),
+        }
     }
 
     /// What can be selected, row by row from the top.
@@ -422,13 +480,10 @@ impl Home {
                     let song = self.recent.items().get(*ix)?;
                     Some(vec![Item::Song(song.id().clone())])
                 }
-                Part::RecommendedRow(range) => {
-                    let albums = self.recommended.items().get(range.clone())?;
-                    Some(albums.iter().map(album_item).collect())
-                }
-                Part::AlbumRow(range) => {
-                    let albums = self.new_albums.items().get(range.clone())?;
-                    Some(albums.iter().map(album_item).collect())
+                Part::AlbumRow(shelf, range) => {
+                    let albums = self.albums(*shelf).get(range.clone())?;
+                    let item = |album: &Album| Item::Album(*shelf, album.id().clone());
+                    Some(albums.iter().map(item).collect())
                 }
                 _ => None,
             })
@@ -447,7 +502,10 @@ impl Home {
                 && matches!(motion, Motion::Up | Motion::PageUp | Motion::First)
                 && matches!(
                     parts[ix - 1],
-                    Part::RecommendedHeading | Part::RecentHeading | Part::NewAlbumsHeading
+                    Part::RecommendedHeading
+                        | Part::RecentHeading
+                        | Part::MostPlayedHeading
+                        | Part::NewAlbumsHeading
                 );
             self.scroll
                 .scroll_to_item(if heading_above { ix - 1 } else { ix });
@@ -464,16 +522,11 @@ impl Home {
                 .items()
                 .get(*ix)
                 .is_some_and(|song| song.id() == id),
-            (Part::RecommendedRow(range), Item::Album(id)) => self
-                .recommended
-                .items()
-                .get(range.clone())
-                .is_some_and(|albums| albums.iter().any(|album| album.id() == id)),
-            (Part::AlbumRow(range), Item::Album(id)) => self
-                .new_albums
-                .items()
-                .get(range.clone())
-                .is_some_and(|albums| albums.iter().any(|album| album.id() == id)),
+            (Part::AlbumRow(part_shelf, range), Item::Album(shelf, id)) if part_shelf == shelf => {
+                self.albums(*shelf)
+                    .get(range.clone())
+                    .is_some_and(|albums| albums.iter().any(|album| album.id() == id))
+            }
             _ => false,
         })
     }
@@ -508,7 +561,7 @@ impl Home {
 
     fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.selection_on_screen() {
-            Some(Item::Album(album)) => {
+            Some(Item::Album(_, album)) => {
                 window.dispatch_action(Box::new(ShowAlbum::new(album)), cx);
             }
             Some(Item::Song(song)) => {
@@ -522,7 +575,7 @@ impl Home {
 
     fn play(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.selection_on_screen() {
-            Some(Item::Album(album)) => self.act_on_album(album, AlbumAction::Play, window, cx),
+            Some(Item::Album(_, album)) => self.act_on_album(album, AlbumAction::Play, window, cx),
             Some(Item::Song(song)) => {
                 if let Some(ix) = self.song_ix(&song) {
                     self.play_from(ix, window, cx);
@@ -534,7 +587,7 @@ impl Home {
 
     fn enqueue(&mut self, placement: Placement, window: &mut Window, cx: &mut Context<Self>) {
         match self.selection_on_screen() {
-            Some(Item::Album(album)) => {
+            Some(Item::Album(_, album)) => {
                 self.act_on_album(album, AlbumAction::Enqueue(placement), window, cx);
             }
             Some(Item::Song(id)) => {
@@ -550,7 +603,7 @@ impl Home {
 
     fn show_in_library(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let album = match self.selection_on_screen() {
-            Some(Item::Album(album)) => Some(album),
+            Some(Item::Album(_, album)) => Some(album),
             Some(Item::Song(id)) => self
                 .song_ix(&id)
                 .and_then(|ix| self.recent.items()[ix].album_id().cloned()),
@@ -638,18 +691,15 @@ impl Home {
         match part {
             Part::RecommendedHeading => heading("Recommended").into_any_element(),
             Part::RecommendedStatus => self.render_recommended_status(cx),
-            Part::RecommendedRow(range) => {
-                let albums = self.recommended.items().get(range.clone());
-                self.render_album_row(albums.unwrap_or_default(), window, cx)
-            }
             Part::RecentHeading => heading("Recently played").into_any_element(),
+            Part::MostPlayedHeading => heading("Most played").into_any_element(),
             Part::NewAlbumsHeading => heading("New albums").into_any_element(),
             Part::RecentStatus => self.render_recent_status(cx),
+            Part::MostPlayedStatus => self.render_most_played_status(cx),
             Part::NewAlbumsStatus => self.render_new_albums_status(cx),
             Part::Song(ix) => self.render_song(*ix, window, cx),
-            Part::AlbumRow(range) => {
-                let albums = self.new_albums.items().get(range.clone());
-                self.render_album_row(albums.unwrap_or_default(), window, cx)
+            Part::AlbumRow(shelf, range) => {
+                self.render_album_row(*shelf, range.clone(), window, cx)
             }
         }
     }
@@ -679,6 +729,20 @@ impl Home {
                 cx,
             ),
             Shelf::Loading | Shelf::Loaded(_) => loading("Loading recently played songs", cx),
+        }
+    }
+
+    fn render_most_played_status(&self, cx: &mut Context<Self>) -> AnyElement {
+        match &self.most_played {
+            Shelf::Failed(error) => failure(
+                error.clone(),
+                Button::new("retry-most-played")
+                    .label("Retry")
+                    .small()
+                    .on_click(cx.listener(|this, _, _, cx| this.reload_most_played(cx))),
+                cx,
+            ),
+            Shelf::Loading | Shelf::Loaded(_) => loading("Loading most played albums", cx),
         }
     }
 
@@ -814,14 +878,16 @@ impl Home {
 
     fn render_album_row(
         &self,
-        albums: &[Album],
+        shelf: AlbumShelf,
+        range: Range<usize>,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let columns = u16::try_from(self.columns.max(1)).unwrap_or(u16::MAX);
+        let albums = self.albums(shelf).get(range).unwrap_or_default();
         let cards = albums
             .iter()
-            .map(|album| self.render_album_card(album, window, cx))
+            .map(|album| self.render_album_card(shelf, album, window, cx))
             .collect::<Vec<_>>();
         div()
             .flex_none()
@@ -836,12 +902,13 @@ impl Home {
 
     fn render_album_card(
         &self,
+        shelf: AlbumShelf,
         album: &Album,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = album.id().clone();
-        let is_selected = self.selection == Some(Item::Album(id.clone()));
+        let is_selected = self.selection == Some(Item::Album(shelf, id.clone()));
         let focused = self.focus.is_focused(window);
         let name = SharedString::from(album.name().to_owned());
         let artist = album
@@ -866,7 +933,7 @@ impl Home {
         };
         let focus = self.focus.clone();
         v_flex()
-            .id(ElementId::Name(format!("home-album-{id}").into()))
+            .id(ElementId::Name(format!("home-album-{shelf:?}-{id}").into()))
             .group(CARD_GROUP)
             .min_w_0()
             .gap_1()
@@ -901,14 +968,14 @@ impl Home {
             .on_click(cx.listener({
                 let id = id.clone();
                 move |this, _, window, cx| {
-                    this.select(Item::Album(id.clone()), window, cx);
+                    this.select(Item::Album(shelf, id.clone()), window, cx);
                     this.open(window, cx);
                 }
             }))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, _, window, cx| {
-                    this.select(Item::Album(id.clone()), window, cx);
+                    this.select(Item::Album(shelf, id.clone()), window, cx);
                 }),
             )
             .context_menu(move |menu, _, _| {
@@ -1029,10 +1096,6 @@ async fn fetch_recently_played(client: &client::Client) -> Result<RecentlyPlayed
             complete: failure.is_none(),
         }),
     }
-}
-
-fn album_item(album: &Album) -> Item {
-    Item::Album(album.id().clone())
 }
 
 fn heading(title: &'static str) -> impl IntoElement {
@@ -1160,6 +1223,8 @@ mod tests {
         home.recommended_day = None;
         home.recommended = Shelf::Loaded(Arc::from([]));
         home._recent_task = Task::ready(());
+        home._most_played_task = Task::ready(());
+        home.most_played = Shelf::Loaded(Arc::from([]));
         home._new_albums_task = Task::ready(());
         home.recent = Shelf::Loaded(songs.iter().map(|id| song(id)).collect());
         home.new_albums = Shelf::Loaded(albums(album_count).into());
@@ -1170,7 +1235,13 @@ mod tests {
         let (home, cx) = home(cx);
         update(&home, cx, |home, _| {
             fill(home, &[], 1);
-            assert_eq!(home.parts(), [Part::NewAlbumsHeading, Part::AlbumRow(0..1)]);
+            assert_eq!(
+                home.parts(),
+                [
+                    Part::NewAlbumsHeading,
+                    Part::AlbumRow(AlbumShelf::New, 0..1)
+                ]
+            );
         });
     }
 
@@ -1180,9 +1251,11 @@ mod tests {
         update(&home, cx, |home, _| {
             home._recommended_task = Task::ready(());
             home._recent_task = Task::ready(());
+            home._most_played_task = Task::ready(());
             home._new_albums_task = Task::ready(());
             home.recommended = Shelf::Failed("offline".into());
             home.recent = Shelf::Loading;
+            home.most_played = Shelf::Failed("offline".into());
             home.new_albums = Shelf::Failed("offline".into());
             assert_eq!(
                 home.parts(),
@@ -1191,6 +1264,8 @@ mod tests {
                     Part::RecommendedStatus,
                     Part::RecentHeading,
                     Part::RecentStatus,
+                    Part::MostPlayedHeading,
+                    Part::MostPlayedStatus,
                     Part::NewAlbumsHeading,
                     Part::NewAlbumsStatus,
                 ]
@@ -1208,8 +1283,8 @@ mod tests {
                 home.parts(),
                 [
                     Part::NewAlbumsHeading,
-                    Part::AlbumRow(0..3),
-                    Part::AlbumRow(3..6),
+                    Part::AlbumRow(AlbumShelf::New, 0..3),
+                    Part::AlbumRow(AlbumShelf::New, 3..6),
                 ]
             );
             fill(home, &[], 4);
@@ -1217,8 +1292,8 @@ mod tests {
                 home.parts(),
                 [
                     Part::NewAlbumsHeading,
-                    Part::AlbumRow(0..3),
-                    Part::AlbumRow(3..4),
+                    Part::AlbumRow(AlbumShelf::New, 0..3),
+                    Part::AlbumRow(AlbumShelf::New, 3..4),
                 ]
             );
         });
@@ -1235,16 +1310,111 @@ mod tests {
                 home.parts(),
                 [
                     Part::RecommendedHeading,
-                    Part::RecommendedRow(0..3),
+                    Part::AlbumRow(AlbumShelf::Recommended, 0..3),
                     Part::RecentHeading,
                     Part::Song(0),
                     Part::NewAlbumsHeading,
-                    Part::AlbumRow(0..1),
+                    Part::AlbumRow(AlbumShelf::New, 0..1),
                 ]
             );
             home.recommended = Shelf::Loaded(recommended(2).into());
-            assert_eq!(home.parts()[1], Part::RecommendedRow(0..2));
+            assert_eq!(
+                home.parts()[1],
+                Part::AlbumRow(AlbumShelf::Recommended, 0..2)
+            );
         });
+    }
+
+    #[gpui_kit::test]
+    fn most_played_comes_above_new_albums_in_one_row_of_as_many_as_fit(cx: &mut TestAppContext) {
+        let (home, cx) = home(cx);
+        update(&home, cx, |home, _| {
+            fill(home, &["s1"], 1);
+            home.most_played = Shelf::Loaded(albums(12).into());
+            home.columns = 3;
+            assert_eq!(
+                home.parts(),
+                [
+                    Part::RecentHeading,
+                    Part::Song(0),
+                    Part::MostPlayedHeading,
+                    Part::AlbumRow(AlbumShelf::MostPlayed, 0..3),
+                    Part::NewAlbumsHeading,
+                    Part::AlbumRow(AlbumShelf::New, 0..1),
+                ]
+            );
+            home.most_played = Shelf::Loaded(albums(2).into());
+            assert_eq!(
+                home.parts()[3],
+                Part::AlbumRow(AlbumShelf::MostPlayed, 0..2)
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn no_plays_takes_the_most_played_shelf_away(cx: &mut TestAppContext) {
+        let (home, cx) = home(cx);
+        update(&home, cx, |home, _| {
+            fill(home, &[], 1);
+            assert!(!home.parts().contains(&Part::MostPlayedHeading));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn the_keys_pass_through_an_album_on_two_shelves(cx: &mut TestAppContext) {
+        let (home, cx) = home(cx);
+        update(&home, cx, |home, cx| {
+            fill(home, &[], 1);
+            home.most_played = Shelf::Loaded(albums(1).into());
+            cx.notify();
+        });
+        cx.update(|window, cx| {
+            let focus = home.read(cx).focus.clone();
+            focus.focus(window, cx);
+        });
+        cx.run_until_parked();
+
+        let selection = |cx: &mut VisualTestContext| {
+            cx.update(|_, cx| home.read(cx).selection.clone()).unwrap()
+        };
+        let on = |shelf| Item::Album(shelf, AlbumId::new("a0"));
+        cx.simulate_keystrokes("down");
+        assert_eq!(selection(cx), on(AlbumShelf::MostPlayed));
+        cx.simulate_keystrokes("down");
+        assert_eq!(selection(cx), on(AlbumShelf::New));
+        cx.simulate_keystrokes("up");
+        assert_eq!(selection(cx), on(AlbumShelf::MostPlayed));
+    }
+
+    #[gpui_kit::test]
+    fn an_album_on_the_most_played_shelf_leaves_the_recommendations(cx: &mut TestAppContext) {
+        let (home, cx) = home(cx);
+        update(&home, cx, |home, _| {
+            fill(home, &[], 0);
+            home.recommended = Shelf::Loaded(recommended(2).into());
+            home.most_played = Shelf::Loaded(Arc::from([album("r1")]));
+
+            home.keep_shelves_off_recommended();
+
+            assert_eq!(shown(home), ["r0"]);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_play_reloads_the_shelves_it_changes_keeping_what_is_on_show(cx: &mut TestAppContext) {
+        let (home, cx) = home(cx);
+        update(&home, cx, |home, cx| {
+            fill(home, &["s1"], 0);
+            home.most_played = Shelf::Loaded(albums(1).into());
+            home.recommended_day = Some(today());
+
+            home.song_played(cx);
+
+            assert_eq!(home.recent.items().len(), 1);
+            assert_eq!(home.most_played.items().len(), 1);
+            assert!(!home.recommending);
+        });
+        cx.run_until_parked();
     }
 
     #[gpui_kit::test]
@@ -1264,9 +1434,15 @@ mod tests {
             cx.update(|_, cx| home.read(cx).selection.clone()).unwrap()
         };
         cx.simulate_keystrokes("down");
-        assert_eq!(selection(cx), Item::Album(AlbumId::new("r0")));
+        assert_eq!(
+            selection(cx),
+            Item::Album(AlbumShelf::Recommended, AlbumId::new("r0"))
+        );
         cx.simulate_keystrokes("right");
-        assert_eq!(selection(cx), Item::Album(AlbumId::new("r1")));
+        assert_eq!(
+            selection(cx),
+            Item::Album(AlbumShelf::Recommended, AlbumId::new("r1"))
+        );
         cx.simulate_keystrokes("down");
         assert_eq!(selection(cx), Item::Song(SongId::new("s1")));
     }
@@ -1277,7 +1453,7 @@ mod tests {
         update(&home, cx, |home, cx| {
             fill(home, &[], 0);
             home.recommended = Shelf::Loaded(recommended(1).into());
-            home.selection = Some(Item::Album(AlbumId::new("r0")));
+            home.selection = Some(Item::Album(AlbumShelf::Recommended, AlbumId::new("r0")));
             cx.notify();
         });
         cx.update(|window, cx| {
@@ -1305,7 +1481,7 @@ mod tests {
             fill(home, &[], 0);
             home.recommended = Shelf::Loaded(recommended(6).into());
             home.columns = 6;
-            home.selection = Some(Item::Album(AlbumId::new("r5")));
+            home.selection = Some(Item::Album(AlbumShelf::Recommended, AlbumId::new("r5")));
             assert_eq!(home.selection_on_screen(), home.selection);
 
             home.columns = 4;
@@ -1549,7 +1725,7 @@ mod tests {
             home.recommended = Shelf::Loaded(recommended(2).into());
             home.new_albums = Shelf::Loaded(Arc::from([album("r0")]));
 
-            home.keep_new_albums_off_recommended();
+            home.keep_shelves_off_recommended();
 
             let ids: Vec<_> = home
                 .recommended
@@ -1621,19 +1797,34 @@ mod tests {
         cx.simulate_keystrokes("down");
         assert_eq!(selection(cx), Item::Song(SongId::new("s1")));
         cx.simulate_keystrokes("down down");
-        assert_eq!(selection(cx), Item::Album(AlbumId::new("a0")));
+        assert_eq!(
+            selection(cx),
+            Item::Album(AlbumShelf::New, AlbumId::new("a0"))
+        );
         cx.simulate_keystrokes("right");
-        assert_eq!(selection(cx), Item::Album(AlbumId::new("a1")));
+        assert_eq!(
+            selection(cx),
+            Item::Album(AlbumShelf::New, AlbumId::new("a1"))
+        );
         cx.simulate_keystrokes("down");
-        assert_eq!(selection(cx), Item::Album(AlbumId::new("a3")));
+        assert_eq!(
+            selection(cx),
+            Item::Album(AlbumShelf::New, AlbumId::new("a3"))
+        );
         cx.simulate_keystrokes("pageup");
         assert_eq!(selection(cx), Item::Song(SongId::new("s1")));
         cx.simulate_keystrokes("pagedown");
-        assert_eq!(selection(cx), Item::Album(AlbumId::new("a2")));
+        assert_eq!(
+            selection(cx),
+            Item::Album(AlbumShelf::New, AlbumId::new("a2"))
+        );
         cx.simulate_keystrokes("home");
         assert_eq!(selection(cx), Item::Song(SongId::new("s1")));
         cx.simulate_keystrokes("end");
-        assert_eq!(selection(cx), Item::Album(AlbumId::new("a3")));
+        assert_eq!(
+            selection(cx),
+            Item::Album(AlbumShelf::New, AlbumId::new("a3"))
+        );
     }
 
     /// Whether `key` presses a focused Retry, which the screen's own use of
@@ -1652,7 +1843,7 @@ mod tests {
         update(&home, cx, |home, cx| {
             fill(home, &[], 1);
             home.recent = Shelf::Failed("before".into());
-            home.selection = Some(Item::Album(AlbumId::new("a0")));
+            home.selection = Some(Item::Album(AlbumShelf::New, AlbumId::new("a0")));
             cx.notify();
         });
         cx.update(|window, cx| {
@@ -1692,12 +1883,15 @@ mod tests {
         update(&home, cx, |home, _| {
             fill(home, &[], 24);
             home.columns = 7;
-            home.selection = Some(Item::Album(AlbumId::new("a13")));
+            home.selection = Some(Item::Album(AlbumShelf::New, AlbumId::new("a13")));
             assert_eq!(home.selection_on_screen(), home.selection);
 
             home.columns = 2;
             assert_eq!(home.selection_on_screen(), None);
-            assert_eq!(home.selection, Some(Item::Album(AlbumId::new("a13"))));
+            assert_eq!(
+                home.selection,
+                Some(Item::Album(AlbumShelf::New, AlbumId::new("a13")))
+            );
 
             home.columns = 7;
             assert_eq!(home.selection_on_screen(), home.selection);

@@ -193,11 +193,7 @@ impl AppShell {
                             .ok();
                     }
                     PlayerEvent::Played => {
-                        home.update(cx, |home, cx| {
-                            home.reload_recently_played(cx);
-                            home.renew_recommended(cx);
-                        })
-                        .ok();
+                        home.update(cx, |home, cx| home.song_played(cx)).ok();
                     }
                     PlayerEvent::QueueChanged => {}
                 }

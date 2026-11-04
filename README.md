@@ -53,17 +53,17 @@ overrides it, and takes `system` as well.
 
 ## Home
 
-The app opens on albums to try, the songs played last and the albums added last,
-all asked of the server: Subsonic has no method for the songs, so they come from
-the albums played last, whose songs say when each was played. Plays from other
-clients show the next time the list loads, which is on signing in and after each
-play.
+The app opens on albums to try, the songs played last, the albums played most and
+the albums added last, all asked of the server: Subsonic has no method for the
+songs, so they come from the albums played last, whose songs say when each was
+played. Plays from other clients show the next time the list loads, which is on
+signing in and after each play.
 
 The albums to try are picked once a day and stay until the next. They come from
 songs similar to the albums played last (`getSimilarSongs2`), one album per
-artist, leaving out albums played in the last two weeks and those on the shelf of
-new ones. Similar songs need the server to be set up with Last.fm or the like;
-the most played albums and random ones fill what they leave open.
+artist, leaving out albums played in the last two weeks and those on the shelves
+of the most played and of new ones. Similar songs need the server to be set up with Last.fm or the like;
+the most played albums past that shelf and random ones fill what they leave open.
 
 ## Scrobbling
 

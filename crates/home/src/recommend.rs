@@ -42,24 +42,27 @@ pub(crate) struct Recommendations {
 pub(crate) async fn fetch_recommended(
     client: &client::Client,
     new_albums: u32,
+    most_played: u32,
 ) -> Result<Recommendations, client::Error> {
     let (played, newest, frequent, random) = try_join4(
         client.recently_played_albums(HEARD_ALBUMS),
         client.newest_albums(new_albums),
-        client.frequent_albums(FILL_ALBUMS),
+        client.frequent_albums(most_played + FILL_ALBUMS),
         client.random_albums(FILL_ALBUMS),
     )
     .await?;
 
+    let (most_played, frequent) = frequent.split_at(frequent.len().min(most_played as usize));
     let similar = similar_songs(&played, |seed| client.similar_songs(seed, SIMILAR_SONGS)).await;
 
     let picks = pick(
         &Sources {
             similar: &similar.lists,
-            frequent: &frequent,
+            frequent,
             random: &random,
             played: &played,
             newest: &newest,
+            most_played,
             now: Utc::now(),
         },
         RECOMMENDED,
@@ -129,6 +132,8 @@ struct Sources<'a> {
     played: &'a [Album],
     /// The albums on the shelf of new ones.
     newest: &'a [Album],
+    /// The albums on the shelf of the most played.
+    most_played: &'a [Album],
     now: DateTime<Utc>,
 }
 
@@ -141,8 +146,8 @@ struct Candidate<'a> {
 
 /// Up to `count` albums, those with similar songs first and the most played
 /// and random ones for the rest, taking turns between sources so that none
-/// outweighs the others. Leaves out albums played lately and new ones, and
-/// takes one album per artist.
+/// outweighs the others. Leaves out albums played lately and those on the other
+/// shelves, and takes one album per artist.
 fn pick(sources: &Sources<'_>, count: usize) -> Vec<AlbumId> {
     let similar: Vec<Vec<_>> = sources
         .similar
@@ -158,6 +163,7 @@ fn pick(sources: &Sources<'_>, count: usize) -> Vec<AlbumId> {
         .iter()
         .filter(|album| played_since(album, heard_since))
         .chain(sources.newest)
+        .chain(sources.most_played)
         .map(Album::id)
         .collect();
     let mut artists = HashSet::new();
@@ -263,6 +269,7 @@ mod tests {
             random: &[],
             played: &[],
             newest: &[],
+            most_played: &[],
             now: now(),
         }
     }
@@ -372,6 +379,17 @@ mod tests {
             ..sources(&[], &frequent)
         };
         assert_eq!(ids(&pick(&sources, 12)), ["old"]);
+    }
+
+    #[test]
+    fn albums_on_the_most_played_shelf_are_left_out() {
+        let similar = [vec![song("top", "A"), song("other", "B")]];
+        let most_played = [album("top", "A")];
+        let sources = Sources {
+            most_played: &most_played,
+            ..sources(&similar, &[])
+        };
+        assert_eq!(ids(&pick(&sources, 12)), ["other"]);
     }
 
     #[test]
