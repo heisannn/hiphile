@@ -127,15 +127,6 @@ impl Session {
     pub fn server(&self) -> &ServerInfo {
         &self.server
     }
-
-    /// The server's host, for showing which server is connected.
-    pub fn host(&self) -> &str {
-        self.client
-            .server()
-            .base_url()
-            .host_str()
-            .unwrap_or_default()
-    }
 }
 
 /// What went wrong updating the cached library, as [`describe`] does for

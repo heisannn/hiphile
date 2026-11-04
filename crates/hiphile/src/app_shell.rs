@@ -17,8 +17,8 @@ use gpui_kit::component::{
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Div, Entity, FocusHandle, Focusable as _,
     InteractiveElement as _, IntoElement, MouseButton, NavigationDirection, ParentElement as _,
-    Pixels, Render, SharedString, Stateful, Styled as _, Subscription, Window, div,
-    prelude::FluentBuilder as _,
+    Pixels, Render, Stateful, Styled as _, Subscription, Window, div, prelude::FluentBuilder as _,
+    px,
 };
 use home::Home;
 use library::{Library, LibraryEvent, Refresh};
@@ -41,6 +41,9 @@ use crate::{
 
 /// The queue's width when first shown, in rem.
 const QUEUE_WIDTH: f32 = 20.;
+/// Where the title bar's contents start on macOS, just past the window
+/// controls. Those are not scaled with the base font, so this is in pixels.
+const MACOS_TITLE_BAR_INSET: Pixels = px(64.);
 
 /// Key context of the whole window; player shortcuts are bound to it.
 pub const WORKSPACE_CONTEXT: &str = "Workspace";
@@ -107,7 +110,6 @@ impl Destination {
 
 /// Everything that exists only while signed in.
 struct Workspace {
-    session: Session,
     profile: config::Profile,
     destination: Destination,
     /// Where going back and forward leads.
@@ -361,7 +363,6 @@ impl AppShell {
             }
         });
         let workspace = Workspace {
-            session,
             profile,
             destination: Destination::Home,
             history: History::new(),
@@ -730,30 +731,22 @@ impl AppShell {
         queue_fits: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let server = match &self.screen {
-            Screen::Workspace(workspace) => Some(&workspace.session),
-            Screen::SignIn { .. } => None,
-        };
+        let signed_in = matches!(self.screen, Screen::Workspace(_));
         let destination_ix = self
             .destination()
             .and_then(|current| Destination::ALL.iter().position(|d| *d == current));
         let (can_go_back, can_go_forward) = self.history_available();
         TitleBar::new()
+            .when(cfg!(target_os = "macos"), |this| {
+                this.pl(MACOS_TITLE_BAR_INSET)
+            })
             .child(
                 h_flex()
                     .size_full()
                     .px_1()
                     .pr_3()
                     .gap_2()
-                    .when_some(server, |this, session| {
-                        let software = match (
-                            session.server().server_type(),
-                            session.server().server_version(),
-                        ) {
-                            (Some(name), Some(version)) => Some(format!("{name} {version}")),
-                            (Some(name), None) => Some(name.to_owned()),
-                            _ => None,
-                        };
+                    .when(signed_in, |this| {
                         this.child(
                             h_flex()
                                 .flex_none()
@@ -782,20 +775,7 @@ impl AppShell {
                                         })),
                                 ),
                         )
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_medium()
-                                .child(SharedString::from(session.host().to_owned())),
-                        )
-                        .when_some(software, |this, software| {
-                            this.child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(software),
-                            )
-                        })
+                        .child(div().text_sm().font_medium().child("Hiphile"))
                         .child(
                             div().flex_none().ml_3().child(
                                 TabBar::new("destinations")
