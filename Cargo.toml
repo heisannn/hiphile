@@ -44,7 +44,7 @@ dirs = "7.0"
 discord-rich-presence = "1.1"
 futures = "0.3"
 http = "1.5"
-gpui-kit = "0.9"
+gpui-kit = { version = "0.9", features = ["gpui-fast"] }
 hex = "0.4"
 keyring-core = "1.0"
 md-5 = "0.11"
@@ -74,6 +74,8 @@ too_many_lines = "warn"
 [profile.dev.package]
 gpui-pre = { opt-level = 3 }
 gpui-component = { opt-level = 3 }
+gpui-fast = { opt-level = 3 }
+gpui-fast-platform = { opt-level = 3 }
 gpui-kit = { opt-level = 3 }
 gpui-kit-assets = { opt-level = 3 }
 gpui-pre-platform = { opt-level = 3 }
