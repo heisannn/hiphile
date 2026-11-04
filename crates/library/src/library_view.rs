@@ -32,8 +32,8 @@ use ui::{CoverArt, format_duration};
 
 use crate::filter::matching_albums;
 use crate::{
-    ALBUMS_CONTEXT, AddAlbumToPlaylist, AddToPlaylist, AddToQueue, Back, FocusFilter,
-    LIBRARY_CONTEXT, Open, Play, PlayNext, Refresh, SONGS_CONTEXT,
+    ALBUMS_CONTEXT, AddAlbumToPlaylist, AddToPlaylist, AddToQueue, Back, CONTROL_CONTEXT,
+    FocusFilter, LIBRARY_CONTEXT, Open, Play, PlayNext, Refresh, SONGS_CONTEXT,
 };
 
 /// Pixel size requested for the detail cover: twice its on-screen size, for
@@ -878,6 +878,7 @@ impl Library {
                             )
                             .child(
                                 h_flex()
+                                    .key_context(CONTROL_CONTEXT)
                                     .pt_3()
                                     .gap_2()
                                     .child(
@@ -1259,7 +1260,7 @@ fn failure(
                 .text_color(cx.theme().muted_foreground)
                 .child(reason),
         )
-        .child(h_flex().child(retry))
+        .child(h_flex().key_context(CONTROL_CONTEXT).child(retry))
         .into_any_element()
 }
 
@@ -1272,7 +1273,7 @@ mod tests {
     use std::time::Duration;
 
     use actions::NewPlaylist;
-    use gpui_kit::{TestAppContext, VisualTestContext};
+    use gpui_kit::{KeyUpEvent, Keystroke, TestAppContext, VisualTestContext};
     use serde_json::json;
     use subsonic::Credentials;
 
@@ -1369,6 +1370,93 @@ mod tests {
                 library.reveal_album(AlbumId::new(id), window, cx);
             });
         });
+    }
+
+    /// Presses `key` on what focus reaches next after `from`. A button acts on
+    /// the release.
+    fn press_after(
+        from: impl Fn(&Library) -> FocusHandle,
+        key: &str,
+        library: &Entity<Library>,
+        cx: &mut VisualTestContext,
+    ) {
+        cx.update(|window, cx| {
+            let focus = from(library.read(cx));
+            focus.focus(window, cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.focus_next(cx));
+        cx.run_until_parked();
+        cx.simulate_keystrokes(key);
+        let os = cx.update(|_, cx| cx.platform_info().os);
+        cx.simulate_event(KeyUpEvent {
+            keystroke: Keystroke::parse_with_os(key, os).unwrap(),
+        });
+    }
+
+    fn key_presses_retry(key: &str, cx: &mut TestAppContext) -> bool {
+        let (library, cx) = library(cx);
+        cx.update(|_, cx| crate::init(cx));
+        wait_for_the_sync(&library, cx);
+        cx.update(|_, cx| {
+            library.update(cx, |library, cx| {
+                library.albums = Albums::Failed("before".into());
+                library.visible = Arc::default();
+                library.sync = SyncState::Idle;
+                cx.notify();
+            });
+        });
+        press_after(|library| library.albums_focus.clone(), key, &library, cx);
+
+        // Pressed, it loads again, and whatever that comes to is not this.
+        cx.update(
+            |_, cx| !matches!(&library.read(cx).albums, Albums::Failed(error) if error == "before"),
+        )
+    }
+
+    /// Lets the sync a new library starts fail, which leaves the state alone.
+    fn wait_for_the_sync(library: &Entity<Library>, cx: &mut VisualTestContext) {
+        for _ in 0..500 {
+            cx.run_until_parked();
+            let running =
+                cx.update(|_, cx| matches!(library.read(cx).sync, SyncState::Running { .. }));
+            if !running {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("the sync never ended");
+    }
+
+    #[gpui_kit::test]
+    fn enter_presses_a_focused_retry(cx: &mut TestAppContext) {
+        assert!(key_presses_retry("enter", cx));
+    }
+
+    #[gpui_kit::test]
+    fn space_presses_a_focused_retry(cx: &mut TestAppContext) {
+        assert!(key_presses_retry("space", cx));
+    }
+
+    #[gpui_kit::test]
+    fn enter_on_the_play_button_plays_from_the_first_song(cx: &mut TestAppContext) {
+        let (library, cx) = library(cx);
+        cx.update(|_, cx| crate::init(cx));
+        wait_for_the_sync(&library, cx);
+        show_album_a(&library, cx);
+        cx.update(|_, cx| {
+            library.update(cx, |library, cx| library.select_song(1, cx));
+        });
+        let played = Rc::new(RefCell::new(Vec::new()));
+        cx.update(|_, cx| {
+            let played = played.clone();
+            cx.on_action(move |action: &PlaySongs, _| played.borrow_mut().push(action.start_ix()));
+        });
+
+        press_after(|library| library.songs_focus.clone(), "enter", &library, cx);
+        cx.run_until_parked();
+
+        assert_eq!(*played.borrow(), [0]);
     }
 
     #[gpui_kit::test]

@@ -7,7 +7,7 @@
 mod filter;
 mod library_view;
 
-use gpui_kit::{App, KeyBinding, actions};
+use gpui_kit::{App, KeyBinding, NoAction, actions};
 use ui::list_navigation::bind_list_navigation;
 
 pub use library_view::{Library, LibraryEvent};
@@ -17,6 +17,9 @@ pub const ALBUMS_CONTEXT: &str = "LibraryAlbums";
 /// Key context of the focused song list.
 pub const SONGS_CONTEXT: &str = "LibrarySongs";
 const LIBRARY_CONTEXT: &str = "Library";
+/// Key context of buttons inside the lists, which keep Enter and Space to
+/// themselves.
+const CONTROL_CONTEXT: &str = "LibraryControl";
 
 actions!(
     library,
@@ -72,5 +75,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("escape", Back, Some(SONGS_CONTEXT)),
         KeyBinding::new(find, FocusFilter, Some(LIBRARY_CONTEXT)),
         KeyBinding::new(refresh, Refresh, Some(LIBRARY_CONTEXT)),
+        KeyBinding::new("enter", NoAction, Some(CONTROL_CONTEXT)),
+        KeyBinding::new("space", NoAction, Some(CONTROL_CONTEXT)),
     ]);
 }
