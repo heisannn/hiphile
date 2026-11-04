@@ -67,6 +67,7 @@ unsafe_code = "deny"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+too_many_lines = "warn"
 
 [profile.dev.package]
 gpui-pre = { opt-level = 3 }

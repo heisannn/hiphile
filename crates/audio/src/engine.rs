@@ -425,6 +425,10 @@ fn run(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one loop on the engine's thread, whose locals every command changes"
+)]
 fn serve(
     commands: &mpsc::Receiver<Command>,
     command_sender: &mpsc::Sender<Command>,
