@@ -6,6 +6,7 @@ use gpui_kit::component::WindowExt as _;
 use gpui_kit::{
     DismissEvent, KeyDownEvent, KeyUpEvent, Keystroke, TestAppContext, VisualTestContext,
 };
+use gpui_kit::{Modifiers, MouseButton, Pixels, Point, point};
 use serde_json::json;
 use subsonic::Credentials;
 
@@ -944,4 +945,92 @@ fn enter_in_the_rename_dialog_closes_it_and_saves(cx: &mut TestAppContext) {
 
     cx.update(|window, cx| assert!(!window.has_active_dialog(cx)));
     finish_writing(&view, cx);
+}
+
+/// The middle of the row at `ix` in the song list, as last drawn.
+fn song_row(view: &Entity<Playlists>, ix: usize, cx: &mut VisualTestContext) -> Point<Pixels> {
+    cx.update(|_, cx| {
+        let this = view.read(cx);
+        let len = this.loaded_detail().unwrap().entries.len();
+        let state = this.songs_scroll.0.borrow();
+        let list = state.base_handle.bounds();
+        let row = state.last_item_size.unwrap().contents.height / len as f32;
+        point(
+            list.origin.x + list.size.width / 2.,
+            list.origin.y + row * (ix as f32 + 0.5),
+        )
+    })
+}
+
+/// Presses on the row at `from` and takes the pointer to the row at `to`.
+fn drag_toward(from: usize, to: usize, view: &Entity<Playlists>, cx: &mut VisualTestContext) {
+    cx.run_until_parked();
+    let (from, to) = (song_row(view, from, cx), song_row(view, to, cx));
+    let none = Modifiers::default();
+    cx.simulate_mouse_move(from, None, none);
+    cx.simulate_mouse_down(from, MouseButton::Left, none);
+    cx.simulate_mouse_move(to, MouseButton::Left, none);
+    cx.simulate_mouse_move(to, MouseButton::Left, none);
+}
+
+fn drop_on(ix: usize, view: &Entity<Playlists>, cx: &mut VisualTestContext) {
+    let to = song_row(view, ix, cx);
+    cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn a_song_dragged_down_lands_after_the_row_dropped_on(cx: &mut TestAppContext) {
+    let server = two_playlists();
+    let (view, cx) = loaded_from(&server, cx);
+
+    drag_toward(0, 2, &view, cx);
+    drop_on(2, &view, cx);
+
+    assert_eq!(song_ids(&view, cx), ["2", "3", "1"]);
+    cx.update(|_, cx| assert_eq!(view.read(cx).selected_entry_ix(), Some(2)));
+    wait_for_saving(&view, cx);
+}
+
+#[gpui_kit::test]
+fn a_song_dragged_up_lands_before_the_row_dropped_on(cx: &mut TestAppContext) {
+    let server = two_playlists();
+    let (view, cx) = loaded_from(&server, cx);
+
+    drag_toward(2, 0, &view, cx);
+    drop_on(0, &view, cx);
+
+    assert_eq!(song_ids(&view, cx), ["3", "1", "2"]);
+    cx.update(|_, cx| assert_eq!(view.read(cx).selected_entry_ix(), Some(0)));
+    wait_for_saving(&view, cx);
+}
+
+#[gpui_kit::test]
+fn the_songs_of_a_readonly_playlist_cant_be_dragged(cx: &mut TestAppContext) {
+    let (view, cx) = playlists(cx);
+    cx.update(|_, cx| {
+        view.update(cx, |this, cx| {
+            let shared = serde_json::from_value(json!({
+                "id": "a", "name": "alpha", "owner": "bob", "readonly": true,
+            }))
+            .unwrap();
+            this.loaded_detail_mut().unwrap().playlist = shared;
+            cx.notify();
+        });
+    });
+
+    drag_toward(0, 2, &view, cx);
+
+    cx.update(|_, cx| assert!(!cx.has_active_drag()));
+    drop_on(2, &view, cx);
+    assert_eq!(song_ids(&view, cx), ["1", "2", "3"]);
+}
+
+#[gpui_kit::test]
+fn the_songs_of_an_editable_playlist_can_be_dragged(cx: &mut TestAppContext) {
+    let (view, cx) = playlists(cx);
+
+    drag_toward(0, 2, &view, cx);
+
+    cx.update(|_, cx| assert!(cx.has_active_drag()));
 }
