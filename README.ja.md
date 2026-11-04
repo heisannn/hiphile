@@ -23,6 +23,16 @@ Hiphile は macOS で開発されています。Windows と Linux は定期的�
 - **Discord:** Discord のステータスに現在再生中の曲を表示します。
 - **CLI:** ターミナルからの同期、検索、再生。
 
+## インストール
+
+[Releases](https://github.com/heisannn/hiphile/releases) から macOS または Windows 向けのビルドをダウンロードしてください。
+
+ビルドには開発者証明書の署名がないため、システムの警告が表示されます。
+
+- **macOS:** `hiphile.app` をアプリケーションフォルダに移動し、初回起動の前に
+  `xattr -dr com.apple.quarantine /Applications/hiphile.app` を実行してください。
+- **Windows:** SmartScreen にブロックされた場合は、**詳細情報** を選んでから **実行** を選んでください。
+
 ## はじめに
 
 ```sh

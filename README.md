@@ -23,6 +23,16 @@ Hiphile is developed on macOS. Windows and Linux are not regularly tested.
 - **Discord:** Show the current song as your Discord status.
 - **CLI:** Sync, search and play from the terminal.
 
+## Install
+
+Download a build for macOS or Windows from [Releases](https://github.com/heisannn/hiphile/releases).
+
+The builds are not signed with a developer certificate, so the system warns about them:
+
+- **macOS:** Move `hiphile.app` to Applications, then run
+  `xattr -dr com.apple.quarantine /Applications/hiphile.app` before the first launch.
+- **Windows:** If SmartScreen stops the app, choose **More info**, then **Run anyway**.
+
 ## Getting started
 
 ```sh
