@@ -87,6 +87,9 @@ pub fn server_url(address: &str) -> Result<Url, Error> {
 }
 
 /// Cheap to clone; clones share the transport.
+///
+/// A response is decoded where its future is polled, so await calls off a UI
+/// thread: a response can be large.
 #[derive(Clone)]
 pub struct Client {
     net: net::Client,

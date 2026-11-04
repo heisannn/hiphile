@@ -246,7 +246,11 @@ impl Home {
         let client = self.session.client().clone();
         let day = today();
         self._recommended_task = cx.spawn(async move |this, cx| {
-            let result = fetch_recommended(&client, NEW_ALBUMS, MOST_PLAYED).await;
+            let result = cx
+                .background_spawn(async move {
+                    fetch_recommended(&client, NEW_ALBUMS, MOST_PLAYED).await
+                })
+                .await;
             this.update(cx, |this, cx| {
                 let result = result.map_err(|error| session::describe(&error).into());
                 this.finish_recommended(result, day, cx);
@@ -342,7 +346,9 @@ impl Home {
         self.most_played.begin();
         let client = self.session.client().clone();
         self._most_played_task = cx.spawn(async move |this, cx| {
-            let result = client.frequent_albums(MOST_PLAYED).await;
+            let result = cx
+                .background_spawn(async move { client.frequent_albums(MOST_PLAYED).await })
+                .await;
             this.update(cx, |this, cx| {
                 this.most_played
                     .finish(result.map_err(|error| session::describe(&error).into()));
@@ -359,7 +365,9 @@ impl Home {
         self.recent.begin();
         let client = self.session.client().clone();
         self._recent_task = cx.spawn(async move |this, cx| {
-            let result = fetch_recently_played(&client).await;
+            let result = cx
+                .background_spawn(async move { fetch_recently_played(&client).await })
+                .await;
             this.update(cx, |this, cx| {
                 this.finish_recently_played(
                     result.map_err(|error| session::describe(&error).into()),
@@ -385,7 +393,9 @@ impl Home {
         self.new_albums.begin();
         let client = self.session.client().clone();
         self._new_albums_task = cx.spawn(async move |this, cx| {
-            let result = client.newest_albums(NEW_ALBUMS).await;
+            let result = cx
+                .background_spawn(async move { client.newest_albums(NEW_ALBUMS).await })
+                .await;
             this.update(cx, |this, cx| {
                 this.new_albums
                     .finish(result.map_err(|error| session::describe(&error).into()));
@@ -638,7 +648,10 @@ impl Home {
             };
             let loaded = match saved {
                 Some(saved) => Ok(saved),
-                None => client.album(&album).await,
+                None => {
+                    cx.background_spawn(async move { client.album(&album).await })
+                        .await
+                }
             };
             cx.update(|window, cx| match loaded {
                 Ok(loaded) => {

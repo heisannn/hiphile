@@ -294,7 +294,11 @@ impl Library {
                         .ok();
                 }
             }
-            let result = client.album(&album).await;
+            let result = {
+                let album = album.clone();
+                cx.background_spawn(async move { client.album(&album).await })
+                    .await
+            };
             if let (Ok(fetched), Some(catalog)) = (&result, catalog) {
                 let fetched = fetched.clone();
                 cx.background_spawn(async move { catalog.put_album(&fetched).ok() })
@@ -1027,7 +1031,10 @@ async fn run_sync(
     let describe_catalog =
         |error: catalog::Error| SharedString::from(session::describe_catalog(&error));
     let Some(catalog) = session.catalog().cloned() else {
-        let albums = client.albums_by_name().await.map_err(describe)?;
+        let albums = cx
+            .background_spawn(async move { client.albums_by_name().await })
+            .await
+            .map_err(describe)?;
         this.update(cx, |this, cx| {
             this.set_albums(albums, cx);
             cx.emit(LibraryEvent::AlbumsSynced);
@@ -1065,7 +1072,14 @@ async fn run_sync(
         }
         Outcome::UpToDate if !shown => Some(saved(cx).await.map_err(describe_catalog)?),
         // The CLI may be filling an empty copy; ask the server directly.
-        Outcome::Busy if !shown => Some(client.albums_by_name().await.map_err(describe)?),
+        Outcome::Busy if !shown => {
+            let client = client.clone();
+            Some(
+                cx.background_spawn(async move { client.albums_by_name().await })
+                    .await
+                    .map_err(describe)?,
+            )
+        }
         Outcome::UpToDate | Outcome::Busy => None,
     };
     if let Some(albums) = albums {
