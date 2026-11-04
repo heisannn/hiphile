@@ -1034,3 +1034,29 @@ fn the_songs_of_an_editable_playlist_can_be_dragged(cx: &mut TestAppContext) {
 
     cx.update(|_, cx| assert!(cx.has_active_drag()));
 }
+
+#[gpui_kit::test]
+fn the_page_keys_move_by_the_songs_in_view(cx: &mut TestAppContext) {
+    let (view, cx) = playlists(cx);
+    let songs: Vec<Song> = (0..100).map(|ix| song(&ix.to_string())).collect();
+    let len = songs.len();
+    cx.update(|_, cx| {
+        view.update(cx, |this, cx| {
+            this.loaded_detail_mut().unwrap().entries = Entries::new(songs);
+            cx.notify();
+        });
+    });
+    focus_songs(&view, cx);
+    cx.run_until_parked();
+    let page = cx.update(|_, cx| {
+        let state = view.read(cx).songs_scroll.0.borrow();
+        let row = state.last_item_size.unwrap().contents.height / len as f32;
+        (state.base_handle.bounds().size.height / row).floor() as usize
+    });
+    assert!(page > 1, "the window shows {page} rows");
+
+    cx.simulate_keystrokes("home pagedown");
+    cx.update(|_, cx| assert_eq!(view.read(cx).selected_entry_ix(), Some(page)));
+    cx.simulate_keystrokes("pageup");
+    cx.update(|_, cx| assert_eq!(view.read(cx).selected_entry_ix(), Some(0)));
+}

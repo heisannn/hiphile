@@ -146,7 +146,7 @@ impl QueueView {
         // look at the queue usually starts.
         let target = match (selected_ix, current_ix, motion) {
             (None, Some(current), Motion::By(_) | Motion::Pages(_)) => Some(current),
-            _ => motion.apply(selected_ix, len, page_rows(&self.scroll)),
+            _ => motion.apply(selected_ix, len, page_rows(&self.scroll, len)),
         };
         if let Some(ix) = target {
             self.select(ix, cx);

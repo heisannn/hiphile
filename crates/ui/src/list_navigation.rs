@@ -2,8 +2,8 @@
 //! every feature.
 
 use gpui_kit::{
-    App, Context, InteractiveElement, KeyBinding, NoAction, UniformListScrollHandle, Window,
-    actions, px,
+    App, Context, InteractiveElement, KeyBinding, NoAction, Pixels, UniformListScrollHandle,
+    Window, actions, px,
 };
 
 /// Key context around a button inside a list, whose own use of Enter and Space
@@ -104,20 +104,26 @@ impl Motion {
     }
 }
 
-/// Rows that fit in a list's viewport, at least one, from its last layout.
+/// Rows that fit in the viewport of a list of `len` rows, at least one, from
+/// its last layout.
 ///
 /// Reads the handle's public state, which the list writes while it lays
 /// out; should that be under way, a page is one row rather than a panic.
-pub fn page_rows(scroll: &UniformListScrollHandle) -> usize {
+pub fn page_rows(scroll: &UniformListScrollHandle, len: usize) -> usize {
     let Ok(state) = scroll.0.try_borrow() else {
         return 1;
     };
     let viewport = state.base_handle.bounds().size.height;
-    let row = state.last_item_size.map(|size| size.item.height);
-    match row {
-        Some(row) if row > px(0.) => ((viewport / row).floor() as usize).max(1),
-        _ => 1,
+    let contents = state.last_item_size.map(|size| size.contents.height);
+    contents.map_or(1, |contents| rows_in_view(viewport, contents, len))
+}
+
+/// `contents` is the height of all `len` rows, which are of one height.
+fn rows_in_view(viewport: Pixels, contents: Pixels, len: usize) -> usize {
+    if len == 0 || contents <= px(0.) {
+        return 1;
     }
+    ((viewport / (contents / len as f32)).floor() as usize).max(1)
 }
 
 #[cfg(test)]
@@ -183,6 +189,23 @@ mod tests {
     ) {
         cx.update(|window, cx| handle(list.read(cx)).focus(window, cx));
         cx.run_until_parked();
+    }
+
+    #[test]
+    fn a_page_is_the_whole_rows_in_view() {
+        // Rows of 48 in a viewport of 480, and of 500 with one partly in view.
+        assert_eq!(rows_in_view(px(480.), px(4800.), 100), 10);
+        assert_eq!(rows_in_view(px(500.), px(4800.), 100), 10);
+        // A list shorter than its viewport still pages by what would fit.
+        assert_eq!(rows_in_view(px(480.), px(144.), 3), 10);
+    }
+
+    #[test]
+    fn a_page_is_a_row_with_nothing_to_measure() {
+        assert_eq!(rows_in_view(px(480.), px(0.), 0), 1);
+        assert_eq!(rows_in_view(px(480.), px(0.), 3), 1);
+        assert_eq!(rows_in_view(px(0.), px(4800.), 100), 1);
+        assert_eq!(rows_in_view(px(40.), px(4800.), 100), 1);
     }
 
     #[gpui_kit::test]

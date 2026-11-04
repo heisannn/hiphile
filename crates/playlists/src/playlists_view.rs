@@ -445,9 +445,9 @@ impl Playlists {
     }
 
     fn move_selection(&mut self, motion: Motion, window: &mut Window, cx: &mut Context<Self>) {
-        let page = page_rows(&self.list_scroll);
-        let Some(position) = motion.apply(self.selected_position(), self.visible.len(), page)
-        else {
+        let len = self.visible.len();
+        let page = page_rows(&self.list_scroll, len);
+        let Some(position) = motion.apply(self.selected_position(), len, page) else {
             return;
         };
         if let Some(playlist) = self
@@ -489,7 +489,7 @@ impl Playlists {
         let len = self
             .loaded_detail()
             .map_or(0, |loaded| loaded.entries.len());
-        let page = page_rows(&self.songs_scroll);
+        let page = page_rows(&self.songs_scroll, len);
         if let Some(ix) = motion.apply(self.selected_entry_ix(), len, page) {
             self.select_entry_at(ix, cx);
         }

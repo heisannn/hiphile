@@ -373,9 +373,9 @@ impl Library {
     }
 
     fn move_album(&mut self, motion: Motion, cx: &mut Context<Self>) {
-        let page = page_rows(&self.albums_scroll);
-        let Some(position) = motion.apply(self.selected_position(), self.visible.len(), page)
-        else {
+        let len = self.visible.len();
+        let page = page_rows(&self.albums_scroll, len);
+        let Some(position) = motion.apply(self.selected_position(), len, page) else {
             return;
         };
         if let Some(album) = self.visible_album(position).map(|album| album.id().clone()) {
@@ -409,7 +409,7 @@ impl Library {
 
     fn move_song(&mut self, motion: Motion, cx: &mut Context<Self>) {
         let len = self.loaded_songs().map_or(0, |songs| songs.len());
-        let page = page_rows(&self.songs_scroll);
+        let page = page_rows(&self.songs_scroll, len);
         if let Some(ix) = motion.apply(self.selected_song_ix(), len, page) {
             self.select_song(ix, cx);
         }

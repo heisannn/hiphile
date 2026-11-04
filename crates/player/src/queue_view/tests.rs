@@ -191,3 +191,25 @@ fn removing_an_entry_selects_the_one_in_its_place(cx: &mut TestAppContext) {
     assert_eq!(song_ids(&view, cx), ["a"]);
     assert_eq!(selected_ix(&view, cx), Some(0));
 }
+
+#[gpui_kit::test]
+fn the_page_keys_move_by_the_rows_in_view(cx: &mut TestAppContext) {
+    let ids: Vec<String> = (0..100).map(|ix| ix.to_string()).collect();
+    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let (view, cx) = queue(&ids, 0, cx);
+    focus(&view, cx);
+    let page = cx.update(|_, cx| {
+        let this = view.read(cx);
+        let state = this.scroll.0.borrow();
+        let row = state.last_item_size.unwrap().contents.height / ids.len() as f32;
+        (state.base_handle.bounds().size.height / row).floor() as usize
+    });
+    assert!(page > 1, "the window shows {page} rows");
+
+    cx.simulate_keystrokes("home pagedown");
+    assert_eq!(selected_ix(&view, cx), Some(page));
+    cx.simulate_keystrokes("pagedown");
+    assert_eq!(selected_ix(&view, cx), Some(page * 2));
+    cx.simulate_keystrokes("pageup");
+    assert_eq!(selected_ix(&view, cx), Some(page));
+}

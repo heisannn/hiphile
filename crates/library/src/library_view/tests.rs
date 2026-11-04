@@ -441,3 +441,31 @@ fn an_album_without_songs_is_not_played(cx: &mut TestAppContext) {
 
     assert!(dispatched::<PlaySongs>(Play, cx).is_empty());
 }
+
+#[gpui_kit::test]
+fn the_page_keys_move_by_the_albums_in_view(cx: &mut TestAppContext) {
+    let (library, cx) = library(cx);
+    init_keys(cx);
+    wait_for_the_sync(&library, cx);
+    let albums: Vec<Album> = (0..100)
+        .map(|ix| album(&ix.to_string(), &ix.to_string()))
+        .collect();
+    let len = albums.len();
+    set_albums(&library, albums, cx);
+    cx.update(|window, cx| {
+        let focus = library.read(cx).albums_focus.clone();
+        focus.focus(window, cx);
+    });
+    cx.run_until_parked();
+    let page = cx.update(|_, cx| {
+        let state = library.read(cx).albums_scroll.0.borrow();
+        let row = state.last_item_size.unwrap().contents.height / len as f32;
+        (state.base_handle.bounds().size.height / row).floor() as usize
+    });
+    assert!(page > 1, "the window shows {page} rows");
+
+    cx.simulate_keystrokes("home pagedown");
+    cx.update(|_, cx| assert_eq!(library.read(cx).selected_position(), Some(page)));
+    cx.simulate_keystrokes("pageup");
+    cx.update(|_, cx| assert_eq!(library.read(cx).selected_position(), Some(0)));
+}
