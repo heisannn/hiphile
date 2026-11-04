@@ -34,10 +34,16 @@ username = "alice"
 ```
 
 The app writes it on sign-in and keeps any other keys and comments in the file.
-`HIPHILE_SERVER` and `HIPHILE_USERNAME` override it. Passwords never go in the
-file: signing in saves the password to the system keychain (Keychain on macOS,
-Credential Manager on Windows, the Secret Service elsewhere), the next launch
-signs in with it, and signing out deletes it.
+`HIPHILE_SERVER` and `HIPHILE_USERNAME` override it. Signing in saves the
+password to the system keychain (Keychain on macOS, Credential Manager on
+Windows, the Secret Service elsewhere), the next launch signs in with it, and
+signing out deletes it.
+
+To skip the keychain, for example while testing, add `password = "..."` to the
+file by hand. It is stored as plain text and the app never writes it. While it
+is there, it is used instead of the keychain for the file's `server` and
+`username`, so the next launch signs in with it even after signing out. Signing
+in to a different server or user removes it.
 
 hiphile > Settings… chooses the output device and the sample rate, which take
 effect at once and are kept as `output_device` and `sample_rate` (in Hz).
@@ -101,12 +107,13 @@ emptied and filled again.
 ## CLI
 
 The CLI uses the app's last sign-in by default: its server, its user, and the
-password saved in the keychain. Options or environment variables override each.
+password in `config.toml` or else the keychain. Options or environment variables
+override each.
 
 ```sh
 cargo run -p hiphile-cli -- ping
 cargo run -p hiphile-cli -- ping --server https://music.example.com --username alice
-# The password is read from --password, HIPHILE_PASSWORD, or the keychain;
+# The password is read from --password, HIPHILE_PASSWORD, config.toml, or the keychain;
 # --api-key or HIPHILE_API_KEY also works.
 cargo run -p hiphile-cli -- devices
 cargo run -p hiphile-cli -- sync                 # fetch every album and song into the cache

@@ -16,7 +16,7 @@ use subsonic::Credentials;
 pub enum SignInEvent {
     SignedIn {
         session: Session,
-        /// Where the user signed in; its password is in the keychain.
+        /// Where the user signed in.
         profile: config::Profile,
     },
 }
@@ -33,8 +33,9 @@ pub enum Start {
 /// The sign-in form. Owns its fields and the in-flight connection attempt;
 /// the app shell decides what happens after [`SignInEvent::SignedIn`].
 ///
-/// A successful sign-in saves the profile to the settings directory and the
-/// password to the keychain.
+/// A successful sign-in saves the profile to the settings directory and,
+/// unless the settings file holds the profile's password, the password to the
+/// keychain.
 pub struct SignIn {
     net: net::Client,
     store: Option<config::Store>,
@@ -142,15 +143,18 @@ impl SignIn {
         this
     }
 
-    /// Reads the profile's saved password and signs in with it. Without one,
-    /// or if the keychain fails, the form waits for the user as usual.
+    /// Reads the profile's saved password, from the settings file or else the
+    /// keychain, and signs in with it. Without one, or if the keychain fails,
+    /// the form waits for the user as usual.
     fn resume(&mut self, profile: config::Profile, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(keychain) = self.keychain.clone() else {
-            return;
-        };
-        let lookup = cx.background_spawn(async move { keychain.password(&profile) });
+        let store = self.store.clone();
+        let keychain = self.keychain.clone();
+        let lookup = cx.background_spawn(async move {
+            password_in_file(store.as_ref(), &profile)
+                .or_else(|| keychain?.password(&profile).ok().flatten())
+        });
         self._resume = cx.spawn_in(window, async move |this, cx| {
-            let Ok(Some(password)) = lookup.await else {
+            let Some(password) = lookup.await else {
                 return;
             };
             this.update_in(cx, |this, window, cx| {
@@ -243,16 +247,22 @@ impl SignIn {
         });
     }
 
-    /// Saves the profile, and the password to the keychain. A failure only
-    /// means the user types more next time, so it is not shown.
+    /// Saves the profile, and the password to the keychain unless the settings
+    /// file holds it. A failure only means the user types more next time, so it
+    /// is not shown.
     fn remember(&self, profile: &config::Profile, password: String, cx: &mut Context<Self>) {
         if let Some(store) = &self.store {
             store.save_profile(profile).ok();
         }
         if let Some(keychain) = self.keychain.clone() {
             let profile = profile.clone();
-            cx.background_spawn(async move { keychain.set_password(&profile, &password) })
-                .detach();
+            let store = self.store.clone();
+            cx.background_spawn(async move {
+                if password_in_file(store.as_ref(), &profile).is_none() {
+                    keychain.set_password(&profile, &password).ok();
+                }
+            })
+            .detach();
         }
     }
 
@@ -270,6 +280,10 @@ impl SignIn {
             _ => None,
         }
     }
+}
+
+fn password_in_file(store: Option<&config::Store>, profile: &config::Profile) -> Option<String> {
+    store?.password(profile).ok().flatten()
 }
 
 /// What went wrong, and what to try next.

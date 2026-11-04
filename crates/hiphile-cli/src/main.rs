@@ -57,7 +57,8 @@ enum Command {
 }
 
 /// Where to connect. Anything left out comes from the last sign-in in the
-/// app: its server, its user, and the password saved in the keychain.
+/// app: its server, its user, and the password in `config.toml` or else the
+/// keychain.
 #[derive(Args)]
 struct ServerArgs {
     /// Server address, e.g. https://music.example.com
@@ -126,6 +127,12 @@ impl ServerArgs {
 
 fn saved_password(server: &str, username: &str) -> anyhow::Result<String> {
     let profile = config::Profile::new(server, username);
+    let in_file = config::Store::user()
+        .ok()
+        .and_then(|store| store.password(&profile).ok().flatten());
+    if let Some(password) = in_file {
+        return Ok(password);
+    }
     config::Keychain::system()?
         .password(&profile)?
         .with_context(|| {

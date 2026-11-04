@@ -1,7 +1,8 @@
 //! Server profiles and passwords shared by the GUI and the CLI.
 //!
-//! Settings live in `~/.config/hiphile/config.toml` on every platform and
-//! never hold a secret. Passwords live in the system keychain.
+//! Settings live in `~/.config/hiphile/config.toml` on every platform.
+//! Passwords live in the system keychain, unless the user wrote one in the
+//! file by hand.
 
 mod keychain;
 mod profile;

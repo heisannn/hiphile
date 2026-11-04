@@ -52,6 +52,7 @@ pub enum Appearance {
 struct Settings {
     server: Option<String>,
     username: Option<String>,
+    password: Option<String>,
     volume: Option<f32>,
     song_cache_gib: Option<f64>,
     output_device: Option<String>,
@@ -106,6 +107,21 @@ impl Store {
             .server
             .zip(settings.username)
             .map(|(server, username)| Profile::new(server, username)))
+    }
+
+    /// The password written by hand in the file, if it belongs to `profile`.
+    /// It is only for the file's own `server` and `username`, so it is never
+    /// sent to a server named by an option or the environment. The app never
+    /// writes this key.
+    pub fn password(&self, profile: &Profile) -> Result<Option<String>, Error> {
+        let settings = self.read(
+            config_rs::Environment::with_prefix(ENV_PREFIX).source(Some(Default::default())),
+        )?;
+        let same_profile = settings.server.as_deref() == Some(profile.server())
+            && settings.username.as_deref() == Some(profile.username());
+        Ok(settings
+            .password
+            .filter(|password| same_profile && !password.is_empty()))
     }
 
     /// The playback volume from `0.0` to `1.0`, if one was saved.
@@ -203,9 +219,16 @@ impl Store {
     }
 
     /// Records `profile` in `config.toml`, keeping the file's other keys and
-    /// comments.
+    /// comments. A different profile removes `password`, which belonged to the
+    /// one it replaces.
     pub fn save_profile(&self, profile: &Profile) -> Result<(), Error> {
         self.edit(|document| {
+            let saved = |key| document.get(key).and_then(toml_edit::Item::as_str);
+            if saved("server") != Some(profile.server())
+                || saved("username") != Some(profile.username())
+            {
+                document.remove("password");
+            }
             document["server"] = toml_edit::value(profile.server());
             document["username"] = toml_edit::value(profile.username());
         })
@@ -590,6 +613,47 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn a_password_in_the_file_is_only_for_the_files_profile() {
+        let store = temporary_store("password");
+        let alice = Profile::new("https://music.example.com", "alice");
+        assert_eq!(store.password(&alice).unwrap(), None);
+
+        std::fs::create_dir_all(store.dir()).unwrap();
+        std::fs::write(
+            store.config_path(),
+            "server = \"https://music.example.com\"\nusername = \"alice\"\npassword = \"sesame\"\n",
+        )
+        .unwrap();
+        assert_eq!(store.password(&alice).unwrap().as_deref(), Some("sesame"));
+        for other in [
+            Profile::new("https://music.example.com", "bob"),
+            Profile::new("https://other.example.com", "alice"),
+        ] {
+            assert_eq!(store.password(&other).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn saving_the_same_profile_keeps_the_password_and_another_removes_it() {
+        let store = temporary_store("password-saved");
+        let alice = Profile::new("https://music.example.com", "alice");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        std::fs::write(
+            store.config_path(),
+            "server = \"https://music.example.com\"\nusername = \"alice\"\npassword = \"sesame\"\n",
+        )
+        .unwrap();
+
+        store.save_profile(&alice).unwrap();
+        assert_eq!(store.password(&alice).unwrap().as_deref(), Some("sesame"));
+
+        let bob = Profile::new("https://music.example.com", "bob");
+        store.save_profile(&bob).unwrap();
+        assert_eq!(store.password(&bob).unwrap(), None);
+        assert_eq!(read(&store, &[]).password, None);
     }
 
     #[test]
