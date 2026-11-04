@@ -2,12 +2,17 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use gpui_kit::{KeyDownEvent, KeyUpEvent, Keystroke, TestAppContext, VisualTestContext};
+use gpui_kit::component::WindowExt as _;
+use gpui_kit::{
+    DismissEvent, KeyDownEvent, KeyUpEvent, Keystroke, TestAppContext, VisualTestContext,
+};
 use serde_json::json;
 use subsonic::Credentials;
 
+use super::dialogs::open_name_dialog;
 use super::*;
 use crate::fake_server::FakeServer;
+use crate::name_form::NameForm;
 
 fn playlist(id: &str, name: &str) -> Playlist {
     serde_json::from_value(json!({ "id": id, "name": name, "owner": "alice" })).unwrap()
