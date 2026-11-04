@@ -1,13 +1,15 @@
 //! Feature: the home screen.
 //!
-//! The way to something to listen to from the moment the app opens: the songs
-//! played last and the albums added last, as the server knows them. Dispatches
+//! The way to something to listen to from the moment the app opens: albums to
+//! try, picked anew each day, then the songs played last and the albums added
+//! last, as the server knows them. Dispatches
 //! `actions::ShowAlbum`, `actions::PlaySongs` and `actions::EnqueueSongs`; the
 //! app shell routes them.
 
 mod home_view;
 mod layout;
 mod recent;
+mod recommend;
 
 use gpui_kit::{App, KeyBinding, NoAction, actions};
 use ui::list_navigation::bind_list_navigation;

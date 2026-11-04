@@ -26,7 +26,7 @@ mod sync;
 pub use covers::{COVER_CAPACITY, COVER_REFRESH_AFTER, CoverStore, KeptCover};
 pub use scrobbles::{ScrobbleTarget, Scrobbles};
 pub use songs::{KeptSong, SONG_CAPACITY, SongStore};
-pub use store::Catalog;
+pub use store::{Catalog, Recommended};
 pub use sync::{Mode, Outcome, STALE_AFTER, Source, sync_albums, sync_songs};
 
 use std::path::PathBuf;

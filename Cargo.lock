@@ -3760,6 +3760,8 @@ name = "home"
 version = "0.1.0"
 dependencies = [
  "actions",
+ "catalog",
+ "chrono",
  "client",
  "futures",
  "gpui-kit",
@@ -3767,6 +3769,7 @@ dependencies = [
  "serde_json",
  "session",
  "subsonic",
+ "tempfile",
  "ui",
 ]
 

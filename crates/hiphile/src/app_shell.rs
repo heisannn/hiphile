@@ -191,8 +191,11 @@ impl AppShell {
                             .ok();
                     }
                     PlayerEvent::Played => {
-                        home.update(cx, |home, cx| home.reload_recently_played(cx))
-                            .ok();
+                        home.update(cx, |home, cx| {
+                            home.reload_recently_played(cx);
+                            home.renew_recommended(cx);
+                        })
+                        .ok();
                     }
                     PlayerEvent::QueueChanged => {}
                 }
@@ -203,7 +206,7 @@ impl AppShell {
             let home = home.downgrade();
             move |_, _, event, cx| {
                 let LibraryEvent::AlbumsSynced = event;
-                home.update(cx, |home, cx| home.reload_new_albums(cx)).ok();
+                home.update(cx, |home, cx| home.library_synced(cx)).ok();
             }
         });
         let output_changes = cx.subscribe(&audio_settings, {
@@ -267,6 +270,11 @@ impl AppShell {
             return;
         }
         workspace.destination = destination;
+        if destination == Destination::Home {
+            workspace
+                .home
+                .update(cx, |home, cx| home.renew_recommended(cx));
+        }
         workspace.focus_destination(window, cx);
         self.update_menus(cx);
         cx.notify();

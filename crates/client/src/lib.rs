@@ -7,8 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::de::DeserializeOwned;
 use subsonic::{
     Album, AlbumId, AlbumWithSongs, CoverArtId, Credentials, Endpoint, Envelope, GetAlbum,
-    GetAlbumList2, GetIndexes, GetScanStatus, GetSong, Ping, ScanStatus, Search3, ServerInfo, Song,
-    SongId,
+    GetAlbumList2, GetIndexes, GetScanStatus, GetSimilarSongs2, GetSong, Ping, ScanStatus, Search3,
+    ServerInfo, Song, SongId,
 };
 use url::Url;
 
@@ -144,6 +144,31 @@ impl Client {
             .call::<GetAlbumList2>(&Endpoint::recently_played_albums(size))
             .await?;
         Ok(envelope.into_payload().into_albums())
+    }
+
+    /// The `size` albums the user played most, most played first.
+    pub async fn frequent_albums(&self, size: u32) -> Result<Vec<Album>, Error> {
+        let envelope = self
+            .call::<GetAlbumList2>(&Endpoint::frequent_albums(size))
+            .await?;
+        Ok(envelope.into_payload().into_albums())
+    }
+
+    /// `size` albums in no order, different each time.
+    pub async fn random_albums(&self, size: u32) -> Result<Vec<Album>, Error> {
+        let envelope = self
+            .call::<GetAlbumList2>(&Endpoint::random_albums(size))
+            .await?;
+        Ok(envelope.into_payload().into_albums())
+    }
+
+    /// Up to `count` songs similar to those of `album`; none when the server
+    /// has no outside service to ask.
+    pub async fn similar_songs(&self, album: &AlbumId, count: u32) -> Result<Vec<Song>, Error> {
+        let envelope = self
+            .call::<GetSimilarSongs2>(&Endpoint::similar_songs(album, count))
+            .await?;
+        Ok(envelope.into_payload().into_songs())
     }
 
     /// One page of every song in the library, in an order that stays the

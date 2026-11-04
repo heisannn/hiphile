@@ -54,6 +54,28 @@ impl Endpoint {
             .param("size", size.to_string())
     }
 
+    /// The albums the user played most, most played first.
+    pub fn frequent_albums(size: u32) -> Self {
+        Self::new("getAlbumList2")
+            .param("type", "frequent")
+            .param("size", size.to_string())
+    }
+
+    /// Albums in no order, different each time.
+    pub fn random_albums(size: u32) -> Self {
+        Self::new("getAlbumList2")
+            .param("type", "random")
+            .param("size", size.to_string())
+    }
+
+    /// Songs similar to those of `album`, as far as the server knows: it asks
+    /// an outside service such as Last.fm, if it is set up to.
+    pub fn similar_songs(album: &crate::AlbumId, count: u32) -> Self {
+        Self::new("getSimilarSongs2")
+            .param("id", album.as_str())
+            .param("count", count.to_string())
+    }
+
     /// The artist index, sent only if it changed after `since` (milliseconds
     /// since the Unix epoch). Either way the response says when the library
     /// last changed.

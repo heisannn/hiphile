@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 actions.workspace = true
+chrono.workspace = true
 client.workspace = true
 futures.workspace = true
 gpui-kit.workspace = true
@@ -18,6 +19,8 @@ ui.workspace = true
 workspace = true
 
 [dev-dependencies]
+catalog.workspace = true
 gpui-kit = { workspace = true, features = ["test-support"] }
 net.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true

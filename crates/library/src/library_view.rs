@@ -1154,7 +1154,13 @@ mod tests {
         let net = net::Client::new("hiphile-test").unwrap();
         let server = client::Server::new("http://127.0.0.1:9", Credentials::api_key("k")).unwrap();
         let info = serde_json::from_value(json!({ "version": "1.16.1" })).unwrap();
-        let session = session::Session::new(client::Client::new(net, server), info, None, None);
+        let session = session::Session::new(
+            client::Client::new(net, server),
+            "alice".to_owned(),
+            info,
+            None,
+            None,
+        );
         let (library, cx) = cx.add_window_view(|window, cx| Library::new(session, window, cx));
         cx.update(|_, cx| {
             library.update(cx, |library, cx| {

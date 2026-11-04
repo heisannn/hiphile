@@ -60,6 +60,14 @@ CREATE TABLE songs (
 CREATE INDEX songs_by_album ON songs (album_id, disc, track);
 ";
 
+/// The albums recommended last and the day they were picked for.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct Recommended {
+    pub day: String,
+    pub albums: Vec<Album>,
+}
+
 /// A collection that is synced as a whole.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
@@ -222,6 +230,36 @@ impl Catalog {
         let generation = generation(&transaction, Kind::Songs)?;
         transaction.execute("DELETE FROM songs WHERE album_id = ?1", [id.as_str()])?;
         insert_songs(&transaction, generation, album.songs(), Some(id))?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// The albums recommended to `user` last, whichever day that was. They
+    /// follow from what `user` listens to, which others on the server should
+    /// not see.
+    pub fn recommended(&self, user: &str) -> Result<Option<Recommended>, Error> {
+        let connection = self.connection();
+        let Some(day) = get_meta(&connection, &recommended_key(user, "day"))? else {
+            return Ok(None);
+        };
+        let albums = get_meta(&connection, &recommended_key(user, "albums"))?.unwrap_or_default();
+        Ok(Some(Recommended {
+            day,
+            albums: serde_json::from_str(&albums)?,
+        }))
+    }
+
+    /// Keeps the albums picked for `user` on `day`, in place of those kept
+    /// before.
+    pub fn put_recommended(&self, user: &str, day: &str, albums: &[Album]) -> Result<(), Error> {
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        set_meta(&transaction, &recommended_key(user, "day"), day)?;
+        set_meta(
+            &transaction,
+            &recommended_key(user, "albums"),
+            &serde_json::to_string(albums)?,
+        )?;
         transaction.commit()?;
         Ok(())
     }
@@ -508,6 +546,10 @@ fn generation(connection: &Connection, kind: Kind) -> Result<i64, Error> {
         .unwrap_or(0))
 }
 
+fn recommended_key(user: &str, name: &str) -> String {
+    format!("recommended.{user}.{name}")
+}
+
 fn get_meta(connection: &Connection, key: &str) -> Result<Option<String>, Error> {
     Ok(connection
         .prepare_cached("SELECT value FROM meta WHERE key = ?1")?
@@ -621,6 +663,44 @@ mod tests {
         assert!(is_busy(&error), "{error}");
         catalog.execute("COMMIT;");
         assert_eq!(catalog.album_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn the_albums_recommended_last_are_kept_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(dir.path()).unwrap();
+        assert!(catalog.recommended("alice").unwrap().is_none());
+
+        let album = |id: &str| -> Album {
+            serde_json::from_value(serde_json::json!({ "id": id, "name": id })).unwrap()
+        };
+        catalog
+            .put_recommended("alice", "2026-11-03", &[album("old")])
+            .unwrap();
+        catalog
+            .put_recommended("alice", "2026-11-04", &[album("b"), album("a")])
+            .unwrap();
+
+        let kept = Catalog::open(dir.path())
+            .unwrap()
+            .recommended("alice")
+            .unwrap()
+            .unwrap();
+        assert_eq!(kept.day, "2026-11-04");
+        let ids: Vec<_> = kept
+            .albums
+            .iter()
+            .map(|album| album.id().as_str())
+            .collect();
+        assert_eq!(ids, ["b", "a"]);
+    }
+
+    #[test]
+    fn the_albums_recommended_to_one_user_stay_theirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(dir.path()).unwrap();
+        catalog.put_recommended("alice", "2026-11-04", &[]).unwrap();
+        assert!(catalog.recommended("bob").unwrap().is_none());
     }
 
     #[test]

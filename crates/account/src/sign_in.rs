@@ -227,10 +227,11 @@ impl SignIn {
                 match result {
                     Ok(info) => {
                         this.status = Status::Idle;
+                        let session_user = username.clone();
                         let profile = config::Profile::new(address, username);
                         this.remember(&profile, password, cx);
                         cx.emit(SignInEvent::SignedIn {
-                            session: Session::new(client, info, catalog, scrobbles),
+                            session: Session::new(client, session_user, info, catalog, scrobbles),
                             profile,
                         });
                     }

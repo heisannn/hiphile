@@ -20,6 +20,8 @@ pub struct Album {
     /// Seconds.
     duration: Option<u64>,
     year: Option<u32>,
+    /// When the user last played a song of it, in RFC 3339.
+    played: Option<String>,
 }
 
 impl Album {
@@ -53,6 +55,12 @@ impl Album {
 
     pub fn year(&self) -> Option<u32> {
         self.year
+    }
+
+    /// When the user last played a song of it, in RFC 3339. `None` if they
+    /// never have, or the server does not say.
+    pub fn played(&self) -> Option<&str> {
+        self.played.as_deref()
     }
 }
 

@@ -24,6 +24,7 @@ pub fn init(net: net::Client, cx: &mut App) {
 #[derive(Clone)]
 pub struct Session {
     client: client::Client,
+    username: String,
     server: ServerInfo,
     catalog: Option<catalog::Catalog>,
     scrobbles: Option<catalog::Scrobbles>,
@@ -36,12 +37,14 @@ impl Session {
     /// the server has them; without it, a play that fails to send is lost.
     pub fn new(
         client: client::Client,
+        username: String,
         server: ServerInfo,
         catalog: Option<catalog::Catalog>,
         scrobbles: Option<catalog::Scrobbles>,
     ) -> Self {
         Self {
             client,
+            username,
             server,
             catalog,
             scrobbles,
@@ -67,6 +70,11 @@ impl Session {
 
     pub fn client(&self) -> &client::Client {
         &self.client
+    }
+
+    /// Who signed in.
+    pub fn username(&self) -> &str {
+        &self.username
     }
 
     pub fn catalog(&self) -> Option<&catalog::Catalog> {

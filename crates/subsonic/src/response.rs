@@ -86,6 +86,25 @@ impl GetAlbumList2 {
     }
 }
 
+/// Payload of `getSimilarSongs2`.
+#[derive(Debug, Deserialize)]
+pub struct GetSimilarSongs2 {
+    #[serde(rename = "similarSongs2", default)]
+    list: SongList,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SongList {
+    #[serde(default)]
+    song: Vec<Song>,
+}
+
+impl GetSimilarSongs2 {
+    pub fn into_songs(self) -> Vec<Song> {
+        self.list.song
+    }
+}
+
 /// Payload of `getIndexes`; only when the library last changed is read.
 #[derive(Debug, Deserialize)]
 pub struct GetIndexes {
@@ -348,6 +367,43 @@ mod tests {
                 .into_albums()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn albums_say_when_they_were_last_played() {
+        let body = br#"{"subsonic-response":{"status":"ok","version":"1.16.1","albumList2":{"album":[{"id":"a1","name":"A","played":"2026-11-03T23:20:30.898Z"},{"id":"a2","name":"B"}]}}}"#;
+        let albums = parse::<GetAlbumList2>(body)
+            .unwrap()
+            .into_payload()
+            .into_albums();
+        assert_eq!(albums[0].played(), Some("2026-11-03T23:20:30.898Z"));
+        assert_eq!(albums[1].played(), None);
+    }
+
+    #[test]
+    fn parses_similar_songs() {
+        let body = br#"{"subsonic-response":{"status":"ok","version":"1.16.1","similarSongs2":{"song":[{"id":"s1","title":"So What","albumId":"a1"}]}}}"#;
+        let songs = parse::<GetSimilarSongs2>(body)
+            .unwrap()
+            .into_payload()
+            .into_songs();
+        assert_eq!(songs[0].album_id().map(|id| id.as_str()), Some("a1"));
+    }
+
+    #[test]
+    fn no_similar_songs_are_none() {
+        for body in [
+            br#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#.as_slice(),
+            br#"{"subsonic-response":{"status":"ok","version":"1.16.1","similarSongs2":{}}}"#,
+        ] {
+            assert!(
+                parse::<GetSimilarSongs2>(body)
+                    .unwrap()
+                    .into_payload()
+                    .into_songs()
+                    .is_empty()
+            );
+        }
     }
 
     #[test]
