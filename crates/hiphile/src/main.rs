@@ -1,6 +1,9 @@
 //! App shell: initializes GPUI Kit, installs shared services, and composes
 //! feature crates into the window. Feature logic lives in the feature crates.
 
+// Keeps a release build on Windows from opening a console window next to the app.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod app_shell;
 mod assets;
 mod navigation;
