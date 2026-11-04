@@ -1,0 +1,50 @@
+# Every crate takes part so that a change in any of them bumps the shared version,
+# but only `hiphile` gets a tag, a GitHub Release and a changelog.
+[workspace]
+git_only = true
+semver_check = false
+release_always = false
+features_always_increment_minor = true
+git_tag_name = "v{{ version }}"
+git_release_name = "v{{ version }}"
+git_tag_enable = false
+git_release_enable = false
+changelog_update = false
+
+[[package]]
+name = "hiphile"
+git_tag_enable = true
+git_release_enable = true
+# .github/workflows/release.yml publishes the draft once its builds are attached.
+git_release_draft = true
+changelog_update = true
+changelog_path = "CHANGELOG.md"
+# Commits of a crate missing here stay out of the changelog.
+changelog_include = [
+    "account",
+    "actions",
+    "artists",
+    "audio",
+    "catalog",
+    "client",
+    "config",
+    "home",
+    "library",
+    "lyrics",
+    "net",
+    "playback",
+    "player",
+    "playlists",
+    "presence",
+    "search",
+    "session",
+    "settings",
+    "songs",
+    "subsonic",
+    "ui",
+]
+
+# The CLI is not part of the release, so a change to it alone does not start one.
+[[package]]
+name = "hiphile-cli"
+release = false

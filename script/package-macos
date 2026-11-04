@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Packages a release build as a disk image holding hiphile.app.
+# Usage: script/package-macos <version> <target-dir> <output.dmg>
+set -euo pipefail
+
+version="$1"
+target_dir="$2"
+output="$3"
+
+root="$(mktemp -d)"
+trap 'rm -rf "$root"' EXIT
+app="$root/hiphile.app"
+
+mkdir -p "$app/Contents/MacOS"
+cp "$target_dir/hiphile" "$app/Contents/MacOS/hiphile"
+ln -s /Applications "$root/Applications"
+
+cat >"$app/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>hiphile</string>
+  <key>CFBundleIdentifier</key>
+  <string>dev.heisannn.hiphile</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>hiphile</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>$version</string>
+  <key>CFBundleVersion</key>
+  <string>$version</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.music</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>${MACOSX_DEPLOYMENT_TARGET:-12.0}</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>hiphile connects to your music server when it is on your local network.</string>
+</dict>
+</plist>
+PLIST
+plutil -lint "$app/Contents/Info.plist" >/dev/null
+
+# Without a Developer ID, an ad-hoc signature is what lets the bundle run on Apple silicon.
+codesign --force --sign - "$app"
+
+hdiutil create -quiet -fs HFS+ -volname "hiphile $version" -srcfolder "$root" -format UDZO -ov "$output"

@@ -1,0 +1,133 @@
+name: Release
+
+# No workflow-level concurrency: a newer push would cancel a pending run, and a merged release PR
+# whose run was cancelled would never be released.
+on: # zizmor: ignore[concurrency-limits]
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  # Tags a merged release PR and drafts its GitHub Release. Tags pushed with GITHUB_TOKEN start
+  # no workflows, so the builds below are jobs of this run rather than a workflow on tags.
+  release:
+    name: Tag and draft
+    if: github.repository_owner == 'heisannn'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # to push the tag and create the release
+      pull-requests: read # to tell whether the commit comes from a release PR
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable # zizmor: ignore[unpinned-uses,superfluous-actions]
+      - id: release-plz
+        uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.5.148
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - id: tag
+        env:
+          RELEASES: ${{ steps.release-plz.outputs.releases }}
+        run: |
+          tag="$(jq -r '.[] | select(.package_name == "hiphile") | .tag' <<<"${RELEASES:-[]}")"
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+
+  # Runs after `release` so that it sees the new tag instead of proposing the same version again.
+  release-pr:
+    name: Update release PR
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # to push the release PR's branch
+      pull-requests: write # to open and update the release PR
+    concurrency:
+      group: release-pr-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable # zizmor: ignore[unpinned-uses,superfluous-actions]
+      - uses: release-plz/action@66b324fd6c72d05d2a08568492ecdd62bfb8a62b # v0.5.148
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: release
+    if: needs.release.outputs.tag != ''
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - { os: macos-latest, target: aarch64-apple-darwin, platform: macos-arm64 }
+          - { os: macos-latest, target: x86_64-apple-darwin, platform: macos-x64 }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, platform: windows-x64 }
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+      TAG: ${{ needs.release.outputs.tag }}
+      TARGET: ${{ matrix.target }}
+      PLATFORM: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release.outputs.tag }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable # zizmor: ignore[unpinned-uses,superfluous-actions]
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --locked --target "$TARGET" -p hiphile
+        shell: bash
+      - if: runner.os == 'macOS'
+        run: |
+          version="${TAG#v}"
+          mkdir dist
+          script/package-macos "$version" "target/$TARGET/release" "dist/hiphile-$version-$PLATFORM.dmg"
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = $env:TAG.TrimStart('v')
+          New-Item -ItemType Directory dist | Out-Null
+          $release = "target/$env:TARGET/release"
+          Compress-Archive -Path "$release/hiphile.exe", LICENSE `
+            -DestinationPath "dist/hiphile-$version-$env:PLATFORM.zip"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+
+  # Publishes only when every build succeeded, so a release never appears with builds missing.
+  # After a failure, rerun the failed jobs: the draft and its tag are still there.
+  publish:
+    name: Publish
+    needs: [release, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # to attach the builds and publish the draft
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.release.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+      - working-directory: dist
+        run: |
+          sha256sum * >SHA256SUMS
+          gh release upload "$TAG" * --clobber
+          gh release edit "$TAG" --draft=false

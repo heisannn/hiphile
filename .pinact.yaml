@@ -1,0 +1,5 @@
+version: 3
+ignore_actions:
+  # This action picks the toolchain from its ref, so it stays on the `stable` branch.
+  - name: dtolnay/rust-toolchain
+    ref: stable
