@@ -6,6 +6,12 @@ Rust と GPUI で構築されたネイティブな Navidrome クライアント�
 
 Hiphile は macOS で開発されています。Windows と Linux は定期的なテストを行っていません。
 
+![ホーム](docs/screenshots/home.png)
+
+| アルバム | プレイリスト | 歌詞 |
+| --- | --- | --- |
+| ![アルバム](docs/screenshots/albums.png) | ![プレイリスト](docs/screenshots/playlists.png) | ![歌詞](docs/screenshots/lyrics.png) |
+
 ## 機能
 
 - **ライブラリ:** アルバム、アーティスト、曲の閲覧、ホーム画面でのデイリーおすすめ機能、プレイリストの編集。

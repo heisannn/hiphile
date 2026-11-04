@@ -6,6 +6,12 @@ A native Navidrome client built with Rust and GPUI, with a focus on performance.
 
 Hiphile is developed on macOS. Windows and Linux are not regularly tested.
 
+![Home](docs/screenshots/home.png)
+
+| Albums | Playlists | Lyrics |
+| --- | --- | --- |
+| ![Albums](docs/screenshots/albums.png) | ![Playlists](docs/screenshots/playlists.png) | ![Lyrics](docs/screenshots/lyrics.png) |
+
 ## Features
 
 - **Library:** Browse albums, artists and songs, get daily recommendations on the home screen, and edit playlists.
