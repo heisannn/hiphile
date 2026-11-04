@@ -52,6 +52,7 @@ fn view_on<'a>(
     // The requests wake the test from the network's own thread.
     cx.executor().allow_parking();
     cx.update(gpui_kit::init);
+    cx.update(ui::list_navigation::bind_control_keys);
     cx.update(crate::init);
     let net = net::Client::new("hiphile-test").unwrap();
     let server = client::Server::new(url, Credentials::api_key("k")).unwrap();

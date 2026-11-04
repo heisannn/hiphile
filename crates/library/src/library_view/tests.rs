@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use actions::NewPlaylist;
-use gpui_kit::{KeyUpEvent, Keystroke, TestAppContext, VisualTestContext};
+use gpui_kit::{KeyBinding, KeyUpEvent, Keystroke, TestAppContext, VisualTestContext, actions};
 use serde_json::json;
 use subsonic::Credentials;
 
@@ -127,8 +127,17 @@ fn press_after(
 }
 
 fn key_presses_retry(key: &str, cx: &mut TestAppContext) -> bool {
+    actions!(library_test, [TakenByTheWorkspace]);
     let (library, cx) = library(cx);
-    cx.update(|_, cx| crate::init(cx));
+    init_keys(cx);
+    cx.update(|_, cx| {
+        cx.bind_keys([KeyBinding::new(
+            "space",
+            TakenByTheWorkspace,
+            Some(ALBUMS_CONTEXT),
+        )]);
+        cx.on_action(|_: &TakenByTheWorkspace, _| {});
+    });
     wait_for_the_sync(&library, cx);
     cx.update(|_, cx| {
         library.update(cx, |library, cx| {
@@ -144,6 +153,13 @@ fn key_presses_retry(key: &str, cx: &mut TestAppContext) -> bool {
     cx.update(
         |_, cx| !matches!(&library.read(cx).albums, Albums::Failed(error) if error == "before"),
     )
+}
+
+fn init_keys(cx: &mut VisualTestContext) {
+    cx.update(|_, cx| {
+        ui::list_navigation::bind_control_keys(cx);
+        crate::init(cx);
+    });
 }
 
 /// Lets the sync a new library starts fail, which leaves the state alone.
@@ -172,7 +188,7 @@ fn space_presses_a_focused_retry(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn enter_on_the_play_button_plays_from_the_first_song(cx: &mut TestAppContext) {
     let (library, cx) = library(cx);
-    cx.update(|_, cx| crate::init(cx));
+    init_keys(cx);
     wait_for_the_sync(&library, cx);
     show_album_a(&library, cx);
     cx.update(|_, cx| {

@@ -46,6 +46,7 @@ fn home_with(
     cx.executor().allow_parking();
     cx.update(|cx| {
         gpui_kit::init(cx);
+        ui::list_navigation::bind_control_keys(cx);
         crate::init(cx);
     });
     let net = net::Client::new("hiphile-test").unwrap();

@@ -22,13 +22,19 @@ actions!(
     ]
 );
 
-/// Binds the arrow, Home, End, and page keys to the selection moves in the
-/// list whose key context is `context`, and leaves Enter and Space to what is
-/// inside [`CONTROL_CONTEXT`].
-pub fn bind_list_navigation(context: &'static str, cx: &mut App) {
+/// Leaves Enter and Space to what is inside [`CONTROL_CONTEXT`]. Call once at
+/// startup, before building the menu bar.
+pub fn bind_control_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("enter", NoAction, Some(CONTROL_CONTEXT)),
         KeyBinding::new("space", NoAction, Some(CONTROL_CONTEXT)),
+    ]);
+}
+
+/// Binds the arrow, Home, End, and page keys to the selection moves in the
+/// list whose key context is `context`.
+pub fn bind_list_navigation(context: &'static str, cx: &mut App) {
+    cx.bind_keys([
         KeyBinding::new("down", SelectNext, Some(context)),
         KeyBinding::new("up", SelectPrevious, Some(context)),
         KeyBinding::new("home", SelectFirst, Some(context)),
