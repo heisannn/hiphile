@@ -33,6 +33,7 @@ struct Fields {
     album_id: Option<AlbumId>,
     artist: Option<String>,
     artist_id: Option<ArtistId>,
+    display_album_artist: Option<String>,
     track: Option<u32>,
     disc_number: Option<u32>,
     cover_art: Option<CoverArtId>,
@@ -72,6 +73,11 @@ impl Song {
 
     pub fn artist_id(&self) -> Option<&ArtistId> {
         self.0.artist_id.as_ref()
+    }
+
+    /// OpenSubsonic servers only.
+    pub fn album_artist(&self) -> Option<&str> {
+        self.0.display_album_artist.as_deref()
     }
 
     pub fn track(&self) -> Option<u32> {
@@ -143,6 +149,21 @@ mod tests {
         assert_eq!(stored["albumId"], "a");
         assert_eq!(stored["title"], "So What");
         assert_eq!(serde_json::from_value::<Song>(stored).unwrap(), song);
+    }
+
+    #[test]
+    fn the_album_artist_is_the_one_to_display() {
+        let song: Song = serde_json::from_value(json!({
+            "id": "s",
+            "title": "t",
+            "displayAlbumArtist": "One & Two",
+            "albumArtists": [{ "id": "1", "name": "One" }, { "id": "2", "name": "Two" }],
+        }))
+        .unwrap();
+        assert_eq!(song.album_artist(), Some("One & Two"));
+
+        let song: Song = serde_json::from_value(json!({ "id": "s", "title": "t" })).unwrap();
+        assert_eq!(song.album_artist(), None);
     }
 
     #[test]

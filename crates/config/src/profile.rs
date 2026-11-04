@@ -47,6 +47,14 @@ pub enum Appearance {
     Dark,
 }
 
+/// How lyrics light up as they are sung, where they have the times for it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LyricsHighlight {
+    #[default]
+    ByWord,
+    ByLine,
+}
+
 /// The keys of `config.toml` this crate reads. Others are left alone.
 #[derive(Deserialize)]
 struct Settings {
@@ -59,6 +67,7 @@ struct Settings {
     output_device: Option<String>,
     sample_rate: Option<u32>,
     appearance: Option<String>,
+    lyrics_highlight: Option<String>,
     imgbb_api_key: Option<String>,
 }
 
@@ -73,6 +82,7 @@ struct Settings {
 /// output_device = "coreaudio:BuiltInSpeakerDevice"
 /// sample_rate = 48000
 /// appearance = "dark"
+/// lyrics_highlight = "line"
 /// imgbb_api_key = "..."
 /// ```
 #[derive(Clone, Debug)]
@@ -194,6 +204,13 @@ impl Store {
         self.parse_appearance(settings.appearance.as_deref())
     }
 
+    /// How lyrics light up, by word unless the file says otherwise.
+    /// `HIPHILE_LYRICS_HIGHLIGHT` takes precedence over the file.
+    pub fn lyrics_highlight(&self) -> Result<LyricsHighlight, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        self.parse_lyrics_highlight(settings.lyrics_highlight.as_deref())
+    }
+
     /// The API key for publishing covers on ImgBB, if there is one.
     /// `HIPHILE_IMGBB_API_KEY` takes precedence over the file.
     pub fn imgbb_api_key(&self) -> Result<Option<String>, Error> {
@@ -210,6 +227,19 @@ impl Store {
                 path: self.config_path(),
                 key: "appearance",
                 expected: "\"system\", \"light\" or \"dark\"",
+            }),
+        }
+    }
+
+    fn parse_lyrics_highlight(&self, value: Option<&str>) -> Result<LyricsHighlight, Error> {
+        match value {
+            None => Ok(LyricsHighlight::default()),
+            Some("word") => Ok(LyricsHighlight::ByWord),
+            Some("line") => Ok(LyricsHighlight::ByLine),
+            Some(_) => Err(Error::InvalidSetting {
+                path: self.config_path(),
+                key: "lyrics_highlight",
+                expected: "\"word\" or \"line\"",
             }),
         }
     }
@@ -324,6 +354,15 @@ impl Store {
                 document.remove("appearance");
             }
         })
+    }
+
+    /// Records how lyrics light up, like [`Self::save_profile`].
+    pub fn save_lyrics_highlight(&self, highlight: LyricsHighlight) -> Result<(), Error> {
+        let value = match highlight {
+            LyricsHighlight::ByWord => "word",
+            LyricsHighlight::ByLine => "line",
+        };
+        self.edit(|document| document["lyrics_highlight"] = toml_edit::value(value))
     }
 
     /// Records the ImgBB API key, like [`Self::save_profile`]. `None` removes
@@ -688,6 +727,48 @@ mod tests {
             store.parse_appearance(settings.appearance.as_deref()),
             Err(Error::InvalidSetting {
                 key: "appearance",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn lyrics_highlight_round_trips_and_is_by_word_unless_told_otherwise() {
+        let store = temporary_store("lyrics-highlight");
+        store.save_volume(0.5).unwrap();
+        let highlight = |env: &[(&str, &str)]| {
+            store
+                .parse_lyrics_highlight(read(&store, env).lyrics_highlight.as_deref())
+                .unwrap()
+        };
+        assert_eq!(highlight(&[]), LyricsHighlight::ByWord);
+
+        store
+            .save_lyrics_highlight(LyricsHighlight::ByLine)
+            .unwrap();
+        assert_eq!(highlight(&[]), LyricsHighlight::ByLine);
+        assert_eq!(
+            highlight(&[("HIPHILE_LYRICS_HIGHLIGHT", "word")]),
+            LyricsHighlight::ByWord
+        );
+
+        store
+            .save_lyrics_highlight(LyricsHighlight::ByWord)
+            .unwrap();
+        assert_eq!(highlight(&[]), LyricsHighlight::ByWord);
+        assert_eq!(read(&store, &[]).volume, Some(0.5));
+    }
+
+    #[test]
+    fn an_unknown_lyrics_highlight_is_an_error() {
+        let store = temporary_store("lyrics-highlight-unknown");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        std::fs::write(store.config_path(), "lyrics_highlight = \"note\"\n").unwrap();
+        let settings = read(&store, &[]);
+        assert!(matches!(
+            store.parse_lyrics_highlight(settings.lyrics_highlight.as_deref()),
+            Err(Error::InvalidSetting {
+                key: "lyrics_highlight",
                 ..
             })
         ));

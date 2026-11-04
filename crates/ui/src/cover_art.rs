@@ -1,8 +1,8 @@
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable, Size};
 use gpui_kit::{
-    App, IntoElement, ObjectFit, ParentElement as _, RenderOnce, SharedString, Styled as _,
-    StyledImage as _, Window, div, img,
+    App, IntoElement, ObjectFit, ParentElement as _, Pixels, RenderOnce, SharedString, Styled as _,
+    StyledImage as _, Window, div, img, prelude::FluentBuilder as _,
 };
 
 /// Album artwork, or a neutral placeholder while there is none.
@@ -15,6 +15,9 @@ pub struct CoverArt {
     size: Size,
     fill: bool,
     placeholder: IconName,
+    /// A rounding that also applies to the picture, which the frame otherwise
+    /// does not clip.
+    radius: Option<Pixels>,
 }
 
 impl CoverArt {
@@ -24,6 +27,7 @@ impl CoverArt {
             size: Size::Medium,
             fill: false,
             placeholder: IconName::Disc3,
+            radius: None,
         }
     }
 
@@ -38,6 +42,12 @@ impl CoverArt {
     /// Takes the width of its parent, and as much height, instead of a size.
     pub fn fill(mut self) -> Self {
         self.fill = true;
+        self
+    }
+
+    /// Rounds the corners of the picture or placeholder by `radius`.
+    pub fn rounded_by(mut self, radius: Pixels) -> Self {
+        self.radius = Some(radius);
         self
     }
 }
@@ -60,8 +70,10 @@ impl RenderOnce for CoverArt {
         let muted = cx.theme().muted;
         let muted_foreground = cx.theme().muted_foreground;
         let icon = self.placeholder;
+        let corners = self.radius;
         let placeholder = move || {
             div()
+                .when_some(corners, |this, radius| this.rounded(radius))
                 .size_full()
                 .flex()
                 .items_center()
@@ -81,6 +93,7 @@ impl RenderOnce for CoverArt {
         match self.url {
             Some(url) => frame.child(
                 img(url)
+                    .when_some(corners, |this, radius| this.rounded(radius))
                     .size_full()
                     .object_fit(ObjectFit::Cover)
                     .with_fallback(placeholder)

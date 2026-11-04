@@ -3729,6 +3729,7 @@ dependencies = [
  "gpui-kit",
  "home",
  "library",
+ "lyrics",
  "net",
  "player",
  "playlists",
@@ -4683,6 +4684,23 @@ dependencies = [
  "float_next_after",
  "lyon_path",
  "num-traits",
+]
+
+[[package]]
+name = "lyrics"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "bytes",
+ "dirs 7.0.0",
+ "futures",
+ "net",
+ "roxmltree 0.21.2",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+ "url",
 ]
 
 [[package]]
@@ -5984,6 +6002,7 @@ dependencies = [
  "config 0.1.0",
  "futures",
  "gpui-kit",
+ "lyrics",
  "net",
  "playback",
  "presence",

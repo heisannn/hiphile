@@ -3,7 +3,8 @@
 //! [`AudioSettings`] holds the chosen output and a [`CacheLimit`] each how many
 //! songs and covers to keep, and each saves its own. The app shell hands them to
 //! those who use them and passes on [`OutputChanged`] and [`CacheLimitChanged`], and likewise
-//! for [`DiscordSettings`] and [`ImgbbKeyChanged`]. The appearance only concerns
+//! for [`DiscordSettings`] and [`ImgbbKeyChanged`], and for [`LyricsSettings`] and
+//! [`LyricsHighlightChanged`]. The appearance only concerns
 //! the theme, which this crate keeps on it.
 
 mod appearance_settings;
@@ -12,6 +13,7 @@ mod cache_limit;
 mod cache_limit_field;
 mod discord_settings;
 mod imgbb_key_field;
+mod lyrics_settings;
 mod number_field;
 mod settings_view;
 mod song_cache_usage;
@@ -26,6 +28,7 @@ use gpui_kit::{
 pub use audio_settings::{AudioSettings, OutputChanged};
 pub use cache_limit::{CacheLimit, CacheLimitChanged};
 pub use discord_settings::{DiscordSettings, ImgbbKeyChanged};
+pub use lyrics_settings::{LyricsHighlightChanged, LyricsSettings};
 
 use appearance_settings::AppearanceSettings;
 use settings_view::SettingsView;
@@ -41,6 +44,7 @@ struct GlobalSettings {
     song_cache: Entity<CacheLimit>,
     cover_cache: Entity<CacheLimit>,
     discord: Entity<DiscordSettings>,
+    lyrics: Entity<LyricsSettings>,
     /// The settings window, if one was opened. It may have been closed since.
     window: Option<AnyWindowHandle>,
 }
@@ -56,12 +60,14 @@ pub fn init(cx: &mut App) {
     let song_cache = cx.new(|cx| CacheLimit::new(CacheKind::Songs, cx));
     let cover_cache = cx.new(|cx| CacheLimit::new(CacheKind::Covers, cx));
     let discord = cx.new(DiscordSettings::new);
+    let lyrics = cx.new(LyricsSettings::new);
     cx.set_global(GlobalSettings {
         appearance,
         audio,
         song_cache,
         cover_cache,
         discord,
+        lyrics,
         window: None,
     });
     // Deferred because an action reaches this handler while its window is being
@@ -87,6 +93,11 @@ pub fn audio_settings(cx: &App) -> Entity<AudioSettings> {
 /// The ImgBB API key, shared by the settings window and the app shell.
 pub fn discord_settings(cx: &App) -> Entity<DiscordSettings> {
     cx.global::<GlobalSettings>().discord.clone()
+}
+
+/// How lyrics light up, shared by the settings window and the app shell.
+pub fn lyrics_settings(cx: &App) -> Entity<LyricsSettings> {
+    cx.global::<GlobalSettings>().lyrics.clone()
 }
 
 /// How many songs to keep, shared by the settings window and the app shell.

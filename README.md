@@ -58,6 +58,10 @@ Settings… also switches between light and dark, kept as `appearance` (`"light"
 or `"dark"`). Without it, the app follows the system. `HIPHILE_APPEARANCE`
 overrides it, and takes `system` as well.
 
+Settings… also chooses whether lyrics light up by word or by line, kept as
+`lyrics_highlight` (`"word"` or `"line"`). Without it, they light up by word.
+`HIPHILE_LYRICS_HIGHLIGHT` overrides it.
+
 ## Home
 
 The app opens on albums to try, the songs played last, the albums played most and

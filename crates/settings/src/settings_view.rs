@@ -21,6 +21,7 @@ use crate::cache_limit::CacheLimit;
 use crate::cache_limit_field::CacheLimitField;
 use crate::discord_settings::DiscordSettings;
 use crate::imgbb_key_field::ImgbbKeyField;
+use crate::lyrics_settings::{self, LyricsSettings};
 use crate::song_cache_usage::{SongCacheUsage, format_size};
 use crate::{CloseWindow, SETTINGS_CONTEXT};
 
@@ -30,8 +31,8 @@ use crate::{CloseWindow, SETTINGS_CONTEXT};
 const REFRESH: Duration = Duration::from_secs(2);
 
 /// Root view of the settings window. The choices live in
-/// [`AppearanceSettings`], [`AudioSettings`], the [`CacheLimit`]s and
-/// [`DiscordSettings`].
+/// [`AppearanceSettings`], [`AudioSettings`], the [`CacheLimit`]s,
+/// [`DiscordSettings`] and [`LyricsSettings`].
 pub(crate) struct SettingsView {
     appearance: Entity<AppearanceSettings>,
     audio: Entity<AudioSettings>,
@@ -42,6 +43,7 @@ pub(crate) struct SettingsView {
     song_cache_usage: Entity<SongCacheUsage>,
     discord: Entity<DiscordSettings>,
     imgbb_key_field: Entity<ImgbbKeyField>,
+    lyrics: Entity<LyricsSettings>,
     focus: FocusHandle,
     _appearance_changes: Subscription,
     _system_appearance_changes: Subscription,
@@ -50,6 +52,7 @@ pub(crate) struct SettingsView {
     _cover_cache_changes: Subscription,
     _song_cache_usage_changes: Subscription,
     _discord_changes: Subscription,
+    _lyrics_changes: Subscription,
     _refresh: Task<()>,
 }
 
@@ -85,6 +88,7 @@ impl SettingsView {
         let song_cache_field = cx.new(|cx| CacheLimitField::new(song_cache.clone(), window, cx));
         let cover_cache_field = cx.new(|cx| CacheLimitField::new(cover_cache.clone(), window, cx));
         let imgbb_key_field = cx.new(|cx| ImgbbKeyField::new(discord.clone(), window, cx));
+        let lyrics = crate::lyrics_settings(cx);
         Self {
             _appearance_changes: cx.observe(&appearance, |_, _, cx| cx.notify()),
             _system_appearance_changes: crate::follow_system_appearance(window),
@@ -96,6 +100,8 @@ impl SettingsView {
             _discord_changes: cx.observe(&discord, |_, _, cx| cx.notify()),
             discord,
             imgbb_key_field,
+            _lyrics_changes: cx.observe(&lyrics, |_, _, cx| cx.notify()),
+            lyrics,
             audio,
             song_cache,
             song_cache_field,
@@ -137,6 +143,36 @@ impl SettingsView {
         }
         SettingPage::new("Appearance")
             .icon(IconName::Palette)
+            .group(group)
+    }
+
+    fn lyrics_page(&self, cx: &mut Context<Self>) -> SettingPage {
+        let highlight =
+            SettingField::render({
+                let lyrics = self.lyrics.clone();
+                move |_, _, cx| {
+                    let selected = lyrics.read(cx).highlight();
+                    let lyrics = lyrics.clone();
+                    let choices = lyrics_settings::CHOICES;
+                    RadioGroup::horizontal("lyrics-highlight")
+                        .selected_index(choices.iter().position(|(choice, _)| *choice == selected))
+                        .children(choices.iter().enumerate().map(|(ix, (_, label))| {
+                            Radio::new(("lyrics-highlight", ix)).label(*label)
+                        }))
+                        .on_click(move |ix, _, cx| {
+                            let (choice, _) = choices[*ix];
+                            lyrics.update(cx, |lyrics, cx| lyrics.set_highlight(choice, cx));
+                        })
+                }
+            });
+
+        let mut group = SettingGroup::new().item(SettingItem::new("Highlight", highlight));
+        if let Some(error) = self.lyrics.read(cx).error().cloned() {
+            group =
+                group.footer(move |_, cx| div().text_color(cx.theme().danger).child(error.clone()));
+        }
+        SettingPage::new("Lyrics")
+            .icon(IconName::MicVocal)
             .group(group)
     }
 
@@ -317,6 +353,7 @@ impl Render for SettingsView {
                     Settings::new("settings")
                         .with_group_variant(GroupBoxVariant::Outline)
                         .page(self.audio_page(cx))
+                        .page(self.lyrics_page(cx))
                         .page(self.storage_page(cx))
                         .page(self.discord_page(cx))
                         .page(self.appearance_page(cx)),

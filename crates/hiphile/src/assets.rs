@@ -13,6 +13,7 @@ gpui_kit::assets::icon_assets!(
         AudioLines,
         Disc3,
         ListMusic,
+        MicVocal,
         Repeat,
         Repeat1,
         Shuffle,

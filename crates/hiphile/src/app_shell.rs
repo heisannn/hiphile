@@ -23,9 +23,9 @@ use gpui_kit::{
 use home::Home;
 use library::{Library, LibraryEvent, Refresh};
 use player::{
-    CycleRepeat, NextSong, Player, PlayerEvent, PreviousSong, QueueView, RepeatMode, SaveQueue,
-    SeekBackward, SeekForward, SetRepeat, ToggleMute, TogglePlayback, ToggleShuffle, VolumeDown,
-    VolumeUp,
+    CloseLyrics, CycleRepeat, LyricsView, NextSong, Player, PlayerEvent, PreviousSong, QueueView,
+    RepeatMode, SaveQueue, SeekBackward, SeekForward, SetRepeat, ToggleLyrics, ToggleMute,
+    TogglePlayback, ToggleShuffle, VolumeDown, VolumeUp,
 };
 use playlists::{Playlists, PlaylistsEvent};
 use session::Session;
@@ -128,6 +128,8 @@ struct Workspace {
     playlists: Entity<Playlists>,
     player: Entity<Player>,
     queue: Entity<QueueView>,
+    /// Over the screen and the player when open; the rest stay as they were.
+    lyrics: Entity<LyricsView>,
     /// The split between the library and the queue.
     panes: Entity<ResizableState>,
     /// Holds the session's decoded covers, so signing out frees them.
@@ -138,6 +140,7 @@ struct Workspace {
     _playlists_events: Subscription,
     _output_changes: Subscription,
     _cover_key_changes: Subscription,
+    _lyrics_highlight_changes: Subscription,
     _focus_lost: Subscription,
 }
 
@@ -159,9 +162,11 @@ impl Workspace {
         }
     }
 
-    /// Gives focus to the screen showing, whose shortcuts then work.
+    /// Gives focus to what is on top, the lyrics or the screen showing, whose
+    /// shortcuts then work.
     fn focus_destination(&self, window: &mut Window, cx: &mut App) {
         let focus = match self.destination {
+            _ if self.lyrics.read(cx).is_open() => self.lyrics.focus_handle(cx),
             Destination::Home => self.home.focus_handle(cx),
             Destination::Albums => self.library.focus_handle(cx),
             Destination::Artists => self.artists.focus_handle(cx),
@@ -189,7 +194,7 @@ impl AppShell {
         let keychain = config::Keychain::system().ok();
         let screen = Self::sign_in(&net, keychain.clone(), Start::Resume, window, cx);
         let queue_shown = true;
-        crate::set_menus(queue_shown, None, false, RepeatMode::Off, cx);
+        crate::set_menus(queue_shown, false, None, false, RepeatMode::Off, cx);
         let song_cache_changes = cx.subscribe(
             &settings::song_cache_settings(cx),
             |_, song_cache, _: &settings::CacheLimitChanged, cx| {
@@ -260,6 +265,7 @@ impl AppShell {
             player
         });
         let queue = cx.new(|cx| QueueView::new(player.clone(), window, cx));
+        let (lyrics, lyrics_highlight_changes) = lyrics_view(&session, &player, cx);
         let covers = CoverCache::new(cx);
         // Every screen marks the song the player is on; the shell also
         // re-renders, which updates which commands are available.
@@ -272,6 +278,11 @@ impl AppShell {
             move |this, _, event, cx| {
                 match event {
                     PlayerEvent::NowPlaying { song, playing } => {
+                        // With no song the lyrics have nothing to show. Focus
+                        // follows once they are gone, as the view holds it.
+                        if song.is_none() {
+                            this.close_lyrics(cx);
+                        }
                         home.update(cx, |home, cx| {
                             home.set_now_playing(song.clone(), *playing, cx)
                         })
@@ -373,6 +384,7 @@ impl AppShell {
             playlists,
             player,
             queue,
+            lyrics,
             panes: cx.new(|_| ResizableState::default()),
             covers,
             _player_events: player_events,
@@ -381,6 +393,7 @@ impl AppShell {
             _playlists_events: playlists_events,
             _output_changes: output_changes,
             _cover_key_changes: cover_key_changes,
+            _lyrics_highlight_changes: lyrics_highlight_changes,
             _focus_lost: focus_lost,
         };
         workspace.focus_destination(window, cx);
@@ -440,7 +453,15 @@ impl AppShell {
             let player = player.read(cx);
             (player.is_shuffled(), player.repeat())
         });
-        crate::set_menus(self.queue_shown, self.destination(), shuffled, repeat, cx);
+        let is_lyrics_open = self.is_lyrics_open(cx);
+        crate::set_menus(
+            self.queue_shown && !is_lyrics_open,
+            is_lyrics_open,
+            self.destination(),
+            shuffled,
+            repeat,
+            cx,
+        );
     }
 
     /// Goes to `destination`; going back returns to where this leaves.
@@ -450,6 +471,7 @@ impl AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.close_lyrics(cx);
         let Screen::Workspace(workspace) = &mut self.screen else {
             return;
         };
@@ -525,6 +547,7 @@ impl AppShell {
 
     /// Shows `location`, leaving the history as it is.
     fn go_to(&mut self, location: Location, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_lyrics(cx);
         self.enter_destination(location.destination(), window, cx);
         let Screen::Workspace(workspace) = &self.screen else {
             return;
@@ -550,7 +573,13 @@ impl AppShell {
         cx.notify();
     }
 
+    /// Goes back from the lyrics if they are open, and otherwise to the place
+    /// before this one.
     fn go_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_lyrics_open(cx) {
+            self.set_lyrics_open(false, window, cx);
+            return;
+        }
         let Screen::Workspace(workspace) = &mut self.screen else {
             return;
         };
@@ -561,6 +590,9 @@ impl AppShell {
     }
 
     fn go_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_lyrics_open(cx) {
+            return;
+        }
         let Screen::Workspace(workspace) = &mut self.screen else {
             return;
         };
@@ -571,8 +603,9 @@ impl AppShell {
     }
 
     /// Whether going back and going forward lead anywhere.
-    fn history_available(&self) -> (bool, bool) {
+    fn history_available(&self, cx: &App) -> (bool, bool) {
         match &self.screen {
+            Screen::Workspace(_) if self.is_lyrics_open(cx) => (true, false),
             Screen::Workspace(workspace) => (
                 workspace.history.can_go_back(),
                 workspace.history.can_go_forward(),
@@ -646,7 +679,48 @@ impl AppShell {
         }
     }
 
-    fn toggle_queue(&mut self, cx: &mut Context<Self>) {
+    fn is_lyrics_open(&self, cx: &App) -> bool {
+        match &self.screen {
+            Screen::Workspace(workspace) => workspace.lyrics.read(cx).is_open(),
+            Screen::SignIn { .. } => false,
+        }
+    }
+
+    fn set_lyrics_open(&mut self, is_open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Screen::Workspace(workspace) = &self.screen else {
+            return;
+        };
+        workspace
+            .lyrics
+            .update(cx, |lyrics, cx| lyrics.set_open(is_open, cx));
+        workspace.focus_destination(window, cx);
+        self.update_menus(cx);
+        cx.notify();
+    }
+
+    /// Closes the lyrics from where there is no window to move focus in. The
+    /// callers go on to focus something, or the view goes and gives up focus.
+    fn close_lyrics(&mut self, cx: &mut Context<Self>) {
+        if !self.is_lyrics_open(cx) {
+            return;
+        }
+        if let Screen::Workspace(workspace) = &self.screen {
+            workspace
+                .lyrics
+                .update(cx, |lyrics, cx| lyrics.set_open(false, cx));
+        }
+        self.update_menus(cx);
+        cx.notify();
+    }
+
+    /// Shows or hides the queue beside the screen. With the lyrics over it, it
+    /// is not in view either way, so going back from them shows it.
+    fn toggle_queue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_lyrics_open(cx) {
+            self.queue_shown = true;
+            self.set_lyrics_open(false, window, cx);
+            return;
+        }
         self.queue_shown = !self.queue_shown;
         self.update_menus(cx);
         cx.notify();
@@ -674,7 +748,7 @@ impl AppShell {
     /// Makes `root` go back and forward, by the commands wherever they lead
     /// somewhere, and by what mice and trackpads send for it.
     fn handle_navigation(&self, root: Stateful<Div>, cx: &mut Context<Self>) -> Stateful<Div> {
-        let (can_go_back, can_go_forward) = self.history_available();
+        let (can_go_back, can_go_forward) = self.history_available(cx);
         root.on_mouse_down(
             MouseButton::Navigate(NavigationDirection::Back),
             cx.listener(|this, _, window, cx| this.go_back(window, cx)),
@@ -691,6 +765,81 @@ impl AppShell {
                 cx.listener(|this, _: &GoForward, window, cx| this.go_forward(window, cx)),
             )
         })
+    }
+
+    /// Makes `root` handle the commands about the song playing, wherever they
+    /// do something.
+    fn handle_song_commands(&self, root: Stateful<Div>, cx: &mut Context<Self>) -> Stateful<Div> {
+        let lyrics_open = self.is_lyrics_open(cx);
+        let has_song = self
+            .player()
+            .is_some_and(|player| player.read(cx).has_song());
+        root.when(lyrics_open, |this| {
+            this.on_action(cx.listener(|this, _: &CloseLyrics, window, cx| {
+                this.set_lyrics_open(false, window, cx);
+            }))
+        })
+        .when(has_song, |this| {
+            this.on_action(cx.listener(|this, _: &ToggleLyrics, window, cx| {
+                let is_open = this.is_lyrics_open(cx);
+                this.set_lyrics_open(!is_open, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &TogglePlayback, window, cx| {
+                this.update_player(window, cx, |player, _, cx| player.toggle_playback(cx));
+            }))
+            .on_action(cx.listener(|this, _: &NextSong, window, cx| {
+                this.update_player(window, cx, |player, _, cx| player.next(cx));
+            }))
+            .on_action(cx.listener(|this, _: &PreviousSong, window, cx| {
+                this.update_player(window, cx, |player, _, cx| player.previous(cx));
+            }))
+            .on_action(cx.listener(|this, _: &SeekForward, window, cx| {
+                this.update_player(window, cx, Player::seek_forward);
+            }))
+            .on_action(cx.listener(|this, _: &SeekBackward, window, cx| {
+                this.update_player(window, cx, Player::seek_backward);
+            }))
+        })
+    }
+
+    /// What goes under the title bar: `content` and the player, and the lyrics
+    /// over them when those are on their way or open.
+    fn render_under_title_bar(
+        &self,
+        content: AnyElement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let lyrics = match &self.screen {
+            Screen::Workspace(workspace) => Some(&workspace.lyrics),
+            Screen::SignIn { .. } => None,
+        };
+        let reveal = lyrics.map(|lyrics| lyrics.read(cx).reveal(cx));
+        // What is under the lyrics fades with them, so it needs the frames too.
+        if reveal.is_some_and(|reveal| reveal.is_moving) {
+            window.request_animation_frame();
+        }
+        let under_opacity = reveal.map_or(1., |reveal| reveal.under_opacity);
+        let is_covered = reveal.is_some_and(|reveal| reveal.is_covering);
+        let lyrics = lyrics
+            .filter(|_| reveal.is_some_and(|reveal| reveal.is_shown))
+            .cloned();
+        div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            // Under the lyrics only while they are on their way, so that nothing
+            // out of sight takes Tab or a frame.
+            .when(!is_covered, |this| {
+                this.child(
+                    v_flex()
+                        .size_full()
+                        .opacity(under_opacity)
+                        .child(div().flex_1().min_h_0().child(content))
+                        .when_some(self.player().cloned(), |this, player| this.child(player)),
+                )
+            })
+            .children(lyrics)
     }
 
     /// The screen showing and, when shown, the queue to its right.
@@ -735,7 +884,11 @@ impl AppShell {
         let destination_ix = self
             .destination()
             .and_then(|current| Destination::ALL.iter().position(|d| *d == current));
-        let (can_go_back, can_go_forward) = self.history_available();
+        let (can_go_back, can_go_forward) = self.history_available(cx);
+        let is_lyrics_open = self.is_lyrics_open(cx);
+        let has_song = self
+            .player()
+            .is_some_and(|player| player.read(cx).has_song());
         TitleBar::new()
             .when(cfg!(target_os = "macos"), |this| {
                 this.pl(MACOS_TITLE_BAR_INSET)
@@ -796,11 +949,24 @@ impl AppShell {
                         )
                         .child(div().flex_1())
                         .child(
+                            Button::new("toggle-lyrics")
+                                .ghost()
+                                .small()
+                                .icon(IconName::MicVocal)
+                                .selected(is_lyrics_open)
+                                .disabled(!has_song)
+                                .accessibility_label("Lyrics")
+                                .tooltip_with_action("Lyrics", &ToggleLyrics, None)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.set_lyrics_open(!is_lyrics_open, window, cx);
+                                })),
+                        )
+                        .child(
                             Button::new("toggle-queue")
                                 .ghost()
                                 .small()
                                 .icon(IconName::ListMusic)
-                                .selected(queue_visible)
+                                .selected(queue_visible && !is_lyrics_open)
                                 .disabled(!queue_fits)
                                 .accessibility_label("Queue")
                                 .map(|this| {
@@ -810,12 +976,40 @@ impl AppShell {
                                         this.tooltip("Widen the window to show the queue.")
                                     }
                                 })
-                                .on_click(cx.listener(|this, _, _, cx| this.toggle_queue(cx))),
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.toggle_queue(window, cx);
+                                })),
                         )
                     }),
             )
             .into_any_element()
     }
+}
+
+/// The lyrics of what `player` plays, kept on the chosen highlight for as long as
+/// the subscription lives.
+fn lyrics_view(
+    session: &Session,
+    player: &Entity<Player>,
+    cx: &mut Context<AppShell>,
+) -> (Entity<LyricsView>, Subscription) {
+    let finder = lyrics::Finder::user(session.client().net().clone());
+    let lyrics_settings = settings::lyrics_settings(cx);
+    let highlight = lyrics_settings.read(cx).highlight();
+    let view = cx.new(|cx| {
+        let mut view = LyricsView::new(player.clone(), finder, cx);
+        view.set_highlight(highlight, cx);
+        view
+    });
+    let changes = cx.subscribe(&lyrics_settings, {
+        let view = view.downgrade();
+        move |_, lyrics_settings, _: &settings::LyricsHighlightChanged, cx| {
+            let highlight = lyrics_settings.read(cx).highlight();
+            view.update(cx, |view, cx| view.set_highlight(highlight, cx))
+                .ok();
+        }
+    });
+    (view, changes)
 }
 
 impl Render for AppShell {
@@ -833,9 +1027,6 @@ impl Render for AppShell {
             Screen::SignIn { .. } => None,
         };
         let signed_in = matches!(self.screen, Screen::Workspace(_));
-        let has_song = self
-            .player()
-            .is_some_and(|player| player.read(cx).has_song());
         let has_queue = self
             .player()
             .is_some_and(|player| player.read(cx).has_queued_songs());
@@ -932,7 +1123,9 @@ impl Render for AppShell {
                 }))
             })
             .when(queue_fits, |this| {
-                this.on_action(cx.listener(|this, _: &ToggleQueue, _, cx| this.toggle_queue(cx)))
+                this.on_action(cx.listener(|this, _: &ToggleQueue, window, cx| {
+                    this.toggle_queue(window, cx);
+                }))
             })
             .when(has_queue, |this| {
                 this.on_action(cx.listener(|this, _: &SaveQueue, window, cx| {
@@ -945,27 +1138,10 @@ impl Render for AppShell {
                     });
                 }))
             })
-            .when(has_song, |this| {
-                this.on_action(cx.listener(|this, _: &TogglePlayback, window, cx| {
-                    this.update_player(window, cx, |player, _, cx| player.toggle_playback(cx));
-                }))
-                .on_action(cx.listener(|this, _: &NextSong, window, cx| {
-                    this.update_player(window, cx, |player, _, cx| player.next(cx));
-                }))
-                .on_action(cx.listener(|this, _: &PreviousSong, window, cx| {
-                    this.update_player(window, cx, |player, _, cx| player.previous(cx));
-                }))
-                .on_action(cx.listener(|this, _: &SeekForward, window, cx| {
-                    this.update_player(window, cx, Player::seek_forward);
-                }))
-                .on_action(cx.listener(|this, _: &SeekBackward, window, cx| {
-                    this.update_player(window, cx, Player::seek_backward);
-                }))
-            })
+            .when(signed_in, |this| self.handle_song_commands(this, cx))
             .when(signed_in, |this| self.handle_navigation(this, cx))
             .child(self.render_title_bar(queue_visible, queue_fits, cx))
-            .child(div().flex_1().min_h_0().child(content))
-            .when_some(self.player().cloned(), |this, player| this.child(player))
+            .child(self.render_under_title_bar(content, window, cx))
             .children(chooser)
     }
 }

@@ -8,7 +8,7 @@ mod keychain;
 mod profile;
 
 pub use keychain::Keychain;
-pub use profile::{Appearance, Profile, Store, cache_capacity_of};
+pub use profile::{Appearance, LyricsHighlight, Profile, Store, cache_capacity_of};
 
 use std::path::PathBuf;
 

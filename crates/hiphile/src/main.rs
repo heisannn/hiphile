@@ -12,7 +12,7 @@ use gpui_kit::{
 };
 use player::{
     NextSong, PreviousSong, RepeatMode, SaveQueue, SeekBackward, SeekForward, SetRepeat,
-    ToggleMute, TogglePlayback, ToggleShuffle, VolumeDown, VolumeUp,
+    ToggleLyrics, ToggleMute, TogglePlayback, ToggleShuffle, VolumeDown, VolumeUp,
 };
 
 use app_shell::{AppShell, Destination, WORKSPACE_CONTEXT};
@@ -140,12 +140,14 @@ fn install_app_commands(cx: &mut App) {
     ]);
 }
 
-/// Builds the menu bar; `queue_shown` checks View > Queue, `destination` the
-/// screen showing, if any, and `shuffled` and `repeat` their items in Controls.
+/// Builds the menu bar; `queue_shown` checks View > Queue, `lyrics_open` View >
+/// Lyrics, `destination` the screen showing, if any, and `shuffled` and `repeat`
+/// their items in Controls.
 /// The app shell calls it, once the keys above are bound (menus read the keymap
 /// when they are built), and again when that changes.
 pub(crate) fn set_menus(
     queue_shown: bool,
+    lyrics_open: bool,
     destination: Option<Destination>,
     shuffled: bool,
     repeat: RepeatMode,
@@ -179,6 +181,7 @@ pub(crate) fn set_menus(
                 .checked(destination == Some(Destination::Playlists)),
             MenuItem::separator(),
             MenuItem::action("Queue", ToggleQueue).checked(queue_shown),
+            MenuItem::action("Lyrics", ToggleLyrics).checked(lyrics_open),
         ]),
         Menu::new("Controls").items([
             MenuItem::action("Play/Pause", TogglePlayback),

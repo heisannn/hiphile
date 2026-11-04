@@ -3,31 +3,26 @@ use std::time::{Duration, SystemTime};
 
 use audio::{Engine, Event, EventKind, LoadId, OutputSettings, PlaybackFormat};
 use futures::AsyncReadExt as _;
-use gpui_kit::assets::IconName;
 use gpui_kit::base::{Transition, transition};
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _,
-    button::{Button, ButtonVariants as _},
-    h_flex,
+    ActiveTheme as _, Sizable as _, h_flex,
     slider::{SliderEvent, SliderState},
     v_flex,
 };
 use gpui_kit::http_client::AsyncBody;
 use gpui_kit::{
-    AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, Window, div,
-    prelude::FluentBuilder as _, relative, rems,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _,
+    IntoElement, ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _, relative, rems,
 };
 use playback::{Arrival, EntryId, Placement, PlayTally, Queue, RepeatMode};
 use presence::{CoverHost, Presence};
 use subsonic::{CoverArtId, Song, SongId};
-use ui::{AlbumLink, ArtistLink, CoverArt, format_duration, song_artist_link};
+use ui::{AlbumLink, ArtistLink, CoverArt, song_artist_link};
 
 use crate::format;
-use crate::hover_slider::HoverSlider;
-use crate::{
-    CycleRepeat, GlobalSongCache, NextSong, PreviousSong, ToggleMute, TogglePlayback, ToggleShuffle,
-};
+use crate::transport::{PositionLine, TransportControls, VolumeControl};
+use crate::{GlobalSongCache, ToggleLyrics};
 
 /// How often the position redraws while playing.
 const POSITION_REFRESH: Duration = Duration::from_millis(250);
@@ -40,9 +35,16 @@ const SEEK_STEP: Duration = Duration::from_secs(10);
 const VOLUME_STEP: f32 = 0.1;
 /// Pixel size requested for the bar's cover: twice its on-screen size.
 const COVER_PIXELS: u32 = 96;
+/// Pixel size requested for the lyrics view's cover, which fills about half of
+/// a tall window on a high-density display.
+const LARGE_COVER_PIXELS: u32 = 1024;
 /// Pixel size of the cover published for the Discord status, the same as the
 /// library's, so that it is often on disk already.
 const PRESENCE_COVER_PIXELS: u32 = 512;
+/// How much of the foreground a cover takes on under the pointer.
+const COVER_HOVER_OPACITY: f32 = 0.08;
+/// How much of the foreground a cover takes on while pressed.
+const COVER_PRESS_OPACITY: f32 = 0.14;
 
 pub enum PlayerEvent {
     /// What the player is on, for views that mark it.
@@ -104,6 +106,9 @@ pub struct Player {
     /// is then not looked for again until another song has had its turn.
     sought_cover: Option<CoverArtId>,
     cover_url: Option<SharedString>,
+    large_cover_url: Option<SharedString>,
+    /// Whether the bar leaves out its cover, for another that stands in for it.
+    is_cover_hidden: bool,
     error: Option<SharedString>,
     /// The position as a fraction of the song.
     position: Entity<SliderState>,
@@ -266,6 +271,8 @@ impl Player {
             cover_key: None,
             sought_cover: None,
             cover_url: None,
+            large_cover_url: None,
+            is_cover_hidden: false,
             error: None,
             position,
             scrub: None,
@@ -392,6 +399,52 @@ impl Player {
         matches!(self.state, State::Playing | State::Opening)
     }
 
+    pub(crate) fn set_cover_hidden(&mut self, is_hidden: bool, cx: &mut Context<Self>) {
+        self.is_cover_hidden = is_hidden;
+        cx.notify();
+    }
+
+    /// Whether the current song's download is starting or its decoder opening.
+    pub(crate) fn is_opening(&self) -> bool {
+        self.state == State::Opening
+    }
+
+    pub(crate) fn current_song(&self) -> Option<&Song> {
+        self.queue.current()
+    }
+
+    /// The current song's cover, as the bar shows it and at a large size.
+    pub(crate) fn cover_urls(&self) -> (Option<&SharedString>, Option<&SharedString>) {
+        (self.cover_url.as_ref(), self.large_cover_url.as_ref())
+    }
+
+    /// How the current file reaches the device, once it is known.
+    pub(crate) fn format_text(&self) -> Option<String> {
+        self.format
+            .as_ref()
+            .map(|format| format::describe(format, self.queue.current().and_then(Song::suffix)))
+    }
+
+    pub(crate) fn position_state(&self) -> &Entity<SliderState> {
+        &self.position
+    }
+
+    pub(crate) fn volume_state(&self) -> &Entity<SliderState> {
+        &self.volume
+    }
+
+    pub(crate) fn is_muted(&self) -> bool {
+        self.muted
+    }
+
+    /// The position to show, which follows a drag of the slider.
+    pub(crate) fn shown_position(&self) -> Duration {
+        match (self.scrub, self.duration()) {
+            (Some(fraction), Some(duration)) => duration.mul_f32(fraction),
+            _ => self.position_now(),
+        }
+    }
+
     /// Plays the entry from its start.
     pub(crate) fn play_entry(&mut self, id: EntryId, cx: &mut Context<Self>) {
         if self.queue.jump_to(id).is_some() {
@@ -495,12 +548,12 @@ impl Player {
         cx.notify();
     }
 
-    fn is_started(&self) -> bool {
+    pub(crate) fn is_started(&self) -> bool {
         matches!(self.state, State::Playing | State::Paused)
     }
 
     /// The position to show: where the song is, or where it would pick up.
-    fn position_now(&self) -> Duration {
+    pub(crate) fn position_now(&self) -> Duration {
         if self.is_started() {
             self.engine.position()
         } else {
@@ -508,7 +561,7 @@ impl Player {
         }
     }
 
-    fn duration(&self) -> Option<Duration> {
+    pub(crate) fn duration(&self) -> Option<Duration> {
         self.format
             .as_ref()
             .and_then(PlaybackFormat::duration)
@@ -518,7 +571,12 @@ impl Player {
 
     /// Jumps to `target` in the current song; at or past its end, moves on
     /// to the next one.
-    fn seek_to(&mut self, target: Duration, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn seek_to(
+        &mut self,
+        target: Duration,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(duration) = self.duration().filter(|_| self.is_started()) else {
             return;
         };
@@ -671,7 +729,7 @@ impl Player {
         }
     }
 
-    fn level(&self, cx: &Context<Self>) -> f32 {
+    pub(crate) fn level(&self, cx: &App) -> f32 {
         self.volume.read(cx).value().end()
     }
 
@@ -802,6 +860,9 @@ impl Player {
         self.cover_url = song
             .cover_art()
             .map(|cover_art| self.session.cover_art_url(cover_art, COVER_PIXELS));
+        self.large_cover_url = song
+            .cover_art()
+            .map(|cover_art| self.session.cover_art_url(cover_art, LARGE_COVER_PIXELS));
         self.set_state(State::Opening, cx);
     }
 
@@ -969,173 +1030,81 @@ impl Player {
         cx.notify();
     }
 
-    fn render_song(&self, shown: f32, cx: &mut Context<Self>) -> impl IntoElement {
-        let song = self.queue.current();
-        let error = self.error.as_ref().map(|error| {
-            div()
+    /// What goes under the song's name: why it stopped playing, if it did, or
+    /// else its artist and album.
+    pub(crate) fn render_song_status(&self, song: &Song, cx: &App) -> AnyElement {
+        match &self.error {
+            Some(error) => div()
+                .debug_selector(|| "player-error".to_owned())
                 .text_xs()
                 .truncate()
                 .text_color(cx.theme().danger)
                 .child(error.clone())
-        });
+                .into_any_element(),
+            None => song_details(song, cx).into_any_element(),
+        }
+    }
+
+    fn render_song(&self, shown: f32, cx: &mut Context<Self>) -> impl IntoElement {
+        let song = self.queue.current();
+        let is_cover_hidden = self.is_cover_hidden;
         h_flex()
             .flex_1()
             .min_w_0()
             .gap_3()
             .opacity(shown)
             .when_some(song, |this, song| {
-                this.child(CoverArt::new(self.cover_url.clone()).small())
-                    .child(
-                        v_flex()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .truncate()
-                                    .child(SharedString::from(song.title().to_owned())),
-                            )
-                            .map(|this| match error {
-                                Some(error) => this.child(error),
-                                None => this.child(song_details(song, cx)),
-                            }),
-                    )
-            })
-    }
-
-    fn render_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let has_song = self.has_song();
-        let playing = matches!(self.state, State::Playing | State::Opening);
-        let (icon, label) = if playing {
-            (IconName::Pause, "Pause")
-        } else {
-            (IconName::Play, "Play")
-        };
-        let shuffled = self.is_shuffled();
-        let repeat = self.repeat();
-        let (repeat_icon, repeat_label) = match repeat {
-            RepeatMode::Off => (IconName::Repeat, "Repeat off"),
-            RepeatMode::All => (IconName::Repeat, "Repeat all"),
-            RepeatMode::One => (IconName::Repeat1, "Repeat one"),
-        };
-        h_flex()
-            .debug_selector(|| "player-controls".to_owned())
-            .flex_none()
-            .gap_1()
-            .child(
-                Button::new("toggle-shuffle")
-                    .ghost()
-                    .icon(IconName::Shuffle)
-                    .accessibility_label("Shuffle")
-                    .tooltip_with_action("Shuffle", &ToggleShuffle, None)
-                    .selected(shuffled)
-                    .toggled(shuffled)
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_shuffle(cx))),
-            )
-            .child(
-                Button::new("previous-song")
-                    .ghost()
-                    .icon(IconName::SkipBack)
-                    .accessibility_label("Previous")
-                    .tooltip_with_action("Previous", &PreviousSong, None)
-                    .disabled(!has_song)
-                    .on_click(cx.listener(|this, _, _, cx| this.previous(cx))),
-            )
-            .child(
-                Button::new("toggle-playback")
-                    .ghost()
-                    .icon(icon)
-                    .accessibility_label(label)
-                    .tooltip_with_action(label, &TogglePlayback, None)
-                    .disabled(!has_song || self.state == State::Opening)
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_playback(cx))),
-            )
-            .child(
-                Button::new("next-song")
-                    .ghost()
-                    .icon(IconName::SkipForward)
-                    .accessibility_label("Next")
-                    .tooltip_with_action("Next", &NextSong, None)
-                    .disabled(!has_song)
-                    .on_click(cx.listener(|this, _, _, cx| this.next(cx))),
-            )
-            .child(
-                Button::new("cycle-repeat")
-                    .ghost()
-                    .icon(repeat_icon)
-                    .accessibility_label(repeat_label)
-                    .tooltip_with_action(repeat_label, &CycleRepeat, None)
-                    .selected(repeat != RepeatMode::Off)
-                    .on_click(cx.listener(|this, _, _, cx| this.cycle_repeat(cx))),
-            )
-    }
-
-    /// The line under the controls. `shown` opens it from nothing, which takes
-    /// the controls from the middle of the bar to their place above it.
-    fn render_position(&self, shown: f32, cx: &mut Context<Self>) -> impl IntoElement {
-        let duration = self.duration();
-        let seekable = self.is_started() && duration.is_some();
-        let position = match (self.scrub, duration) {
-            (Some(fraction), Some(duration)) => duration.mul_f32(fraction),
-            _ => self.position_now(),
-        };
-        h_flex()
-            .debug_selector(|| "player-position".to_owned())
-            .w_full()
-            .h(rems(shown))
-            .opacity(shown)
-            .gap_2()
-            .text_xs()
-            .text_color(cx.theme().muted_foreground)
-            .when(self.has_song(), |this| {
                 this.child(
-                    h_flex()
-                        .flex_none()
-                        .min_w_9()
-                        .justify_end()
-                        .child(format_duration(position)),
-                )
-                .child(HoverSlider::new(&self.position, "Position").disabled(!seekable))
-                .child(
                     div()
+                        .id("player-cover")
+                        .debug_selector(|| "player-cover".to_owned())
                         .flex_none()
-                        .min_w_9()
-                        .child(duration.map(format_duration).unwrap_or_default()),
+                        .role(Role::Button)
+                        .aria_label("Lyrics")
+                        .relative()
+                        .when(is_cover_hidden, |this| this.opacity(0.))
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(ToggleLyrics), cx);
+                        })
+                        .child(CoverArt::new(self.cover_url.clone()).small())
+                        .child(cover_hover("player-cover-hover", cx.theme().radius, cx)),
+                )
+                .child(
+                    v_flex()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .text_sm()
+                                .truncate()
+                                .child(SharedString::from(song.title().to_owned())),
+                        )
+                        .child(self.render_song_status(song, cx)),
                 )
             })
     }
+}
 
-    fn render_volume(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let level = self.level(cx);
-        let (icon, label) = if self.muted || level == 0.0 {
-            (IconName::VolumeX, "Unmute")
-        } else if level < 0.5 {
-            (IconName::Volume1, "Mute")
-        } else {
-            (IconName::Volume2, "Mute")
-        };
-        h_flex()
-            .flex_none()
-            .gap_2()
-            .child(
-                Button::new("toggle-mute")
-                    .ghost()
-                    .small()
-                    .icon(icon)
-                    .accessibility_label(label)
-                    .tooltip_with_action(label, &ToggleMute, None)
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_mute(cx))),
-            )
-            .child(
-                h_flex()
-                    .w_20()
-                    .child(HoverSlider::new(&self.volume, "Volume")),
-            )
-    }
+/// What covers a cover that can be clicked, to answer the pointer, with the
+/// corners of that cover.
+pub(crate) fn cover_hover(
+    id: &'static str,
+    radius: gpui_kit::Pixels,
+    cx: &App,
+) -> impl IntoElement + use<> {
+    let hovered = cx.theme().foreground.opacity(COVER_HOVER_OPACITY);
+    let pressed = cx.theme().foreground.opacity(COVER_PRESS_OPACITY);
+    div()
+        .id(id)
+        .absolute()
+        .inset_0()
+        .rounded(radius)
+        .hover(move |this| this.bg(hovered))
+        .active(move |this| this.bg(pressed))
 }
 
 /// The line under the song playing: its artist and its album, whose names can
 /// be clicked.
-fn song_details(song: &Song, cx: &gpui_kit::App) -> impl IntoElement + use<> {
+fn song_details(song: &Song, cx: &App) -> impl IntoElement + use<> {
     let artist: Option<ArtistLink> = song_artist_link(song);
     let album = AlbumLink::of_song(song);
     let separated = artist.is_some();
@@ -1195,10 +1164,7 @@ fn describe(error: &audio::Error) -> String {
 
 impl Render for Player {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let format_text = self
-            .format
-            .as_ref()
-            .map(|format| format::describe(format, self.queue.current().and_then(Song::suffix)));
+        let format_text = self.format_text();
         let muted_foreground = cx.theme().muted_foreground;
         let song_shown = reveal("player-song-shown", self.has_song(), window, cx);
         let format_shown = reveal("player-format-shown", format_text.is_some(), window, cx);
@@ -1218,8 +1184,8 @@ impl Render for Player {
                     .min_w_80()
                     .max_w(rems(35.))
                     .items_center()
-                    .child(self.render_controls(cx))
-                    .child(self.render_position(song_shown, cx)),
+                    .child(TransportControls::new(cx.entity()))
+                    .child(PositionLine::in_bar(cx.entity(), song_shown)),
             )
             .child(
                 // Never narrower than its contents: it is the song's lane that
@@ -1234,7 +1200,7 @@ impl Render for Player {
                     .when_some(format_text, |this, text| {
                         this.child(div().flex_none().opacity(format_shown).child(text))
                     })
-                    .child(self.render_volume(cx)),
+                    .child(VolumeControl::new(cx.entity())),
             )
     }
 }
@@ -1244,6 +1210,32 @@ impl Player {
     /// Queues `songs` with the one at `current_ix` current, without playing.
     pub(crate) fn fill_queue(&mut self, songs: &[Song], current_ix: usize) {
         self.queue.replace(songs.to_vec(), current_ix);
+    }
+
+    /// Stands at `position` in the current song, without playing it.
+    pub(crate) fn place_at(&mut self, position: Duration) {
+        self.resume = Some(Resume {
+            position,
+            paused: true,
+        });
+    }
+
+    /// Says it is playing or paused, without doing so.
+    pub(crate) fn pretend_playing(&mut self, playing: bool, cx: &mut Context<Self>) {
+        let state = if playing {
+            State::Playing
+        } else {
+            State::Paused
+        };
+        self.set_state(state, cx);
+    }
+
+    pub(crate) fn is_cover_hidden(&self) -> bool {
+        self.is_cover_hidden
+    }
+
+    pub(crate) fn set_error(&mut self, error: &'static str) {
+        self.error = Some(error.into());
     }
 }
 

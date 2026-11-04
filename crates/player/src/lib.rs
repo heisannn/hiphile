@@ -1,13 +1,17 @@
-//! Feature: the play queue, transport controls, and the now-playing bar.
+//! Feature: the play queue, transport controls, the now-playing bar, and the
+//! lyrics of what is playing.
 
 mod format;
 mod hover_slider;
+mod lyrics_view;
 mod player;
 mod queue_view;
+mod transport;
 
 use gpui_kit::{Action, App, Global, KeyBinding, actions};
 use ui::list_navigation::bind_list_navigation;
 
+pub use lyrics_view::{LYRICS_CONTEXT, LyricsReveal, LyricsView};
 pub use playback::{Placement, RepeatMode};
 pub use player::{Player, PlayerEvent};
 pub use queue_view::{QUEUE_CONTEXT, QueueView};
@@ -27,7 +31,11 @@ actions!(
         /// Goes on from no repeat to all songs, to one song, and back.
         CycleRepeat,
         /// Creates a playlist of the songs in the queue.
-        SaveQueue
+        SaveQueue,
+        /// Shows the lyrics of the current song, or goes back from them.
+        ToggleLyrics,
+        /// Goes back from the lyrics.
+        CloseLyrics
     ]
 );
 
@@ -82,6 +90,7 @@ pub fn init(context: &'static str, cx: &mut App) {
         mute,
         shuffle,
         repeat,
+        lyrics,
         add_to_playlist,
     ] = if cx.platform_info().is_mac() {
         [
@@ -94,6 +103,7 @@ pub fn init(context: &'static str, cx: &mut App) {
             "cmd-alt-down",
             "cmd-alt-s",
             "cmd-alt-r",
+            "cmd-l",
             "cmd-shift-p",
         ]
     } else {
@@ -107,6 +117,7 @@ pub fn init(context: &'static str, cx: &mut App) {
             "ctrl-alt-down",
             "ctrl-alt-s",
             "ctrl-alt-r",
+            "ctrl-l",
             "ctrl-shift-p",
         ]
     };
@@ -120,6 +131,10 @@ pub fn init(context: &'static str, cx: &mut App) {
         KeyBinding::new(mute, ToggleMute, Some(context)),
         KeyBinding::new(shuffle, ToggleShuffle, Some(context)),
         KeyBinding::new(repeat, CycleRepeat, Some(context)),
+        KeyBinding::new(lyrics, ToggleLyrics, Some(context)),
+        KeyBinding::new("escape", CloseLyrics, Some(LYRICS_CONTEXT)),
+        // Space toggles playback from the lyrics, never from a focused control.
+        KeyBinding::new("space", TogglePlayback, Some(LYRICS_CONTEXT)),
     ]);
 
     bind_list_navigation(QUEUE_CONTEXT, cx);
