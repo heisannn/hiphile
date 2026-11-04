@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -9,7 +9,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crate::convert::Converter;
 use crate::decode::Decoder;
 use crate::device::device_name;
-use crate::output::{self, OutputSettings};
+use crate::output::{self, ConfigRange, OutputSettings, Spec};
 use crate::track::Cancel;
 use crate::{Error, Track};
 
@@ -57,8 +57,10 @@ pub enum EventKind {
     /// The track moved to other output settings, or to the rate someone else
     /// set on the device, and goes on from where it was, paused if it was.
     OutputChanged(PlaybackFormat),
-    /// The track played to its end.
-    Ended,
+    /// The track played to its end. `next` is the [`Engine::set_next`] load
+    /// that goes on from here and reports [`EventKind::Started`] or
+    /// [`EventKind::Failed`] next; with `None`, nothing else plays.
+    Ended { next: Option<LoadId> },
     /// The track stopped because of an error.
     Failed(Error),
 }
@@ -106,21 +108,26 @@ impl PlaybackFormat {
     }
 }
 
-/// Identifies one `load` or `stop` request. Work and errors from an older
-/// generation are discarded, so a superseded track can never end, fail, or
-/// report a device error on behalf of the one that replaced it.
+/// Identifies one `load`, `set_next` or `stop` request. Work and errors from
+/// a generation that is not current are discarded, so a superseded track can
+/// never end, fail, or report a device error on behalf of the one that
+/// replaced it.
 type Generation = u64;
 
 enum Command {
     Load(Generation, Track),
+    SetNext(Generation, Track),
+    ClearNext,
     Pause,
     Resume,
     Seek(Duration),
     SetOutput(OutputSettings),
     Stop,
     /// The stream stopped because the device changed under it, such as its
-    /// rate being set from outside the engine.
+    /// rate being set from outside the engine. Names the generation the
+    /// stream was opened for, which later tracks may have joined.
     StreamInvalidated(Generation),
+    /// Names the generation the stream was opened for.
     OutputFailed(Generation, String),
     Shutdown,
 }
@@ -130,11 +137,19 @@ struct Shared {
     output_rate: AtomicU32,
     /// `f32` bits; read by the audio callback.
     volume: AtomicU32,
-    /// The latest requested generation.
+    /// The last generation handed out.
+    issued: AtomicU64,
+    /// The generation of the current track.
     generation: AtomicU64,
-    /// Unblocks the current track's reads. Touched only by the engine handle
-    /// and never by the audio callback.
-    cancel: Mutex<Option<Cancel>>,
+    /// Never touched by the audio callback.
+    cancels: Mutex<Cancels>,
+}
+
+/// What unblocks reads of the tracks the engine holds.
+#[derive(Default)]
+struct Cancels {
+    current: Option<Cancel>,
+    next: Option<(Generation, Option<Cancel>)>,
 }
 
 impl Shared {
@@ -143,8 +158,9 @@ impl Shared {
             frames_played: AtomicU64::new(0),
             output_rate: AtomicU32::new(0),
             volume: AtomicU32::new(1.0f32.to_bits()),
+            issued: AtomicU64::new(0),
             generation: AtomicU64::new(0),
-            cancel: Mutex::new(None),
+            cancels: Mutex::default(),
         }
     }
 
@@ -161,27 +177,87 @@ impl Shared {
         self.generation.load(Ordering::Acquire) == generation
     }
 
-    /// Starts a new generation and cancels the previous track, so an engine
-    /// thread blocked reading it returns to its command loop.
+    fn lock_cancels(&self) -> MutexGuard<'_, Cancels> {
+        self.cancels.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn issue(&self) -> Generation {
+        self.issued.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    /// Starts a new generation and cancels the previous track and the one
+    /// set to follow it, so an engine thread blocked reading the former
+    /// returns to its command loop.
     fn supersede(&self, cancel: Option<Cancel>) -> Generation {
         let (generation, previous) = {
-            let mut current = self.cancel.lock().unwrap_or_else(PoisonError::into_inner);
-            let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
-            (generation, std::mem::replace(&mut *current, cancel))
+            let mut cancels = self.lock_cancels();
+            let generation = self.issue();
+            self.generation.store(generation, Ordering::Release);
+            let replacement = Cancels {
+                current: cancel,
+                next: None,
+            };
+            (generation, std::mem::replace(&mut *cancels, replacement))
         };
-        if let Some(cancel) = previous {
+        if let Some(cancel) = previous.current {
+            cancel();
+        }
+        if let Some((_, Some(cancel))) = previous.next {
             cancel();
         }
         generation
     }
 
+    /// Names a track to follow the current one, canceling the one set to
+    /// before, whose reads could otherwise wait on the network for nothing.
+    fn set_next(&self, cancel: Option<Cancel>) -> Generation {
+        let (generation, previous) = {
+            let mut cancels = self.lock_cancels();
+            let generation = self.issue();
+            (generation, cancels.next.replace((generation, cancel)))
+        };
+        if let Some((_, Some(cancel))) = previous {
+            cancel();
+        }
+        generation
+    }
+
+    fn clear_next(&self) {
+        let previous = self.lock_cancels().next.take();
+        if let Some((_, Some(cancel))) = previous {
+            cancel();
+        }
+    }
+
+    /// Makes `to`, which was set to follow `from`, the current track, unless
+    /// a later request has replaced `from`. Returns whether it did.
+    fn promote(&self, from: Generation, to: Generation) -> bool {
+        let mut cancels = self.lock_cancels();
+        if !self.is_current(from) {
+            return false;
+        }
+        self.generation.store(to, Ordering::Release);
+        cancels.current = cancels
+            .next
+            .take_if(|(generation, _)| *generation == to)
+            .and_then(|(_, cancel)| cancel);
+        true
+    }
+
     /// Drops the cancel hook of a track that has finished, so the hook does
     /// not keep its source (often a whole downloaded file) alive.
     fn release(&self, generation: Generation) {
-        let mut current = self.cancel.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut cancels = self.lock_cancels();
         if self.is_current(generation) {
-            current.take();
+            cancels.current.take();
         }
+    }
+
+    /// Drops the cancel hook of a next track that came too late to follow.
+    fn release_next(&self, generation: Generation) {
+        self.lock_cancels()
+            .next
+            .take_if(|(next, _)| *next == generation);
     }
 }
 
@@ -223,6 +299,31 @@ impl Engine {
         let generation = self.shared.supersede(track.cancel.take());
         self.send(Command::Load(generation, track));
         LoadId(generation)
+    }
+
+    /// Plays `track` when the current one ends, instead of any track set to
+    /// before. Events about it carry the returned id, starting from the
+    /// [`EventKind::Ended`] that names it.
+    ///
+    /// The track starts opening right away on a thread of its own, so waiting
+    /// for its data does not hold up the current one. If the device can stay
+    /// as it is, the track's first sample follows the current one's last on
+    /// the same stream; otherwise the stream reopens in between. Failing to
+    /// open is reported when the track's turn comes.
+    ///
+    /// With no current track, as right after one ended, nothing follows and
+    /// the track is dropped.
+    pub fn set_next(&self, mut track: Track) -> LoadId {
+        let generation = self.shared.set_next(track.cancel.take());
+        self.send(Command::SetNext(generation, track));
+        LoadId(generation)
+    }
+
+    /// Lets nothing follow the current track. Audio of the next track that is
+    /// already on its way to the device is taken back.
+    pub fn clear_next(&self) {
+        self.shared.clear_next();
+        self.send(Command::ClearNext);
     }
 
     /// Takes effect once the engine thread is not waiting for the track's
@@ -337,6 +438,7 @@ fn serve(
     };
     let mut output = OutputSettings::default();
     let mut current: Option<Playback> = None;
+    let mut next: Option<Next> = None;
     let mut idle_since: Option<Instant> = None;
     // A command that arrived behind a run of seeks.
     let mut deferred: Option<Command> = None;
@@ -397,32 +499,35 @@ fn serve(
             Some(Command::Load(generation, track)) => {
                 // Release the device before opening it again.
                 current = None;
+                next = None;
                 // A newer request already replaced this one; dropping the
                 // track releases its source.
                 if shared.is_current(generation) {
-                    match Playback::start(
+                    let opened = Playback::start(
                         track,
                         generation,
                         &output,
                         shared,
                         command_sender,
                         restore,
-                    ) {
-                        Ok(playback) if shared.is_current(generation) => {
-                            emit(generation, EventKind::Started(playback.format.clone()));
-                            current = Some(playback);
-                            Ok(())
-                        }
-                        Ok(_) => Ok(()),
-                        Err(_) if !shared.is_current(generation) => Ok(()),
-                        Err(error) => {
-                            shared.release(generation);
-                            Err((generation, error))
-                        }
-                    }
+                    );
+                    adopt(opened, generation, shared, &emit).map(|playback| current = playback)
                 } else {
                     Ok(())
                 }
+            }
+            Some(Command::SetNext(generation, track)) => {
+                let abandoned = abandon_next(&mut current, shared, &emit);
+                if current.is_some() {
+                    next = Some(Next::open(generation, track));
+                } else {
+                    shared.release_next(generation);
+                }
+                abandoned
+            }
+            Some(Command::ClearNext) => {
+                next = None;
+                abandon_next(&mut current, shared, &emit)
             }
             Some(Command::Pause) => current.as_mut().map_or(Ok(()), |playback| {
                 playback
@@ -434,14 +539,18 @@ fn serve(
                     .resume()
                     .map_err(|error| (playback.generation, error))
             }),
-            Some(Command::Seek(to)) => current.as_mut().map_or(Ok(()), |playback| {
-                playback
-                    .seek(to, shared)
-                    .map_err(|error| (playback.generation, error))
-            }),
+            Some(Command::Seek(to)) => {
+                return_to_sounding(&mut current, &mut next, shared, &emit);
+                current.as_mut().map_or(Ok(()), |playback| {
+                    playback
+                        .seek(to, shared)
+                        .map_err(|error| (playback.generation, error))
+                })
+            }
             Some(Command::SetOutput(settings)) if settings == output => Ok(()),
             Some(Command::SetOutput(settings)) => {
                 output = settings;
+                return_to_sounding(&mut current, &mut next, shared, &emit);
                 current.take().map_or(Ok(()), |playback| {
                     let moved = playback.move_to(&output, shared, command_sender, restore)?;
                     current = moved.inspect(|playback| {
@@ -453,33 +562,39 @@ fn serve(
                     Ok(())
                 })
             }
-            Some(Command::StreamInvalidated(generation)) => current
-                .take_if(|playback| playback.generation == generation)
-                .map_or(Ok(()), |playback| {
-                    let settings = keep_device_rate(&output, &playback, restore);
-                    let moved = playback.move_to(&settings, shared, command_sender, restore)?;
-                    current = moved.inspect(|playback| {
-                        emit(
-                            playback.generation,
-                            EventKind::OutputChanged(playback.format.clone()),
-                        );
-                    });
-                    Ok(())
-                }),
+            Some(Command::StreamInvalidated(generation)) => {
+                // A late notice about an earlier stream changes nothing here.
+                if current
+                    .as_ref()
+                    .is_some_and(|playback| playback.opened_for == generation)
+                {
+                    return_to_sounding(&mut current, &mut next, shared, &emit);
+                }
+                current
+                    .take_if(|playback| playback.opened_for == generation)
+                    .map_or(Ok(()), |playback| {
+                        let settings = keep_device_rate(&output, &playback, restore);
+                        let moved = playback.move_to(&settings, shared, command_sender, restore)?;
+                        current = moved.inspect(|playback| {
+                            emit(
+                                playback.generation,
+                                EventKind::OutputChanged(playback.format.clone()),
+                            );
+                        });
+                        Ok(())
+                    })
+            }
             Some(Command::Stop) => {
                 current = None;
+                next = None;
                 Ok(())
             }
-            Some(Command::OutputFailed(generation, message)) => {
-                let affects_current = current
-                    .as_ref()
-                    .is_some_and(|playback| playback.generation == generation);
-                if affects_current {
-                    Err((generation, Error::Output(message)))
-                } else {
-                    Ok(())
-                }
-            }
+            Some(Command::OutputFailed(generation, message)) => current
+                .as_ref()
+                .filter(|playback| playback.opened_for == generation)
+                .map_or(Ok(()), |playback| {
+                    Err((playback.generation, Error::Output(message)))
+                }),
             Some(Command::Shutdown) => return,
         };
         if let Err((generation, error)) = result {
@@ -493,26 +608,144 @@ fn serve(
             continue;
         }
 
+        report_crossing(&mut current, shared, &emit);
+
         if let Some(playback) = current.as_mut().filter(|playback| !playback.paused) {
             let generation = playback.generation;
+            next = next.and_then(|next| playback.join(next, &output, shared));
             let fill = playback.fill();
-            if !matches!(fill, Ok(Fill::Playing)) {
-                current = None;
+            if matches!(fill, Ok(Fill::Playing)) {
+                continue;
             }
+            current = None;
             // A superseded track was canceled on purpose; stay silent.
             if !shared.is_current(generation) {
                 continue;
             }
-            if !matches!(fill, Ok(Fill::Playing)) {
-                shared.release(generation);
-            }
             match fill {
-                Ok(Fill::Playing) => {}
-                Ok(Fill::Drained) => emit(generation, EventKind::Ended),
-                Err(error) => emit(generation, EventKind::Failed(error)),
+                Err(error) => {
+                    shared.release(generation);
+                    emit(generation, EventKind::Failed(error));
+                }
+                Ok(_) => match next.take() {
+                    None => {
+                        shared.release(generation);
+                        emit(generation, EventKind::Ended { next: None });
+                    }
+                    Some(following) => {
+                        let started = following.generation;
+                        if !shared.promote(generation, started) {
+                            continue;
+                        }
+                        let next = Some(LoadId(started));
+                        emit(generation, EventKind::Ended { next });
+                        // Superseding it cancels the wait for it to open.
+                        let opened = following.into_decoder().and_then(|decoder| {
+                            Playback::begin(
+                                decoder,
+                                Start::BEGINNING,
+                                started,
+                                &output,
+                                shared,
+                                command_sender,
+                                restore,
+                            )
+                        });
+                        match adopt(opened, started, shared, &emit) {
+                            Ok(playback) => current = playback,
+                            Err((failed, error)) => emit(failed, EventKind::Failed(error)),
+                        }
+                    }
+                },
             }
         }
     }
+}
+
+/// Takes in the outcome of opening the current track, reporting that it
+/// started. A superseded track was canceled on purpose and stays silent. An
+/// error names the generation it ends.
+fn adopt(
+    opened: Result<Playback, Error>,
+    generation: Generation,
+    shared: &Shared,
+    emit: &impl Fn(Generation, EventKind),
+) -> Result<Option<Playback>, (Generation, Error)> {
+    match opened {
+        Ok(playback) if shared.is_current(generation) => {
+            emit(generation, EventKind::Started(playback.format.clone()));
+            Ok(Some(playback))
+        }
+        Ok(_) => Ok(None),
+        Err(_) if !shared.is_current(generation) => Ok(None),
+        Err(error) => {
+            shared.release(generation);
+            Err((generation, error))
+        }
+    }
+}
+
+/// Reports that the device has gone from one track to the one that joined it
+/// on the stream.
+fn report_crossing(
+    current: &mut Option<Playback>,
+    shared: &Shared,
+    emit: &impl Fn(Generation, EventKind),
+) {
+    let Some(playback) = current.as_mut() else {
+        return;
+    };
+    let Some(joined) = playback.take_crossed() else {
+        return;
+    };
+    let ended = std::mem::replace(&mut playback.generation, joined.generation);
+    if shared.promote(ended, joined.generation) {
+        let next = Some(LoadId(joined.generation));
+        emit(ended, EventKind::Ended { next });
+        // One that has already failed goes on to report that instead.
+        if playback.failure.is_none() {
+            emit(
+                joined.generation,
+                EventKind::Started(playback.format.clone()),
+            );
+        }
+    }
+}
+
+/// Before a change to where the sounding track is: makes it the one being
+/// written again, and the track that joined it the next one once more.
+fn return_to_sounding(
+    current: &mut Option<Playback>,
+    next: &mut Option<Next>,
+    shared: &Shared,
+    emit: &impl Fn(Generation, EventKind),
+) {
+    if let Some(taken) = current.as_mut().and_then(Playback::take_back) {
+        *next = Some(taken.rewound());
+    }
+    report_crossing(current, shared, emit);
+}
+
+/// Before the next track changes: drops the track that joined the sounding
+/// one, which goes on from where the device is. An error names the generation
+/// it ends.
+fn abandon_next(
+    current: &mut Option<Playback>,
+    shared: &Shared,
+    emit: &impl Fn(Generation, EventKind),
+) -> Result<(), (Generation, Error)> {
+    // Read first: as long as the take-back works, this is still the position
+    // in the sounding track.
+    let position = shared.position();
+    let taken_back = current.as_mut().and_then(Playback::take_back).is_some();
+    let result = match current.as_mut() {
+        Some(playback) if taken_back => playback
+            .seek(position, shared)
+            .map_err(|error| (playback.generation, error)),
+        _ => Ok(()),
+    };
+    report_crossing(current, shared, emit);
+    result
 }
 
 /// Whether a stream error ends playback. cpal reports some conditions on the
@@ -528,6 +761,87 @@ enum Fill {
     Playing,
     /// The device has played every sample of the track.
     Drained,
+}
+
+/// The track set to follow the current one.
+struct Next {
+    generation: Generation,
+    state: NextState,
+}
+
+enum NextState {
+    /// On a thread of its own, as that may wait on the network.
+    Opening(mpsc::Receiver<Result<Decoder, Error>>),
+    Ready(Decoder),
+    /// Reported when its turn comes.
+    Failed(Error),
+}
+
+impl Next {
+    fn open(generation: Generation, track: Track) -> Self {
+        let (opened, receiver) = mpsc::channel();
+        let thread = thread::Builder::new()
+            .name("hiphile-audio-next".to_owned())
+            .spawn(move || {
+                opened.send(Decoder::open(track)).ok();
+            });
+        let state = match thread {
+            Ok(_) => NextState::Opening(receiver),
+            Err(error) => NextState::Failed(Error::Read(error.to_string())),
+        };
+        Self { generation, state }
+    }
+
+    /// Takes the decoder in once it has opened.
+    fn poll(&mut self) {
+        if let NextState::Opening(receiver) = &self.state {
+            match receiver.try_recv() {
+                Ok(Ok(decoder)) => self.state = NextState::Ready(decoder),
+                Ok(Err(error)) => self.state = NextState::Failed(error),
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.state = NextState::Failed(open_stopped());
+                }
+            }
+        }
+    }
+
+    /// The decoder, waiting for it to open. A read it is blocked on returns
+    /// once the track's cancel hook runs.
+    fn into_decoder(self) -> Result<Decoder, Error> {
+        match self.state {
+            NextState::Opening(receiver) => receiver.recv().unwrap_or_else(|_| Err(open_stopped())),
+            NextState::Ready(decoder) => Ok(decoder),
+            NextState::Failed(error) => Err(error),
+        }
+    }
+
+    /// Back at its first sample, after decoding some.
+    fn rewound(self) -> Self {
+        let state = match self.state {
+            NextState::Ready(mut decoder) => match decoder.seek(Duration::ZERO) {
+                Ok(_) => NextState::Ready(decoder),
+                Err(error) => NextState::Failed(error),
+            },
+            state => state,
+        };
+        Self { state, ..self }
+    }
+}
+
+fn open_stopped() -> Error {
+    Error::Decode("opening the file stopped unexpectedly".to_owned())
+}
+
+/// The track still sounding while a next one is written behind it, kept to go
+/// back to until the device has reached the next one.
+struct Joined {
+    /// Of the next track; the playback still has the sounding one's.
+    generation: Generation,
+    decoder: Decoder,
+    /// `None` when the next track goes through the same one.
+    converter: Option<Converter>,
+    format: PlaybackFormat,
 }
 
 /// What the engine needs to switch a device back to the sample rate it had
@@ -659,6 +973,12 @@ struct Start {
 }
 
 impl Start {
+    const BEGINNING: Self = Self {
+        position: Duration::ZERO,
+        paused: false,
+        past_end: false,
+    };
+
     /// Moves `decoder` to the position, which ends up where it could seek to.
     fn seek(self, decoder: &mut Decoder) -> Result<Self, Error> {
         let resumed = decoder.seek(self.position)?;
@@ -670,10 +990,13 @@ impl Start {
     }
 }
 
-/// One track playing on one device stream. Lives on the engine thread only;
-/// `cpal::Stream` is not `Send` on every platform. A new stream is opened per
-/// track so the device can follow each file's sample rate.
+/// A device stream and the track it plays. Lives on the engine thread only;
+/// `cpal::Stream` is not `Send` on every platform. A new stream is opened
+/// whenever the device has to follow a file's sample rate; a track it need not
+/// change for joins the same stream, with no gap.
 struct Playback {
+    /// Of the track being written, which may be behind the one sounding; see
+    /// [`Self::joined`].
     decoder: Decoder,
     converter: Converter,
     producer: rtrb::Producer<f32>,
@@ -682,10 +1005,26 @@ struct Playback {
     pending: Vec<f32>,
     pending_ix: usize,
     decoded: Vec<f32>,
+    /// The decoder has no more samples; the converter may still hold some.
+    decoded_all: bool,
+    /// The converter has given up its last samples too.
     finished: bool,
     paused: bool,
+    /// Of the track being written.
     format: PlaybackFormat,
+    /// Of the track sounding.
     generation: Generation,
+    /// The generation the stream was opened for, by which its errors name it.
+    opened_for: Generation,
+    /// The device's configurations, to tell whether a next track fits.
+    ranges: Vec<ConfigRange>,
+    joined: Option<Joined>,
+    /// Why the track being written stopped, reported once it is sounding.
+    failure: Option<Error>,
+    /// The number of the first sample of the track that joined, until the
+    /// audio callback takes samples up to it and sets this to zero. `0` means
+    /// the device has no track to reach: none is on its way, or it is there.
+    next_at: Arc<AtomicU64>,
     /// Set by the audio callback while samples it handed to the device have
     /// not all been played.
     sounding: Arc<AtomicBool>,
@@ -844,6 +1183,7 @@ impl Playback {
         let ahead_frames = (output.rate as f64 * BUFFER_AHEAD.as_secs_f64()) as usize;
         let capacity = ahead_frames.max(1) * channels;
         let (producer, consumer) = rtrb::RingBuffer::new(capacity);
+        let next_at = Arc::new(AtomicU64::new(0));
 
         let frames = (position.as_secs_f64() * f64::from(output.rate)) as u64;
         shared.frames_played.store(frames, Ordering::Relaxed);
@@ -859,6 +1199,7 @@ impl Playback {
                 Arc::clone(shared),
                 Arc::clone(&sounding),
                 Arc::clone(&flush_until),
+                Arc::clone(&next_at),
             ),
             {
                 let commands = commands.clone();
@@ -892,9 +1233,15 @@ impl Playback {
             pending: Vec::new(),
             pending_ix: 0,
             decoded: Vec::new(),
+            decoded_all: false,
             finished: false,
             paused: false,
             generation,
+            opened_for: generation,
+            ranges,
+            joined: None,
+            failure: None,
+            next_at,
             sounding,
             emptied_at: None,
             written: 0,
@@ -932,31 +1279,184 @@ impl Playback {
         self.pending_ix = 0;
         // Past the end, the track ends once the device has played out.
         self.finished = resumed.is_none();
+        self.decoded_all = false;
         self.emptied_at = None;
         Ok(())
     }
 
+    /// Writes `next` behind the current track, if `next` plays on this stream
+    /// as it is and that track has no samples left to decode. Otherwise gives
+    /// `next` back.
+    ///
+    /// A next track with the same source format goes through the same
+    /// converter. A resampler flushed at the end of a track dents the audio
+    /// on either side of the joint, so this is tried before it is flushed.
+    fn join(&mut self, mut next: Next, settings: &OutputSettings, shared: &Shared) -> Option<Next> {
+        next.poll();
+        let all_written = self.finished && self.pending_ix == self.pending.len();
+        let ready = all_written || (self.decoded_all && !self.finished);
+        if !ready || self.joined.is_some() || self.failure.is_some() {
+            return Some(next);
+        }
+        let generation = next.generation;
+        let output = Spec {
+            rate: self.format.output_rate,
+            channels: self.format.output_channels,
+        };
+        let decoder = match next.state {
+            NextState::Ready(decoder)
+                if output::plan(
+                    &self.ranges,
+                    output.rate,
+                    decoder.spec(),
+                    settings.fixed_rate(),
+                ) == Some(output) =>
+            {
+                decoder
+            }
+            state => return Some(Next { generation, state }),
+        };
+        let source = decoder.spec();
+        let converter = if self.finished {
+            match Converter::new(source, output) {
+                Ok(converter) => Some(converter),
+                Err(error) => {
+                    let state = NextState::Failed(error);
+                    return Some(Next { generation, state });
+                }
+            }
+        } else if source.rate == self.format.source_rate
+            && source.channels == self.format.source_channels
+        {
+            None
+        } else {
+            let state = NextState::Ready(decoder);
+            return Some(Next { generation, state });
+        };
+        let next_at = self.written
+            + self.converter.undelivered_frames() * u64::from(self.format.output_channels);
+        let format = PlaybackFormat {
+            device: self.format.device.clone(),
+            source_rate: source.rate,
+            source_channels: source.channels,
+            output_rate: output.rate,
+            output_channels: output.channels,
+            duration: decoder.duration(),
+        };
+        self.joined = Some(Joined {
+            generation,
+            decoder: std::mem::replace(&mut self.decoder, decoder),
+            converter: converter.map(|converter| std::mem::replace(&mut self.converter, converter)),
+            format: std::mem::replace(&mut self.format, format),
+        });
+        self.decoded_all = false;
+        self.finished = false;
+        self.emptied_at = None;
+        // After no samples at all, the device is at the next track already,
+        // and the callback sees no crossing to restart the position at.
+        if next_at == 0 {
+            shared.frames_played.store(0, Ordering::Relaxed);
+        }
+        self.next_at.store(next_at, Ordering::Release);
+        None
+    }
+
+    /// The track that joined, once the device has reached it.
+    fn take_crossed(&mut self) -> Option<Joined> {
+        self.joined
+            .take_if(|_| self.next_at.load(Ordering::Acquire) == 0)
+    }
+
+    /// Goes back to writing the sounding track, and returns the track that
+    /// joined it, unless the device has reached that one. Follow with a seek:
+    /// the sounding track's decoder is at its end, and its next samples are
+    /// the ones to play after what the ring buffer holds is flushed.
+    fn take_back(&mut self) -> Option<Next> {
+        self.joined.as_ref()?;
+        // Whichever of this and the audio callback sets it to zero first
+        // decides whether the device reaches the next track.
+        if self.next_at.swap(0, Ordering::AcqRel) == 0 {
+            return None;
+        }
+        let joined = self.joined.take()?;
+        let decoder = std::mem::replace(&mut self.decoder, joined.decoder);
+        if let Some(converter) = joined.converter {
+            self.converter = converter;
+        }
+        self.format = joined.format;
+        let state = match self.failure.take() {
+            Some(error) => NextState::Failed(error),
+            None => NextState::Ready(decoder),
+        };
+        Some(Next {
+            generation: joined.generation,
+            state,
+        })
+    }
+
     /// Tops the ring buffer up; returns whether the track has fully played.
     fn fill(&mut self) -> Result<Fill, Error> {
+        // A next track's failure is not the sounding track's, whose last
+        // samples may still be on their way here.
+        if self.joined.is_some() && self.failure.is_some() {
+            self.write_pending();
+            return Ok(Fill::Playing);
+        }
+        if let Some(error) = self.failure.take() {
+            return Err(error);
+        }
+        match self.write_ahead() {
+            Err(error) if self.joined.is_some() => {
+                self.give_up_on_joined(error);
+                Ok(Fill::Playing)
+            }
+            filled => filled,
+        }
+    }
+
+    /// Stops writing the track that joined, which `error` ended, and makes
+    /// sure the device can still reach it, to report that at its turn.
+    ///
+    /// The converter they may share holds the end of the sounding track until
+    /// more input pushes it out, so it gives that up now. If it cannot, the
+    /// sounding track ends with what the ring buffer got.
+    fn give_up_on_joined(&mut self, error: Error) {
+        self.failure = Some(error);
+        self.converter.finish(&mut self.pending).ok();
+        let end = self.written + (self.pending.len() - self.pending_ix) as u64;
+        self.next_at.fetch_min(end, Ordering::AcqRel);
+        self.write_pending();
+    }
+
+    /// Writes as much of the converted samples as the ring buffer has room
+    /// for. Returns whether that was all of them.
+    fn write_pending(&mut self) -> bool {
+        while self.pending_ix < self.pending.len() {
+            let free = self.producer.slots();
+            if free == 0 {
+                return false;
+            }
+            let samples = &self.pending[self.pending_ix..];
+            let len = free.min(samples.len());
+            let chunk = self
+                .producer
+                .write_chunk_uninit(len)
+                .expect("`len` is at most the free slots");
+            let written = chunk.fill_from_iter(samples[..len].iter().copied());
+            self.pending_ix += written;
+            self.written += written as u64;
+        }
+        true
+    }
+
+    fn write_ahead(&mut self) -> Result<Fill, Error> {
         loop {
-            if self.pending_ix < self.pending.len() {
-                let free = self.producer.slots();
-                if free == 0 {
-                    return Ok(Fill::Playing);
-                }
-                let samples = &self.pending[self.pending_ix..];
-                let len = free.min(samples.len());
-                let chunk = self
-                    .producer
-                    .write_chunk_uninit(len)
-                    .expect("`len` is at most the free slots");
-                let written = chunk.fill_from_iter(samples[..len].iter().copied());
-                self.pending_ix += written;
-                self.written += written as u64;
-                continue;
+            if !self.write_pending() {
+                return Ok(Fill::Playing);
             }
             if self.finished {
-                if self.producer.slots() < self.capacity {
+                // Whatever joined counts as playing until the device reaches it.
+                if self.producer.slots() < self.capacity || self.joined.is_some() {
                     return Ok(Fill::Playing);
                 }
                 // The device has taken every sample but may still be playing
@@ -968,12 +1468,19 @@ impl Playback {
             }
             self.pending.clear();
             self.pending_ix = 0;
+            if self.decoded_all {
+                self.converter.finish(&mut self.pending)?;
+                self.finished = true;
+                continue;
+            }
             self.decoded.clear();
             if self.decoder.decode_into(&mut self.decoded)? {
                 self.converter.process(&self.decoded, &mut self.pending)?;
             } else {
-                self.converter.finish(&mut self.pending)?;
-                self.finished = true;
+                // Leaves a next track its chance to join before the converter
+                // is flushed.
+                self.decoded_all = true;
+                return Ok(Fill::Playing);
             }
         }
     }
@@ -984,7 +1491,8 @@ impl Playback {
 ///
 /// `sounding` is true from the moment samples go to the device until a later
 /// callback starts after the device's predicted time for playing the last of
-/// them. Samples numbered below `flush_until` are dropped unplayed.
+/// them. Samples numbered below `flush_until` are dropped unplayed. Reaching
+/// `next_at` restarts the position counter, as that sample starts a track.
 fn output_callback(
     mut consumer: rtrb::Consumer<f32>,
     channels: usize,
@@ -992,6 +1500,7 @@ fn output_callback(
     shared: Arc<Shared>,
     sounding: Arc<AtomicBool>,
     flush_until: Arc<AtomicU64>,
+    next_at: Arc<AtomicU64>,
 ) -> impl FnMut(&mut [f32], &cpal::OutputCallbackInfo) + Send + 'static {
     // When the device will have played the last sample written so far.
     let mut played_by: Option<cpal::StreamInstant> = None;
@@ -1041,9 +1550,20 @@ fn output_callback(
             }
         }
         data[written..].fill(0.0);
-        shared
-            .frames_played
-            .fetch_add((written / channels) as u64, Ordering::Relaxed);
+        let next_starts = next_at.load(Ordering::Acquire);
+        let crossed = next_starts != 0
+            && read >= next_starts
+            && next_at
+                .compare_exchange(next_starts, 0, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok();
+        if crossed {
+            let frames = (read - next_starts) / channels as u64;
+            shared.frames_played.store(frames, Ordering::Relaxed);
+        } else {
+            shared
+                .frames_played
+                .fetch_add((written / channels) as u64, Ordering::Relaxed);
+        }
     }
 }
 
@@ -1080,7 +1600,7 @@ mod tests {
             panic!("expected Started");
         };
         assert_eq!(format.source_rate(), 44_100);
-        assert!(matches!(next_event(&events).kind, EventKind::Ended));
+        assert!(matches!(next_event(&events).kind, EventKind::Ended { .. }));
         assert!(started.elapsed() >= Duration::from_millis(450));
         assert!(engine.position() >= Duration::from_millis(450));
     }
@@ -1094,7 +1614,7 @@ mod tests {
         assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
         let sought = Instant::now();
         engine.seek(Duration::from_secs(20));
-        assert!(matches!(next_event(&events).kind, EventKind::Ended));
+        assert!(matches!(next_event(&events).kind, EventKind::Ended { .. }));
         assert!(sought.elapsed() < Duration::from_secs(5));
     }
 
@@ -1329,6 +1849,403 @@ mod tests {
         engine.shutdown();
     }
 
+    /// A loopback device, such as BlackHole, whose input hears its output.
+    fn loopback_device() -> (cpal::Device, String) {
+        let name = std::env::var("HIPHILE_TEST_DEVICE")
+            .expect("name a loopback device in HIPHILE_TEST_DEVICE");
+        let id = crate::output_devices()
+            .unwrap()
+            .into_iter()
+            .find(|device| device.name().trim() == name)
+            .expect("no such device")
+            .id()
+            .unwrap()
+            .to_owned();
+        let device = cpal::default_host()
+            .device_by_id(&id.parse().unwrap())
+            .unwrap();
+        (device, id)
+    }
+
+    /// Records the left channel of `device` until the stream is dropped.
+    fn record(device: &cpal::Device, rate: u32) -> (cpal::Stream, Arc<Mutex<Vec<f32>>>) {
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let config = cpal::StreamConfig {
+            channels: 2,
+            sample_rate: rate,
+            buffer_size: cpal::BufferSize::Default,
+        };
+        let stream = device
+            .build_input_stream(
+                config,
+                {
+                    let heard = heard.clone();
+                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                        let (frames, _) = data.as_chunks::<2>();
+                        heard
+                            .lock()
+                            .unwrap()
+                            .extend(frames.iter().map(|frame| frame[0]));
+                    }
+                },
+                |_| {},
+                Some(RATE_SWITCH_TIMEOUT),
+            )
+            .unwrap();
+        stream.play().unwrap();
+        (stream, heard)
+    }
+
+    /// 16-bit stereo WAV of a sine wave from sample `from`, up to `to`, so
+    /// that files with consecutive ranges make up one wave between them.
+    fn sine_wav(rate: u32, from: u32, to: u32) -> Vec<u8> {
+        let mut bytes = wav(rate, 2, to - from, 0);
+        let data = bytes.len() - (to - from) as usize * 4;
+        let (frames, _) = bytes[data..].as_chunks_mut::<4>();
+        for (frame, chunk) in (from..to).zip(frames) {
+            let phase = f64::from(frame) * 997.0 * std::f64::consts::TAU / f64::from(rate);
+            let sample = (phase.sin() * f64::from(i16::MAX / 2)) as i16;
+            chunk[..2].copy_from_slice(&sample.to_le_bytes());
+            chunk[2..].copy_from_slice(&sample.to_le_bytes());
+        }
+        bytes
+    }
+
+    /// From where the sound starts to where it ends.
+    fn sounding_part(heard: &[f32]) -> &[f32] {
+        let start = heard.iter().position(|sample| sample.abs() > 0.1).unwrap();
+        let end = heard.iter().rposition(|sample| sample.abs() > 0.1).unwrap();
+        &heard[start..=end]
+    }
+
+    /// How far `heard` strays from one 997 Hz sine wave, of whatever level
+    /// and phase fit it best. A sample missing, added or silent anywhere
+    /// shifts or breaks the wave, wherever in its cycle that falls.
+    fn departure_from_one_wave(heard: &[f32], rate: u32) -> f64 {
+        let step = 997.0 * std::f64::consts::TAU / f64::from(rate);
+        let phases = || (0..heard.len()).map(|ix| ix as f64 * step);
+        let samples = || heard.iter().copied().map(f64::from);
+        let fit = |wave: fn(f64) -> f64| {
+            let sum: f64 = phases().zip(samples()).map(|(p, s)| wave(p) * s).sum();
+            sum * 2.0 / heard.len() as f64
+        };
+        let (sines, cosines) = (fit(f64::sin), fit(f64::cos));
+        phases()
+            .zip(samples())
+            .map(|(p, s)| (s - sines * p.sin() - cosines * p.cos()).abs())
+            .fold(0.0, f64::max)
+    }
+
+    /// The most samples in a row without any sound.
+    fn longest_silence(heard: &[f32]) -> usize {
+        heard
+            .split(|sample| sample.abs() > 0.01)
+            .map(<[f32]>::len)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// One wave split across three files comes out of the device as one wave,
+    /// with not a sample missing at the joints.
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn tracks_of_one_rate_join_without_a_gap() {
+        let (device, id) = loopback_device();
+        let rate = current_rate(&id);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id), None));
+        let (stream, heard) = record(&device, rate);
+
+        let (first, second, third) = (rate, rate * 2, rate * 3);
+        let track = |from, to| Track::new(Cursor::new(sine_wav(rate, from, to)));
+        let a = engine.load(track(0, first));
+        let b = engine.set_next(track(first, second));
+        let started = next_event(&events);
+        assert_eq!(started.load, a);
+        assert!(matches!(started.kind, EventKind::Started(_)));
+
+        let ended = next_event(&events);
+        assert_eq!(ended.load, a);
+        assert!(matches!(ended.kind, EventKind::Ended { next } if next == Some(b)));
+        let started = next_event(&events);
+        assert_eq!(started.load, b);
+        assert!(matches!(started.kind, EventKind::Started(_)));
+        assert!(engine.position() < Duration::from_millis(100));
+
+        let c = engine.set_next(track(second, third));
+        let ended = next_event(&events);
+        assert_eq!(ended.load, b);
+        assert!(matches!(ended.kind, EventKind::Ended { next } if next == Some(c)));
+        assert_eq!(next_event(&events).load, c);
+        let ended = next_event(&events);
+        assert_eq!(ended.load, c);
+        assert!(matches!(ended.kind, EventKind::Ended { next: None }));
+        thread::sleep(Duration::from_millis(200));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let wave = sounding_part(&heard);
+        let departure = departure_from_one_wave(wave, rate);
+        assert!(departure < 0.002, "strays from the wave by {departure}");
+        let missing = (third as usize).abs_diff(wave.len());
+        assert!(missing < 16, "{} frames against {third}", wave.len());
+    }
+
+    /// Tracks of one source rate that the device does not run at come out as
+    /// one wave too, as the resampler carries on across the joint.
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn resampled_tracks_of_one_rate_join_without_a_gap() {
+        let (device, id) = loopback_device();
+        let rate = current_rate(&id);
+        let source = if rate == 44_100 { 48_000 } else { 44_100 };
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id), Some(rate)));
+        let (stream, heard) = record(&device, rate);
+
+        let track = |from, to| Track::new(Cursor::new(sine_wav(source, from, to)));
+        let a = engine.load(track(0, source));
+        let b = engine.set_next(track(source, source * 2));
+        assert_eq!(next_event(&events).load, a);
+        let ended = next_event(&events);
+        assert!(matches!(ended.kind, EventKind::Ended { next } if next == Some(b)));
+        let position = engine.position();
+        assert!(position < Duration::from_millis(100), "{position:?}");
+        assert_eq!(next_event(&events).load, b);
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::Ended { next: None }
+        ));
+        thread::sleep(Duration::from_millis(200));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let wave = sounding_part(&heard);
+        let missing = (rate as usize * 2).abs_diff(wave.len());
+        assert!(missing < 128, "{} frames against {}", wave.len(), rate * 2);
+        // Away from the far ends, where the resampler ramps in and out.
+        let margin = rate as usize / 10;
+        let wave = &wave[margin..wave.len() - margin];
+        let departure = departure_from_one_wave(wave, rate);
+        assert!(departure < 0.002, "strays from the wave by {departure}");
+    }
+
+    /// A seek in the last moments of a track goes back to it from the next
+    /// one, which then still follows from its start.
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_seek_after_the_next_track_has_joined_stays_in_the_track() {
+        let (device, id) = loopback_device();
+        let rate = current_rate(&id);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id), None));
+        let (_stream, _heard) = record(&device, rate);
+
+        let track = |seconds| Track::new(Cursor::new(wav(rate, 2, rate * seconds, 0)));
+        let a = engine.load(track(2));
+        let b = engine.set_next(track(1));
+        assert_eq!(next_event(&events).load, a);
+        // Within what the ring buffer holds ahead of the end.
+        thread::sleep(Duration::from_millis(1_800));
+        assert!(events.is_empty());
+        let sought = Instant::now();
+        engine.seek(Duration::from_secs(1));
+        thread::sleep(Duration::from_millis(100));
+        assert!(engine.position() >= Duration::from_secs(1));
+        assert!(engine.position() < Duration::from_millis(1_500));
+
+        let ended = next_event(&events);
+        assert_eq!(ended.load, a);
+        assert!(matches!(ended.kind, EventKind::Ended { next } if next == Some(b)));
+        assert!(sought.elapsed() >= Duration::from_millis(900));
+        assert_eq!(next_event(&events).load, b);
+        let started_at = Instant::now();
+        let ended = next_event(&events);
+        assert_eq!(ended.load, b);
+        assert!(matches!(ended.kind, EventKind::Ended { next: None }));
+        assert!(started_at.elapsed() >= Duration::from_millis(900));
+        engine.shutdown();
+    }
+
+    /// Replacing the next track after it has joined takes back its audio:
+    /// the rest of the current track sounds in its place, and then the
+    /// replacement. Silence in the taken-back track gives it away if not.
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_next_track_replaced_after_it_joined_is_taken_back() {
+        let (device, id) = loopback_device();
+        let rate = current_rate(&id);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id), None));
+        let (stream, heard) = record(&device, rate);
+
+        let sine = |from, to| Track::new(Cursor::new(sine_wav(rate, from, to)));
+        let a = engine.load(sine(0, rate * 2));
+        engine.set_next(Track::new(Cursor::new(wav(rate, 2, rate * 5, 0))));
+        assert_eq!(next_event(&events).load, a);
+        thread::sleep(Duration::from_millis(1_800));
+        assert!(events.is_empty());
+        let c = engine.set_next(sine(rate * 2, rate * 3));
+
+        let ended = next_event(&events);
+        assert_eq!(ended.load, a);
+        assert!(matches!(ended.kind, EventKind::Ended { next } if next == Some(c)));
+        assert_eq!(next_event(&events).load, c);
+        let ended = next_event(&events);
+        assert_eq!(ended.load, c);
+        assert!(matches!(ended.kind, EventKind::Ended { next: None }));
+        thread::sleep(Duration::from_millis(200));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let wave = sounding_part(&heard);
+        let tolerance = rate as usize / 20;
+        let silence = longest_silence(wave);
+        assert!(silence < tolerance, "{silence} silent frames");
+        let total = rate as usize * 3;
+        let frames = wave.len();
+        assert!(
+            total.abs_diff(frames) < tolerance,
+            "{frames} frames against {total}"
+        );
+    }
+
+    /// A source that has the start of a file and then cannot be read, like a
+    /// connection lost right after a download started.
+    fn track_that_breaks_after(bytes: Vec<u8>) -> Track {
+        struct Breaks(Cursor<Vec<u8>>);
+        impl std::io::Read for Breaks {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                match self.0.read(buffer)? {
+                    0 => Err(std::io::Error::other("the connection was lost")),
+                    read => Ok(read),
+                }
+            }
+        }
+        impl std::io::Seek for Breaks {
+            fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+                self.0.seek(to)
+            }
+        }
+        Track::new(Breaks(Cursor::new(bytes)))
+    }
+
+    /// A next track that breaks as it joins, before any of its audio has pushed
+    /// the end of the current track out of the resampler. That end still
+    /// sounds, and the next track fails at its turn, without having started.
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_next_track_that_breaks_at_the_joint_lets_the_track_end() {
+        let (device, id) = loopback_device();
+        let rate = current_rate(&id);
+        let source = if rate == 44_100 { 48_000 } else { 44_100 };
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id), Some(rate)));
+        let (stream, heard) = record(&device, rate);
+
+        let a = engine.load(Track::new(Cursor::new(sine_wav(source, 0, source))));
+        let mut start_of_b = sine_wav(source, source, source * 2);
+        start_of_b.truncate(44 + 16);
+        let b = engine.set_next(track_that_breaks_after(start_of_b));
+        assert_eq!(next_event(&events).load, a);
+
+        let ended = next_event(&events);
+        assert_eq!(ended.load, a);
+        assert!(matches!(ended.kind, EventKind::Ended { next } if next == Some(b)));
+        let failed = next_event(&events);
+        assert_eq!(failed.load, b);
+        assert!(matches!(failed.kind, EventKind::Failed(_)));
+        thread::sleep(Duration::from_millis(200));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let frames = sounding_part(&heard).len();
+        assert!(
+            (rate as usize).abs_diff(frames) < 128,
+            "{frames} frames against {rate}"
+        );
+    }
+
+    /// A next track at a rate that takes the device switching still follows,
+    /// through a new stream.
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_next_track_at_another_rate_reopens_the_stream() {
+        let device = device_to_open_by_id();
+        let id = device.id().unwrap().to_owned();
+        let rate = current_rate(&id);
+        let other = *device
+            .sample_rates()
+            .iter()
+            .find(|other| **other != rate)
+            .unwrap();
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id.clone()), None));
+        let a = engine.load(Track::new(Cursor::new(wav(rate, 2, rate / 2, 0))));
+        let b = engine.set_next(Track::new(Cursor::new(wav(other, 2, other / 2, 0))));
+        assert_eq!(next_event(&events).load, a);
+        let ended = next_event(&events);
+        assert!(matches!(ended.kind, EventKind::Ended { next } if next == Some(b)));
+        let started = next_event(&events);
+        assert_eq!(started.load, b);
+        let EventKind::Started(format) = started.kind else {
+            panic!("expected Started");
+        };
+        assert_eq!(format.output_rate(), other);
+        assert_eq!(current_rate(&id), other);
+        let ended = next_event(&events);
+        assert!(matches!(ended.kind, EventKind::Ended { next: None }));
+        engine.shutdown();
+        assert_eq!(current_rate(&id), rate);
+    }
+
+    /// The current track ends while the next one is still waiting for its
+    /// data. That wait holds up the engine thread, and stopping ends it.
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn stop_ends_the_wait_for_a_next_track_stuck_opening() {
+        let device = device_to_open_by_id();
+        let id = device.id().unwrap().to_owned();
+        let rate = current_rate(&id);
+        let (engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id), None));
+        let a = engine.load(Track::new(Cursor::new(wav(rate, 2, rate / 4, 0))));
+        let b = engine.set_next(stalled_track());
+        assert_eq!(next_event(&events).load, a);
+        let ended = next_event(&events);
+        assert!(matches!(ended.kind, EventKind::Ended { next } if next == Some(b)));
+        assert_no_event(&events);
+        engine.stop();
+        assert_no_event(&events);
+        shutdown_within_deadline(engine);
+    }
+
+    /// A next track that cannot open is not the current track's failure: it
+    /// fails when its turn comes.
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_next_track_that_cannot_open_fails_at_its_turn() {
+        let device = device_to_open_by_id();
+        let id = device.id().unwrap().to_owned();
+        let rate = current_rate(&id);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id), None));
+        let a = engine.load(Track::new(Cursor::new(wav(rate, 2, rate / 2, 0))));
+        let b = engine.set_next(Track::new(Cursor::new(b"not audio".to_vec())));
+        assert_eq!(next_event(&events).load, a);
+        let ended = next_event(&events);
+        assert_eq!(ended.load, a);
+        assert!(matches!(ended.kind, EventKind::Ended { next } if next == Some(b)));
+        let failed = next_event(&events);
+        assert_eq!(failed.load, b);
+        assert!(matches!(failed.kind, EventKind::Failed(_)));
+        engine.shutdown();
+    }
+
     /// 384 kHz is beyond typical devices, so this exercises resampling.
     #[test]
     #[ignore = "needs an audio output device"]
@@ -1339,7 +2256,7 @@ mod tests {
             panic!("expected Started");
         };
         assert!(format.is_resampled(), "{format:?}");
-        assert!(matches!(next_event(&events).kind, EventKind::Ended));
+        assert!(matches!(next_event(&events).kind, EventKind::Ended { .. }));
     }
 
     fn default_device_rate() -> u32 {
@@ -1368,7 +2285,7 @@ mod tests {
         };
         assert_eq!(format.output_rate(), other);
         assert_eq!(default_device_rate(), other);
-        assert!(matches!(next_event(events).kind, EventKind::Ended));
+        assert!(matches!(next_event(events).kind, EventKind::Ended { .. }));
         original
     }
 
@@ -1459,6 +2376,7 @@ mod tests {
             shared.clone(),
             sounding.clone(),
             Arc::default(),
+            Arc::default(),
         );
         for sample in [0.5; 8] {
             producer.push(sample).unwrap();
@@ -1493,6 +2411,7 @@ mod tests {
             shared.clone(),
             Arc::default(),
             flush_until.clone(),
+            Arc::default(),
         );
         for sample in [0.1; 6] {
             producer.push(sample).unwrap();
@@ -1512,13 +2431,93 @@ mod tests {
         assert_eq!(shared.frames_played.load(Ordering::Relaxed), 2);
     }
 
+    /// The position restarts at the first sample of the track that joined,
+    /// wherever in a callback that falls, and only once.
+    #[test]
+    fn the_position_restarts_where_the_next_track_starts() {
+        let (mut producer, consumer) = rtrb::RingBuffer::new(64);
+        let shared = Arc::new(Shared::new());
+        let next_at = Arc::new(AtomicU64::new(0));
+        let mut callback = output_callback(
+            consumer,
+            2,
+            1_000,
+            shared.clone(),
+            Arc::default(),
+            Arc::default(),
+            next_at.clone(),
+        );
+        let frames = || shared.frames_played.load(Ordering::Relaxed);
+        for sample in [0.1; 8] {
+            producer.push(sample).unwrap();
+        }
+        let mut data = [1.0; 4];
+        callback(&mut data, &callback_info(0, 10));
+        assert_eq!(frames(), 2);
+
+        // The two frames left in the ring buffer end the track; the next one
+        // starts at sample 8 and has two frames in there too.
+        next_at.store(8, Ordering::Release);
+        for sample in [0.9; 4] {
+            producer.push(sample).unwrap();
+        }
+        let mut data = [1.0; 2];
+        callback(&mut data, &callback_info(2, 10));
+        assert_eq!(frames(), 3);
+        assert_eq!(next_at.load(Ordering::Acquire), 8);
+
+        let mut data = [1.0; 4];
+        callback(&mut data, &callback_info(3, 10));
+        assert_eq!(data, [0.1, 0.1, 0.9, 0.9]);
+        assert_eq!(frames(), 1);
+        assert_eq!(next_at.load(Ordering::Acquire), 0);
+
+        let mut data = [1.0; 2];
+        callback(&mut data, &callback_info(5, 10));
+        assert_eq!(frames(), 2);
+    }
+
+    /// When the ring buffer ran empty before the next track joined, the
+    /// restart waits for no sample to arrive.
+    #[test]
+    fn the_position_restarts_after_an_underrun_too() {
+        let (mut producer, consumer) = rtrb::RingBuffer::new(64);
+        let shared = Arc::new(Shared::new());
+        let next_at = Arc::new(AtomicU64::new(0));
+        let mut callback = output_callback(
+            consumer,
+            2,
+            1_000,
+            shared.clone(),
+            Arc::default(),
+            Arc::default(),
+            next_at.clone(),
+        );
+        for sample in [0.1; 4] {
+            producer.push(sample).unwrap();
+        }
+        let mut data = [1.0; 4];
+        callback(&mut data, &callback_info(0, 10));
+        next_at.store(4, Ordering::Release);
+        callback(&mut data, &callback_info(2, 10));
+        assert_eq!(shared.frames_played.load(Ordering::Relaxed), 0);
+        assert_eq!(next_at.load(Ordering::Acquire), 0);
+    }
+
     #[test]
     fn an_underrun_keeps_whole_frames() {
         let (mut producer, consumer) = rtrb::RingBuffer::new(64);
         let shared = Arc::new(Shared::new());
         let sounding = Arc::new(AtomicBool::new(false));
-        let mut callback =
-            output_callback(consumer, 2, 1_000, shared.clone(), sounding, Arc::default());
+        let mut callback = output_callback(
+            consumer,
+            2,
+            1_000,
+            shared.clone(),
+            sounding,
+            Arc::default(),
+            Arc::default(),
+        );
         for sample in [0.1, 0.2, 0.3] {
             producer.push(sample).unwrap();
         }
@@ -1614,6 +2613,14 @@ mod tests {
         let (engine, _events) = Engine::spawn();
         engine.load(stalled_track());
         thread::sleep(Duration::from_millis(100));
+        shutdown_within_deadline(engine);
+    }
+
+    #[test]
+    fn a_next_track_with_no_current_one_is_dropped() {
+        let (engine, events) = Engine::spawn();
+        engine.set_next(Track::new(Cursor::new(b"not audio".to_vec())));
+        assert_no_event(&events);
         shutdown_within_deadline(engine);
     }
 

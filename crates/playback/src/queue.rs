@@ -132,6 +132,23 @@ impl<T> Queue<T> {
         }
     }
 
+    /// The item of the entry at [`Self::following_ix`].
+    pub fn following(&self) -> Option<&T> {
+        self.following_ix().map(|ix| &self.entries[ix].item)
+    }
+
+    /// The ID of the entry at [`Self::following_ix`].
+    pub fn following_id(&self) -> Option<EntryId> {
+        self.following_ix().map(|ix| self.entries[ix].id)
+    }
+
+    /// Moves to the entry at [`Self::following_ix`], for when the current one
+    /// has ended on its own.
+    pub fn follow(&mut self) -> Option<&T> {
+        self.current_ix = self.following_ix();
+        self.current()
+    }
+
     /// Moves to the next entry; at the end without repeat, playback stops.
     ///
     /// An explicit skip leaves a repeated single song, unlike [`Self::following_ix`].
@@ -306,6 +323,24 @@ mod tests {
         queue.set_repeat(RepeatMode::One);
         assert_eq!(queue.following_ix(), Some(0));
         assert_eq!(queue.advance().copied(), Some("b"));
+    }
+
+    #[test]
+    fn following_goes_where_the_end_of_a_song_leads() {
+        let mut queue = queue(&["a", "b"], 0);
+        assert_eq!(queue.following_id(), Some(id_of(&queue, 1)));
+        assert_eq!(queue.follow().copied(), Some("b"));
+        assert_eq!(queue.following_id(), None);
+        assert_eq!(queue.follow(), None);
+        assert_eq!(queue.current_ix(), None);
+        assert_eq!(queue.following_id(), None);
+
+        let mut queue = self::queue(&["a", "b"], 1);
+        queue.set_repeat(RepeatMode::One);
+        assert_eq!(queue.following_id(), Some(id_of(&queue, 1)));
+        assert_eq!(queue.follow().copied(), Some("b"));
+        queue.set_repeat(RepeatMode::All);
+        assert_eq!(queue.follow().copied(), Some("a"));
     }
 
     #[test]

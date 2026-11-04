@@ -6,6 +6,10 @@
 //! allocates, locks, or blocks. Control goes through [`Engine`]'s methods,
 //! outcomes come back as [`Event`]s, and the position is read from an atomic
 //! frame counter instead of per-tick events.
+//!
+//! A track set to follow the current one is written to the same ring buffer
+//! when the device does not have to change for it, so no sample is lost
+//! between them. Otherwise the stream reopens at the track's rate in between.
 
 mod convert;
 mod decode;

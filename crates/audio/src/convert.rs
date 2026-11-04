@@ -56,6 +56,13 @@ impl Converter {
         }
     }
 
+    /// Frames that the input so far comes to, still inside the resampler.
+    pub(crate) fn undelivered_frames(&self) -> u64 {
+        self.resampler
+            .as_ref()
+            .map_or(0, RateConverter::undelivered_frames)
+    }
+
     /// Appends whatever the resampler still holds once the input has ended.
     pub(crate) fn finish(&mut self, out: &mut Vec<f32>) -> Result<(), Error> {
         match &mut self.resampler {
@@ -144,8 +151,17 @@ impl RateConverter {
         Ok(())
     }
 
+    /// How many output frames the input so far comes to.
+    fn expected_frames(&self) -> u64 {
+        (self.frames_in as f64 * self.ratio).round() as u64
+    }
+
+    fn undelivered_frames(&self) -> u64 {
+        self.expected_frames().saturating_sub(self.frames_out)
+    }
+
     fn finish(&mut self, out: &mut Vec<f32>) -> Result<(), Error> {
-        let expected = (self.frames_in as f64 * self.ratio).round() as u64;
+        let expected = self.expected_frames();
         let remaining = self.input.len() / self.channels;
         if remaining > 0 {
             self.chunk(0, remaining, Some(remaining), out)?;
@@ -256,6 +272,35 @@ mod tests {
         }
         converter.finish(&mut out).unwrap();
         assert_eq!(out.len(), 48_000);
+    }
+
+    /// What has come out plus what is still inside is the length of the input
+    /// so far, so the sample where a next track starts can be told in advance.
+    #[test]
+    fn undelivered_frames_complete_the_output_so_far() {
+        let source = Spec {
+            rate: 44_100,
+            channels: 1,
+        };
+        let output = Spec {
+            rate: 48_000,
+            channels: 1,
+        };
+        let mut converter = Converter::new(source, output).unwrap();
+        let mut out = Vec::new();
+        for chunk in sine(44_100, 22_050).chunks(1_000) {
+            converter.process(chunk, &mut out).unwrap();
+        }
+        let undelivered = converter.undelivered_frames();
+        assert!(undelivered > 0, "the resampler holds no input back");
+        assert_eq!(out.len() as u64 + undelivered, 24_000);
+        converter.finish(&mut out).unwrap();
+        assert_eq!(out.len(), 24_000);
+        assert_eq!(converter.undelivered_frames(), 0);
+
+        let mut unchanged = Converter::new(source, source).unwrap();
+        unchanged.process(&[0.5; 100], &mut Vec::new()).unwrap();
+        assert_eq!(unchanged.undelivered_frames(), 0);
     }
 
     #[test]

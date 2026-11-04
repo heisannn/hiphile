@@ -14,6 +14,19 @@ use subsonic::Song;
 pub struct OpenedTrack {
     track: audio::Track,
     kept: bool,
+    arrival: Option<Arrival>,
+}
+
+/// The rest of a song's download.
+#[derive(Clone)]
+pub struct Arrival(net::DownloadHandle);
+
+impl Arrival {
+    /// Waits until the download has ended, whether it arrived whole or not.
+    /// Needs no particular executor and does not block.
+    pub async fn wait(&self) {
+        self.0.completed().await;
+    }
 }
 
 impl OpenedTrack {
@@ -23,6 +36,12 @@ impl OpenedTrack {
     /// [`SongCache::forget`] it and open the song again.
     pub fn is_kept(&self) -> bool {
         self.kept
+    }
+
+    /// The download still to arrive, unless it plays a kept file. Starting
+    /// another download only after it leaves this one the whole connection.
+    pub fn arrival(&self) -> Option<Arrival> {
+        self.arrival.clone()
     }
 
     pub fn into_track(self) -> audio::Track {
@@ -49,6 +68,7 @@ pub async fn open_track(
         return Ok(OpenedTrack {
             track: with_hints(track, song.content_type(), song),
             kept: true,
+            arrival: None,
         });
     }
 
@@ -70,10 +90,12 @@ pub async fn open_track(
         Some(len) => audio::Track::with_known_len(download, len),
         None => audio::Track::new(download),
     };
+    let arrival = Arrival(handle.clone());
     let track = track.cancel_with(move || handle.cancel());
     Ok(OpenedTrack {
         track: with_hints(track, content_type.as_deref(), song),
         kept: false,
+        arrival: Some(arrival),
     })
 }
 
@@ -197,6 +219,7 @@ mod tests {
 
         let opened = block_on(open_track(&client, Some(&cache), &song)).unwrap();
         assert!(opened.is_kept());
+        assert!(opened.arrival().is_none());
         assert_eq!(connections.load(Ordering::SeqCst), 0);
         assert!(block_on(open_track(&client, None, &song)).is_err());
         assert_eq!(connections.load(Ordering::SeqCst), 1);
@@ -222,6 +245,35 @@ mod tests {
             let kept = store.open(&server, song.id(), None).unwrap();
             assert_eq!(kept.byte_len(), BODY.len() as u64);
         }
+    }
+
+    #[test]
+    fn the_arrival_of_a_download_ends_with_it() {
+        const BODY: &[u8] = b"not really flac";
+        let client = client(&serve(BODY, false));
+        let opened = block_on(open_track(&client, None, &song("so-1", BODY.len()))).unwrap();
+        let arrival = opened.arrival().unwrap();
+        let (arrived, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            block_on(arrival.wait());
+            arrived.send(()).ok();
+        });
+        // The track is held, as the engine holds it, until the body is here.
+        receiver.recv_timeout(WAIT).expect("still waiting");
+        drop(opened);
+
+        // A download given up on ends too.
+        let client = self::client(&listen(|mut socket| {
+            read_request(&socket);
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nfla")
+                .ok();
+            std::thread::sleep(WAIT);
+        }));
+        let opened = block_on(open_track(&client, None, &song("so-1", 100))).unwrap();
+        let arrival = opened.arrival().unwrap();
+        drop(opened);
+        block_on(arrival.wait());
     }
 
     #[test]

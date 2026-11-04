@@ -13,7 +13,7 @@ use gpui_kit::{
     AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render,
     SharedString, Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _,
 };
-use playback::{EntryId, Placement, PlayTally, Queue};
+use playback::{Arrival, EntryId, Placement, PlayTally, Queue};
 use subsonic::{Song, SongId};
 use ui::{CoverArt, format_duration};
 
@@ -60,6 +60,13 @@ pub struct Player {
     /// Whether that load plays the song's kept file, which a failure may
     /// show to be damaged.
     loaded_kept: bool,
+    /// Whether that load was opened ahead of its turn and has yet to start,
+    /// so a failure may be out of date by now.
+    loaded_ahead: bool,
+    /// The current song's download, which the next one waits for.
+    arrival: Option<Arrival>,
+    /// The song that follows the current one, being made ready to go on to.
+    following: Option<Following>,
     queue: Queue<Song>,
     state: State,
     format: Option<PlaybackFormat>,
@@ -88,6 +95,19 @@ pub struct Player {
     saving_volume: bool,
     _save_volume: Task<()>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// The queue's next entry, whose download and decoder are started ahead of
+/// its turn. Dropping it stops getting it ready; a load the engine already has
+/// is left for the owner to take back.
+struct Following {
+    entry: EntryId,
+    /// Once it is open and set to follow in the engine. Stays `None` if that
+    /// fails: its turn comes the usual way, and shows why then.
+    load: Option<LoadId>,
+    kept: bool,
+    arrival: Option<Arrival>,
+    _open: Task<()>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -198,6 +218,9 @@ impl Player {
             engine,
             load: None,
             loaded_kept: false,
+            loaded_ahead: false,
+            arrival: None,
+            following: None,
             queue: Queue::new(),
             state: State::Stopped,
             format: None,
@@ -306,6 +329,7 @@ impl Player {
     }
 
     fn queue_changed(&mut self, cx: &mut Context<Self>) {
+        self.prepare_following(cx);
         cx.emit(PlayerEvent::QueueChanged);
         cx.notify();
     }
@@ -532,6 +556,8 @@ impl Player {
         self._open = Task::ready(());
         self.engine.stop();
         self.load = None;
+        self.arrival = None;
+        self.following = None;
         self.format = None;
         self.resume = None;
         if !self.has_song() {
@@ -557,18 +583,13 @@ impl Player {
         // way about it, so its end cannot advance the queue a second time.
         self.engine.stop();
         self.load = None;
-        self.format = None;
-        self.error = None;
-        self.scrub = None;
-        self.cover_url = song
-            .cover_art()
-            .map(|cover_art| self.session.cover_art_url(cover_art, COVER_PIXELS));
-        self.set_state(State::Opening, cx);
+        self.arrival = None;
+        self.following = None;
+        self.loaded_ahead = false;
+        self.show_opening(&song, cx);
 
         let client = self.session.client().clone();
-        let song_cache = cx
-            .try_global::<GlobalSongCache>()
-            .and_then(|song_cache| song_cache.0.clone());
+        let song_cache = song_cache(cx);
         // Replacing the task drops an earlier open, and with it its download.
         self._open = cx.spawn(async move |this, cx| {
             // Removing and opening a kept song read and write the disk.
@@ -588,6 +609,7 @@ impl Player {
             this.update(cx, |this, cx| match opened {
                 Ok(opened) => {
                     this.loaded_kept = opened.is_kept();
+                    this.arrival = opened.arrival();
                     let resume = this.resume.unwrap_or_default();
                     let track = opened
                         .into_track()
@@ -601,6 +623,104 @@ impl Player {
         });
     }
 
+    /// Shows `song`, now current, as about to play.
+    fn show_opening(&mut self, song: &Song, cx: &mut Context<Self>) {
+        self.format = None;
+        self.error = None;
+        self.scrub = None;
+        self.cover_url = song
+            .cover_art()
+            .map(|cover_art| self.session.cover_art_url(cover_art, COVER_PIXELS));
+        self.set_state(State::Opening, cx);
+    }
+
+    /// Makes the entry that follows the current one ready to go on to,
+    /// replacing what was being made ready if that is no longer next. Waits
+    /// for the current song's download, so that the two never compete for the
+    /// connection and leave the song playing short of data.
+    fn prepare_following(&mut self, cx: &mut Context<Self>) {
+        if !self.is_started() {
+            return;
+        }
+        let entry = self.queue.following_id();
+        if self.following.as_ref().map(|following| following.entry) == entry {
+            return;
+        }
+        let was_set = self
+            .following
+            .take()
+            .is_some_and(|following| following.load.is_some());
+        if was_set {
+            self.engine.clear_next();
+        }
+        let Some((entry, song)) = entry.zip(self.queue.following().cloned()) else {
+            return;
+        };
+        let client = self.session.client().clone();
+        let song_cache = song_cache(cx);
+        let arrival = self.arrival.clone();
+        let open = cx.spawn(async move |this, cx| {
+            if let Some(arrival) = arrival {
+                arrival.wait().await;
+            }
+            let opened = cx
+                .background_spawn(async move {
+                    playback::open_track(&client, song_cache.as_ref(), &song).await
+                })
+                .await;
+            this.update(cx, |this, _| {
+                if let (Some(following), Ok(opened)) = (this.following.as_mut(), opened) {
+                    following.kept = opened.is_kept();
+                    following.arrival = opened.arrival();
+                    following.load = Some(this.engine.set_next(opened.into_track()));
+                }
+            })
+            .ok();
+        });
+        self.following = Some(Following {
+            entry,
+            load: None,
+            kept: false,
+            arrival: None,
+            _open: open,
+        });
+    }
+
+    /// Moves on after the current song has ended. When the engine goes on to
+    /// the song made ready for this, it only has to be shown; in any other
+    /// case, such as a change of the queue crossing the end of the song, the
+    /// next song opens from scratch.
+    ///
+    /// A pause on its way through the events about that holds for the next
+    /// song, as the engine stays paused.
+    fn song_ended(&mut self, next: Option<LoadId>, cx: &mut Context<Self>) {
+        let paused = self.state == State::Paused;
+        let following_id = self.queue.following_id();
+        let following = self.following.take().filter(|following| {
+            following.load.is_some()
+                && following.load == next
+                && Some(following.entry) == following_id
+        });
+        let Some(song) = self.queue.follow().cloned() else {
+            self.stop(cx);
+            return;
+        };
+        self.tally = PlayTally::default();
+        self.resume = paused.then_some(Resume {
+            position: Duration::ZERO,
+            paused,
+        });
+        let Some(following) = following else {
+            self.open_current(false, cx);
+            return;
+        };
+        self.load = following.load;
+        self.loaded_kept = following.kept;
+        self.loaded_ahead = true;
+        self.arrival = following.arrival;
+        self.show_opening(&song, cx);
+    }
+
     fn on_engine_event(&mut self, event: Event, cx: &mut Context<Self>) {
         if self.load != Some(event.load) {
             return;
@@ -609,6 +729,7 @@ impl Player {
             EventKind::Started(format) => {
                 self.format = Some(format);
                 self.error = None;
+                self.loaded_ahead = false;
                 let paused = self.resume.take().is_some_and(|resume| resume.paused);
                 let state = if paused {
                     State::Paused
@@ -619,22 +740,21 @@ impl Player {
                 if !paused {
                     self.announce_current(cx);
                 }
+                self.prepare_following(cx);
             }
             EventKind::OutputChanged(format) => {
                 self.format = Some(format);
                 cx.notify();
             }
-            EventKind::Ended => {
-                if self.queue.advance().is_some() {
-                    self.play_current(cx);
-                } else {
-                    self.stop(cx);
-                }
-            }
+            EventKind::Ended { next } => self.song_ended(next, cx),
             // The song fetched again plays from a download, not a kept
             // file, so a song is fetched again at most once per play.
             EventKind::Failed(error) if self.loaded_kept && error.is_track_error() => {
                 self.open_current(true, cx);
+            }
+            // It opened a while ago, and what stopped it then may have passed.
+            EventKind::Failed(error) if self.loaded_ahead && error.is_track_error() => {
+                self.open_current(false, cx);
             }
             EventKind::Failed(error) => {
                 // The output is at fault, not the song, so it can pick up
@@ -662,6 +782,8 @@ impl Player {
     fn fail(&mut self, song: &Song, reason: &str, cx: &mut Context<Self>) {
         self.engine.stop();
         self.load = None;
+        self.arrival = None;
+        self.following = None;
         self.format = None;
         self.error = Some(format!("Couldn't play “{}”. {reason}", song.title()).into());
         self.set_state(State::Stopped, cx);
@@ -807,6 +929,12 @@ impl Player {
     }
 }
 
+/// The songs kept on this computer, if there are any to be had.
+fn song_cache(cx: &Context<Player>) -> Option<playback::SongCache> {
+    cx.try_global::<GlobalSongCache>()
+        .and_then(|song_cache| song_cache.0.clone())
+}
+
 /// The engine gain for a volume slider at `level`. Squared, so equal slider
 /// steps sound like roughly equal changes in loudness.
 fn gain(level: f32, muted: bool) -> f32 {
@@ -870,12 +998,412 @@ impl Render for Player {
 
 #[cfg(test)]
 mod tests {
-    use super::gain;
+    use std::collections::HashMap;
+    use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+
+    use gpui_kit::{TestAppContext, VisualTestContext};
+    use serde_json::json;
+    use subsonic::Credentials;
+
+    use super::*;
+
+    const RATE: u32 = 44_100;
+    const WAIT: Duration = Duration::from_secs(15);
 
     #[test]
     fn gain_follows_the_square_of_the_level() {
         assert_eq!(gain(1.0, false), 1.0);
         assert_eq!(gain(0.5, false), 0.25);
         assert_eq!(gain(1.0, true), 0.0);
+    }
+
+    /// A silent 16-bit stereo WAV.
+    fn wav(millis: u32) -> Vec<u8> {
+        let frames = RATE * millis / 1_000;
+        let data_len = frames * 4;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&RATE.to_le_bytes());
+        bytes.extend_from_slice(&(RATE * 4).to_le_bytes());
+        bytes.extend_from_slice(&4u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_len.to_le_bytes());
+        bytes.resize(44 + data_len as usize, 0);
+        bytes
+    }
+
+    /// Serves songs by ID and notes which were asked for, in order.
+    #[derive(Clone, Default)]
+    struct Server {
+        songs: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+        streamed: Arc<Mutex<Vec<String>>>,
+        /// While set, the body of the song named keeps its last half back.
+        held: Arc<Mutex<Option<String>>>,
+        released: Arc<AtomicBool>,
+        /// The connection is lost after this many bytes of the song named.
+        cut: Arc<Mutex<Option<(String, usize)>>>,
+    }
+
+    impl Server {
+        fn start(self) -> String {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = format!("http://{}/", listener.local_addr().unwrap());
+            std::thread::spawn(move || {
+                for socket in listener.incoming() {
+                    let Ok(socket) = socket else { return };
+                    let server = self.clone();
+                    std::thread::spawn(move || server.answer(socket));
+                }
+            });
+            address
+        }
+
+        fn answer(&self, mut socket: TcpStream) {
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
+            let mut request = String::new();
+            reader.read_line(&mut request).ok();
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap_or(0) > 2 {
+                line.clear();
+            }
+            let streamed = request.contains("/stream");
+            let id = request
+                .split(['?', '&', ' '])
+                .find_map(|part| part.strip_prefix("id="))
+                .unwrap_or_default()
+                .to_owned();
+            let song = streamed
+                .then(|| {
+                    self.streamed.lock().unwrap().push(id.clone());
+                    self.songs.lock().unwrap().get(&id).cloned()
+                })
+                .flatten();
+            let Some(body) = song else {
+                let status = if streamed { "404 Not Found" } else { "200 OK" };
+                let reply =
+                    format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                socket.write_all(reply.as_bytes()).ok();
+                return;
+            };
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            socket.write_all(headers.as_bytes()).ok();
+            if let Some((_, len)) = self.cut.lock().unwrap().as_ref().filter(|cut| cut.0 == id) {
+                socket.write_all(&body[..*len]).ok();
+                return;
+            }
+            let held = self.held.lock().unwrap().as_deref() == Some(id.as_str());
+            let head = if held { body.len() / 2 } else { body.len() };
+            socket.write_all(&body[..head]).ok();
+            while !self.released.load(Ordering::SeqCst) && head < body.len() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            socket.write_all(&body[head..]).ok();
+            // Until the client has gone, so that it decides when a body ends.
+            let _ = reader.read(&mut [0; 1]);
+        }
+
+        fn add(&self, id: &str, body: Vec<u8>) -> Song {
+            let song = json!({
+                "id": id, "title": id, "suffix": "wav", "size": body.len(), "duration": 1
+            });
+            self.songs.lock().unwrap().insert(id.to_owned(), body);
+            serde_json::from_value(song).unwrap()
+        }
+
+        fn streamed(&self) -> Vec<String> {
+            self.streamed.lock().unwrap().clone()
+        }
+    }
+
+    fn player<'a>(
+        server: &Server,
+        cx: &'a mut TestAppContext,
+    ) -> (Entity<Player>, &'a mut VisualTestContext) {
+        // The engine and the network wake the test from their own threads.
+        cx.executor().allow_parking();
+        cx.update(gpui_kit::init);
+        let name = std::env::var("HIPHILE_TEST_DEVICE")
+            .expect("name a virtual device in HIPHILE_TEST_DEVICE");
+        let device = audio::output_devices()
+            .unwrap()
+            .into_iter()
+            .find(|device| device.name().trim() == name)
+            .expect("no such device");
+        let output = OutputSettings::new(device.id().map(str::to_owned), None);
+        let address = server.clone().start();
+        let net = net::Client::new("hiphile-test").unwrap();
+        let server = client::Server::new(&address, Credentials::api_key("k")).unwrap();
+        let info = serde_json::from_value(json!({ "version": "1.16.1" })).unwrap();
+        let session = session::Session::new(
+            client::Client::new(net, server),
+            "alice".to_owned(),
+            info,
+            None,
+            None,
+        );
+        cx.add_window_view(|window, cx| Player::new(session, output, window, cx))
+    }
+
+    fn wait_until(
+        player: &Entity<Player>,
+        cx: &mut VisualTestContext,
+        what: &str,
+        mut condition: impl FnMut(&Player) -> bool,
+    ) {
+        let started = Instant::now();
+        loop {
+            cx.run_until_parked();
+            if player.read_with(cx, |player, _| condition(player)) {
+                return;
+            }
+            assert!(started.elapsed() < WAIT, "still waiting: {what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn current(player: &Player) -> Option<&str> {
+        player.queue.current().map(|song| song.id().as_str())
+    }
+
+    fn is_playing_song(player: &Player, id: &str) -> bool {
+        player.state == State::Playing && current(player) == Some(id)
+    }
+
+    fn is_following_set(player: &Player, id: &str) -> bool {
+        player.queue.following().map(|song| song.id().as_str()) == Some(id)
+            && player
+                .following
+                .as_ref()
+                .is_some_and(|following| following.load.is_some())
+    }
+
+    /// Each song is fetched once and only after the one before it has
+    /// arrived, and playback goes through the queue on its own.
+    #[gpui_kit::test]
+    #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
+    fn the_next_song_is_fetched_once_the_current_one_has_arrived(cx: &mut TestAppContext) {
+        let server = Server::default();
+        let songs = [
+            server.add("a", wav(2_000)),
+            server.add("b", wav(500)),
+            server.add("c", wav(300)),
+        ];
+        *server.held.lock().unwrap() = Some("a".to_owned());
+        let (player, cx) = player(&server, cx);
+        player.update(cx, |player, cx| player.play(&songs, 0, cx));
+
+        wait_until(&player, cx, "a to play", |player| {
+            is_playing_song(player, "a")
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        cx.run_until_parked();
+        assert_eq!(server.streamed(), ["a"]);
+
+        server.released.store(true, Ordering::SeqCst);
+        wait_until(&player, cx, "b to be set", |player| {
+            is_following_set(player, "b")
+        });
+        assert_eq!(server.streamed(), ["a", "b"]);
+
+        wait_until(&player, cx, "b to play", |player| {
+            is_playing_song(player, "b")
+        });
+        let duration = player.read_with(cx, |player, _| player.duration());
+        assert_eq!(duration, Some(Duration::from_millis(500)));
+        wait_until(&player, cx, "c to play", |player| {
+            is_playing_song(player, "c")
+        });
+        wait_until(&player, cx, "the end", |player| {
+            player.state == State::Stopped
+        });
+        assert_eq!(server.streamed(), ["a", "b", "c"]);
+        player.read_with(cx, |player, _| {
+            assert_eq!(current(player), None);
+            assert!(player.following.is_none());
+            assert!(player.arrival.is_none());
+            assert!(player.error.is_none());
+        });
+    }
+
+    /// A change of what comes next replaces what was made ready for it.
+    #[gpui_kit::test]
+    #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
+    fn moving_another_song_next_makes_it_follow(cx: &mut TestAppContext) {
+        let server = Server::default();
+        let songs = [
+            server.add("a", wav(1_500)),
+            server.add("b", wav(5_000)),
+            server.add("c", wav(5_000)),
+        ];
+        let (player, cx) = player(&server, cx);
+        player.update(cx, |player, cx| player.play(&songs, 0, cx));
+        wait_until(&player, cx, "b to be set", |player| {
+            is_following_set(player, "b")
+        });
+
+        player.update(cx, |player, cx| {
+            let last = player.queue.entries()[2].id();
+            player.move_entry_to_next(last, cx);
+        });
+        wait_until(&player, cx, "c to be set", |player| {
+            is_following_set(player, "c")
+        });
+        wait_until(&player, cx, "c to play", |player| {
+            is_playing_song(player, "c")
+        });
+        assert_eq!(server.streamed()[..3], ["a", "b", "c"]);
+    }
+
+    /// With nothing left to come next, playback ends after the song, even when
+    /// the removed song was already on its way to the device. That its audio
+    /// is taken back is for the engine's tests, which can hear it.
+    #[gpui_kit::test]
+    #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
+    fn removing_the_next_song_ends_playback_after_the_current_one(cx: &mut TestAppContext) {
+        let server = Server::default();
+        let songs = [server.add("a", wav(1_000)), server.add("b", wav(5_000))];
+        let (player, cx) = player(&server, cx);
+        player.update(cx, |player, cx| player.play(&songs, 0, cx));
+        wait_until(&player, cx, "b to be set", |player| {
+            is_following_set(player, "b")
+        });
+        // Within what the engine writes ahead of the end of the song.
+        wait_until(&player, cx, "the end of a to be near", |player| {
+            player.engine.position() > Duration::from_millis(700)
+        });
+        player.update(cx, |player, cx| {
+            let next = player.queue.entries()[1].id();
+            player.remove_entry(next, cx);
+        });
+        wait_until(&player, cx, "the end", |player| {
+            player.state == State::Stopped
+        });
+        player.read_with(cx, |player, _| assert!(player.error.is_none()));
+    }
+
+    /// A next song the server has no file for fails when its turn comes, not
+    /// before: the current song plays out undisturbed.
+    #[gpui_kit::test]
+    #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
+    fn a_next_song_that_cannot_be_fetched_fails_at_its_turn(cx: &mut TestAppContext) {
+        let server = Server::default();
+        let songs = [
+            server.add("a", wav(1_000)),
+            serde_json::from_value(json!({ "id": "gone", "title": "Gone" })).unwrap(),
+        ];
+        let (player, cx) = player(&server, cx);
+        player.update(cx, |player, cx| player.play(&songs, 0, cx));
+        wait_until(&player, cx, "the attempt", |_| {
+            server.streamed() == ["a", "gone"]
+        });
+        cx.run_until_parked();
+        player.read_with(cx, |player, _| {
+            assert!(is_playing_song(player, "a"));
+            assert!(player.error.is_none());
+        });
+        wait_until(&player, cx, "the failure", |player| player.error.is_some());
+        player.read_with(cx, |player, _| {
+            assert_eq!(current(player), Some("gone"));
+            assert_eq!(player.state, State::Stopped);
+        });
+        assert_eq!(server.streamed(), ["a", "gone", "gone"]);
+    }
+
+    /// A next song that opened ahead of time gets one more try at its turn,
+    /// as what stopped it may have passed.
+    #[gpui_kit::test]
+    #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
+    fn a_next_song_that_cannot_open_is_tried_once_more(cx: &mut TestAppContext) {
+        let server = Server::default();
+        let songs = [
+            server.add("a", wav(1_000)),
+            server.add("broken", b"not audio".to_vec()),
+        ];
+        let (player, cx) = player(&server, cx);
+        player.update(cx, |player, cx| player.play(&songs, 0, cx));
+        wait_until(&player, cx, "the failure", |player| player.error.is_some());
+        player.read_with(cx, |player, _| {
+            assert_eq!(current(player), Some("broken"));
+            assert_eq!(player.state, State::Stopped);
+            assert!(player.arrival.is_none());
+        });
+        assert_eq!(server.streamed(), ["a", "broken", "broken"]);
+    }
+
+    /// So does one that opened and then broke, once its audio has joined the
+    /// current song's but before the device has got to it.
+    #[gpui_kit::test]
+    #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
+    fn a_next_song_that_breaks_as_it_joins_is_tried_once_more(cx: &mut TestAppContext) {
+        let server = Server::default();
+        let songs = [server.add("a", wav(1_000)), server.add("b", wav(1_000))];
+        *server.cut.lock().unwrap() = Some(("b".to_owned(), 44 + 16));
+        let (player, cx) = player(&server, cx);
+        player.update(cx, |player, cx| player.play(&songs, 0, cx));
+        wait_until(&player, cx, "the failure", |player| player.error.is_some());
+        player.read_with(cx, |player, _| {
+            assert_eq!(current(player), Some("b"));
+            assert_eq!(player.state, State::Stopped);
+        });
+        let tries = server.streamed();
+        assert_eq!(tries.iter().filter(|id| *id == "b").count(), 2, "{tries:?}");
+    }
+
+    /// A pause that crosses the events of the next song starting stays: the
+    /// engine has paused the song, so the player must not show it as playing.
+    #[gpui_kit::test]
+    #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
+    fn a_pause_as_the_next_song_starts_holds(cx: &mut TestAppContext) {
+        let server = Server::default();
+        let songs = [server.add("a", wav(1_000)), server.add("b", wav(5_000))];
+        let (player, cx) = player(&server, cx);
+        player.update(cx, |player, cx| player.play(&songs, 0, cx));
+        wait_until(&player, cx, "b to be set", |player| {
+            is_following_set(player, "b")
+        });
+
+        // Without running the player, so that the events wait for it.
+        let position = || player.read_with(cx, |player, _| player.engine.position());
+        let started = Instant::now();
+        let mut last = position();
+        while position() >= last {
+            last = position();
+            assert!(started.elapsed() < WAIT, "still waiting for the next song");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        player.update(cx, |player, cx| {
+            assert!(is_playing_song(player, "a"));
+            player.toggle_playback(cx);
+        });
+
+        wait_until(&player, cx, "b to start", |player| {
+            current(player) == Some("b") && player.format.is_some()
+        });
+        player.read_with(cx, |player, _| assert_eq!(player.state, State::Paused));
+        std::thread::sleep(Duration::from_millis(100));
+        let paused_at = player.read_with(cx, |player, _| player.engine.position());
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(
+            player.read_with(cx, |player, _| player.engine.position()),
+            paused_at
+        );
+
+        player.update(cx, |player, cx| player.toggle_playback(cx));
+        player.read_with(cx, |player, _| assert_eq!(player.state, State::Playing));
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(player.read_with(cx, |player, _| player.engine.position()) > paused_at);
     }
 }
