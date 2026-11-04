@@ -1,6 +1,7 @@
 //! Feature: the play queue, transport controls, and the now-playing bar.
 
 mod format;
+mod hover_slider;
 mod player;
 mod queue_view;
 

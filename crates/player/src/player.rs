@@ -4,17 +4,19 @@ use std::time::{Duration, SystemTime};
 use audio::{Engine, Event, EventKind, LoadId, OutputSettings, PlaybackFormat};
 use futures::AsyncReadExt as _;
 use gpui_kit::assets::IconName;
+use gpui_kit::base::{Transition, transition};
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    slider::{Slider, SliderEvent, SliderState},
+    slider::{SliderEvent, SliderState},
     v_flex,
 };
 use gpui_kit::http_client::AsyncBody;
 use gpui_kit::{
-    AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render,
-    SharedString, Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _,
+    AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, Window, div,
+    prelude::FluentBuilder as _, relative, rems,
 };
 use playback::{Arrival, EntryId, Placement, PlayTally, Queue, RepeatMode};
 use presence::{CoverHost, Presence};
@@ -22,6 +24,7 @@ use subsonic::{CoverArtId, Song, SongId};
 use ui::{AlbumLink, ArtistLink, CoverArt, format_duration, song_artist_link};
 
 use crate::format;
+use crate::hover_slider::HoverSlider;
 use crate::{
     CycleRepeat, GlobalSongCache, NextSong, PreviousSong, ToggleMute, TogglePlayback, ToggleShuffle,
 };
@@ -966,7 +969,7 @@ impl Player {
         cx.notify();
     }
 
-    fn render_song(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_song(&self, shown: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let song = self.queue.current();
         let error = self.error.as_ref().map(|error| {
             div()
@@ -979,6 +982,7 @@ impl Player {
             .flex_1()
             .min_w_0()
             .gap_3()
+            .opacity(shown)
             .when_some(song, |this, song| {
                 this.child(CoverArt::new(self.cover_url.clone()).small())
                     .child(
@@ -1014,6 +1018,7 @@ impl Player {
             RepeatMode::One => (IconName::Repeat1, "Repeat one"),
         };
         h_flex()
+            .debug_selector(|| "player-controls".to_owned())
             .flex_none()
             .gap_1()
             .child(
@@ -1064,7 +1069,9 @@ impl Player {
             )
     }
 
-    fn render_position(&self) -> impl IntoElement {
+    /// The line under the controls. `shown` opens it from nothing, which takes
+    /// the controls from the middle of the bar to their place above it.
+    fn render_position(&self, shown: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let duration = self.duration();
         let seekable = self.is_started() && duration.is_some();
         let position = match (self.scrub, duration) {
@@ -1072,21 +1079,29 @@ impl Player {
             _ => self.position_now(),
         };
         h_flex()
-            .flex_none()
-            .gap_3()
-            .child(div().flex_none().child(format_duration(position)))
-            .child(
-                div().w_40().child(
-                    Slider::new(&self.position)
-                        .disabled(!seekable)
-                        .accessibility_label("Position"),
-                ),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .child(duration.map(format_duration).unwrap_or_default()),
-            )
+            .debug_selector(|| "player-position".to_owned())
+            .w_full()
+            .h(rems(shown))
+            .opacity(shown)
+            .gap_2()
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .when(self.has_song(), |this| {
+                this.child(
+                    h_flex()
+                        .flex_none()
+                        .min_w_9()
+                        .justify_end()
+                        .child(format_duration(position)),
+                )
+                .child(HoverSlider::new(&self.position, "Position").disabled(!seekable))
+                .child(
+                    div()
+                        .flex_none()
+                        .min_w_9()
+                        .child(duration.map(format_duration).unwrap_or_default()),
+                )
+            })
     }
 
     fn render_volume(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1100,7 +1115,7 @@ impl Player {
         };
         h_flex()
             .flex_none()
-            .gap_1()
+            .gap_2()
             .child(
                 Button::new("toggle-mute")
                     .ghost()
@@ -1111,9 +1126,9 @@ impl Player {
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_mute(cx))),
             )
             .child(
-                div()
+                h_flex()
                     .w_20()
-                    .child(Slider::new(&self.volume).accessibility_label("Volume")),
+                    .child(HoverSlider::new(&self.volume, "Volume")),
             )
     }
 }
@@ -1134,6 +1149,15 @@ fn song_details(song: &Song, cx: &gpui_kit::App) -> impl IntoElement + use<> {
             this.when(separated, |this| this.child(div().flex_none().child("—")))
                 .child(album)
         })
+}
+
+/// Eases from 0 to 1 when `shown` turns true, and back when it turns false. The
+/// first frame takes its place at once, so a bar that opens with a song holds
+/// still.
+fn reveal(id: &'static str, shown: bool, window: &mut Window, cx: &mut Context<Player>) -> f32 {
+    let motion = cx.theme().motion_tokens();
+    let policy = Transition::new(motion.duration_slow).easing(motion.easing_move.clone());
+    transition(id, if shown { 1. } else { 0. }, policy, window, cx)
 }
 
 /// The songs kept on this computer, if there are any to be had.
@@ -1170,13 +1194,16 @@ fn describe(error: &audio::Error) -> String {
 }
 
 impl Render for Player {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let format_text = self
             .format
             .as_ref()
             .map(|format| format::describe(format, self.queue.current().and_then(Song::suffix)));
         let muted_foreground = cx.theme().muted_foreground;
+        let song_shown = reveal("player-song-shown", self.has_song(), window, cx);
+        let format_shown = reveal("player-format-shown", format_text.is_some(), window, cx);
         h_flex()
+            .debug_selector(|| "player-bar".to_owned())
             .flex_none()
             .h_16()
             .px_4()
@@ -1184,22 +1211,30 @@ impl Render for Player {
             .border_t_1()
             .border_color(cx.theme().border)
             .bg(cx.theme().background)
-            .child(self.render_song(cx))
-            .child(self.render_controls(cx))
+            .child(self.render_song(song_shown, cx))
+            .child(
+                v_flex()
+                    .flex_basis(relative(0.4))
+                    .min_w_80()
+                    .max_w(rems(35.))
+                    .items_center()
+                    .child(self.render_controls(cx))
+                    .child(self.render_position(song_shown, cx)),
+            )
             .child(
                 // Never narrower than its contents: it is the song's lane that
-                // gives way, as its text truncates.
+                // gives way, as its text truncates. The volume keeps the edge,
+                // so the format coming and going with each song never moves it.
                 h_flex()
                     .flex_1()
                     .justify_end()
                     .gap_4()
                     .text_xs()
                     .text_color(muted_foreground)
-                    .when(self.has_song(), |this| this.child(self.render_position()))
-                    .child(self.render_volume(cx))
                     .when_some(format_text, |this, text| {
-                        this.child(div().flex_none().child(text))
-                    }),
+                        this.child(div().flex_none().opacity(format_shown).child(text))
+                    })
+                    .child(self.render_volume(cx)),
             )
     }
 }
@@ -1237,6 +1272,66 @@ mod tests {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             div().size_full().child(song_details(&self.0, cx))
         }
+    }
+
+    /// A player that plays nothing, so nothing reaches a device or the server.
+    fn idle_player(cx: &mut TestAppContext) -> (Entity<Player>, &mut VisualTestContext) {
+        cx.update(gpui_kit::init);
+        let net = net::Client::new("hiphile-test").unwrap();
+        let server = client::Server::new("http://127.0.0.1:9", Credentials::api_key("k")).unwrap();
+        let info = serde_json::from_value(json!({ "version": "1.16.1" })).unwrap();
+        let session = session::Session::new(
+            client::Client::new(net, server),
+            "alice".to_owned(),
+            info,
+            None,
+            None,
+        );
+        let (player, cx) = cx.add_window_view(|window, cx| {
+            Player::new(session, OutputSettings::default(), window, cx)
+        });
+        cx.run_until_parked();
+        (player, cx)
+    }
+
+    fn position_height(cx: &mut VisualTestContext) -> gpui_kit::Pixels {
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        cx.debug_bounds("player-position").unwrap().size.height
+    }
+
+    /// How far the middle of the controls is above the middle of the bar's
+    /// content, which starts under the bar's one-pixel top border.
+    fn controls_lift(cx: &mut VisualTestContext) -> gpui_kit::Pixels {
+        let bar = cx.debug_bounds("player-bar").unwrap();
+        let controls = cx.debug_bounds("player-controls").unwrap();
+        bar.center().y + gpui_kit::px(0.5) - controls.center().y
+    }
+
+    #[gpui_kit::test]
+    fn the_controls_ease_up_from_the_middle_as_a_song_arrives(cx: &mut TestAppContext) {
+        let (player, cx) = idle_player(cx);
+        assert_eq!(position_height(cx), gpui_kit::px(0.));
+        assert_eq!(controls_lift(cx), gpui_kit::px(0.));
+
+        let song: Song = serde_json::from_value(json!({ "id": "a", "title": "a" })).unwrap();
+        player.update(cx, |player, cx| {
+            player.fill_queue(&[song], 0);
+            cx.notify();
+        });
+        assert_eq!(position_height(cx), gpui_kit::px(0.));
+
+        let (duration, rem) =
+            cx.update(|window, cx| (cx.theme().motion_tokens().duration_slow, window.rem_size()));
+        cx.executor().advance_clock(duration / 4);
+        let partway = position_height(cx);
+        assert!(gpui_kit::px(0.) < partway && partway < rem);
+        // Layout rounds to whole pixels, so halfway through it can be half off.
+        assert!((controls_lift(cx) - partway / 2.).abs() <= gpui_kit::px(0.5));
+
+        cx.executor().advance_clock(duration);
+        assert_eq!(position_height(cx), rem);
+        assert_eq!(controls_lift(cx), rem / 2.);
     }
 
     #[gpui_kit::test]
