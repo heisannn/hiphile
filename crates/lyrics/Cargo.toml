@@ -4,6 +4,7 @@ description = "Finds a song's lyrics over net, from one provider after another. 
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [features]
 test-support = []

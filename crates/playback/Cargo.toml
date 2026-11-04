@@ -4,6 +4,7 @@ description = "Play queue and playback orchestration. No GPUI."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 audio.workspace = true

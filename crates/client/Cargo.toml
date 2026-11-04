@@ -4,6 +4,7 @@ description = "OpenSubsonic client: executes subsonic endpoints over net."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 net.workspace = true

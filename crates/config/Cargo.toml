@@ -4,6 +4,7 @@ description = "Server profiles and keychain passwords shared by the GUI and the 
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 config-rs.workspace = true

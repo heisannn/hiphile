@@ -4,6 +4,7 @@ description = "Feature: every song in the library, in a table that sorts."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 actions.workspace = true

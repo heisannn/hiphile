@@ -4,6 +4,7 @@ description = "Desktop OpenSubsonic client."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 account.workspace = true

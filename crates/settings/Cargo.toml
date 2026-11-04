@@ -4,6 +4,7 @@ description = "Feature: the settings window."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 audio.workspace = true

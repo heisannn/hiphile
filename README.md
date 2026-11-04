@@ -72,3 +72,7 @@ ImgBB or Discord. It uses third-party services as follows:
 - **Cover art on Discord:** If you set an ImgBB API key, cover images are uploaded
   to ImgBB, where **anyone with the link can view them for 180 days**. Without a
   key, nothing is uploaded.
+
+## License
+
+[MIT](LICENSE)

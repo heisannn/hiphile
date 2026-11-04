@@ -4,6 +4,7 @@ description = "Feature: signing in to a server."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 catalog.workspace = true

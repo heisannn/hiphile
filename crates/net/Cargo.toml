@@ -4,6 +4,7 @@ description = "HTTP transport: reqwest on a dedicated tokio runtime, exposed thr
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 bytes.workspace = true

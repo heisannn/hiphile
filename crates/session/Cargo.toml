@@ -4,6 +4,7 @@ description = "GPUI-side connection state: the active client and the GPUI HTTP a
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 bytes.workspace = true
