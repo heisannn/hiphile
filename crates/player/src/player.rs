@@ -5,7 +5,7 @@ use audio::{Engine, Event, EventKind, LoadId, OutputSettings, PlaybackFormat};
 use futures::AsyncReadExt as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Sizable as _,
+    ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     slider::{Slider, SliderEvent, SliderState},
@@ -16,13 +16,15 @@ use gpui_kit::{
     AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render,
     SharedString, Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _,
 };
-use playback::{Arrival, EntryId, Placement, PlayTally, Queue};
+use playback::{Arrival, EntryId, Placement, PlayTally, Queue, RepeatMode};
 use presence::{CoverHost, Presence};
 use subsonic::{CoverArtId, Song, SongId};
 use ui::{AlbumLink, ArtistLink, CoverArt, format_duration, song_artist_link};
 
 use crate::format;
-use crate::{GlobalSongCache, NextSong, PreviousSong, ToggleMute, TogglePlayback};
+use crate::{
+    CycleRepeat, GlobalSongCache, NextSong, PreviousSong, ToggleMute, TogglePlayback, ToggleShuffle,
+};
 
 /// How often the position redraws while playing.
 const POSITION_REFRESH: Duration = Duration::from_millis(250);
@@ -47,14 +49,21 @@ pub enum PlayerEvent {
         playing: bool,
     },
     /// Entries were added, removed, or moved. A change of the current entry
-    /// alone comes as [`PlayerEvent::NowPlaying`].
+    /// comes as [`PlayerEvent::NowPlaying`], also when a shuffled queue starts
+    /// over in a new order with it.
     QueueChanged,
+    /// The queue was shuffled or put back in order, after
+    /// [`PlayerEvent::QueueChanged`] about the same change.
+    ShuffleChanged,
+    RepeatChanged,
     /// A play of a song has been reported to the server, as far as it could
     /// be, so what the server says was played last may have changed.
     Played,
     /// A cover was looked for to put on the Discord status, and why it could
     /// not be published, if it could not.
-    CoverSought { error: Option<SharedString> },
+    CoverSought {
+        error: Option<SharedString>,
+    },
 }
 
 /// The play queue, the audio engine, and the now-playing bar that controls
@@ -313,6 +322,13 @@ impl Player {
         self.play_current(cx);
     }
 
+    /// Replaces the queue with `songs`, with none chosen to start at.
+    pub fn play_whole(&mut self, songs: &[Song], cx: &mut Context<Self>) {
+        self.queue.replace_from_start(songs.to_vec());
+        self.queue_changed(cx);
+        self.play_current(cx);
+    }
+
     /// Adds `songs` to the queue at `placement`. When nothing is playing or
     /// paused, playback starts: from the first of them if there was no
     /// current song, otherwise from the entry after the current one, so
@@ -331,6 +347,36 @@ impl Player {
         if !had_current || self.queue.advance().is_some() {
             self.play_current(cx);
         }
+    }
+
+    pub fn is_shuffled(&self) -> bool {
+        self.queue.is_shuffled()
+    }
+
+    pub fn toggle_shuffle(&mut self, cx: &mut Context<Self>) {
+        self.queue.set_shuffled(!self.queue.is_shuffled());
+        self.queue_changed(cx);
+        cx.emit(PlayerEvent::ShuffleChanged);
+    }
+
+    pub fn repeat(&self) -> RepeatMode {
+        self.queue.repeat()
+    }
+
+    pub fn set_repeat(&mut self, repeat: RepeatMode, cx: &mut Context<Self>) {
+        self.queue.set_repeat(repeat);
+        self.prepare_following(cx);
+        cx.emit(PlayerEvent::RepeatChanged);
+        cx.notify();
+    }
+
+    pub fn cycle_repeat(&mut self, cx: &mut Context<Self>) {
+        let repeat = match self.repeat() {
+            RepeatMode::Off => RepeatMode::All,
+            RepeatMode::All => RepeatMode::One,
+            RepeatMode::One => RepeatMode::Off,
+        };
+        self.set_repeat(repeat, cx);
     }
 
     pub(crate) fn queue(&self) -> &Queue<Song> {
@@ -960,9 +1006,26 @@ impl Player {
         } else {
             (IconName::Play, "Play")
         };
+        let shuffled = self.is_shuffled();
+        let repeat = self.repeat();
+        let (repeat_icon, repeat_label) = match repeat {
+            RepeatMode::Off => (IconName::Repeat, "Repeat off"),
+            RepeatMode::All => (IconName::Repeat, "Repeat all"),
+            RepeatMode::One => (IconName::Repeat1, "Repeat one"),
+        };
         h_flex()
             .flex_none()
             .gap_1()
+            .child(
+                Button::new("toggle-shuffle")
+                    .ghost()
+                    .icon(IconName::Shuffle)
+                    .accessibility_label("Shuffle")
+                    .tooltip_with_action("Shuffle", &ToggleShuffle, None)
+                    .selected(shuffled)
+                    .toggled(shuffled)
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_shuffle(cx))),
+            )
             .child(
                 Button::new("previous-song")
                     .ghost()
@@ -990,6 +1053,15 @@ impl Player {
                     .disabled(!has_song)
                     .on_click(cx.listener(|this, _, _, cx| this.next(cx))),
             )
+            .child(
+                Button::new("cycle-repeat")
+                    .ghost()
+                    .icon(repeat_icon)
+                    .accessibility_label(repeat_label)
+                    .tooltip_with_action(repeat_label, &CycleRepeat, None)
+                    .selected(repeat != RepeatMode::Off)
+                    .on_click(cx.listener(|this, _, _, cx| this.cycle_repeat(cx))),
+            )
     }
 
     fn render_position(&self) -> impl IntoElement {
@@ -1004,7 +1076,7 @@ impl Player {
             .gap_3()
             .child(div().flex_none().child(format_duration(position)))
             .child(
-                div().w_48().child(
+                div().w_40().child(
                     Slider::new(&self.position)
                         .disabled(!seekable)
                         .accessibility_label("Position"),
@@ -1115,9 +1187,10 @@ impl Render for Player {
             .child(self.render_song(cx))
             .child(self.render_controls(cx))
             .child(
+                // Never narrower than its contents: it is the song's lane that
+                // gives way, as its text truncates.
                 h_flex()
                     .flex_1()
-                    .min_w_0()
                     .justify_end()
                     .gap_4()
                     .text_xs()
@@ -1470,6 +1543,94 @@ mod tests {
             player.state == State::Stopped
         });
         player.read_with(cx, |player, _| assert!(player.error.is_none()));
+    }
+
+    /// Repeating one song plays it again and again, as a new play each time,
+    /// until repeat is off and it ends for good.
+    #[gpui_kit::test]
+    #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
+    fn repeating_one_song_plays_it_until_repeat_is_off(cx: &mut TestAppContext) {
+        let server = Server::default();
+        let songs = [server.add("a", wav(300)), server.add("b", wav(300))];
+        let (player, cx) = player(&server, cx);
+        player.update(cx, |player, cx| {
+            player.set_repeat(RepeatMode::One, cx);
+            player.play(&songs, 0, cx);
+        });
+        wait_until(&player, cx, "a to come round again", |_| {
+            server.streamed().iter().filter(|id| *id == "a").count() >= 3
+        });
+        player.read_with(cx, |player, _| assert_eq!(current(player), Some("a")));
+        assert!(!server.streamed().contains(&"b".to_owned()));
+
+        player.update(cx, |player, cx| player.set_repeat(RepeatMode::Off, cx));
+        wait_until(&player, cx, "the end", |player| {
+            player.state == State::Stopped
+        });
+        player.read_with(cx, |player, _| {
+            assert_eq!(current(player), None);
+            assert!(player.error.is_none());
+        });
+    }
+
+    /// Repeating all songs goes from the last back to the first, and turning
+    /// it on during the last song is enough.
+    #[gpui_kit::test]
+    #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
+    fn repeating_all_songs_goes_back_to_the_first(cx: &mut TestAppContext) {
+        let server = Server::default();
+        let songs = [server.add("a", wav(1_500)), server.add("b", wav(1_500))];
+        let (player, cx) = player(&server, cx);
+        player.update(cx, |player, cx| player.play(&songs, 1, cx));
+        wait_until(&player, cx, "b to play", |player| {
+            is_playing_song(player, "b")
+        });
+
+        player.update(cx, |player, cx| player.set_repeat(RepeatMode::All, cx));
+        wait_until(&player, cx, "a to be set", |player| {
+            is_following_set(player, "a")
+        });
+        wait_until(&player, cx, "a to play", |player| {
+            is_playing_song(player, "a")
+        });
+    }
+
+    /// Shuffling while a song plays changes what follows it, and the end of
+    /// the song goes where the shuffle says.
+    #[gpui_kit::test]
+    #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
+    fn shuffling_while_a_song_plays_changes_what_follows_it(cx: &mut TestAppContext) {
+        let server = Server::default();
+        let songs: Vec<Song> = (0..30)
+            .map(|ix| server.add(&format!("s{ix}"), wav(1_000)))
+            .collect();
+        let (player, cx) = player(&server, cx);
+        player.update(cx, |player, cx| player.play(&songs, 0, cx));
+        wait_until(&player, cx, "s1 to be set", |player| {
+            is_following_set(player, "s1")
+        });
+
+        let following = |player: &Player| {
+            player
+                .queue
+                .following()
+                .map(|song| song.id().as_str().to_owned())
+        };
+        // One time in 29, the shuffle leaves s1 next.
+        let next = loop {
+            player.update(cx, |player, cx| player.toggle_shuffle(cx));
+            let next = player.read_with(cx, |player, _| following(player)).unwrap();
+            if next != "s1" {
+                break next;
+            }
+            player.update(cx, |player, cx| player.toggle_shuffle(cx));
+        };
+        wait_until(&player, cx, "the shuffled song to be set", |player| {
+            is_following_set(player, &next)
+        });
+        wait_until(&player, cx, "the shuffled song to play", |player| {
+            is_playing_song(player, &next)
+        });
     }
 
     /// A next song the server has no file for fails when its turn comes, not

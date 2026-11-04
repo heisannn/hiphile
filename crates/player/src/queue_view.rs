@@ -22,7 +22,7 @@ use ui::{
     song_artist_link,
 };
 
-use crate::{Player, SaveQueue};
+use crate::{Player, PlayerEvent, SaveQueue};
 
 /// Key context of the focused queue list.
 pub const QUEUE_CONTEXT: &str = "Queue";
@@ -61,7 +61,15 @@ impl QueueView {
     pub fn new(player: Entity<Player>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle().tab_stop(true);
         let subscriptions = vec![
-            cx.subscribe(&player, |this, _, _, cx| this.on_queue_changed(cx)),
+            cx.subscribe(&player, |this, _, event, cx| {
+                this.on_queue_changed(cx);
+                // Back in order, the current entry may be far from where it was.
+                if matches!(event, PlayerEvent::ShuffleChanged)
+                    && let Some(ix) = this.player.read(cx).queue().current_ix()
+                {
+                    this.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
+                }
+            }),
             // Focus changes the selection treatment of the rows.
             cx.on_focus(&focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&focus, window, |_, _, cx| cx.notify()),

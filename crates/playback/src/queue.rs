@@ -1,4 +1,7 @@
+use std::collections::HashMap;
 use std::sync::Arc;
+
+use rand::seq::SliceRandom as _;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RepeatMode {
@@ -55,11 +58,16 @@ impl<T> Entry<T> {
 /// Every change keeps the current position on the same entry. Entries before
 /// it have been played; with no current entry, playback has run off the end
 /// and every entry has.
+///
+/// Shuffling changes the order of the entries themselves, so what they show is
+/// what plays, and moving through them works the same either way.
 #[derive(Clone, Debug)]
 pub struct Queue<T> {
     entries: Arc<Vec<Entry<T>>>,
     current_ix: Option<usize>,
     repeat: RepeatMode,
+    /// While shuffled, every entry in the order to go back to.
+    unshuffled: Option<Vec<EntryId>>,
     next_id: u64,
 }
 
@@ -69,6 +77,7 @@ impl<T> Default for Queue<T> {
             entries: Arc::default(),
             current_ix: None,
             repeat: RepeatMode::default(),
+            unshuffled: None,
             next_id: 0,
         }
     }
@@ -122,6 +131,10 @@ impl<T> Queue<T> {
         self.repeat = repeat;
     }
 
+    pub fn is_shuffled(&self) -> bool {
+        self.unshuffled.is_some()
+    }
+
     /// The entry that follows the current one when it ends on its own.
     pub fn following_ix(&self) -> Option<usize> {
         let ix = self.current_ix?;
@@ -140,25 +153,6 @@ impl<T> Queue<T> {
     /// The ID of the entry at [`Self::following_ix`].
     pub fn following_id(&self) -> Option<EntryId> {
         self.following_ix().map(|ix| self.entries[ix].id)
-    }
-
-    /// Moves to the entry at [`Self::following_ix`], for when the current one
-    /// has ended on its own.
-    pub fn follow(&mut self) -> Option<&T> {
-        self.current_ix = self.following_ix();
-        self.current()
-    }
-
-    /// Moves to the next entry; at the end without repeat, playback stops.
-    ///
-    /// An explicit skip leaves a repeated single song, unlike [`Self::following_ix`].
-    pub fn advance(&mut self) -> Option<&T> {
-        let ix = self.current_ix?;
-        self.current_ix = match self.repeat {
-            RepeatMode::Off => (ix + 1 < self.entries.len()).then_some(ix + 1),
-            RepeatMode::All | RepeatMode::One => Some((ix + 1) % self.entries.len()),
-        };
-        self.current()
     }
 
     /// Moves to the previous entry, staying on the first one.
@@ -186,11 +180,83 @@ impl<T> Queue<T> {
 }
 
 impl<T: Clone> Queue<T> {
+    /// Shuffles the entries yet to play, or puts every entry back in the order
+    /// from before, keeping the current one. Back in that order, entries moved
+    /// by hand in the meantime are where they were.
+    pub fn set_shuffled(&mut self, shuffled: bool) {
+        if shuffled == self.is_shuffled() {
+            return;
+        }
+        if shuffled {
+            self.unshuffled = Some(self.entries.iter().map(Entry::id).collect());
+            self.shuffle_upcoming();
+        } else if let Some(order) = self.unshuffled.take() {
+            let current = self.current_id();
+            let ranks: HashMap<_, _> = order.into_iter().zip(0_usize..).collect();
+            Arc::make_mut(&mut self.entries).sort_by_key(|entry| ranks[&entry.id]);
+            self.current_ix = current.and_then(|id| self.position(id));
+        }
+    }
+
+    fn shuffle_upcoming(&mut self) {
+        let from = self.current_ix.map_or(0, |ix| ix + 1);
+        Arc::make_mut(&mut self.entries)[from..].shuffle(&mut rand::rng());
+    }
+
+    /// Moves to the entry at [`Self::following_ix`], for when the current one
+    /// has ended on its own.
+    pub fn follow(&mut self) -> Option<&T> {
+        self.go_to(self.following_ix())
+    }
+
+    /// Moves to the next entry; at the end without repeat, playback stops.
+    ///
+    /// An explicit skip leaves a repeated single song, unlike [`Self::following_ix`].
+    pub fn advance(&mut self) -> Option<&T> {
+        let ix = self.current_ix?;
+        self.go_to(match self.repeat {
+            RepeatMode::Off => (ix + 1 < self.entries.len()).then_some(ix + 1),
+            RepeatMode::All | RepeatMode::One => Some((ix + 1) % self.entries.len()),
+        })
+    }
+
+    /// Moves to the entry at `ix`. A shuffled queue starting over does so in a
+    /// new order, from the entry already known to come next.
+    fn go_to(&mut self, ix: Option<usize>) -> Option<&T> {
+        let len = self.entries.len();
+        let starts_over = len > 1 && ix == Some(0) && self.current_ix == Some(len - 1);
+        self.current_ix = ix;
+        if starts_over && self.is_shuffled() {
+            self.shuffle_upcoming();
+        }
+        self.current()
+    }
+
     /// Replaces the queue and starts at `start_ix`, clamped to the last song.
+    /// While shuffled, every other song is yet to play, in any order.
     pub fn replace(&mut self, items: Vec<T>, start_ix: usize) {
         let entries: Vec<_> = items.into_iter().map(|item| self.entry(item)).collect();
         self.current_ix = (!entries.is_empty()).then(|| start_ix.min(entries.len() - 1));
         self.entries = Arc::new(entries);
+        if self.is_shuffled() {
+            self.unshuffled = Some(self.entries.iter().map(Entry::id).collect());
+            if let Some(ix) = self.current_ix {
+                Arc::make_mut(&mut self.entries).swap(0, ix);
+                self.current_ix = Some(0);
+            }
+            self.shuffle_upcoming();
+        }
+    }
+
+    /// Replaces the queue, starting with no song in particular: the first, or
+    /// while shuffled any of them.
+    pub fn replace_from_start(&mut self, items: Vec<T>) {
+        let start_ix = if self.is_shuffled() {
+            rand::random_range(0..items.len().max(1))
+        } else {
+            0
+        };
+        self.replace(items, start_ix);
     }
 
     /// Adds `items` in order and returns the first one's ID, if any.
@@ -204,6 +270,16 @@ impl<T: Clone> Queue<T> {
             (Some(ix), Placement::Next) => ix + 1,
             (Some(_), Placement::Last) | (None, _) => self.entries.len(),
         };
+        let current = self.current_id();
+        if let Some(order) = &mut self.unshuffled {
+            let unshuffled_at = match placement {
+                Placement::Next => current
+                    .and_then(|current| order.iter().position(|id| *id == current))
+                    .map_or(order.len(), |ix| ix + 1),
+                Placement::Last => order.len(),
+            };
+            order.splice(unshuffled_at..unshuffled_at, new.iter().map(Entry::id));
+        }
         if self.current_ix.is_none() {
             self.current_ix = Some(at);
         }
@@ -218,6 +294,9 @@ impl<T: Clone> Queue<T> {
             return false;
         };
         Arc::make_mut(&mut self.entries).remove(ix);
+        if let Some(order) = &mut self.unshuffled {
+            order.retain(|other| *other != id);
+        }
         if let Some(current) = &mut self.current_ix
             && ix < *current
         {
@@ -272,6 +351,9 @@ impl<T: Clone> Queue<T> {
             .into_iter()
             .collect();
         self.current_ix = (!kept.is_empty()).then_some(0);
+        if self.is_shuffled() {
+            self.unshuffled = Some(kept.iter().map(Entry::id).collect());
+        }
         self.entries = Arc::new(kept);
     }
 }
@@ -499,6 +581,205 @@ mod tests {
         queue.remove(gone);
         assert_eq!(queue.jump_to(gone), None);
         assert_eq!(queue.current().copied(), Some("c"));
+    }
+
+    /// As many items that a shuffle leaving them in order would take a miracle.
+    const MANY: [&str; 40] = [
+        "00", "01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14",
+        "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26", "27", "28", "29",
+        "30", "31", "32", "33", "34", "35", "36", "37", "38", "39",
+    ];
+
+    fn sorted(mut items: Vec<&'static str>) -> Vec<&'static str> {
+        items.sort_unstable();
+        items
+    }
+
+    #[test]
+    fn shuffling_leaves_what_has_played_and_mixes_what_has_not() {
+        let mut queue = queue(&MANY, 10);
+        queue.set_shuffled(true);
+        assert!(queue.is_shuffled());
+        let shuffled = items(&queue);
+        assert_eq!(shuffled[..=10], MANY[..=10]);
+        assert_eq!(queue.current().copied(), Some("10"));
+        assert_ne!(shuffled[11..], MANY[11..]);
+        assert_eq!(sorted(shuffled), MANY);
+    }
+
+    #[test]
+    fn shuffling_off_goes_back_to_the_order_and_keeps_the_current_entry() {
+        let mut queue = queue(&MANY, 10);
+        queue.set_shuffled(true);
+        queue.advance();
+        let current = queue.current().copied();
+        queue.set_shuffled(false);
+        assert!(!queue.is_shuffled());
+        assert_eq!(items(&queue), MANY);
+        assert_eq!(queue.current().copied(), current);
+    }
+
+    #[test]
+    fn shuffling_again_changes_nothing() {
+        let mut queue = queue(&MANY, 0);
+        queue.set_shuffled(true);
+        let shuffled = items(&queue);
+        queue.set_shuffled(true);
+        assert_eq!(items(&queue), shuffled);
+        queue.set_shuffled(false);
+        queue.set_shuffled(false);
+        assert_eq!(items(&queue), MANY);
+    }
+
+    #[test]
+    fn shuffling_with_nothing_current_mixes_everything() {
+        let mut queue = queue(&MANY, 39);
+        queue.advance();
+        queue.set_shuffled(true);
+        assert_eq!(queue.current(), None);
+        assert_ne!(items(&queue), MANY);
+        queue.set_shuffled(false);
+        assert_eq!(items(&queue), MANY);
+        assert_eq!(queue.current(), None);
+    }
+
+    #[test]
+    fn a_new_queue_while_shuffled_starts_at_its_song_with_all_the_others_to_come() {
+        let mut queue = Queue::new();
+        queue.set_shuffled(true);
+        queue.replace(MANY.to_vec(), 20);
+        assert_eq!(queue.current_ix(), Some(0));
+        assert_eq!(queue.current().copied(), Some("20"));
+        assert_eq!(sorted(items(&queue)), MANY);
+        assert_ne!(items(&queue)[1..], MANY[1..]);
+
+        queue.set_shuffled(false);
+        assert_eq!(items(&queue), MANY);
+        assert_eq!(queue.current_ix(), Some(20));
+
+        let mut empty = Queue::<&str>::new();
+        empty.set_shuffled(true);
+        empty.replace(Vec::new(), 0);
+        assert_eq!(empty.current(), None);
+    }
+
+    #[test]
+    fn replacing_from_the_start_takes_the_first_song_unless_shuffled() {
+        let mut queue = Queue::new();
+        queue.replace_from_start(MANY.to_vec());
+        assert_eq!(queue.current().copied(), Some("00"));
+        assert_eq!(items(&queue), MANY);
+
+        queue.set_shuffled(true);
+        let starts_elsewhere = (0..1_000).any(|_| {
+            queue.replace_from_start(MANY.to_vec());
+            queue.current().copied() != Some("00")
+        });
+        assert!(starts_elsewhere);
+        assert_eq!(queue.current_ix(), Some(0));
+
+        queue.replace_from_start(Vec::new());
+        assert_eq!(queue.current(), None);
+    }
+
+    #[test]
+    fn songs_added_while_shuffled_keep_their_order_and_place() {
+        let mut queue = queue(&["a", "b", "c", "d"], 1);
+        queue.set_shuffled(true);
+        queue.insert(vec!["x", "y"], Placement::Next);
+        queue.insert(vec!["z"], Placement::Last);
+        let shuffled = items(&queue);
+        assert_eq!(shuffled[..4], ["a", "b", "x", "y"]);
+        assert_eq!(shuffled.last(), Some(&"z"));
+
+        queue.set_shuffled(false);
+        assert_eq!(items(&queue), ["a", "b", "x", "y", "c", "d", "z"]);
+        assert_eq!(queue.current().copied(), Some("b"));
+    }
+
+    #[test]
+    fn songs_added_with_nothing_current_while_shuffled_go_at_the_end() {
+        let mut queue = queue(&["a", "b"], 1);
+        queue.set_shuffled(true);
+        queue.advance();
+        queue.insert(vec!["x"], Placement::Next);
+        assert_eq!(queue.current().copied(), Some("x"));
+        queue.set_shuffled(false);
+        assert_eq!(items(&queue), ["a", "b", "x"]);
+        assert_eq!(queue.current().copied(), Some("x"));
+    }
+
+    #[test]
+    fn entries_taken_out_while_shuffled_stay_out() {
+        let mut queue = queue(&MANY, 0);
+        queue.set_shuffled(true);
+        let (id, item) = (id_of(&queue, 39), *queue.entries()[39].item());
+        assert!(queue.remove(id));
+        queue.set_shuffled(false);
+        let mut expected = MANY.to_vec();
+        expected.retain(|other| *other != item);
+        assert_eq!(items(&queue), expected);
+
+        let mut queue = self::queue(&MANY, 5);
+        queue.set_shuffled(true);
+        queue.clear();
+        queue.set_shuffled(false);
+        assert_eq!(items(&queue), ["05"]);
+        assert_eq!(queue.current().copied(), Some("05"));
+    }
+
+    #[test]
+    fn an_entry_moved_while_shuffled_plays_there_and_goes_back_after() {
+        let mut queue = queue(&MANY, 0);
+        queue.set_shuffled(true);
+        let moved = queue.entries()[39].id();
+        assert!(queue.move_to_next(moved));
+        assert_eq!(queue.following_id(), Some(moved));
+        queue.set_shuffled(false);
+        assert_eq!(items(&queue), MANY);
+    }
+
+    #[test]
+    fn a_shuffled_queue_starts_over_from_what_was_to_follow_in_a_new_order() {
+        for skip in [false, true] {
+            let mut queue = queue(&MANY, 0);
+            queue.set_repeat(RepeatMode::All);
+            queue.set_shuffled(true);
+            queue.jump_to(queue.entries()[39].id());
+            let round = items(&queue);
+            let following = queue.following_id();
+            if skip {
+                queue.advance();
+            } else {
+                queue.follow();
+            }
+            assert_eq!(queue.current_ix(), Some(0));
+            assert_eq!(queue.current_id(), following);
+            let next_round = items(&queue);
+            assert_eq!(next_round[0], round[0]);
+            assert_ne!(next_round[1..], round[1..]);
+            assert_eq!(sorted(next_round), MANY);
+        }
+    }
+
+    #[test]
+    fn a_queue_stays_in_its_order_unless_it_starts_over_shuffled() {
+        // Not shuffled.
+        let mut unshuffled = queue(&MANY, 39);
+        unshuffled.set_repeat(RepeatMode::All);
+        unshuffled.follow();
+        assert_eq!(items(&unshuffled), MANY);
+
+        // A song on repeat, and a step through the middle.
+        let mut queue = queue(&MANY, 39);
+        queue.set_repeat(RepeatMode::One);
+        queue.set_shuffled(true);
+        let order = items(&queue);
+        queue.follow();
+        assert_eq!(items(&queue), order);
+        queue.retreat();
+        queue.advance();
+        assert_eq!(items(&queue), order);
     }
 
     #[test]

@@ -449,7 +449,7 @@ fn enter_plays_only_the_top_songs_on_show(cx: &mut TestAppContext) {
 
     assert_eq!(played.len(), 1);
     assert_eq!(played[0].songs().len(), 5);
-    assert_eq!(played[0].start_ix(), 2);
+    assert_eq!(played[0].start_ix(), Some(2));
 }
 
 #[gpui_kit::test]

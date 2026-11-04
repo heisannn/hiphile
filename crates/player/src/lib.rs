@@ -4,10 +4,10 @@ mod format;
 mod player;
 mod queue_view;
 
-use gpui_kit::{App, Global, KeyBinding, actions};
+use gpui_kit::{Action, App, Global, KeyBinding, actions};
 use ui::list_navigation::bind_list_navigation;
 
-pub use playback::Placement;
+pub use playback::{Placement, RepeatMode};
 pub use player::{Player, PlayerEvent};
 pub use queue_view::{QUEUE_CONTEXT, QueueView};
 
@@ -22,10 +22,30 @@ actions!(
         VolumeUp,
         VolumeDown,
         ToggleMute,
+        ToggleShuffle,
+        /// Goes on from no repeat to all songs, to one song, and back.
+        CycleRepeat,
         /// Creates a playlist of the songs in the queue.
         SaveQueue
     ]
 );
+
+/// Repeats as this says from now on.
+#[derive(Clone, Debug, PartialEq, Action)]
+#[action(namespace = player, no_json)]
+pub struct SetRepeat {
+    repeat: RepeatMode,
+}
+
+impl SetRepeat {
+    pub fn new(repeat: RepeatMode) -> Self {
+        Self { repeat }
+    }
+
+    pub fn repeat(&self) -> RepeatMode {
+        self.repeat
+    }
+}
 
 /// The songs kept on this computer, shared by every player in the app.
 /// `None` when there is nowhere to keep them or the settings cannot be read.
@@ -59,6 +79,8 @@ pub fn init(context: &'static str, cx: &mut App) {
         up,
         down,
         mute,
+        shuffle,
+        repeat,
         add_to_playlist,
     ] = if cx.platform_info().is_mac() {
         [
@@ -69,6 +91,8 @@ pub fn init(context: &'static str, cx: &mut App) {
             "cmd-up",
             "cmd-down",
             "cmd-alt-down",
+            "cmd-alt-s",
+            "cmd-alt-r",
             "cmd-shift-p",
         ]
     } else {
@@ -80,6 +104,8 @@ pub fn init(context: &'static str, cx: &mut App) {
             "ctrl-up",
             "ctrl-down",
             "ctrl-alt-down",
+            "ctrl-alt-s",
+            "ctrl-alt-r",
             "ctrl-shift-p",
         ]
     };
@@ -91,6 +117,8 @@ pub fn init(context: &'static str, cx: &mut App) {
         KeyBinding::new(up, VolumeUp, Some(context)),
         KeyBinding::new(down, VolumeDown, Some(context)),
         KeyBinding::new(mute, ToggleMute, Some(context)),
+        KeyBinding::new(shuffle, ToggleShuffle, Some(context)),
+        KeyBinding::new(repeat, CycleRepeat, Some(context)),
     ]);
 
     bind_list_navigation(QUEUE_CONTEXT, cx);

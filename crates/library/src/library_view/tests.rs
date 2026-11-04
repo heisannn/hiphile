@@ -186,7 +186,7 @@ fn space_presses_a_focused_retry(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn enter_on_the_play_button_plays_from_the_first_song(cx: &mut TestAppContext) {
+fn enter_on_the_play_button_plays_the_whole_album(cx: &mut TestAppContext) {
     let (library, cx) = library(cx);
     init_keys(cx);
     wait_for_the_sync(&library, cx);
@@ -203,7 +203,7 @@ fn enter_on_the_play_button_plays_from_the_first_song(cx: &mut TestAppContext) {
     press_after(|library| library.songs_focus.clone(), "enter", &library, cx);
     cx.run_until_parked();
 
-    assert_eq!(*played.borrow(), [0]);
+    assert_eq!(*played.borrow(), [None]);
 }
 
 #[gpui_kit::test]
@@ -322,7 +322,7 @@ fn song_ids(songs: &[Song]) -> Vec<&str> {
 }
 
 #[gpui_kit::test]
-fn play_on_an_album_plays_it_from_the_first_song(cx: &mut TestAppContext) {
+fn play_on_an_album_plays_the_whole_of_it(cx: &mut TestAppContext) {
     let (library, cx) = library(cx);
     show_album_a(&library, cx);
 
@@ -330,7 +330,7 @@ fn play_on_an_album_plays_it_from_the_first_song(cx: &mut TestAppContext) {
 
     assert_eq!(plays.len(), 1);
     assert_eq!(song_ids(plays[0].songs()), ["a1", "a2"]);
-    assert_eq!(plays[0].start_ix(), 0);
+    assert_eq!(plays[0].start_ix(), None);
 }
 
 #[gpui_kit::test]

@@ -563,6 +563,16 @@ impl Playlists {
         }
     }
 
+    fn play_whole(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let songs = self
+            .loaded_detail()
+            .filter(|loaded| !loaded.entries.is_empty())
+            .map(|loaded| loaded.entries.songs());
+        if let Some(songs) = songs {
+            window.dispatch_action(Box::new(PlaySongs::whole(songs)), cx);
+        }
+    }
+
     /// Runs `command` on the whole of the selected playlist, once its songs
     /// are here: a right click selects a row and opens its menu at once.
     fn on_playlist(&mut self, command: SongsCommand, window: &mut Window, cx: &mut Context<Self>) {
@@ -580,7 +590,7 @@ impl Playlists {
         cx: &mut Context<Self>,
     ) {
         match command {
-            SongsCommand::Play => self.play_from(0, window, cx),
+            SongsCommand::Play => self.play_whole(window, cx),
             SongsCommand::Enqueue(placement) => {
                 let songs = self
                     .loaded_detail()
@@ -911,7 +921,7 @@ impl Playlists {
                         .icon(IconName::Play)
                         .label("Play")
                         .disabled(songs.is_empty())
-                        .on_click(cx.listener(|this, _, window, cx| this.play_from(0, window, cx))),
+                        .on_click(cx.listener(|this, _, window, cx| this.play_whole(window, cx))),
                 )
                 .action(self.render_playlist_menu(editable, !songs.is_empty())),
             )

@@ -5967,6 +5967,7 @@ dependencies = [
  "client",
  "futures",
  "net",
+ "rand 0.10.3",
  "serde_json",
  "subsonic",
  "tempfile",

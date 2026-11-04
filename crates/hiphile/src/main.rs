@@ -11,8 +11,8 @@ use gpui_kit::{
     size,
 };
 use player::{
-    NextSong, PreviousSong, SaveQueue, SeekBackward, SeekForward, ToggleMute, TogglePlayback,
-    VolumeDown, VolumeUp,
+    NextSong, PreviousSong, RepeatMode, SaveQueue, SeekBackward, SeekForward, SetRepeat,
+    ToggleMute, TogglePlayback, ToggleShuffle, VolumeDown, VolumeUp,
 };
 
 use app_shell::{AppShell, Destination, WORKSPACE_CONTEXT};
@@ -140,11 +140,17 @@ fn install_app_commands(cx: &mut App) {
     ]);
 }
 
-/// Builds the menu bar; `queue_shown` checks View > Queue, and `destination`
-/// the screen showing, if any. The app shell calls it, once the keys above are
-/// bound (menus read the keymap when they are built), and again when that
-/// changes.
-pub(crate) fn set_menus(queue_shown: bool, destination: Option<Destination>, cx: &mut App) {
+/// Builds the menu bar; `queue_shown` checks View > Queue, `destination` the
+/// screen showing, if any, and `shuffled` and `repeat` their items in Controls.
+/// The app shell calls it, once the keys above are bound (menus read the keymap
+/// when they are built), and again when that changes.
+pub(crate) fn set_menus(
+    queue_shown: bool,
+    destination: Option<Destination>,
+    shuffled: bool,
+    repeat: RepeatMode,
+    cx: &mut App,
+) {
     cx.set_menus([
         Menu::new("hiphile").items([
             MenuItem::action("Settings…", settings::OpenSettings),
@@ -178,6 +184,18 @@ pub(crate) fn set_menus(queue_shown: bool, destination: Option<Destination>, cx:
             MenuItem::action("Play/Pause", TogglePlayback),
             MenuItem::action("Next", NextSong),
             MenuItem::action("Previous", PreviousSong),
+            MenuItem::separator(),
+            MenuItem::action("Shuffle", ToggleShuffle).checked(shuffled),
+            MenuItem::submenu(
+                Menu::new("Repeat").items([
+                    MenuItem::action("Off", SetRepeat::new(RepeatMode::Off))
+                        .checked(repeat == RepeatMode::Off),
+                    MenuItem::action("All", SetRepeat::new(RepeatMode::All))
+                        .checked(repeat == RepeatMode::All),
+                    MenuItem::action("One", SetRepeat::new(RepeatMode::One))
+                        .checked(repeat == RepeatMode::One),
+                ]),
+            ),
             MenuItem::separator(),
             MenuItem::action("Seek Forward", SeekForward),
             MenuItem::action("Seek Backward", SeekBackward),

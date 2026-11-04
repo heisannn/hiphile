@@ -471,7 +471,7 @@ fn enter_plays_the_songs_on_show_in_their_order(cx: &mut TestAppContext) {
     assert_eq!(played.len(), 1);
     let ids: Vec<_> = played[0].songs().iter().map(|s| s.id().as_str()).collect();
     assert_eq!(ids, ["c", "b", "a"]);
-    assert_eq!(played[0].start_ix(), 1);
+    assert_eq!(played[0].start_ix(), Some(1));
 }
 
 #[gpui_kit::test]
@@ -485,7 +485,7 @@ fn a_filter_narrows_what_plays(cx: &mut TestAppContext) {
     let played: Vec<PlaySongs> = dispatched_by("enter", cx);
 
     assert_eq!(played[0].songs().len(), 1);
-    assert_eq!(played[0].start_ix(), 0);
+    assert_eq!(played[0].start_ix(), Some(0));
 }
 
 #[gpui_kit::test]

@@ -193,6 +193,75 @@ fn removing_an_entry_selects_the_one_in_its_place(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn the_selection_stays_on_its_entry_through_a_shuffle(cx: &mut TestAppContext) {
+    let (view, cx) = queue(&["a", "b", "c", "d", "e", "f", "g", "h"], 0, cx);
+    focus(&view, cx);
+    cx.simulate_keystrokes("end");
+    let selected = cx.update(|_, cx| view.read(cx).selected);
+
+    let toggle = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            let player = view.read(cx).player.clone();
+            player.update(cx, |player, cx| player.toggle_shuffle(cx));
+        });
+        cx.run_until_parked();
+    };
+    toggle(cx);
+    assert_eq!(cx.update(|_, cx| view.read(cx).selected), selected);
+    assert_eq!(song_ids(&view, cx)[0], "a");
+
+    toggle(cx);
+    assert_eq!(cx.update(|_, cx| view.read(cx).selected), selected);
+    assert_eq!(selected_ix(&view, cx), Some(7));
+    assert_eq!(
+        song_ids(&view, cx),
+        ["a", "b", "c", "d", "e", "f", "g", "h"]
+    );
+}
+
+#[gpui_kit::test]
+fn going_back_in_order_brings_the_current_entry_into_view(cx: &mut TestAppContext) {
+    let ids: Vec<String> = (0..100).map(|ix| ix.to_string()).collect();
+    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let (view, cx) = queue(&ids, 0, cx);
+    let songs: Vec<Song> = ids.iter().copied().map(song).collect();
+    cx.update(|_, cx| {
+        let player = view.read(cx).player.clone();
+        player.update(cx, |player, cx| {
+            player.toggle_shuffle(cx);
+            // Shuffled, the song chosen comes first, wherever it was.
+            player.fill_queue(&songs, 80);
+        });
+    });
+    cx.run_until_parked();
+    let offset = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| view.read(cx).scroll.0.borrow().base_handle.offset().y)
+    };
+    assert_eq!(offset(cx), gpui_kit::px(0.));
+
+    cx.update(|_, cx| {
+        let player = view.read(cx).player.clone();
+        player.update(cx, |player, cx| player.toggle_shuffle(cx));
+    });
+    cx.run_until_parked();
+    assert!(offset(cx) < gpui_kit::px(0.));
+}
+
+#[gpui_kit::test]
+fn repeat_goes_on_from_off_to_all_to_one_and_back(cx: &mut TestAppContext) {
+    let (view, cx) = queue(&["a"], 0, cx);
+    let player = cx.update(|_, cx| view.read(cx).player.clone());
+    for expected in [
+        playback::RepeatMode::All,
+        playback::RepeatMode::One,
+        playback::RepeatMode::Off,
+    ] {
+        player.update(cx, |player, cx| player.cycle_repeat(cx));
+        assert_eq!(player.read_with(cx, |player, _| player.repeat()), expected);
+    }
+}
+
+#[gpui_kit::test]
 fn the_page_keys_move_by_the_rows_in_view(cx: &mut TestAppContext) {
     let ids: Vec<String> = (0..100).map(|ix| ix.to_string()).collect();
     let ids: Vec<&str> = ids.iter().map(String::as_str).collect();

@@ -459,6 +459,12 @@ impl Library {
         }
     }
 
+    fn play_whole(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(songs) = self.loaded_songs().filter(|songs| !songs.is_empty()) {
+            window.dispatch_action(Box::new(PlaySongs::whole(songs.clone())), cx);
+        }
+    }
+
     /// Does `action` to the whole of the selected album, once its songs are
     /// there if they are still loading. Replaces an action still waiting for
     /// its songs: the latest one counts.
@@ -733,7 +739,7 @@ impl Library {
                         .icon(IconName::Play)
                         .label("Play")
                         .disabled(loaded.songs.is_empty())
-                        .on_click(cx.listener(|this, _, window, cx| this.play_from(0, window, cx))),
+                        .on_click(cx.listener(|this, _, window, cx| this.play_whole(window, cx))),
                 )
                 .action(self.render_album_menu(loaded)),
             )

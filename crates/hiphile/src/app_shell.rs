@@ -23,8 +23,9 @@ use gpui_kit::{
 use home::Home;
 use library::{Library, LibraryEvent, Refresh};
 use player::{
-    NextSong, Player, PlayerEvent, PreviousSong, QueueView, SaveQueue, SeekBackward, SeekForward,
-    ToggleMute, TogglePlayback, VolumeDown, VolumeUp,
+    CycleRepeat, NextSong, Player, PlayerEvent, PreviousSong, QueueView, RepeatMode, SaveQueue,
+    SeekBackward, SeekForward, SetRepeat, ToggleMute, TogglePlayback, ToggleShuffle, VolumeDown,
+    VolumeUp,
 };
 use playlists::{Playlists, PlaylistsEvent};
 use session::Session;
@@ -186,7 +187,7 @@ impl AppShell {
         let keychain = config::Keychain::system().ok();
         let screen = Self::sign_in(&net, keychain.clone(), Start::Resume, window, cx);
         let queue_shown = true;
-        crate::set_menus(queue_shown, None, cx);
+        crate::set_menus(queue_shown, None, false, RepeatMode::Off, cx);
         let song_cache_changes = cx.subscribe(
             &settings::song_cache_settings(cx),
             |_, song_cache, _: &settings::CacheLimitChanged, cx| {
@@ -266,7 +267,7 @@ impl AppShell {
             let artists = artists.downgrade();
             let songs = songs.downgrade();
             let playlists = playlists.downgrade();
-            move |_, _, event, cx| {
+            move |this, _, event, cx| {
                 match event {
                     PlayerEvent::NowPlaying { song, playing } => {
                         home.update(cx, |home, cx| {
@@ -304,6 +305,9 @@ impl AppShell {
                         settings::discord_settings(cx).update(cx, |settings, cx| {
                             settings.set_upload_error(error, cx);
                         });
+                    }
+                    PlayerEvent::ShuffleChanged | PlayerEvent::RepeatChanged => {
+                        this.update_menus(cx);
                     }
                     PlayerEvent::QueueChanged => {}
                 }
@@ -431,7 +435,11 @@ impl AppShell {
     }
 
     fn update_menus(&self, cx: &mut App) {
-        crate::set_menus(self.queue_shown, self.destination(), cx);
+        let (shuffled, repeat) = self.player().map_or((false, RepeatMode::Off), |player| {
+            let player = player.read(cx);
+            (player.is_shuffled(), player.repeat())
+        });
+        crate::set_menus(self.queue_shown, self.destination(), shuffled, repeat, cx);
     }
 
     /// Goes to `destination`; going back returns to where this leaves.
@@ -908,8 +916,9 @@ impl Render for AppShell {
                     });
                 }))
                 .on_action(cx.listener(|this, action: &PlaySongs, window, cx| {
-                    this.update_player(window, cx, |player, _, cx| {
-                        player.play(action.songs(), action.start_ix(), cx)
+                    this.update_player(window, cx, |player, _, cx| match action.start_ix() {
+                        Some(start_ix) => player.play(action.songs(), start_ix, cx),
+                        None => player.play_whole(action.songs(), cx),
                     });
                 }))
                 .on_action(cx.listener(|this, action: &EnqueueSongs, window, cx| {
@@ -929,6 +938,17 @@ impl Render for AppShell {
                 }))
                 .on_action(cx.listener(|this, _: &ToggleMute, window, cx| {
                     this.update_player(window, cx, |player, _, cx| player.toggle_mute(cx));
+                }))
+                .on_action(cx.listener(|this, _: &ToggleShuffle, window, cx| {
+                    this.update_player(window, cx, |player, _, cx| player.toggle_shuffle(cx));
+                }))
+                .on_action(cx.listener(|this, _: &CycleRepeat, window, cx| {
+                    this.update_player(window, cx, |player, _, cx| player.cycle_repeat(cx));
+                }))
+                .on_action(cx.listener(|this, action: &SetRepeat, window, cx| {
+                    this.update_player(window, cx, |player, _, cx| {
+                        player.set_repeat(action.repeat(), cx)
+                    });
                 }))
             })
             .when(queue_fits, |this| {

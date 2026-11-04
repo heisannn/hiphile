@@ -146,7 +146,7 @@ impl AlbumAction {
             return None;
         }
         Some(match self {
-            Self::Play => Box::new(PlaySongs::new(songs, 0)),
+            Self::Play => Box::new(PlaySongs::whole(songs)),
             Self::Enqueue(placement) => Box::new(EnqueueSongs::new(songs, placement)),
             Self::AddToPlaylist(playlist) => add_songs_command(songs)(playlist.as_ref()),
             Self::ChoosePlaylist => Box::new(ChoosePlaylist::new(songs)),
@@ -228,24 +228,37 @@ pub fn bind_go_to_artist(context: &'static str, cx: &mut App) {
     cx.bind_keys([KeyBinding::new(key, GoToArtist, Some(context))]);
 }
 
-/// Replace the play queue with `songs` and start playing at `start_ix`.
+/// Replace the play queue with `songs` and start playing.
 #[derive(Clone, Debug, PartialEq, Action)]
 #[action(namespace = hiphile, no_json)]
 pub struct PlaySongs {
     songs: Arc<[Song]>,
-    start_ix: usize,
+    start_ix: Option<usize>,
 }
 
 impl PlaySongs {
+    /// Starts at the song chosen, shuffled or not.
     pub fn new(songs: Arc<[Song]>, start_ix: usize) -> Self {
-        Self { songs, start_ix }
+        Self {
+            songs,
+            start_ix: Some(start_ix),
+        }
+    }
+
+    /// Plays all of an album or a playlist, with no song chosen to start at.
+    pub fn whole(songs: Arc<[Song]>) -> Self {
+        Self {
+            songs,
+            start_ix: None,
+        }
     }
 
     pub fn songs(&self) -> &Arc<[Song]> {
         &self.songs
     }
 
-    pub fn start_ix(&self) -> usize {
+    /// The song chosen to start at, if one was.
+    pub fn start_ix(&self) -> Option<usize> {
         self.start_ix
     }
 }
