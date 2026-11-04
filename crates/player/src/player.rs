@@ -1119,6 +1119,14 @@ impl Render for Player {
 }
 
 #[cfg(test)]
+impl Player {
+    /// Queues `songs` with the one at `current_ix` current, without playing.
+    pub(crate) fn fill_queue(&mut self, songs: &[Song], current_ix: usize) {
+        self.queue.replace(songs.to_vec(), current_ix);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::collections::HashMap;
     use std::io::{BufRead as _, BufReader, Read as _, Write as _};

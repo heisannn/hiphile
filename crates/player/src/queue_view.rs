@@ -360,6 +360,15 @@ struct EntryCommands {
     remove: bool,
 }
 
+/// A screen reader's name for an entry's row, which says what the row shows.
+fn entry_label(title: &SharedString, state: Option<PlayState>, is_played: bool) -> SharedString {
+    if state.is_none() && is_played {
+        format!("{title}, played").into()
+    } else {
+        PlayState::row_label(title, state)
+    }
+}
+
 /// An entry of the queue, whose commands act on the selection.
 #[derive(IntoElement)]
 struct EntryRow {
@@ -390,11 +399,6 @@ impl RenderOnce for EntryRow {
         } = self;
         let muted_foreground = cx.theme().muted_foreground;
         let title = SharedString::from(song.title().to_owned());
-        let label = if state.is_none() && is_played {
-            format!("{title}, played").into()
-        } else {
-            PlayState::row_label(&title, state)
-        };
         let artist = song
             .artist()
             .map(|artist| SharedString::from(artist.to_owned()));
@@ -408,7 +412,7 @@ impl RenderOnce for EntryRow {
             .h_12()
             .px_4()
             .w_full()
-            .accessibility_label(label)
+            .accessibility_label(entry_label(&title, state, is_played))
             .child(
                 h_flex()
                     .w_full()
@@ -497,3 +501,6 @@ impl Render for QueueView {
             .child(self.render_list(window, cx))
     }
 }
+
+#[cfg(test)]
+mod tests;
