@@ -7422,6 +7422,7 @@ dependencies = [
  "bytes",
  "catalog",
  "client",
+ "config 0.1.0",
  "futures",
  "gpui-kit",
  "net",
@@ -7438,6 +7439,7 @@ dependencies = [
  "catalog",
  "config 0.1.0",
  "gpui-kit",
+ "tempfile",
  "ui",
 ]
 

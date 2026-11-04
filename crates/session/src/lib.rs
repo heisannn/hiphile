@@ -9,15 +9,42 @@ mod http;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use gpui_kit::{App, SharedString};
+use gpui_kit::{App, Global, SharedString};
 use subsonic::{AlbumId, AlbumWithSongs, CoverArtId, ServerInfo};
+
+struct GlobalCovers(catalog::CoverStore);
+
+impl Global for GlobalCovers {}
 
 /// Installs the shared transport, which keeps cover art on disk when the
 /// system has a cache directory. Call once at startup, after
 /// `gpui_kit::init`.
 pub fn init(net: net::Client, cx: &mut App) {
-    let covers = catalog::CoverStore::user().ok();
+    let capacity = match config::Store::user() {
+        Ok(store) => store.cover_cache_capacity(),
+        // Without a home directory there are no settings to follow.
+        Err(_) => Ok(None),
+    };
+    // A setting that cannot be read keeps no more covers rather than the
+    // default amount.
+    let capacity = capacity.map_or(0, cover_capacity);
+    let covers = catalog::CoverStore::user(capacity).ok();
+    if let Some(covers) = &covers {
+        cx.set_global(GlobalCovers(covers.clone()));
+    }
     cx.set_http_client(Arc::new(http::NetHttpClient::new(net, covers)));
+}
+
+/// Keeps at most about `capacity` bytes of covers from the next one on, or the
+/// default amount for `None`.
+pub fn set_cover_capacity(capacity: Option<u64>, cx: &App) {
+    if let Some(GlobalCovers(covers)) = cx.try_global() {
+        covers.set_capacity(cover_capacity(capacity));
+    }
+}
+
+fn cover_capacity(capacity: Option<u64>) -> u64 {
+    capacity.unwrap_or(catalog::COVER_CAPACITY)
 }
 
 /// A server the user has signed in to.

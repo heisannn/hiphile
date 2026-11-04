@@ -50,6 +50,7 @@ pub struct AppShell {
     /// enough for it.
     queue_shown: bool,
     _song_cache_changes: Subscription,
+    _cover_cache_changes: Subscription,
     _system_appearance_changes: Subscription,
 }
 
@@ -138,9 +139,15 @@ impl AppShell {
         crate::set_menus(queue_shown, None, cx);
         let song_cache_changes = cx.subscribe(
             &settings::song_cache_settings(cx),
-            |_, song_cache, _: &settings::SongCacheChanged, cx| {
+            |_, song_cache, _: &settings::CacheLimitChanged, cx| {
                 let capacity = song_cache.read(cx).capacity();
                 player::set_song_capacity(capacity, cx);
+            },
+        );
+        let cover_cache_changes = cx.subscribe(
+            &settings::cover_cache_settings(cx),
+            |_, cover_cache, _: &settings::CacheLimitChanged, cx| {
+                session::set_cover_capacity(cover_cache.read(cx).capacity(), cx);
             },
         );
         Self {
@@ -150,6 +157,7 @@ impl AppShell {
             screen,
             queue_shown,
             _song_cache_changes: song_cache_changes,
+            _cover_cache_changes: cover_cache_changes,
             _system_appearance_changes: settings::follow_system_appearance(window),
         }
     }

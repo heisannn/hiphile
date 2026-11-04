@@ -51,7 +51,8 @@ Without them, playback follows the system's default device and each song's own
 rate. `HIPHILE_OUTPUT_DEVICE` and `HIPHILE_SAMPLE_RATE` override them.
 Settings… also sets the song cache's limit, `song_cache_gib`, which
 `HIPHILE_SONG_CACHE_GIB` overrides, shows how much the cache takes, and clears
-it.
+it. It likewise sets the cover cache's limit, `cover_cache_gib`, which
+`HIPHILE_COVER_CACHE_GIB` overrides.
 
 Settings… also switches between light and dark, kept as `appearance` (`"light"`
 or `"dark"`). Without it, the app follows the system. `HIPHILE_APPEARANCE`
@@ -124,7 +125,8 @@ updates it in the background when the server reports a change or the copy is
 a day old; Library > Refresh Library fetches everything again. A sync removes
 what the server no longer has only after it completes, and not while the
 server is scanning. Cover art is kept beside each library once downloaded
-and fetched again once it is 30 days old, up to 512 MiB in all; past that,
+and fetched again once it is 30 days old, up to 8 GiB in all unless `config.toml` sets `cover_cache_gib` (`0` means no
+limit, and a value that cannot be read keeps no more); past that,
 the images used longest ago are removed.
 A song that arrives whole is kept there too, and plays from the disk next
 time, as long as the server still reports the same file size; a kept file

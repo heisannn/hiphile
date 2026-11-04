@@ -55,6 +55,7 @@ struct Settings {
     password: Option<String>,
     volume: Option<f32>,
     song_cache_gib: Option<f64>,
+    cover_cache_gib: Option<f64>,
     output_device: Option<String>,
     sample_rate: Option<u32>,
     appearance: Option<String>,
@@ -68,6 +69,7 @@ struct Settings {
 /// username = "alice"
 /// volume = 0.8
 /// song_cache_gib = 8
+/// cover_cache_gib = 8
 /// output_device = "coreaudio:BuiltInSpeakerDevice"
 /// sample_rate = 48000
 /// appearance = "dark"
@@ -142,14 +144,30 @@ impl Store {
     /// number is an error, not a reason to keep the default.
     pub fn song_cache_capacity(&self) -> Result<Option<u64>, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
-        self.song_cache_bytes(settings.song_cache_gib)
+        self.cache_bytes("song_cache_gib", settings.song_cache_gib)
     }
 
     /// `song_cache_gib`, as [`Self::song_cache_capacity`] reads it.
     pub fn song_cache_gib(&self) -> Result<Option<f64>, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
-        self.song_cache_bytes(settings.song_cache_gib)?;
+        self.cache_bytes("song_cache_gib", settings.song_cache_gib)?;
         Ok(settings.song_cache_gib)
+    }
+
+    /// How many bytes of covers may be kept on this computer, if the file says:
+    /// `cover_cache_gib`, in GiB, where `0` means no limit.
+    /// `HIPHILE_COVER_CACHE_GIB` takes precedence over the file. A negative
+    /// number is an error, not a reason to keep the default.
+    pub fn cover_cache_capacity(&self) -> Result<Option<u64>, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        self.cache_bytes("cover_cache_gib", settings.cover_cache_gib)
+    }
+
+    /// `cover_cache_gib`, as [`Self::cover_cache_capacity`] reads it.
+    pub fn cover_cache_gib(&self) -> Result<Option<f64>, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        self.cache_bytes("cover_cache_gib", settings.cover_cache_gib)?;
+        Ok(settings.cover_cache_gib)
     }
 
     /// The id of the output device to play on, if one was chosen rather than
@@ -196,15 +214,15 @@ impl Store {
         }
     }
 
-    fn song_cache_bytes(&self, gib: Option<f64>) -> Result<Option<u64>, Error> {
+    fn cache_bytes(&self, key: &'static str, gib: Option<f64>) -> Result<Option<u64>, Error> {
         let Some(gib) = gib else {
             return Ok(None);
         };
-        song_cache_capacity_of(gib)
+        cache_capacity_of(gib)
             .map(Some)
             .ok_or_else(|| Error::InvalidSetting {
                 path: self.config_path(),
-                key: "song_cache_gib",
+                key,
                 expected: "a number of GiB, 0 or more",
             })
     }
@@ -285,6 +303,17 @@ impl Store {
         })
     }
 
+    /// Records how many GiB of covers to keep, like
+    /// [`Self::save_song_cache_gib`].
+    pub fn save_cover_cache_gib(&self, gib: Option<f64>) -> Result<(), Error> {
+        self.edit(|document| match gib {
+            Some(gib) => document["cover_cache_gib"] = toml_edit::value(gib),
+            None => {
+                document.remove("cover_cache_gib");
+            }
+        })
+    }
+
     /// Records the appearance, like [`Self::save_profile`]. `None` removes the
     /// key, which means following the system.
     pub fn save_appearance(&self, appearance: Option<Appearance>) -> Result<(), Error> {
@@ -341,9 +370,9 @@ impl Store {
     }
 }
 
-/// How many bytes of songs a `song_cache_gib` of `gib` keeps, where `0` means no
-/// limit; `None` for a negative number or one that is not.
-pub fn song_cache_capacity_of(gib: f64) -> Option<u64> {
+/// How many bytes a cache limit of `gib` keeps, where `0` means no limit; `None`
+/// for a negative number or one that is not.
+pub fn cache_capacity_of(gib: f64) -> Option<u64> {
     (gib.is_finite() && gib >= 0.0).then(|| {
         if gib == 0.0 {
             u64::MAX
@@ -544,7 +573,7 @@ mod tests {
         let store = temporary_store("song-cache");
         let capacity = |env: &[(&str, &str)]| {
             store
-                .song_cache_bytes(read(&store, env).song_cache_gib)
+                .cache_bytes("song_cache_gib", read(&store, env).song_cache_gib)
                 .map_err(|error| error.to_string())
         };
         assert_eq!(capacity(&[]), Ok(None));
@@ -572,7 +601,7 @@ mod tests {
         assert_eq!(read(&store, &[]).song_cache_gib, Some(0.5));
         assert_eq!(
             store
-                .song_cache_bytes(read(&store, &[]).song_cache_gib)
+                .cache_bytes("song_cache_gib", read(&store, &[]).song_cache_gib)
                 .unwrap(),
             Some(512 << 20)
         );
@@ -584,6 +613,30 @@ mod tests {
         let settings = read(&store, &[]);
         assert_eq!(settings.song_cache_gib, None);
         assert_eq!(settings.volume, Some(0.5));
+    }
+
+    #[test]
+    fn cover_cache_gib_is_kept_apart_from_the_song_cache() {
+        let store = temporary_store("cover-cache-save");
+        store.save_song_cache_gib(Some(2.0)).unwrap();
+
+        store.save_cover_cache_gib(Some(0.5)).unwrap();
+        assert_eq!(store.cover_cache_gib().unwrap(), Some(0.5));
+        assert_eq!(store.cover_cache_capacity().unwrap(), Some(512 << 20));
+        assert_eq!(store.song_cache_gib().unwrap(), Some(2.0));
+
+        store.save_cover_cache_gib(None).unwrap();
+        assert_eq!(store.cover_cache_capacity().unwrap(), None);
+        assert_eq!(store.song_cache_gib().unwrap(), Some(2.0));
+    }
+
+    #[test]
+    fn a_negative_cover_cache_limit_is_an_error_naming_it() {
+        let store = temporary_store("cover-cache-negative");
+        std::fs::create_dir_all(store.config_path().parent().unwrap()).unwrap();
+        std::fs::write(store.config_path(), "cover_cache_gib = -1\n").unwrap();
+        let error = store.cover_cache_capacity().unwrap_err().to_string();
+        assert!(error.contains("cover_cache_gib"), "{error}");
     }
 
     #[test]

@@ -30,7 +30,7 @@ static TEMPORARY: AtomicU64 = AtomicU64::new(0);
 pub(crate) struct Blobs {
     root: PathBuf,
     kind: &'static str,
-    capacity: u64,
+    capacity: AtomicU64,
     usage: Mutex<Usage>,
 }
 
@@ -50,9 +50,19 @@ impl Blobs {
         Self {
             root: root.to_owned(),
             kind,
-            capacity,
+            capacity: AtomicU64::new(capacity),
             usage: Mutex::default(),
         }
+    }
+
+    /// Keeps at most about `capacity` bytes from the next write on, which is
+    /// also when anything over it goes.
+    pub(crate) fn set_capacity(&self, capacity: u64) {
+        self.capacity.store(capacity, Ordering::Relaxed);
+    }
+
+    fn capacity(&self) -> u64 {
+        self.capacity.load(Ordering::Relaxed)
     }
 
     /// Where the file for `id` lives. IDs are opaque and may hold any
@@ -128,7 +138,7 @@ impl Blobs {
             if let Some(kept) = &mut usage.kept {
                 // A file written over is counted twice until the next walk.
                 *kept += added;
-                if *kept <= self.capacity {
+                if *kept <= self.capacity() {
                     return;
                 }
             }
@@ -147,7 +157,7 @@ impl Blobs {
     fn walk(&self) -> u64 {
         let mut blobs = self.blobs();
         let mut kept: u64 = blobs.iter().map(|blob| blob.len).sum();
-        if kept <= self.capacity {
+        if kept <= self.capacity() {
             return kept;
         }
         let target = self.after_removal();
@@ -167,7 +177,7 @@ impl Blobs {
 
     /// How many bytes a removal leaves at most.
     fn after_removal(&self) -> u64 {
-        self.capacity / 4 * 3
+        self.capacity() / 4 * 3
     }
 
     fn usage(&self) -> MutexGuard<'_, Usage> {
@@ -320,6 +330,40 @@ mod tests {
             .unwrap();
         assert!(cover.exists(), "a song write removed a cover");
         assert_eq!(songs.blobs().len(), 1);
+    }
+
+    #[test]
+    fn a_lower_capacity_takes_effect_at_the_next_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = Blobs::new(dir.path(), "test", 1000);
+        let path = |id: &str| blobs.path(&server(), "v", id);
+        blobs.put(&path("old"), &[0; 400]).unwrap();
+        age(&path("old"), Duration::from_secs(60));
+        blobs.put(&path("older"), &[0; 400]).unwrap();
+        age(&path("older"), Duration::from_secs(120));
+
+        blobs.set_capacity(500);
+        assert!(path("old").exists(), "nothing goes until a write");
+
+        blobs.put(&path("new"), &[0; 300]).unwrap();
+        assert!(!path("older").exists());
+        assert!(path("new").exists());
+        assert!(blobs.kept_bytes() <= 500);
+    }
+
+    #[test]
+    fn no_capacity_keeps_nothing_new_and_removes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = Blobs::new(dir.path(), "test", 1000);
+        let kept = blobs.path(&server(), "v", "kept");
+        blobs.put(&kept, &[0; 100]).unwrap();
+
+        blobs.set_capacity(0);
+        let new = blobs.path(&server(), "v", "new");
+        blobs.put(&new, &[0; 100]).unwrap();
+
+        assert!(kept.exists());
+        assert!(!new.exists());
     }
 
     #[test]

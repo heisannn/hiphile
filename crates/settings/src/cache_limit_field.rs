@@ -1,8 +1,8 @@
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::{App, AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
 
+use crate::cache_limit::{CacheLimit, MAX_GIB};
 use crate::number_field::{NumberField, NumberRange};
-use crate::song_cache_settings::{DEFAULT_GIB, MAX_GIB, SongCacheSettings};
 
 const RANGE: NumberRange = NumberRange {
     min: 0.,
@@ -10,17 +10,17 @@ const RANGE: NumberRange = NumberRange {
     step: 1.,
 };
 
-/// Edits the limit in [`SongCacheSettings`]. Only this field changes it, so what it shows
+/// Edits the limit in [`CacheLimit`]. Only this field changes it, so what it shows
 /// never has to follow the settings, and they cannot replace what is being typed.
-pub(crate) struct SongCacheField {
-    settings: Entity<SongCacheSettings>,
+pub(crate) struct CacheLimitField {
+    settings: Entity<CacheLimit>,
     input: Entity<InputState>,
     _input_events: Subscription,
 }
 
-impl SongCacheField {
+impl CacheLimitField {
     pub(crate) fn new(
-        settings: Entity<SongCacheSettings>,
+        settings: Entity<CacheLimit>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -62,20 +62,23 @@ impl SongCacheField {
     }
 
     pub(crate) fn is_resettable(&self, cx: &App) -> bool {
-        self.settings.read(cx).gib() != DEFAULT_GIB
+        let settings = self.settings.read(cx);
+        settings.gib() != settings.kind().default_gib()
     }
 
     /// Goes back to the default limit, reporting the change as typing would.
     pub(crate) fn reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let default = self.settings.read(cx).kind().default_gib();
         self.input.update(cx, |input, cx| {
-            input.replace_all(DEFAULT_GIB.to_string(), window, cx)
+            input.replace_all(default.to_string(), window, cx)
         });
     }
 }
 
-impl Render for SongCacheField {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        NumberField::new(&self.input, RANGE, "Song cache limit", "GiB")
+impl Render for CacheLimitField {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let name = self.settings.read(cx).kind().field_name();
+        NumberField::new(&self.input, RANGE, name, "GiB")
     }
 }
 

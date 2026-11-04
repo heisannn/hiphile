@@ -17,10 +17,10 @@ use gpui_kit::{
 
 use crate::appearance_settings::{AppearanceSettings, CHOICES};
 use crate::audio_settings::{AudioSettings, MATCH_SONG, SYSTEM_DEFAULT};
+use crate::cache_limit::CacheLimit;
+use crate::cache_limit_field::CacheLimitField;
 use crate::discord_settings::DiscordSettings;
 use crate::imgbb_key_field::ImgbbKeyField;
-use crate::song_cache_field::SongCacheField;
-use crate::song_cache_settings::SongCacheSettings;
 use crate::song_cache_usage::{SongCacheUsage, format_size};
 use crate::{CloseWindow, SETTINGS_CONTEXT};
 
@@ -30,13 +30,15 @@ use crate::{CloseWindow, SETTINGS_CONTEXT};
 const REFRESH: Duration = Duration::from_secs(2);
 
 /// Root view of the settings window. The choices live in
-/// [`AppearanceSettings`], [`AudioSettings`], [`SongCacheSettings`] and
+/// [`AppearanceSettings`], [`AudioSettings`], the [`CacheLimit`]s and
 /// [`DiscordSettings`].
 pub(crate) struct SettingsView {
     appearance: Entity<AppearanceSettings>,
     audio: Entity<AudioSettings>,
-    song_cache: Entity<SongCacheSettings>,
-    song_cache_field: Entity<SongCacheField>,
+    song_cache: Entity<CacheLimit>,
+    song_cache_field: Entity<CacheLimitField>,
+    cover_cache: Entity<CacheLimit>,
+    cover_cache_field: Entity<CacheLimitField>,
     song_cache_usage: Entity<SongCacheUsage>,
     discord: Entity<DiscordSettings>,
     imgbb_key_field: Entity<ImgbbKeyField>,
@@ -45,6 +47,7 @@ pub(crate) struct SettingsView {
     _system_appearance_changes: Subscription,
     _audio_changes: Subscription,
     _song_cache_changes: Subscription,
+    _cover_cache_changes: Subscription,
     _song_cache_usage_changes: Subscription,
     _discord_changes: Subscription,
     _refresh: Task<()>,
@@ -54,7 +57,8 @@ impl SettingsView {
     pub(crate) fn new(
         appearance: Entity<AppearanceSettings>,
         audio: Entity<AudioSettings>,
-        song_cache: Entity<SongCacheSettings>,
+        song_cache: Entity<CacheLimit>,
+        cover_cache: Entity<CacheLimit>,
         discord: Entity<DiscordSettings>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -78,7 +82,8 @@ impl SettingsView {
                 }
             }
         });
-        let song_cache_field = cx.new(|cx| SongCacheField::new(song_cache.clone(), window, cx));
+        let song_cache_field = cx.new(|cx| CacheLimitField::new(song_cache.clone(), window, cx));
+        let cover_cache_field = cx.new(|cx| CacheLimitField::new(cover_cache.clone(), window, cx));
         let imgbb_key_field = cx.new(|cx| ImgbbKeyField::new(discord.clone(), window, cx));
         Self {
             _appearance_changes: cx.observe(&appearance, |_, _, cx| cx.notify()),
@@ -86,6 +91,7 @@ impl SettingsView {
             appearance,
             _audio_changes: cx.observe(&audio, |_, _, cx| cx.notify()),
             _song_cache_changes: cx.observe(&song_cache, |_, _, cx| cx.notify()),
+            _cover_cache_changes: cx.observe(&cover_cache, |_, _, cx| cx.notify()),
             _song_cache_usage_changes: cx.observe(&song_cache_usage, |_, _, cx| cx.notify()),
             _discord_changes: cx.observe(&discord, |_, _, cx| cx.notify()),
             discord,
@@ -93,6 +99,8 @@ impl SettingsView {
             audio,
             song_cache,
             song_cache_field,
+            cover_cache,
+            cover_cache_field,
             song_cache_usage,
             focus,
             _refresh: refresh,
@@ -210,21 +218,6 @@ impl SettingsView {
     }
 
     fn storage_page(&self, cx: &mut Context<Self>) -> SettingPage {
-        let limit = SettingField::render({
-            let field = self.song_cache_field.clone();
-            move |_, _, _| field.clone()
-        })
-        .on_reset(
-            {
-                let field = self.song_cache_field.clone();
-                move |cx| field.read(cx).is_resettable(cx)
-            },
-            {
-                let field = self.song_cache_field.clone();
-                move |window, cx| field.update(cx, |field, cx| field.reset(window, cx))
-            },
-        );
-
         let used = SettingField::render({
             let usage = self.song_cache_usage.clone();
             move |_, _, cx| {
@@ -255,9 +248,7 @@ impl SettingsView {
         .cloned()
         .collect();
         let mut songs = SettingGroup::new().title("Song cache").items([
-            SettingItem::new("Limit", limit)
-                .description("0 means no limit.")
-                .keywords(["song cache"]),
+            limit_item(&self.song_cache_field, "song cache"),
             SettingItem::new("Used", used).keywords(["song cache", "clear"]),
         ]);
         if !errors.is_empty() {
@@ -268,10 +259,39 @@ impl SettingsView {
                     .children(errors.iter().cloned())
             });
         }
+        let mut covers = SettingGroup::new()
+            .title("Cover cache")
+            .items([limit_item(&self.cover_cache_field, "cover cache")]);
+        if let Some(error) = self.cover_cache.read(cx).error().cloned() {
+            covers = covers
+                .footer(move |_, cx| div().text_color(cx.theme().danger).child(error.clone()));
+        }
         SettingPage::new("Storage")
             .icon(IconName::HardDrive)
             .group(songs)
+            .group(covers)
     }
+}
+
+/// The item for a cache's limit, found by `keyword`.
+fn limit_item(field: &Entity<CacheLimitField>, keyword: &'static str) -> SettingItem {
+    let limit = SettingField::render({
+        let field = field.clone();
+        move |_, _, _| field.clone()
+    })
+    .on_reset(
+        {
+            let field = field.clone();
+            move |cx| field.read(cx).is_resettable(cx)
+        },
+        {
+            let field = field.clone();
+            move |window, cx| field.update(cx, |field, cx| field.reset(window, cx))
+        },
+    );
+    SettingItem::new("Limit", limit)
+        .description("0 means no limit.")
+        .keywords([keyword])
 }
 
 impl Render for SettingsView {

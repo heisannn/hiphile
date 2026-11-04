@@ -9,9 +9,10 @@ use crate::Error;
 use crate::blobs::Blobs;
 use crate::store::servers_dir;
 
-/// How much cover art may stay on disk, across every server. When a write
-/// goes over, the images used longest ago go until a quarter is free.
-pub const COVER_CAPACITY: u64 = 512 << 20;
+/// How much cover art may stay on disk, across every server, unless the
+/// settings say otherwise. When a write goes over, the images used longest ago
+/// go until a quarter is free.
+pub const COVER_CAPACITY: u64 = 8 << 30;
 /// How old a kept image may get before it is fetched again, for servers
 /// that change an image without changing its ID.
 pub const COVER_REFRESH_AFTER: Duration = Duration::from_secs(30 * 24 * 60 * 60);
@@ -58,13 +59,10 @@ impl KeptCover {
 }
 
 impl CoverStore {
-    /// Images in the system cache directory, beside the libraries.
-    pub fn user() -> Result<Self, Error> {
-        Ok(Self::at(
-            servers_dir()?,
-            COVER_CAPACITY,
-            COVER_REFRESH_AFTER,
-        ))
+    /// Images in the system cache directory, beside the libraries, keeping at
+    /// most about `capacity` bytes.
+    pub fn user(capacity: u64) -> Result<Self, Error> {
+        Ok(Self::at(servers_dir()?, capacity, COVER_REFRESH_AFTER))
     }
 
     /// Images under `root`, one directory per server, keeping at most about
@@ -76,6 +74,12 @@ impl CoverStore {
                 refresh_after,
             }),
         }
+    }
+
+    /// Keeps at most about `capacity` bytes from the next image on, for every
+    /// clone.
+    pub fn set_capacity(&self, capacity: u64) {
+        self.inner.blobs.set_capacity(capacity);
     }
 
     /// The kept image `request` asks for, if there is one.

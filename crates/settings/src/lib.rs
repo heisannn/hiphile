@@ -1,21 +1,22 @@
 //! Feature: the settings window.
 //!
-//! [`AudioSettings`] holds the chosen output and [`SongCacheSettings`] how many
-//! songs to keep, and each saves its own. The app shell hands them to the
-//! player and passes on [`OutputChanged`] and [`SongCacheChanged`], and likewise
+//! [`AudioSettings`] holds the chosen output and a [`CacheLimit`] each how many
+//! songs and covers to keep, and each saves its own. The app shell hands them to
+//! those who use them and passes on [`OutputChanged`] and [`CacheLimitChanged`], and likewise
 //! for [`DiscordSettings`] and [`ImgbbKeyChanged`]. The appearance only concerns
 //! the theme, which this crate keeps on it.
 
 mod appearance_settings;
 mod audio_settings;
+mod cache_limit;
+mod cache_limit_field;
 mod discord_settings;
 mod imgbb_key_field;
 mod number_field;
 mod settings_view;
-mod song_cache_field;
-mod song_cache_settings;
 mod song_cache_usage;
 
+use cache_limit::CacheKind;
 use gpui_kit::component::TitleBar;
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, Bounds, Entity, Global, KeyBinding, Subscription,
@@ -23,8 +24,8 @@ use gpui_kit::{
 };
 
 pub use audio_settings::{AudioSettings, OutputChanged};
+pub use cache_limit::{CacheLimit, CacheLimitChanged};
 pub use discord_settings::{DiscordSettings, ImgbbKeyChanged};
-pub use song_cache_settings::{SongCacheChanged, SongCacheSettings};
 
 use appearance_settings::AppearanceSettings;
 use settings_view::SettingsView;
@@ -37,7 +38,8 @@ actions!(settings, [OpenSettings, CloseWindow]);
 struct GlobalSettings {
     appearance: Entity<AppearanceSettings>,
     audio: Entity<AudioSettings>,
-    song_cache: Entity<SongCacheSettings>,
+    song_cache: Entity<CacheLimit>,
+    cover_cache: Entity<CacheLimit>,
     discord: Entity<DiscordSettings>,
     /// The settings window, if one was opened. It may have been closed since.
     window: Option<AnyWindowHandle>,
@@ -51,12 +53,14 @@ pub fn init(cx: &mut App) {
     number_field::init(cx);
     let appearance = cx.new(AppearanceSettings::new);
     let audio = cx.new(AudioSettings::new);
-    let song_cache = cx.new(SongCacheSettings::new);
+    let song_cache = cx.new(|cx| CacheLimit::new(CacheKind::Songs, cx));
+    let cover_cache = cx.new(|cx| CacheLimit::new(CacheKind::Covers, cx));
     let discord = cx.new(DiscordSettings::new);
     cx.set_global(GlobalSettings {
         appearance,
         audio,
         song_cache,
+        cover_cache,
         discord,
         window: None,
     });
@@ -86,8 +90,13 @@ pub fn discord_settings(cx: &App) -> Entity<DiscordSettings> {
 }
 
 /// How many songs to keep, shared by the settings window and the app shell.
-pub fn song_cache_settings(cx: &App) -> Entity<SongCacheSettings> {
+pub fn song_cache_settings(cx: &App) -> Entity<CacheLimit> {
     cx.global::<GlobalSettings>().song_cache.clone()
+}
+
+/// How many covers to keep, shared by the settings window and the app shell.
+pub fn cover_cache_settings(cx: &App) -> Entity<CacheLimit> {
+    cx.global::<GlobalSettings>().cover_cache.clone()
 }
 
 /// Keeps the theme on the system's appearance for as long as the subscription
@@ -128,9 +137,20 @@ fn open(cx: &mut App) {
     let appearance = cx.global::<GlobalSettings>().appearance.clone();
     let audio = audio_settings(cx);
     let song_cache = song_cache_settings(cx);
+    let cover_cache = cover_cache_settings(cx);
     let discord = discord_settings(cx);
     let opened = gpui_kit::open_window(options, cx, |window, cx| {
-        cx.new(|cx| SettingsView::new(appearance, audio, song_cache, discord, window, cx))
+        cx.new(|cx| {
+            SettingsView::new(
+                appearance,
+                audio,
+                song_cache,
+                cover_cache,
+                discord,
+                window,
+                cx,
+            )
+        })
     });
     if let Ok((window, _)) = opened {
         cx.global_mut::<GlobalSettings>().window = Some(window);
