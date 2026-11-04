@@ -1,16 +1,32 @@
+use std::sync::Arc;
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{AlbumId, ArtistId, CoverArtId, SongId};
 
 /// A song (`Child` with `isDir: false`).
 ///
 /// Serializes to the server's own JSON form, so a stored copy reads back
-/// like a response.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+/// like a response. Cheap to clone: a queue can hold a whole library.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Song(Arc<Fields>);
+
+impl Serialize for Song {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Song {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Fields::deserialize(deserializer).map(|fields| Self(Arc::new(fields)))
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Song {
+struct Fields {
     id: SongId,
     title: String,
     album: Option<String>,
@@ -35,78 +51,103 @@ pub struct Song {
 
 impl Song {
     pub fn id(&self) -> &SongId {
-        &self.id
+        &self.0.id
     }
 
     pub fn title(&self) -> &str {
-        &self.title
+        &self.0.title
     }
 
     pub fn album(&self) -> Option<&str> {
-        self.album.as_deref()
+        self.0.album.as_deref()
     }
 
     pub fn album_id(&self) -> Option<&AlbumId> {
-        self.album_id.as_ref()
+        self.0.album_id.as_ref()
     }
 
     pub fn artist(&self) -> Option<&str> {
-        self.artist.as_deref()
+        self.0.artist.as_deref()
     }
 
     pub fn artist_id(&self) -> Option<&ArtistId> {
-        self.artist_id.as_ref()
+        self.0.artist_id.as_ref()
     }
 
     pub fn track(&self) -> Option<u32> {
-        self.track
+        self.0.track
     }
 
     pub fn disc_number(&self) -> Option<u32> {
-        self.disc_number
+        self.0.disc_number
     }
 
     pub fn cover_art(&self) -> Option<&CoverArtId> {
-        self.cover_art.as_ref()
+        self.0.cover_art.as_ref()
     }
 
     pub fn duration(&self) -> Option<Duration> {
-        self.duration.map(Duration::from_secs)
+        self.0.duration.map(Duration::from_secs)
     }
 
     /// The original file's length in bytes, which `stream` sends untranscoded.
     pub fn size(&self) -> Option<u64> {
-        self.size
+        self.0.size
     }
 
     /// File extension of the original file, e.g. `flac`.
     pub fn suffix(&self) -> Option<&str> {
-        self.suffix.as_deref()
+        self.0.suffix.as_deref()
     }
 
     /// MIME type of the original file, e.g. `audio/flac`.
     pub fn content_type(&self) -> Option<&str> {
-        self.content_type.as_deref()
+        self.0.content_type.as_deref()
     }
 
     /// Sample rate in Hz. OpenSubsonic servers only.
     pub fn sampling_rate(&self) -> Option<u32> {
-        self.sampling_rate
+        self.0.sampling_rate
     }
 
     /// OpenSubsonic servers only.
     pub fn bit_depth(&self) -> Option<u32> {
-        self.bit_depth
+        self.0.bit_depth
     }
 
     /// OpenSubsonic servers only.
     pub fn channel_count(&self) -> Option<u32> {
-        self.channel_count
+        self.0.channel_count
     }
 
     /// When the user last played it, in RFC 3339. `None` if they never have,
     /// or the server does not say.
     pub fn played(&self) -> Option<&str> {
-        self.played.as_deref()
+        self.0.played.as_deref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn a_stored_song_reads_back_as_the_server_wrote_it() {
+        let written = json!({ "id": "s", "title": "So What", "albumId": "a", "track": 1 });
+        let song: Song = serde_json::from_value(written).unwrap();
+        assert_eq!(song.album_id().unwrap().as_str(), "a");
+
+        let stored = serde_json::to_value(&song).unwrap();
+        assert_eq!(stored["albumId"], "a");
+        assert_eq!(stored["title"], "So What");
+        assert_eq!(serde_json::from_value::<Song>(stored).unwrap(), song);
+    }
+
+    #[test]
+    fn a_clone_shares_the_song() {
+        let song: Song = serde_json::from_value(json!({ "id": "s", "title": "t" })).unwrap();
+        assert!(Arc::ptr_eq(&song.0, &song.clone().0));
     }
 }

@@ -8,8 +8,8 @@ use std::fmt::Display;
 use std::sync::Arc;
 
 use gpui_kit::component::{WindowExt as _, menu::PopupMenu, notification::NotificationType};
-use gpui_kit::{Action, App, Context, Global, SharedString, Window};
-use subsonic::{AlbumId, PlaylistId, Song};
+use gpui_kit::{Action, App, Context, Global, KeyBinding, SharedString, Window, actions};
+use subsonic::{AlbumId, ArtistId, PlaylistId, Song};
 
 /// Add `songs` after those already in `playlist`.
 #[derive(Clone, Debug, PartialEq, Action)]
@@ -190,6 +190,42 @@ impl ShowAlbum {
     pub fn album(&self) -> &AlbumId {
         &self.album
     }
+}
+
+/// Show `artist` on the artists' screen.
+#[derive(Clone, Debug, PartialEq, Action)]
+#[action(namespace = hiphile, no_json)]
+pub struct ShowArtist {
+    artist: ArtistId,
+}
+
+impl ShowArtist {
+    pub fn new(artist: ArtistId) -> Self {
+        Self { artist }
+    }
+
+    pub fn artist(&self) -> &ArtistId {
+        &self.artist
+    }
+}
+
+actions!(
+    hiphile,
+    [
+        /// Shows the artist of what is selected. The view with the selection
+        /// handles it, and dispatches [`ShowArtist`].
+        GoToArtist
+    ]
+);
+
+/// Binds the key for [`GoToArtist`] in the view whose key context is `context`.
+pub fn bind_go_to_artist(context: &'static str, cx: &mut App) {
+    let key = if cx.platform_info().is_mac() {
+        "cmd-shift-a"
+    } else {
+        "ctrl-shift-a"
+    };
+    cx.bind_keys([KeyBinding::new(key, GoToArtist, Some(context))]);
 }
 
 /// Replace the play queue with `songs` and start playing at `start_ix`.

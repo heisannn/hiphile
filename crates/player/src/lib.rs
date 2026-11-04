@@ -109,6 +109,7 @@ pub fn init(context: &'static str, cx: &mut App) {
         // Space toggles playback from the list, never from a text field.
         KeyBinding::new("space", TogglePlayback, Some(QUEUE_CONTEXT)),
     ]);
+    actions::bind_go_to_artist(QUEUE_CONTEXT, cx);
 }
 
 /// Keeps at most about `capacity` bytes of songs from now on, or the default

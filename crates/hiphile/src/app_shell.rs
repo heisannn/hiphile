@@ -1,10 +1,15 @@
 use account::{SignIn, SignInEvent, Start};
-use actions::{AddToPlaylist, ChoosePlaylist, EnqueueSongs, NewPlaylist, PlaySongs, ShowAlbum};
+use actions::{
+    AddToPlaylist, ChoosePlaylist, EnqueueSongs, NewPlaylist, PlaySongs, ShowAlbum, ShowArtist,
+};
+use artists::Artists;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, StyledExt as _, TitleBar,
+    WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
+    notification::NotificationType,
     resizable::{ResizableState, h_resizable, resizable_panel},
     tab::{Tab, TabBar},
     v_flex,
@@ -22,10 +27,11 @@ use player::{
 };
 use playlists::{Playlists, PlaylistsEvent};
 use session::Session;
-use subsonic::AlbumId;
+use songs::Songs;
+use subsonic::{AlbumId, ArtistId};
 use ui::CoverCache;
 
-use crate::{ShowHome, ShowLibrary, ShowPlaylists, SignOut, ToggleQueue};
+use crate::{ShowAlbums, ShowArtists, ShowHome, ShowPlaylists, ShowSongs, SignOut, ToggleQueue};
 
 /// The queue's width when first shown, in rem.
 const QUEUE_WIDTH: f32 = 20.;
@@ -66,18 +72,28 @@ enum Screen {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Destination {
     Home,
-    Library,
+    Artists,
+    Albums,
+    Songs,
     Playlists,
 }
 
 impl Destination {
     /// In the order the title bar shows them.
-    const ALL: [Self; 3] = [Self::Home, Self::Library, Self::Playlists];
+    const ALL: [Self; 5] = [
+        Self::Home,
+        Self::Artists,
+        Self::Albums,
+        Self::Songs,
+        Self::Playlists,
+    ];
 
     fn label(self) -> &'static str {
         match self {
             Self::Home => "Home",
-            Self::Library => "Library",
+            Self::Artists => "Artists",
+            Self::Albums => "Albums",
+            Self::Songs => "Songs",
             Self::Playlists => "Playlists",
         }
     }
@@ -92,6 +108,12 @@ struct Workspace {
     /// Kept while another screen shows, along with its selection and the sync
     /// it runs.
     library: Entity<Library>,
+    /// Kept while another screen shows, along with its selection. Loads the
+    /// first time it shows.
+    artists: Entity<Artists>,
+    /// Kept while another screen shows, along with its order and selection.
+    /// Loads the first time it shows.
+    songs: Entity<Songs>,
     /// Kept while another screen shows: the other screens' menus add to it.
     playlists: Entity<Playlists>,
     player: Entity<Player>,
@@ -113,7 +135,9 @@ impl Workspace {
     fn focus_destination(&self, window: &mut Window, cx: &mut App) {
         let focus = match self.destination {
             Destination::Home => self.home.focus_handle(cx),
-            Destination::Library => self.library.focus_handle(cx),
+            Destination::Albums => self.library.focus_handle(cx),
+            Destination::Artists => self.artists.focus_handle(cx),
+            Destination::Songs => self.songs.focus_handle(cx),
             Destination::Playlists => self.playlists.focus_handle(cx),
         };
         focus.focus(window, cx);
@@ -125,6 +149,7 @@ impl Workspace {
         self.library
             .read(cx)
             .min_width(window, cx)
+            .max(self.artists.read(cx).min_width(window, cx))
             .max(self.playlists.read(cx).min_width(window, cx))
     }
 }
@@ -194,6 +219,8 @@ impl AppShell {
     ) {
         let home = cx.new(|cx| Home::new(session.clone(), window, cx));
         let library = cx.new(|cx| Library::new(session.clone(), window, cx));
+        let artists = cx.new(|cx| Artists::new(session.clone(), window, cx));
+        let songs = cx.new(|cx| Songs::new(session.clone(), window, cx));
         let playlists = cx.new(|cx| Playlists::new(session.clone(), window, cx));
         let audio_settings = settings::audio_settings(cx);
         let output = audio_settings.read(cx).output().clone();
@@ -211,6 +238,8 @@ impl AppShell {
         let player_events = cx.subscribe(&player, {
             let home = home.downgrade();
             let library = library.downgrade();
+            let artists = artists.downgrade();
+            let songs = songs.downgrade();
             let playlists = playlists.downgrade();
             move |_, _, event, cx| {
                 match event {
@@ -222,6 +251,16 @@ impl AppShell {
                         library
                             .update(cx, |library, cx| {
                                 library.set_now_playing(song.clone(), *playing, cx)
+                            })
+                            .ok();
+                        artists
+                            .update(cx, |artists, cx| {
+                                artists.set_now_playing(song.clone(), *playing, cx)
+                            })
+                            .ok();
+                        songs
+                            .update(cx, |songs, cx| {
+                                songs.set_now_playing(song.clone(), *playing, cx)
                             })
                             .ok();
                         playlists
@@ -246,11 +285,30 @@ impl AppShell {
                 cx.notify();
             }
         });
-        let library_events = cx.subscribe(&library, {
+        let library_events = cx.subscribe_in(&library, window, {
             let home = home.downgrade();
-            move |_, _, event, cx| {
-                let LibraryEvent::AlbumsSynced = event;
-                home.update(cx, |home, cx| home.library_synced(cx)).ok();
+            let artists = artists.downgrade();
+            let songs = songs.downgrade();
+            move |this, _, event, window, cx| match event {
+                LibraryEvent::AlbumsSynced => {
+                    home.update(cx, |home, cx| home.library_synced(cx)).ok();
+                    artists.update(cx, |artists, cx| artists.refresh(cx)).ok();
+                }
+                LibraryEvent::SongsSynced => {
+                    songs.update(cx, |songs, cx| songs.songs_synced(cx)).ok();
+                    artists
+                        .update(cx, |artists, cx| artists.songs_synced(cx))
+                        .ok();
+                }
+                LibraryEvent::SyncFailed(error) => {
+                    // The albums' screen says so itself.
+                    if let Screen::Workspace(workspace) = &this.screen
+                        && workspace.destination != Destination::Albums
+                    {
+                        let message = format!("Couldn't refresh the library. {error}");
+                        window.push_notification((NotificationType::Error, message), cx);
+                    }
+                }
             }
         });
         let playlists_events =
@@ -295,6 +353,8 @@ impl AppShell {
             destination: Destination::Home,
             home,
             library,
+            artists,
+            songs,
             playlists,
             player,
             queue,
@@ -345,16 +405,30 @@ impl AppShell {
             Destination::Playlists => workspace
                 .playlists
                 .update(cx, |playlists, cx| playlists.refresh(window, cx)),
-            Destination::Library => {}
+            Destination::Artists => workspace
+                .artists
+                .update(cx, |artists, cx| artists.activate(cx)),
+            Destination::Songs => workspace.songs.update(cx, |songs, cx| songs.activate(cx)),
+            Destination::Albums => {}
         }
         workspace.focus_destination(window, cx);
         self.update_menus(cx);
         cx.notify();
     }
 
-    /// Shows `album` in the library, whichever screen is showing.
+    /// Shows `artist` on the artists' screen, whichever screen is showing.
+    fn show_artist(&mut self, artist: &ArtistId, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_destination(Destination::Artists, window, cx);
+        if let Screen::Workspace(workspace) = &self.screen {
+            workspace.artists.update(cx, |artists, cx| {
+                artists.reveal_artist(artist.clone(), window, cx)
+            });
+        }
+    }
+
+    /// Shows `album` on the albums' screen, whichever screen is showing.
     fn show_album(&mut self, album: &AlbumId, window: &mut Window, cx: &mut Context<Self>) {
-        self.show_destination(Destination::Library, window, cx);
+        self.show_destination(Destination::Albums, window, cx);
         if let Screen::Workspace(workspace) = &self.screen {
             workspace.library.update(cx, |library, cx| {
                 library.reveal_album(album.clone(), window, cx)
@@ -467,7 +541,9 @@ impl AppShell {
             .child(resizable_panel().size_range(screen_min..rem * 240.).child(
                 match workspace.destination {
                     Destination::Home => workspace.home.clone().into_any_element(),
-                    Destination::Library => workspace.library.clone().into_any_element(),
+                    Destination::Albums => workspace.library.clone().into_any_element(),
+                    Destination::Artists => workspace.artists.clone().into_any_element(),
+                    Destination::Songs => workspace.songs.clone().into_any_element(),
                     Destination::Playlists => workspace.playlists.clone().into_any_element(),
                 },
             ))
@@ -610,14 +686,23 @@ impl Render for AppShell {
                 .on_action(cx.listener(|this, _: &ShowHome, window, cx| {
                     this.show_destination(Destination::Home, window, cx);
                 }))
-                .on_action(cx.listener(|this, _: &ShowLibrary, window, cx| {
-                    this.show_destination(Destination::Library, window, cx);
+                .on_action(cx.listener(|this, _: &ShowAlbums, window, cx| {
+                    this.show_destination(Destination::Albums, window, cx);
+                }))
+                .on_action(cx.listener(|this, _: &ShowArtists, window, cx| {
+                    this.show_destination(Destination::Artists, window, cx);
+                }))
+                .on_action(cx.listener(|this, _: &ShowSongs, window, cx| {
+                    this.show_destination(Destination::Songs, window, cx);
                 }))
                 .on_action(cx.listener(|this, _: &ShowPlaylists, window, cx| {
                     this.show_destination(Destination::Playlists, window, cx);
                 }))
                 .on_action(cx.listener(|this, action: &ShowAlbum, window, cx| {
                     this.show_album(action.album(), window, cx);
+                }))
+                .on_action(cx.listener(|this, action: &ShowArtist, window, cx| {
+                    this.show_artist(action.artist(), window, cx);
                 }))
                 .on_action(cx.listener(|this, _: &Refresh, window, cx| this.refresh(window, cx)))
                 .on_action(cx.listener(|this, action: &AddToPlaylist, window, cx| {

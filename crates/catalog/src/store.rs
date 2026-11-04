@@ -8,7 +8,7 @@ use md5::{Digest, Md5};
 use rusqlite::{
     Connection, ErrorCode, OptionalExtension as _, Transaction, TransactionBehavior, params,
 };
-use subsonic::{Album, AlbumId, AlbumWithSongs, Song};
+use subsonic::{Album, AlbumId, AlbumWithSongs, ArtistId, Song};
 use url::Url;
 
 use crate::Error;
@@ -156,6 +156,27 @@ impl Catalog {
         let mut statement =
             connection.prepare_cached("SELECT json FROM albums ORDER BY ord, id")?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|json| Ok(serde_json::from_str(&json?)?)).collect()
+    }
+
+    /// The albums of `artist`, in the server's name order. Reads no others, for
+    /// a screen that asks each time its selection moves.
+    pub fn albums_by_artist(&self, artist: &ArtistId) -> Result<Vec<Album>, Error> {
+        let connection = self.connection();
+        let mut statement = connection.prepare_cached(
+            "SELECT json FROM albums WHERE json_extract(json, '$.artistId') = ?1
+             ORDER BY ord, id",
+        )?;
+        let rows = statement.query_map([artist.as_str()], |row| row.get::<_, String>(0))?;
+        rows.map(|json| Ok(serde_json::from_str(&json?)?)).collect()
+    }
+
+    /// The songs that name `artist`, in no particular order. Reads no others.
+    pub fn songs_by_artist(&self, artist: &ArtistId) -> Result<Vec<Song>, Error> {
+        let connection = self.connection();
+        let mut statement = connection
+            .prepare_cached("SELECT json FROM songs WHERE json_extract(json, '$.artistId') = ?1")?;
+        let rows = statement.query_map([artist.as_str()], |row| row.get::<_, String>(0))?;
         rows.map(|json| Ok(serde_json::from_str(&json?)?)).collect()
     }
 
@@ -618,6 +639,45 @@ mod tests {
         );
         assert!(name("https://music.example.com").starts_with("music.example.com-"));
         assert!(name("http://[::1]:4533").starts_with("___1_-"));
+    }
+
+    #[test]
+    fn asking_by_artist_reads_only_what_names_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(dir.path()).unwrap();
+        let album = |id: &str, artist: &str| -> Album {
+            let album = serde_json::json!({ "id": id, "name": id, "artistId": artist });
+            serde_json::from_value(album).unwrap()
+        };
+        let song = |id: &str, artist: &str| -> Song {
+            serde_json::from_value(serde_json::json!({
+                "id": id, "title": id, "artistId": artist,
+            }))
+            .unwrap()
+        };
+        let generation = catalog.begin(Kind::Albums).unwrap();
+        let albums = [album("a2", "m"), album("b", "x"), album("a1", "m")];
+        catalog.store_albums(generation, 0, &albums).unwrap();
+        let generation = catalog.begin(Kind::Songs).unwrap();
+        let songs = [song("s1", "m"), song("s2", "x"), song("s3", "m")];
+        catalog.store_songs(generation, &songs).unwrap();
+
+        let miles = ArtistId::new("m");
+        let found = catalog.albums_by_artist(&miles).unwrap();
+        let ids: Vec<_> = found.iter().map(|album| album.id().as_str()).collect();
+        assert_eq!(ids, ["a2", "a1"]);
+
+        let found = catalog.songs_by_artist(&miles).unwrap();
+        let mut ids: Vec<_> = found.iter().map(|song| song.id().as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["s1", "s3"]);
+
+        assert!(
+            catalog
+                .albums_by_artist(&ArtistId::new("nobody"))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

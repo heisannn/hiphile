@@ -1,8 +1,8 @@
 //! Feature: browsing albums and their songs.
 //!
 //! Shows the server's library saved on this computer at once and brings it
-//! up to date in the background. Dispatches `actions::PlaySongs` and
-//! `actions::EnqueueSongs`; the app shell routes them to the player.
+//! up to date in the background. Dispatches `actions::PlaySongs`,
+//! `actions::EnqueueSongs` and `actions::ShowArtist`; the app shell routes them.
 
 mod filter;
 mod library_view;
@@ -64,6 +64,7 @@ pub fn init(cx: &mut App) {
             KeyBinding::new("shift-enter", AddToQueue, Some(context)),
             KeyBinding::new(add_to_playlist, AddToPlaylist, Some(context)),
         ]);
+        actions::bind_go_to_artist(context, cx);
     }
     cx.bind_keys([
         KeyBinding::new("right", Open, Some(ALBUMS_CONTEXT)),

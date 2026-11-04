@@ -3,7 +3,7 @@
 //! The way to something to listen to from the moment the app opens: albums to
 //! try, picked anew each day, then the songs played last, the albums played most
 //! and the albums added last, as the server knows them. Dispatches
-//! `actions::ShowAlbum`, `actions::PlaySongs` and `actions::EnqueueSongs`; the
+//! `actions::ShowAlbum`, `actions::ShowArtist`, `actions::PlaySongs` and `actions::EnqueueSongs`; the
 //! app shell routes them.
 
 mod home_view;
@@ -22,7 +22,7 @@ pub const HOME_CONTEXT: &str = "Home";
 actions!(
     home,
     [
-        /// Albums: show it in the library. Songs: play from the selection.
+        /// Albums: show it on the albums' screen. Songs: play from the selection.
         Open,
         /// Plays the selected album or, from it on, the songs shown.
         Play,
@@ -30,7 +30,7 @@ actions!(
         PlayNext,
         /// Queues the selection after every other song.
         AddToQueue,
-        /// Shows the selected album, or the selected song's, in the library.
+        /// Shows the selected album, or the selected song's, on the albums' screen.
         ShowInLibrary,
         /// Asks which playlist to add the selection to.
         ChoosePlaylist,
@@ -64,4 +64,5 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(show_in_library, ShowInLibrary, Some(HOME_CONTEXT)),
         KeyBinding::new(choose_playlist, ChoosePlaylist, Some(HOME_CONTEXT)),
     ]);
+    actions::bind_go_to_artist(HOME_CONTEXT, cx);
 }

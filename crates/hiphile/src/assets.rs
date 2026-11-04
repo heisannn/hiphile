@@ -8,11 +8,14 @@ use gpui_kit::{AssetSource, Result, SharedString};
 gpui_kit::assets::icon_assets!(
     ExtraIcons,
     [
+        ArrowDown,
+        ArrowUp,
         AudioLines,
         Disc3,
         ListMusic,
         SkipBack,
         SkipForward,
+        User,
         Volume1,
         Volume2,
         VolumeX

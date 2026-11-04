@@ -1,10 +1,10 @@
 use gpui_kit::component::{Selectable as _, list::ListItem, menu::ContextMenuExt as _};
 use gpui_kit::{
     App, ElementId, FocusHandle, IntoElement, MouseButton, ParentElement as _, RenderOnce,
-    SharedString, Styled as _, WeakEntity, Window,
+    SharedString, Styled as _, WeakEntity, Window, prelude::FluentBuilder as _,
 };
 use subsonic::{Album, AlbumId};
-use ui::{RowText, join_details};
+use ui::{ArtistLine, RowText};
 
 use super::{Library, add_album_command};
 use crate::{AddToQueue, Play, PlayNext};
@@ -14,7 +14,8 @@ use crate::{AddToQueue, Play, PlayNext};
 pub(super) struct AlbumRow {
     id: AlbumId,
     name: SharedString,
-    details: SharedString,
+    details: ArtistLine,
+    has_artist: bool,
     is_selected: bool,
     is_focused: bool,
     owner: WeakEntity<Library>,
@@ -32,10 +33,8 @@ impl AlbumRow {
         Self {
             id: album.id().clone(),
             name: album.name().to_owned().into(),
-            details: join_details([
-                album.artist().map(str::to_owned),
-                album.year().map(|year| year.to_string()),
-            ]),
+            details: ArtistLine::of_album(album),
+            has_artist: album.artist_id().is_some(),
             is_selected,
             is_focused,
             owner,
@@ -50,6 +49,7 @@ impl RenderOnce for AlbumRow {
             id,
             name,
             details,
+            has_artist,
             is_selected,
             is_focused,
             owner,
@@ -64,7 +64,7 @@ impl RenderOnce for AlbumRow {
             .px_4()
             .w_full()
             .accessibility_label(name.clone())
-            .child(RowText::new(name).details(details))
+            .child(RowText::new(name).detail_line(details))
             .on_click(move |_, window, cx| {
                 on_click
                     .update(cx, |this, cx| {
@@ -91,6 +91,9 @@ impl RenderOnce for AlbumRow {
                     .menu("Add to Queue", Box::new(AddToQueue))
                     .separator();
                 actions::add_to_playlist_submenu(menu, add_album_command, window, cx)
+                    .when(has_artist, |menu| {
+                        menu.menu("Go to Artist", Box::new(actions::GoToArtist))
+                    })
             })
     }
 }

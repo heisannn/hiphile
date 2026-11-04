@@ -19,7 +19,7 @@ use gpui_kit::{
 use playback::{Arrival, EntryId, Placement, PlayTally, Queue};
 use presence::{CoverHost, Presence};
 use subsonic::{CoverArtId, Song, SongId};
-use ui::{CoverArt, format_duration};
+use ui::{AlbumLink, ArtistLink, CoverArt, format_duration, song_artist_link};
 
 use crate::format;
 use crate::{GlobalSongCache, NextSong, PreviousSong, ToggleMute, TogglePlayback};
@@ -922,19 +922,13 @@ impl Player {
 
     fn render_song(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let song = self.queue.current();
-        let secondary = match (&self.error, song) {
-            (Some(error), _) => Some((error.clone(), cx.theme().danger)),
-            (None, Some(song)) => {
-                let line = match (song.artist(), song.album()) {
-                    (Some(artist), Some(album)) => format!("{artist} — {album}"),
-                    (Some(artist), None) => artist.to_owned(),
-                    (None, Some(album)) => album.to_owned(),
-                    (None, None) => String::new(),
-                };
-                Some((line.into(), cx.theme().muted_foreground))
-            }
-            (None, None) => None,
-        };
+        let error = self.error.as_ref().map(|error| {
+            div()
+                .text_xs()
+                .truncate()
+                .text_color(cx.theme().danger)
+                .child(error.clone())
+        });
         h_flex()
             .flex_1()
             .min_w_0()
@@ -950,8 +944,9 @@ impl Player {
                                     .truncate()
                                     .child(SharedString::from(song.title().to_owned())),
                             )
-                            .when_some(secondary, |this, (text, color)| {
-                                this.child(div().text_xs().truncate().text_color(color).child(text))
+                            .map(|this| match error {
+                                Some(error) => this.child(error),
+                                None => this.child(song_details(song, cx)),
                             }),
                     )
             })
@@ -1051,6 +1046,24 @@ impl Player {
     }
 }
 
+/// The line under the song playing: its artist and its album, whose names can
+/// be clicked.
+fn song_details(song: &Song, cx: &gpui_kit::App) -> impl IntoElement + use<> {
+    let artist: Option<ArtistLink> = song_artist_link(song);
+    let album = AlbumLink::of_song(song);
+    let separated = artist.is_some();
+    h_flex()
+        .min_w_0()
+        .gap_1()
+        .text_xs()
+        .text_color(cx.theme().muted_foreground)
+        .children(artist)
+        .when_some(album, |this, album| {
+            this.when(separated, |this| this.child(div().flex_none().child("—")))
+                .child(album)
+        })
+}
+
 /// The songs kept on this computer, if there are any to be had.
 fn song_cache(cx: &Context<Player>) -> Option<playback::SongCache> {
     cx.try_global::<GlobalSongCache>()
@@ -1143,6 +1156,41 @@ mod tests {
 
     const RATE: u32 = 44_100;
     const WAIT: Duration = Duration::from_secs(15);
+
+    /// The line under a song playing, on its own.
+    struct Details(Song);
+
+    impl gpui_kit::Render for Details {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(song_details(&self.0, cx))
+        }
+    }
+
+    #[gpui_kit::test]
+    fn clicking_the_album_under_the_song_shows_it(cx: &mut TestAppContext) {
+        let shown = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            let shown = shown.clone();
+            cx.on_action(move |action: &actions::ShowAlbum, _| {
+                shown.borrow_mut().push(action.album().clone());
+            });
+        });
+        let song = serde_json::from_value(json!({
+            "id": "s", "title": "So What", "album": "Kind of Blue", "albumId": "al1",
+        }))
+        .unwrap();
+        let (_, cx) = cx.add_window_view(|_, _| Details(song));
+        let cx: &mut VisualTestContext = cx;
+        cx.simulate_resize(gpui_kit::size(gpui_kit::px(400.), gpui_kit::px(100.)));
+        cx.run_until_parked();
+
+        let position = gpui_kit::point(gpui_kit::px(10.), gpui_kit::px(6.));
+        cx.simulate_click(position, Default::default());
+        cx.run_until_parked();
+
+        assert_eq!(shown.take(), [subsonic::AlbumId::new("al1")]);
+    }
 
     #[test]
     fn gain_follows_the_square_of_the_level() {

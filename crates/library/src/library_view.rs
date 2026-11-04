@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use actions::{AlbumAction, EnqueueSongs, Placement, PlaySongs};
+use actions::{AlbumAction, EnqueueSongs, GoToArtist, Placement, PlaySongs, ShowArtist};
 use catalog::{Mode, Outcome};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
@@ -15,15 +15,15 @@ use gpui_kit::component::{
 use gpui_kit::{
     AnyElement, AppContext as _, AsyncApp, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollStrategy, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, UniformListScrollHandle,
-    WeakEntity, Window, div, prelude::FluentBuilder as _,
+    Styled as _, Subscription, Task, UniformListScrollHandle, WeakEntity, Window, div,
+    prelude::FluentBuilder as _,
 };
 use subsonic::{Album, AlbumId, AlbumWithSongs, PlaylistId, Song, SongId};
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
 use ui::{
     DetailHeader, ListFilter, ListPaneHeader, LoadFailure, MasterDetail, NowPlaying,
-    RefreshFailure, centered, format_duration, format_song_count, join_details, muted_text,
-    row_list,
+    RefreshFailure, album_artist_link, centered, format_duration, format_song_count, join_details,
+    muted_text, row_list,
 };
 
 mod album_row;
@@ -45,6 +45,10 @@ const COVER_PIXELS: u32 = 512;
 pub enum LibraryEvent {
     /// A sync brought the album list up to date with the server.
     AlbumsSynced,
+    /// A sync brought the saved songs up to date with the server.
+    SongsSynced,
+    /// A sync the user asked for failed, for why.
+    SyncFailed(SharedString),
 }
 
 /// The album browser: a filterable album list beside the selected album's
@@ -53,6 +57,9 @@ pub struct Library {
     session: session::Session,
     albums: Albums,
     sync: SyncState,
+    /// Whether the sync under way or last run is one the user asked for, whose
+    /// failure they should hear of wherever they are.
+    is_sync_requested: bool,
     /// Positions in the loaded albums that match the filter.
     visible: Arc<Vec<usize>>,
     selected_album: Option<AlbumId>,
@@ -130,6 +137,7 @@ impl Library {
             session,
             albums: Albums::Loading,
             sync: SyncState::Idle,
+            is_sync_requested: false,
             visible: Arc::default(),
             selected_album: None,
             revealing: None,
@@ -164,6 +172,7 @@ impl Library {
             return;
         }
         self.sync = SyncState::Running { again: false };
+        self.is_sync_requested = mode == Mode::Always;
         if self.loaded_albums().is_none() {
             self.albums = Albums::Loading;
             self.visible = Arc::default();
@@ -179,6 +188,9 @@ impl Library {
 
     fn finish_sync(&mut self, result: Result<(), SharedString>, cx: &mut Context<Self>) {
         let again = matches!(self.sync, SyncState::Running { again: true });
+        if let (Err(error), true, false) = (&result, self.is_sync_requested, again) {
+            cx.emit(LibraryEvent::SyncFailed(error.clone()));
+        }
         self.sync = match result {
             Ok(()) => SyncState::Idle,
             Err(error) if self.loaded_albums().is_some() => SyncState::Failed(error),
@@ -487,6 +499,25 @@ impl Library {
         }
     }
 
+    fn go_to_album_artist(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let selected = self.selected_position();
+        let artist = selected
+            .and_then(|position| self.visible_album(position))
+            .and_then(|album| album.artist_id().cloned());
+        if let Some(artist) = artist {
+            window.dispatch_action(Box::new(ShowArtist::new(artist)), cx);
+        }
+    }
+
+    fn go_to_song_artist(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let artist = self
+            .selected_song_ix()
+            .and_then(|ix| self.loaded_songs()?.get(ix)?.artist_id().cloned());
+        if let Some(artist) = artist {
+            window.dispatch_action(Box::new(ShowArtist::new(artist)), cx);
+        }
+    }
+
     fn render_albums(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let count = self.loaded_albums().map(|albums| albums.len());
         // While nothing shows, the list itself shows a spinner.
@@ -499,15 +530,10 @@ impl Library {
             .size_full()
             .min_h_0()
             .bg(cx.theme().sidebar)
-            .child(ListPaneHeader::new("Albums", count).when(updating, |this| {
-                this.status(
-                    div()
-                        .id("library-updating")
-                        .role(gpui_kit::Role::ProgressIndicator)
-                        .aria_label("Updating the library")
-                        .child(Spinner::new().small().color(cx.theme().muted_foreground)),
-                )
-            }))
+            .child(
+                ListPaneHeader::new("Albums", count)
+                    .when(updating, |this| this.updating("Updating the library")),
+            )
             .child(ListFilter::new(&self.filter))
             .when_some(error, |this, error| {
                 this.child(RefreshFailure::new(
@@ -555,6 +581,9 @@ impl Library {
             .on_action(cx.listener(|this, _: &AddToPlaylist, window, cx| {
                 this.act_on_album(AlbumAction::ChoosePlaylist, window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &GoToArtist, window, cx| this.go_to_album_artist(window, cx)),
+            )
             .child(self.render_album_rows(window, cx))
             .into_any_element()
     }
@@ -634,6 +663,9 @@ impl Library {
             .on_action(cx.listener(|this, _: &AddToPlaylist, window, cx| {
                 this.choose_playlist_for_selected_song(window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &GoToArtist, window, cx| this.go_to_song_artist(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &Back, window, cx| {
                 this.albums_focus.focus(window, cx);
             }))
@@ -680,7 +712,7 @@ impl Library {
                     album.name().to_owned().into(),
                     summary,
                 )
-                .subtitle(album.artist().map(|artist| artist.to_owned().into()))
+                .artist(album_artist_link(album))
                 .action(
                     Button::new("play-album")
                         .icon(IconName::Play)
@@ -816,6 +848,8 @@ async fn run_sync(
         this.update(cx, |this, cx| {
             this.set_albums(albums, cx);
             cx.emit(LibraryEvent::AlbumsSynced);
+            // Without a copy, the songs are the server's, which may have changed.
+            cx.emit(LibraryEvent::SongsSynced);
         })
         .ok();
         return Ok(());
@@ -870,9 +904,14 @@ async fn run_sync(
         .ok();
     }
 
-    cx.background_spawn(async move { catalog::sync_songs(&catalog, &client, mode).await })
+    let outcome = cx
+        .background_spawn(async move { catalog::sync_songs(&catalog, &client, mode).await })
         .await
         .map_err(describe_catalog)?;
+    if matches!(outcome, Outcome::Synced { .. } | Outcome::Unsettled { .. }) {
+        this.update(cx, |_, cx| cx.emit(LibraryEvent::SongsSynced))
+            .ok();
+    }
     Ok(())
 }
 

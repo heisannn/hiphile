@@ -1,14 +1,15 @@
 use std::sync::Arc;
 
 use gpui_kit::component::{
-    ActiveTheme as _, Selectable as _, h_flex, list::ListItem, menu::ContextMenuExt as _,
+    ActiveTheme as _, Selectable as _, Sizable as _, h_flex, list::ListItem,
+    menu::ContextMenuExt as _,
 };
 use gpui_kit::{
     App, ElementId, FocusHandle, IntoElement, MouseButton, ParentElement as _, RenderOnce,
     SharedString, Styled as _, WeakEntity, Window, div, prelude::FluentBuilder as _,
 };
 use subsonic::Song;
-use ui::{PlayState, PlayStateIcon, format_duration};
+use ui::{PlayState, PlayStateIcon, format_duration, song_artist_link};
 
 use super::Library;
 use crate::{AddToQueue, Open, PlayNext};
@@ -41,10 +42,10 @@ impl RenderOnce for SongRow {
         } = self;
         let muted_foreground = cx.theme().muted_foreground;
         let title = SharedString::from(song.title().to_owned());
-        let artist = song
-            .artist()
-            .filter(|artist| album_artist.as_deref() != Some(*artist))
-            .map(|artist| SharedString::from(artist.to_owned()));
+        let artist = song_artist_link(&song)
+            .filter(|_| song.artist() != album_artist.as_deref())
+            .map(|artist| artist.small());
+        let has_artist = song.artist_id().is_some();
         let number = song
             .track()
             .map(|track| track.to_string())
@@ -83,11 +84,7 @@ impl RenderOnce for SongRow {
                             .min_w_0()
                             .gap_2()
                             .child(div().truncate().child(title))
-                            .when_some(artist, |this, artist| {
-                                this.child(
-                                    div().truncate().text_color(muted_foreground).child(artist),
-                                )
-                            }),
+                            .children(artist),
                     )
                     .child(
                         div()
@@ -130,6 +127,9 @@ impl RenderOnce for SongRow {
                     window,
                     cx,
                 )
+                .when(has_artist, |menu| {
+                    menu.menu("Go to Artist", Box::new(actions::GoToArtist))
+                })
             })
     }
 }

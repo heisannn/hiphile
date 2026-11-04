@@ -356,6 +356,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
+name = "artists"
+version = "0.1.0"
+dependencies = [
+ "actions",
+ "catalog",
+ "client",
+ "futures",
+ "gpui-kit",
+ "net",
+ "serde_json",
+ "session",
+ "subsonic",
+ "tempfile",
+ "ui",
+]
+
+[[package]]
 name = "as-raw-xcb-connection"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3705,6 +3722,7 @@ version = "0.1.0"
 dependencies = [
  "account",
  "actions",
+ "artists",
  "config 0.1.0",
  "gpui-kit",
  "home",
@@ -3714,6 +3732,7 @@ dependencies = [
  "playlists",
  "session",
  "settings",
+ "songs",
  "subsonic",
  "ui",
 ]
@@ -7630,6 +7649,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "songs"
+version = "0.1.0"
+dependencies = [
+ "actions",
+ "catalog",
+ "client",
+ "futures",
+ "gpui-kit",
+ "net",
+ "serde_json",
+ "session",
+ "subsonic",
+ "tempfile",
+ "ui",
+]
+
+[[package]]
 name = "spin"
 version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8593,6 +8629,7 @@ dependencies = [
 name = "ui"
 version = "0.1.0"
 dependencies = [
+ "actions",
  "gpui-kit",
  "subsonic",
 ]

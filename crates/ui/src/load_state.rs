@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use gpui_kit::component::{ActiveTheme as _, StyledExt as _, button::Button, h_flex, v_flex};
 use gpui_kit::{
     App, Div, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce, SharedString,
@@ -5,6 +7,39 @@ use gpui_kit::{
 };
 
 use crate::list_navigation::CONTROL_CONTEXT;
+
+/// Something on a screen that comes from the server, which stays on show while
+/// a reload that replaces it is on its way or fails.
+pub enum Shelf<T> {
+    Loading,
+    Loaded(Arc<[T]>),
+    Failed(SharedString),
+}
+
+impl<T> Shelf<T> {
+    pub fn items(&self) -> &[T] {
+        match self {
+            Self::Loaded(items) => items,
+            Self::Loading | Self::Failed(_) => &[],
+        }
+    }
+
+    /// Takes in what a load found. A failure leaves items on show in place.
+    pub fn finish(&mut self, result: Result<Vec<T>, SharedString>) {
+        match result {
+            Ok(items) => *self = Self::Loaded(items.into()),
+            Err(_) if matches!(self, Self::Loaded(_)) => {}
+            Err(error) => *self = Self::Failed(error),
+        }
+    }
+
+    /// Shows the load starting, unless there are items to keep on show.
+    pub fn begin(&mut self) {
+        if !matches!(self, Self::Loaded(_)) {
+            *self = Self::Loading;
+        }
+    }
+}
 
 /// `child` in the middle of the room there is, for what stands in for a list
 /// or a detail with nothing to show.

@@ -1,7 +1,7 @@
 use gpui_kit::component::{ActiveTheme as _, v_flex};
 use gpui_kit::{
-    App, IntoElement, ParentElement as _, RenderOnce, SharedString, Styled as _, Window, div,
-    prelude::FluentBuilder as _,
+    AnyElement, App, IntoElement, ParentElement as _, RenderOnce, SharedString, Styled as _,
+    Window, div, prelude::FluentBuilder as _,
 };
 
 /// A row's title, with what tells it apart on a second line.
@@ -9,6 +9,7 @@ use gpui_kit::{
 pub struct RowText {
     title: SharedString,
     details: Option<SharedString>,
+    detail_line: Option<AnyElement>,
     dimmed: bool,
 }
 
@@ -17,12 +18,19 @@ impl RowText {
         Self {
             title,
             details: None,
+            detail_line: None,
             dimmed: false,
         }
     }
 
     pub fn details(mut self, details: impl Into<Option<SharedString>>) -> Self {
         self.details = details.into();
+        self
+    }
+
+    /// A second line of more than text, such as an [`crate::ArtistLine`].
+    pub fn detail_line(mut self, line: impl IntoElement) -> Self {
+        self.detail_line = Some(line.into_any_element());
         self
     }
 
@@ -55,5 +63,6 @@ impl RenderOnce for RowText {
                         .child(details),
                 )
             })
+            .children(self.detail_line)
     }
 }

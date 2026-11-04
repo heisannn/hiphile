@@ -1,0 +1,555 @@
+use std::sync::Arc;
+
+use actions::{EnqueueSongs, GoToArtist, Placement, PlaySongs, ShowAlbum, ShowArtist};
+use gpui_kit::assets::IconName;
+use gpui_kit::component::{
+    ActiveTheme as _, Icon, Sizable as _,
+    button::{Button, ButtonVariants as _},
+    h_flex,
+    input::{InputEvent, InputState},
+    spinner::Spinner,
+    v_flex,
+};
+use gpui_kit::{
+    AnyElement, App, AppContext as _, Context, Div, Entity, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollStrategy, SharedString,
+    Styled as _, Subscription, Task, UniformListScrollHandle, Window, div,
+    prelude::FluentBuilder as _,
+};
+use subsonic::{Song, SongId};
+use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
+use ui::{
+    ListPaneHeader, LoadFailure, NowPlaying, RefreshFailure, centered, filter_input, muted_text,
+    row_list,
+};
+
+mod song_row;
+
+use song_row::SongRow;
+
+use crate::arrange::{Column, Sort, arrange};
+use crate::{
+    AddToPlaylist, AddToQueue, FocusFilter, GoToAlbum, Open, PlayNext, ROOT_CONTEXT, SONGS_CONTEXT,
+};
+
+/// The songs' screen: every song in a table that filters and sorts. Owns the
+/// songs, their order, the selection, and the focus.
+pub struct Songs {
+    session: session::Session,
+    /// Whether the screen has shown, which is when it starts loading. Reading
+    /// every song is too much to do for a screen that may never show.
+    is_activated: bool,
+    songs: SongList,
+    is_reloading: bool,
+    /// Why reading the songs on show again failed.
+    refresh_error: Option<SharedString>,
+    /// Positions in the songs that match the filter, in the order of `sort`.
+    visible: Arc<Vec<usize>>,
+    sort: Sort,
+    /// Kept by song, so it follows the song as the order changes.
+    selected: Option<SongId>,
+    /// Whether the user chose the selection. Until then it is simply the first
+    /// song on show, which changing the order should not chase down the list.
+    has_chosen_selection: bool,
+    now_playing: Option<NowPlaying>,
+    filter: Entity<InputState>,
+    focus: FocusHandle,
+    scroll: UniformListScrollHandle,
+    _load_task: Task<()>,
+    _arrange_task: Task<()>,
+    _subscriptions: Vec<Subscription>,
+}
+
+enum SongList {
+    Loading,
+    Loaded(Arc<Vec<Song>>),
+    Failed(SharedString),
+}
+
+/// Songs just read, and which of them to show as `query` and `sort` had it when
+/// the reading started.
+struct Arranged {
+    songs: Vec<Song>,
+    visible: Vec<usize>,
+    query: SharedString,
+    sort: Sort,
+}
+
+impl Arranged {
+    fn new(songs: Vec<Song>, query: SharedString, sort: Sort) -> Self {
+        let visible = arrange(&songs, &query, sort);
+        Self {
+            songs,
+            visible,
+            query,
+            sort,
+        }
+    }
+}
+
+impl Songs {
+    pub fn new(session: session::Session, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter songs"));
+        let focus = cx.focus_handle().tab_stop(true);
+        let subscriptions = vec![
+            cx.subscribe_in(&filter, window, |this, _, event, window, cx| match event {
+                InputEvent::Change => this.rearrange(cx),
+                InputEvent::PressEnter { .. } => this.focus.focus(window, cx),
+                _ => {}
+            }),
+            // Focus changes the selection treatment of the rows.
+            cx.on_focus(&focus, window, |_, _, cx| cx.notify()),
+            cx.on_blur(&focus, window, |_, _, cx| cx.notify()),
+        ];
+        Self {
+            session,
+            is_activated: false,
+            songs: SongList::Loading,
+            is_reloading: false,
+            refresh_error: None,
+            visible: Arc::default(),
+            sort: Sort::DEFAULT,
+            selected: None,
+            has_chosen_selection: false,
+            now_playing: None,
+            filter,
+            focus,
+            scroll: UniformListScrollHandle::new(),
+            _load_task: Task::ready(()),
+            _arrange_task: Task::ready(()),
+            _subscriptions: subscriptions,
+        }
+    }
+
+    /// Starts loading the first time the screen shows.
+    pub fn activate(&mut self, cx: &mut Context<Self>) {
+        if !self.is_activated {
+            self.is_activated = true;
+            self.load(cx);
+        }
+    }
+
+    /// Reads the songs again, after a sync changed them. Does nothing to a
+    /// screen that has yet to show.
+    pub fn songs_synced(&mut self, cx: &mut Context<Self>) {
+        if self.is_activated {
+            self.load(cx);
+        }
+    }
+
+    /// Shows the saved songs; with none saved yet, as during the first sync,
+    /// asks the server for them.
+    fn load(&mut self, cx: &mut Context<Self>) {
+        self.is_reloading = true;
+        self.refresh_error = None;
+        if !matches!(self.songs, SongList::Loaded(_)) {
+            self.songs = SongList::Loading;
+        }
+        let client = self.session.client().clone();
+        let catalog = self.session.catalog().cloned();
+        let query = self.filter.read(cx).value();
+        let sort = self.sort;
+        self._load_task = cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    // A copy that can't be read is the same as none.
+                    let saved = catalog.and_then(|catalog| catalog.songs().ok());
+                    let songs = match saved {
+                        Some(songs) if !songs.is_empty() => songs,
+                        _ => client
+                            .all_songs()
+                            .await
+                            .map_err(|error| SharedString::from(session::describe(&error)))?,
+                    };
+                    Ok(Arranged::new(songs, query, sort))
+                })
+                .await;
+            this.update(cx, |this, cx| this.finish_loading(result, cx))
+                .ok();
+        });
+        cx.notify();
+    }
+
+    fn finish_loading(&mut self, result: Result<Arranged, SharedString>, cx: &mut Context<Self>) {
+        self.is_reloading = false;
+        match result {
+            Ok(arranged) => {
+                // Positions worked out for the songs going away mean nothing
+                // for these: `visible` only ever indexes the songs on show.
+                self._arrange_task = Task::ready(());
+                self.songs = SongList::Loaded(Arc::new(arranged.songs));
+                self.visible = Arc::new(arranged.visible);
+                self.select_first_unless_chosen();
+                // The filter or the sort may have changed during the reading.
+                if arranged.query != self.filter.read(cx).value() || arranged.sort != self.sort {
+                    self.rearrange(cx);
+                }
+            }
+            // The songs on show stay there, with word of what went wrong.
+            Err(error) if matches!(self.songs, SongList::Loaded(_)) => {
+                self.refresh_error = Some(error);
+            }
+            Err(error) => self.songs = SongList::Failed(error),
+        }
+        cx.notify();
+    }
+
+    fn loaded_songs(&self) -> Option<&Arc<Vec<Song>>> {
+        match &self.songs {
+            SongList::Loaded(songs) => Some(songs),
+            _ => None,
+        }
+    }
+
+    fn visible_song(&self, position: usize) -> Option<&Song> {
+        self.loaded_songs()?.get(*self.visible.get(position)?)
+    }
+
+    fn selected_position(&self) -> Option<usize> {
+        let selected = self.selected.as_ref()?;
+        (0..self.visible.len()).find(|position| {
+            self.visible_song(*position)
+                .is_some_and(|song| song.id() == selected)
+        })
+    }
+
+    fn selected_song(&self) -> Option<&Song> {
+        self.visible_song(self.selected_position()?)
+    }
+
+    /// Works out the songs on show again, off the UI thread: a large library
+    /// takes a moment to sort. A newer change replaces one still under way.
+    fn rearrange(&mut self, cx: &mut Context<Self>) {
+        let Some(songs) = self.loaded_songs().cloned() else {
+            return;
+        };
+        let query = self.filter.read(cx).value();
+        let sort = self.sort;
+        self._arrange_task = cx.spawn(async move |this, cx| {
+            let visible = cx
+                .background_spawn(async move { arrange(&songs, &query, sort) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.visible = Arc::new(visible);
+                this.select_first_unless_chosen();
+                this.bring_selection_into_view();
+                cx.notify();
+            })
+            .ok();
+        });
+    }
+
+    fn sort_by(&mut self, column: Column, cx: &mut Context<Self>) {
+        self.sort = self.sort.clicked(column);
+        self.rearrange(cx);
+        cx.notify();
+    }
+
+    fn bring_selection_into_view(&self) {
+        let position = self.selected_position().unwrap_or_default();
+        self.scroll
+            .scroll_to_item(position, ScrollStrategy::Nearest);
+    }
+
+    fn select_first_unless_chosen(&mut self) {
+        if !self.has_chosen_selection {
+            self.selected = self.visible_song(0).map(|song| song.id().clone());
+        }
+    }
+
+    fn select_song(&mut self, song: SongId, cx: &mut Context<Self>) {
+        self.selected = Some(song);
+        self.has_chosen_selection = true;
+        cx.notify();
+    }
+
+    fn move_selection(&mut self, motion: Motion, cx: &mut Context<Self>) {
+        let len = self.visible.len();
+        let page = page_rows(&self.scroll, len);
+        let Some(position) = motion.apply(self.selected_position(), len, page) else {
+            return;
+        };
+        if let Some(song) = self.visible_song(position).map(|song| song.id().clone()) {
+            self.scroll
+                .scroll_to_item(position, ScrollStrategy::Nearest);
+            self.select_song(song, cx);
+        }
+    }
+
+    /// Plays the songs on show, in the order they show, from the selected one.
+    fn play_selected(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let (Some(start_ix), Some(songs)) = (self.selected_position(), self.loaded_songs()) else {
+            return;
+        };
+        let queue: Arc<[Song]> = self.visible.iter().map(|ix| songs[*ix].clone()).collect();
+        window.dispatch_action(Box::new(PlaySongs::new(queue, start_ix)), cx);
+    }
+
+    fn enqueue_selected(&self, placement: Placement, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(song) = self.selected_song() {
+            let songs = Arc::from([song.clone()]);
+            window.dispatch_action(Box::new(EnqueueSongs::new(songs, placement)), cx);
+        }
+    }
+
+    fn choose_playlist_for_selected(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(song) = self.selected_song() {
+            let songs = Arc::from([song.clone()]);
+            window.dispatch_action(Box::new(actions::ChoosePlaylist::new(songs)), cx);
+        }
+    }
+
+    fn go_to_album(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(album) = self.selected_song().and_then(Song::album_id) {
+            window.dispatch_action(Box::new(ShowAlbum::new(album.clone())), cx);
+        }
+    }
+
+    fn go_to_artist(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(artist) = self.selected_song().and_then(Song::artist_id) {
+            window.dispatch_action(Box::new(ShowArtist::new(artist.clone())), cx);
+        }
+    }
+
+    /// Marks `song` in the table, or clears the mark.
+    pub fn set_now_playing(&mut self, song: Option<SongId>, playing: bool, cx: &mut Context<Self>) {
+        let now_playing = NowPlaying::new(song, playing);
+        if self.now_playing != now_playing {
+            self.now_playing = now_playing;
+            cx.notify();
+        }
+    }
+
+    fn render_header(&self) -> AnyElement {
+        let count = self.loaded_songs().map(|songs| songs.len());
+        let is_updating = count.is_some() && self.is_reloading;
+        ListPaneHeader::new("Songs", count)
+            .when(is_updating, |this| this.updating("Updating the songs"))
+            .action(div().w_56().child(filter_input(&self.filter)))
+            .into_any_element()
+    }
+
+    /// One heading of the table, which sorts by its column when clicked.
+    fn render_heading(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        column: Column,
+        cx: &mut Context<Self>,
+    ) -> Button {
+        let sorted = (self.sort.column == column).then_some(self.sort.is_descending);
+        let (icon, description) = match sorted {
+            Some(false) => (
+                Some(IconName::ArrowUp),
+                format!("{label}, sorted from the start"),
+            ),
+            Some(true) => (
+                Some(IconName::ArrowDown),
+                format!("{label}, sorted from the end"),
+            ),
+            None => (None, label.to_owned()),
+        };
+        let color = if sorted.is_some() {
+            cx.theme().foreground
+        } else {
+            cx.theme().muted_foreground
+        };
+        Button::new(id)
+            .text()
+            .xsmall()
+            .text_color(color)
+            .accessibility_label(description)
+            .child(label)
+            .when_some(icon, |this, icon| this.child(Icon::new(icon).xsmall()))
+            .on_click(cx.listener(move |this, _, _, cx| this.sort_by(column, cx)))
+    }
+
+    fn render_headings(&self, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .flex_none()
+            .h_8()
+            .px_4()
+            .flex()
+            .items_center()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(columns(
+                None::<Div>,
+                self.render_heading("sort-title", "Title", Column::Title, cx),
+                Some(self.render_heading("sort-artist", "Artist", Column::Artist, cx)),
+                Some(self.render_heading("sort-album", "Album", Column::Album, cx)),
+                self.render_heading("sort-time", "Time", Column::Time, cx),
+                cx,
+            ))
+            .into_any_element()
+    }
+
+    /// The table's focus target, rendered in every state so focus and the
+    /// commands bound above it never land on an element that is gone.
+    fn render_table(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("songs")
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .track_focus(&self.focus)
+            .key_context(SONGS_CONTEXT)
+            .on_list_navigation(|this, motion, _, cx| this.move_selection(motion, cx), cx)
+            .on_action(cx.listener(|this, _: &Open, window, cx| this.play_selected(window, cx)))
+            .on_action(cx.listener(|this, _: &PlayNext, window, cx| {
+                this.enqueue_selected(Placement::Next, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &AddToQueue, window, cx| {
+                this.enqueue_selected(Placement::Last, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &AddToPlaylist, window, cx| {
+                this.choose_playlist_for_selected(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &GoToAlbum, window, cx| this.go_to_album(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &GoToArtist, window, cx| this.go_to_artist(window, cx)),
+            )
+            .child(self.render_rows(window, cx))
+            .into_any_element()
+    }
+
+    fn render_rows(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let songs = match &self.songs {
+            SongList::Loading => return centered(Spinner::new()).into_any_element(),
+            SongList::Failed(error) => {
+                return LoadFailure::new(
+                    "Couldn't load songs",
+                    error.clone(),
+                    Button::new("retry-songs")
+                        .label("Retry")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.focus.focus(window, cx);
+                            this.load(cx);
+                        })),
+                )
+                .into_any_element();
+            }
+            SongList::Loaded(songs) => songs.clone(),
+        };
+        if songs.is_empty() {
+            return centered(muted_text("This server has no songs.", cx)).into_any_element();
+        }
+        if self.visible.is_empty() {
+            return centered(muted_text("No songs match the filter.", cx)).into_any_element();
+        }
+        let visible = self.visible.clone();
+        let selected = self.selected.clone();
+        let now_playing = self.now_playing.clone();
+        let is_focused = self.focus.is_focused(window);
+        let owner = cx.entity().downgrade();
+        let focus = self.focus.clone();
+        row_list(
+            "song-list",
+            "Songs",
+            visible.len(),
+            &self.scroll,
+            move |position| {
+                let song = songs.get(*visible.get(position)?)?;
+                Some(SongRow {
+                    song: song.clone(),
+                    state: now_playing.as_ref().and_then(|now| now.state_of(song.id())),
+                    is_selected: selected.as_ref() == Some(song.id()),
+                    is_focused,
+                    owner: owner.clone(),
+                    focus: focus.clone(),
+                })
+            },
+        )
+        .size_full()
+        .into_any_element()
+    }
+}
+
+/// The table's columns, from the same geometry in its headings and its rows.
+fn columns(
+    marker: Option<impl IntoElement>,
+    title: impl IntoElement,
+    artist: Option<impl IntoElement>,
+    album: Option<impl IntoElement>,
+    time: impl IntoElement,
+    cx: &App,
+) -> Div {
+    let muted_foreground = cx.theme().muted_foreground;
+    h_flex()
+        .w_full()
+        .min_w_0()
+        .gap_3()
+        // A lane of its own, so the titles stay in line.
+        .child(h_flex().w_4().flex_none().justify_center().children(marker))
+        .child(
+            h_flex()
+                .flex_grow(3.)
+                .flex_shrink(3.)
+                .flex_basis(gpui_kit::relative(0.))
+                .min_w_0()
+                .child(title),
+        )
+        .child(
+            h_flex()
+                .flex_grow(2.)
+                .flex_shrink(2.)
+                .flex_basis(gpui_kit::relative(0.))
+                .min_w_0()
+                .text_color(muted_foreground)
+                .children(artist),
+        )
+        .child(
+            h_flex()
+                .flex_grow(2.)
+                .flex_shrink(2.)
+                .flex_basis(gpui_kit::relative(0.))
+                .min_w_0()
+                .text_color(muted_foreground)
+                .children(album),
+        )
+        .child(
+            h_flex()
+                .w_16()
+                .flex_none()
+                .justify_end()
+                .text_color(muted_foreground)
+                .child(time),
+        )
+}
+
+impl Focusable for Songs {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl Render for Songs {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .id("songs-screen")
+            .key_context(ROOT_CONTEXT)
+            .size_full()
+            .min_h_0()
+            .on_action(cx.listener(|this, _: &FocusFilter, window, cx| {
+                this.filter.update(cx, |input, cx| input.focus(window, cx));
+            }))
+            .child(self.render_header())
+            .when_some(self.refresh_error.clone(), |this, error| {
+                this.child(RefreshFailure::new(
+                    "Couldn't refresh the songs",
+                    error,
+                    Button::new("retry-refresh-songs")
+                        .label("Retry")
+                        .small()
+                        .on_click(cx.listener(|this, _, _, cx| this.load(cx))),
+                ))
+            })
+            .child(self.render_headings(cx))
+            .child(self.render_table(window, cx))
+    }
+}
+
+#[cfg(test)]
+mod tests;

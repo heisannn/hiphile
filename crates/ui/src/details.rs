@@ -14,6 +14,13 @@ pub fn format_song_count(count: usize) -> String {
     }
 }
 
+pub fn format_album_count(count: usize) -> String {
+    match count {
+        1 => "1 album".to_owned(),
+        count => format!("{count} albums"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -30,5 +37,7 @@ mod tests {
         assert_eq!(format_song_count(0), "0 songs");
         assert_eq!(format_song_count(1), "1 song");
         assert_eq!(format_song_count(2), "2 songs");
+        assert_eq!(format_album_count(1), "1 album");
+        assert_eq!(format_album_count(2), "2 albums");
     }
 }

@@ -17,7 +17,10 @@ use gpui_kit::{
 use playback::EntryId;
 use subsonic::Song;
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
-use ui::{PlayState, PlayStateIcon, ReorderExt as _, RowText, format_duration, row_list};
+use ui::{
+    ArtistLine, PlayState, PlayStateIcon, ReorderExt as _, RowText, format_duration, row_list,
+    song_artist_link,
+};
 
 use crate::{Player, SaveQueue};
 
@@ -186,6 +189,16 @@ impl QueueView {
         }
     }
 
+    fn go_to_selected_artist(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let artist = self.selected_ix(cx).and_then(|ix| {
+            let entries = self.player.read(cx).queue().entries();
+            entries.get(ix)?.item().artist_id().cloned()
+        });
+        if let Some(artist) = artist {
+            window.dispatch_action(Box::new(actions::ShowArtist::new(artist)), cx);
+        }
+    }
+
     fn choose_playlist_for_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let song = self.selected_ix(cx).and_then(|ix| {
             let entries = self.player.read(cx).queue().entries();
@@ -302,6 +315,9 @@ impl QueueView {
             .on_action(cx.listener(|this, _: &AddToPlaylist, window, cx| {
                 this.choose_playlist_for_selected(window, cx)
             }))
+            .on_action(cx.listener(|this, _: &actions::GoToArtist, window, cx| {
+                this.go_to_selected_artist(window, cx)
+            }))
             .child(self.render_rows(window, cx))
             .into_any_element()
     }
@@ -399,9 +415,8 @@ impl RenderOnce for EntryRow {
         } = self;
         let muted_foreground = cx.theme().muted_foreground;
         let title = SharedString::from(song.title().to_owned());
-        let artist = song
-            .artist()
-            .map(|artist| SharedString::from(artist.to_owned()));
+        let artist = ArtistLine::new(song_artist_link(&song), None);
+        let has_artist = song.artist_id().is_some();
         let duration = song.duration().map(format_duration).unwrap_or_default();
         let on_click = owner.clone();
         let on_right_click = owner.clone();
@@ -428,7 +443,7 @@ impl RenderOnce for EntryRow {
                     )
                     .child(
                         RowText::new(title.clone())
-                            .details(artist)
+                            .detail_line(artist)
                             .dimmed(is_played),
                     )
                     .child(
@@ -485,6 +500,9 @@ impl RenderOnce for EntryRow {
                     window,
                     cx,
                 )
+                .when(has_artist, |menu| {
+                    menu.menu("Go to Artist", Box::new(actions::GoToArtist))
+                })
                 .separator()
                 .menu_with_disabled("Remove", Box::new(Remove), !commands.remove)
             })

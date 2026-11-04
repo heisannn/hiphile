@@ -2,7 +2,8 @@
 //!
 //! The server keeps playlists; this feature shows them and changes them there,
 //! showing each change at once and saving it behind. Dispatches
-//! `actions::PlaySongs`, `actions::EnqueueSongs` and `actions::ShowAlbum`, and
+//! `actions::PlaySongs`, `actions::EnqueueSongs`, `actions::ShowAlbum` and
+//! `actions::ShowArtist`, and
 //! keeps the choices that `actions::add_to_playlist_submenu` offers the other
 //! features. The app shell routes what they dispatch back to [`Playlists`].
 
@@ -51,7 +52,7 @@ actions!(
         MoveDown,
         /// Takes the selected song out of the playlist.
         Remove,
-        /// Shows the selected song's album in the library.
+        /// Shows the selected song's album on the albums' screen.
         ShowAlbum,
         /// Asks which playlist to add the selected song to.
         AddToPlaylist
@@ -100,4 +101,5 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(add_to_playlist, AddToPlaylist, Some(SONGS_CONTEXT)),
         KeyBinding::new(find, FocusFilter, Some(ROOT_CONTEXT)),
     ]);
+    actions::bind_go_to_artist(SONGS_CONTEXT, cx);
 }

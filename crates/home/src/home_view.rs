@@ -2,11 +2,11 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use actions::{AlbumAction, EnqueueSongs, Placement, PlaySongs, ShowAlbum};
+use actions::{AlbumAction, EnqueueSongs, GoToArtist, Placement, PlaySongs, ShowAlbum, ShowArtist};
 use futures::future::join_all;
 use gpui_kit::component::{
-    ActiveTheme as _, Selectable as _, Sizable as _, StyledExt as _, button::Button, h_flex,
-    list::ListItem, menu::ContextMenuExt as _, scroll::Scrollbar, spinner::Spinner, v_flex,
+    ActiveTheme as _, Selectable as _, Sizable as _, button::Button, list::ListItem,
+    menu::ContextMenuExt as _, scroll::Scrollbar, v_flex,
 };
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClickEvent, Context, ElementId, FocusHandle, Focusable,
@@ -15,13 +15,16 @@ use gpui_kit::{
     Window, div, prelude::FluentBuilder as _,
 };
 use subsonic::{Album, AlbumId, PlaylistId, Song, SongId};
+use ui::card_grid::{GridMotion as Motion, card_row, columns_for, media_card, step};
 use ui::list_navigation::{
-    CONTROL_CONTEXT, SelectFirst, SelectLast, SelectNext, SelectPageDown, SelectPageUp,
-    SelectPrevious,
+    SelectFirst, SelectLast, SelectNext, SelectPageDown, SelectPageUp, SelectPrevious,
 };
-use ui::{CoverArt, NowPlaying, PlayState, PlayStateIcon, RowText, format_duration, join_details};
+use ui::{
+    ArtistLine, CoverArt, NowPlaying, PlayState, Shelf, format_duration, section_failure,
+    section_heading, section_loading, song_with_cover,
+};
 
-use crate::layout::{AlbumShelf, Item, Motion, columns_for, step};
+use crate::layout::{AlbumShelf, Item};
 use crate::recent::most_recent;
 use crate::recommend::{Recommendations, fetch_recommended, today};
 use crate::{
@@ -46,8 +49,6 @@ const ROW_COVER_PIXELS: u32 = 96;
 /// takes the server's outside service several seconds per album, and windows
 /// can come to the front often.
 const RECOMMENDED_RETRY_AFTER: Duration = Duration::from_secs(10 * 60);
-/// The group of an album card, for the hover outline over its cover.
-const CARD_GROUP: &str = "home-album-card";
 
 /// The home screen: albums to try, the songs played last, the albums played
 /// most and the albums added last. Owns those lists, the selection among them,
@@ -83,37 +84,6 @@ pub struct Home {
     _new_albums_task: Task<()>,
     _album_task: Task<()>,
     _subscriptions: Vec<Subscription>,
-}
-
-enum Shelf<T> {
-    Loading,
-    Loaded(Arc<[T]>),
-    Failed(SharedString),
-}
-
-impl<T> Shelf<T> {
-    fn items(&self) -> &[T] {
-        match self {
-            Self::Loaded(items) => items,
-            Self::Loading | Self::Failed(_) => &[],
-        }
-    }
-
-    /// Takes in what a load found. A failure leaves items on show in place.
-    fn finish(&mut self, result: Result<Vec<T>, SharedString>) {
-        match result {
-            Ok(items) => *self = Self::Loaded(items.into()),
-            Err(_) if matches!(self, Self::Loaded(_)) => {}
-            Err(error) => *self = Self::Failed(error),
-        }
-    }
-
-    /// Shows the load starting, unless there are items to keep on show.
-    fn begin(&mut self) {
-        if !matches!(self, Self::Loaded(_)) {
-            *self = Self::Loading;
-        }
-    }
 }
 
 /// One child of the scrolling list, in order. Each is a direct child so that
@@ -640,6 +610,23 @@ impl Home {
         }
     }
 
+    fn go_to_artist(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let artist = match self.selection_on_screen() {
+            Some(Item::Album(shelf, id)) => self
+                .albums(shelf)
+                .iter()
+                .find(|album| album.id() == &id)
+                .and_then(|album| album.artist_id().cloned()),
+            Some(Item::Song(id)) => self
+                .song_ix(&id)
+                .and_then(|ix| self.recent.items()[ix].artist_id().cloned()),
+            None => None,
+        };
+        if let Some(artist) = artist {
+            window.dispatch_action(Box::new(ShowArtist::new(artist)), cx);
+        }
+    }
+
     /// Plays or queues `album`, through its saved songs when there are any.
     /// Replaces an action still waiting for its songs: the latest one counts.
     fn act_on_album(
@@ -686,11 +673,11 @@ impl Home {
 
     fn render_part(&self, part: &Part, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         match part {
-            Part::RecommendedHeading => heading("Recommended").into_any_element(),
+            Part::RecommendedHeading => section_heading("Recommended").into_any_element(),
             Part::RecommendedStatus => self.render_recommended_status(cx),
-            Part::RecentHeading => heading("Recently played").into_any_element(),
-            Part::MostPlayedHeading => heading("Most played").into_any_element(),
-            Part::NewAlbumsHeading => heading("New albums").into_any_element(),
+            Part::RecentHeading => section_heading("Recently played").into_any_element(),
+            Part::MostPlayedHeading => section_heading("Most played").into_any_element(),
+            Part::NewAlbumsHeading => section_heading("New albums").into_any_element(),
             Part::RecentStatus => self.render_recent_status(cx),
             Part::MostPlayedStatus => self.render_most_played_status(cx),
             Part::NewAlbumsStatus => self.render_new_albums_status(cx),
@@ -703,7 +690,7 @@ impl Home {
 
     fn render_recommended_status(&self, cx: &mut Context<Self>) -> AnyElement {
         match &self.recommended {
-            Shelf::Failed(error) => failure(
+            Shelf::Failed(error) => section_failure(
                 error.clone(),
                 Button::new("retry-recommended")
                     .label("Retry")
@@ -711,13 +698,13 @@ impl Home {
                     .on_click(cx.listener(|this, _, _, cx| this.pick_recommended(cx))),
                 cx,
             ),
-            Shelf::Loading | Shelf::Loaded(_) => loading("Loading recommendations", cx),
+            Shelf::Loading | Shelf::Loaded(_) => section_loading("Loading recommendations", cx),
         }
     }
 
     fn render_recent_status(&self, cx: &mut Context<Self>) -> AnyElement {
         match &self.recent {
-            Shelf::Failed(error) => failure(
+            Shelf::Failed(error) => section_failure(
                 error.clone(),
                 Button::new("retry-recent")
                     .label("Retry")
@@ -725,13 +712,15 @@ impl Home {
                     .on_click(cx.listener(|this, _, _, cx| this.reload_recently_played(cx))),
                 cx,
             ),
-            Shelf::Loading | Shelf::Loaded(_) => loading("Loading recently played songs", cx),
+            Shelf::Loading | Shelf::Loaded(_) => {
+                section_loading("Loading recently played songs", cx)
+            }
         }
     }
 
     fn render_most_played_status(&self, cx: &mut Context<Self>) -> AnyElement {
         match &self.most_played {
-            Shelf::Failed(error) => failure(
+            Shelf::Failed(error) => section_failure(
                 error.clone(),
                 Button::new("retry-most-played")
                     .label("Retry")
@@ -739,13 +728,13 @@ impl Home {
                     .on_click(cx.listener(|this, _, _, cx| this.reload_most_played(cx))),
                 cx,
             ),
-            Shelf::Loading | Shelf::Loaded(_) => loading("Loading most played albums", cx),
+            Shelf::Loading | Shelf::Loaded(_) => section_loading("Loading most played albums", cx),
         }
     }
 
     fn render_new_albums_status(&self, cx: &mut Context<Self>) -> AnyElement {
         match &self.new_albums {
-            Shelf::Failed(error) => failure(
+            Shelf::Failed(error) => section_failure(
                 error.clone(),
                 Button::new("retry-new-albums")
                     .label("Retry")
@@ -753,7 +742,7 @@ impl Home {
                     .on_click(cx.listener(|this, _, _, cx| this.reload_new_albums(cx))),
                 cx,
             ),
-            Shelf::Loading => loading("Loading new albums", cx),
+            Shelf::Loading => section_loading("Loading new albums", cx),
             Shelf::Loaded(_) => div()
                 .flex_none()
                 .px_6()
@@ -772,16 +761,16 @@ impl Home {
         let is_selected = self.selection == Some(Item::Song(id.clone()));
         let focused = self.focus.is_focused(window);
         let title = SharedString::from(song.title().to_owned());
-        let details = join_details([song.artist(), song.album()]);
+        let details = ArtistLine::of_song(song);
         let duration = song.duration().map(format_duration).unwrap_or_default();
         let cover = song
             .cover_art()
             .map(|cover_art| self.session.cover_art_url(cover_art, ROW_COVER_PIXELS));
         let marker = self.now_playing.as_ref().and_then(|now| now.state_of(&id));
         let label = PlayState::row_label(&title, marker);
-        let muted_foreground = cx.theme().muted_foreground;
         let focus = self.focus.clone();
         let has_album = song.album_id().is_some();
+        let has_artist = song.artist_id().is_some();
         ListItem::new(ElementId::Name(format!("home-song-{id}").into()))
             .selected(is_selected)
             .secondary_selected(focused && is_selected)
@@ -790,29 +779,14 @@ impl Home {
             .px_6()
             .w_full()
             .accessibility_label(label)
-            .child(
-                h_flex()
-                    .w_full()
-                    .min_w_0()
-                    .gap_3()
-                    .child(CoverArt::new(cover).small())
-                    .child(RowText::new(title).details(details))
-                    .child(
-                        // A lane of its own, so the durations stay in line.
-                        h_flex()
-                            .w_4()
-                            .flex_none()
-                            .justify_end()
-                            .when_some(marker, |this, state| this.child(PlayStateIcon::new(state))),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_sm()
-                            .text_color(muted_foreground)
-                            .child(duration),
-                    ),
-            )
+            .child(song_with_cover(
+                cover,
+                title,
+                details,
+                marker,
+                duration.into(),
+                cx,
+            ))
             .on_click(cx.listener({
                 let id = id.clone();
                 move |this, event: &ClickEvent, window, cx| {
@@ -839,7 +813,10 @@ impl Home {
                     .separator();
                 actions::add_to_playlist_submenu(menu, add_selection_command, window, cx)
                     .when(has_album, |menu| {
-                        menu.menu("Show Album", Box::new(ShowInLibrary))
+                        menu.menu("Go to Album", Box::new(ShowInLibrary))
+                    })
+                    .when(has_artist, |menu| {
+                        menu.menu("Go to Artist", Box::new(GoToArtist))
                     })
             })
             .into_any_element()
@@ -852,21 +829,12 @@ impl Home {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let columns = u16::try_from(self.columns.max(1)).unwrap_or(u16::MAX);
         let albums = self.albums(shelf).get(range).unwrap_or_default();
         let cards = albums
             .iter()
             .map(|album| self.render_album_card(shelf, album, window, cx))
             .collect::<Vec<_>>();
-        div()
-            .flex_none()
-            .px_6()
-            .pb_4()
-            .grid()
-            .grid_cols(columns)
-            .gap_4()
-            .children(cards)
-            .into_any_element()
+        card_row(self.columns, cards).into_any_element()
     }
 
     fn render_album_card(
@@ -880,83 +848,48 @@ impl Home {
         let is_selected = self.selection == Some(Item::Album(shelf, id.clone()));
         let focused = self.focus.is_focused(window);
         let name = SharedString::from(album.name().to_owned());
-        let artist = album
-            .artist()
-            .map(|artist| SharedString::from(artist.to_owned()));
         let cover = album
             .cover_art()
             .map(|cover_art| self.session.cover_art_url(cover_art, CARD_COVER_PIXELS));
-        // Selected, with or without focus, reads apart from hovered.
-        let outline = if is_selected && focused {
-            cx.theme().primary
-        } else if is_selected {
-            cx.theme().muted_foreground
-        } else {
-            cx.theme().transparent
-        };
-        let hover_outline = if is_selected {
-            outline
-        } else {
-            cx.theme().border
-        };
         let focus = self.focus.clone();
-        v_flex()
-            .id(ElementId::Name(format!("home-album-{shelf:?}-{id}").into()))
-            .group(CARD_GROUP)
-            .min_w_0()
-            .gap_1()
-            .role(Role::ListItem)
-            .aria_label(name.clone())
-            .aria_selected(is_selected)
-            .when(is_selected, |this| this.aria_active_descendant())
-            .child(
-                div()
-                    .relative()
-                    .w_full()
-                    .child(CoverArt::new(cover).fill())
-                    // Over the cover, so that showing it moves nothing. Square
-                    // like the cover, whose corners a rounded frame does not clip.
-                    .child(
-                        div()
-                            .absolute()
-                            .inset_0()
-                            .border_2()
-                            .border_color(outline)
-                            .group_hover(CARD_GROUP, |this| this.border_color(hover_outline)),
-                    ),
-            )
-            .child(div().text_sm().truncate().child(name))
-            .child(
-                div()
-                    .text_xs()
-                    .truncate()
-                    .text_color(cx.theme().muted_foreground)
-                    .when_some(artist, |this, artist| this.child(artist)),
-            )
-            .on_click(cx.listener({
-                let id = id.clone();
-                move |this, _, window, cx| {
-                    this.select(Item::Album(shelf, id.clone()), window, cx);
-                    this.open(window, cx);
-                }
-            }))
-            .on_mouse_down(
-                MouseButton::Right,
-                cx.listener(move |this, _, window, cx| {
-                    this.select(Item::Album(shelf, id.clone()), window, cx);
-                }),
-            )
-            .context_menu(move |menu, window, cx| {
-                let menu = menu
-                    .action_context(focus.clone())
-                    .menu("Play", Box::new(Play))
-                    .menu("Play Next", Box::new(PlayNext))
-                    .menu("Add to Queue", Box::new(AddToQueue))
-                    .separator();
-                actions::add_to_playlist_submenu(menu, add_selection_command, window, cx)
-                    .menu("Show in Library", Box::new(ShowInLibrary))
-            })
-            .into_any_element()
+        let has_artist = album.artist_id().is_some();
+        let artist = ui::ArtistLine::new(ui::album_artist_link(album), None);
+        media_card(
+            ElementId::Name(format!("home-album-{shelf:?}-{id}").into()),
+            CoverArt::new(cover),
+            name,
+            artist,
+            is_selected,
+            focused,
+            cx,
+        )
+        .on_click(cx.listener({
+            let id = id.clone();
+            move |this, _, window, cx| {
+                this.select(Item::Album(shelf, id.clone()), window, cx);
+                this.open(window, cx);
+            }
+        }))
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |this, _, window, cx| {
+                this.select(Item::Album(shelf, id.clone()), window, cx);
+            }),
+        )
+        .context_menu(move |menu, window, cx| {
+            let menu = menu
+                .action_context(focus.clone())
+                .menu("Play", Box::new(Play))
+                .menu("Play Next", Box::new(PlayNext))
+                .menu("Add to Queue", Box::new(AddToQueue))
+                .separator();
+            actions::add_to_playlist_submenu(menu, add_selection_command, window, cx)
+                .menu("Show in Albums", Box::new(ShowInLibrary))
+                .when(has_artist, |menu| {
+                    menu.menu("Go to Artist", Box::new(GoToArtist))
+                })
+        })
+        .into_any_element()
     }
 }
 
@@ -1016,6 +949,9 @@ impl Render for Home {
             }))
             .on_action(cx.listener(|this, _: &ShowInLibrary, window, cx| {
                 this.show_in_library(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &GoToArtist, window, cx| {
+                this.go_to_artist(window, cx);
             }))
             .on_action(
                 cx.listener(|this, action: &AddSelectionToPlaylist, window, cx| {
@@ -1082,48 +1018,6 @@ async fn fetch_recently_played(client: &client::Client) -> Result<RecentlyPlayed
             complete: failure.is_none(),
         }),
     }
-}
-
-fn heading(title: &'static str) -> impl IntoElement {
-    div()
-        .id(title)
-        .role(Role::Heading)
-        .aria_level(2)
-        .aria_label(title)
-        .flex_none()
-        .px_6()
-        .pt_6()
-        .pb_2()
-        .font_semibold()
-        .child(title)
-}
-
-fn loading(label: &'static str, cx: &Context<Home>) -> AnyElement {
-    h_flex()
-        .id(label)
-        .role(Role::ProgressIndicator)
-        .aria_label(label)
-        .flex_none()
-        .h_16()
-        .justify_center()
-        .child(Spinner::new().color(cx.theme().muted_foreground))
-        .into_any_element()
-}
-
-/// A failed load: why, and a way to try again.
-fn failure(reason: SharedString, retry: Button, cx: &Context<Home>) -> AnyElement {
-    v_flex()
-        .flex_none()
-        .px_6()
-        .gap_2()
-        .child(
-            div()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(reason),
-        )
-        .child(h_flex().key_context(CONTROL_CONTEXT).child(retry))
-        .into_any_element()
 }
 
 #[cfg(test)]

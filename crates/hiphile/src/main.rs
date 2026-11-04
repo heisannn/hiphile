@@ -23,7 +23,9 @@ actions!(
         SignOut,
         ToggleQueue,
         ShowHome,
-        ShowLibrary,
+        ShowAlbums,
+        ShowArtists,
+        ShowSongs,
         ShowPlaylists
     ]
 );
@@ -41,6 +43,8 @@ fn main() {
             ui::list_navigation::bind_control_keys(cx);
             home::init(cx);
             library::init(cx);
+            artists::init(cx);
+            songs::init(cx);
             player::init(WORKSPACE_CONTEXT, cx);
             playlists::init(cx);
             settings::init(cx);
@@ -68,7 +72,9 @@ fn install_app_commands(cx: &mut App) {
         quit,
         toggle_queue,
         show_home,
-        show_library,
+        show_artists,
+        show_albums,
+        show_songs,
         show_playlists,
         refresh,
         new_playlist,
@@ -79,6 +85,8 @@ fn install_app_commands(cx: &mut App) {
             "cmd-1",
             "cmd-2",
             "cmd-3",
+            "cmd-4",
+            "cmd-5",
             "cmd-r",
             "cmd-n",
         ]
@@ -89,6 +97,8 @@ fn install_app_commands(cx: &mut App) {
             "ctrl-1",
             "ctrl-2",
             "ctrl-3",
+            "ctrl-4",
+            "ctrl-5",
             "ctrl-r",
             "ctrl-n",
         ]
@@ -97,7 +107,9 @@ fn install_app_commands(cx: &mut App) {
         KeyBinding::new(quit, Quit, None),
         KeyBinding::new(toggle_queue, ToggleQueue, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new(show_home, ShowHome, Some(WORKSPACE_CONTEXT)),
-        KeyBinding::new(show_library, ShowLibrary, Some(WORKSPACE_CONTEXT)),
+        KeyBinding::new(show_artists, ShowArtists, Some(WORKSPACE_CONTEXT)),
+        KeyBinding::new(show_albums, ShowAlbums, Some(WORKSPACE_CONTEXT)),
+        KeyBinding::new(show_songs, ShowSongs, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new(show_playlists, ShowPlaylists, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new(refresh, library::Refresh, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new(
@@ -109,6 +121,9 @@ fn install_app_commands(cx: &mut App) {
         KeyBinding::new("space", TogglePlayback, Some(home::HOME_CONTEXT)),
         KeyBinding::new("space", TogglePlayback, Some(library::ALBUMS_CONTEXT)),
         KeyBinding::new("space", TogglePlayback, Some(library::SONGS_CONTEXT)),
+        KeyBinding::new("space", TogglePlayback, Some(artists::ARTISTS_CONTEXT)),
+        KeyBinding::new("space", TogglePlayback, Some(artists::DETAIL_CONTEXT)),
+        KeyBinding::new("space", TogglePlayback, Some(songs::SONGS_CONTEXT)),
         KeyBinding::new("space", TogglePlayback, Some(playlists::PLAYLISTS_CONTEXT)),
         KeyBinding::new("space", TogglePlayback, Some(playlists::SONGS_CONTEXT)),
     ]);
@@ -135,8 +150,11 @@ pub(crate) fn set_menus(queue_shown: bool, destination: Option<Destination>, cx:
         ]),
         Menu::new("View").items([
             MenuItem::action("Home", ShowHome).checked(destination == Some(Destination::Home)),
-            MenuItem::action("Library", ShowLibrary)
-                .checked(destination == Some(Destination::Library)),
+            MenuItem::action("Artists", ShowArtists)
+                .checked(destination == Some(Destination::Artists)),
+            MenuItem::action("Albums", ShowAlbums)
+                .checked(destination == Some(Destination::Albums)),
+            MenuItem::action("Songs", ShowSongs).checked(destination == Some(Destination::Songs)),
             MenuItem::action("Playlists", ShowPlaylists)
                 .checked(destination == Some(Destination::Playlists)),
             MenuItem::separator(),

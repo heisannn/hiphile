@@ -12,6 +12,7 @@ publish = false
 # Internal crates
 account = { path = "crates/account" }
 actions = { path = "crates/actions" }
+artists = { path = "crates/artists" }
 audio = { path = "crates/audio" }
 catalog = { path = "crates/catalog" }
 client = { path = "crates/client" }
@@ -26,6 +27,7 @@ presence = { path = "crates/presence" }
 search = { path = "crates/search" }
 session = { path = "crates/session" }
 settings = { path = "crates/settings" }
+songs = { path = "crates/songs" }
 subsonic = { path = "crates/subsonic" }
 ui = { path = "crates/ui" }
 

@@ -1,7 +1,10 @@
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
-use crate::{Album, AlbumWithSongs, Error, Playlist, PlaylistWithSongs, ServerErrorCode, Song};
+use crate::{
+    Album, AlbumWithSongs, Artist, ArtistWithAlbums, Error, Playlist, PlaylistWithSongs,
+    ServerErrorCode, Song,
+};
 
 /// Fields every `subsonic-response` carries.
 #[derive(Clone, Debug, Deserialize)]
@@ -100,6 +103,78 @@ struct SongList {
 }
 
 impl GetSimilarSongs2 {
+    pub fn into_songs(self) -> Vec<Song> {
+        self.list.song
+    }
+}
+
+/// Payload of `getArtists`.
+#[derive(Debug, Deserialize)]
+pub struct GetArtists {
+    #[serde(default)]
+    artists: ArtistIndexes,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ArtistIndexes {
+    #[serde(default)]
+    index: Vec<ArtistIndex>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArtistIndex {
+    #[serde(default)]
+    artist: Vec<Artist>,
+}
+
+impl GetArtists {
+    /// Every artist, in the server's order: by index, then by name within it.
+    pub fn into_artists(self) -> Vec<Artist> {
+        let indexes = self.artists.index.into_iter();
+        indexes.flat_map(|index| index.artist).collect()
+    }
+}
+
+/// Payload of `getArtist`.
+#[derive(Debug, Deserialize)]
+pub struct GetArtist {
+    artist: ArtistWithAlbums,
+}
+
+impl GetArtist {
+    pub fn into_artist(self) -> ArtistWithAlbums {
+        self.artist
+    }
+}
+
+/// Payload of `getArtistInfo2`; only the similar artists are read.
+#[derive(Debug, Deserialize)]
+pub struct GetArtistInfo2 {
+    #[serde(rename = "artistInfo2", default)]
+    info: ArtistInfo,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArtistInfo {
+    #[serde(default)]
+    similar_artist: Vec<Artist>,
+}
+
+impl GetArtistInfo2 {
+    pub fn into_similar_artists(self) -> Vec<Artist> {
+        self.info.similar_artist
+    }
+}
+
+/// Payload of `getTopSongs`.
+#[derive(Debug, Deserialize)]
+pub struct GetTopSongs {
+    #[serde(rename = "topSongs", default)]
+    list: SongList,
+}
+
+impl GetTopSongs {
     pub fn into_songs(self) -> Vec<Song> {
         self.list.song
     }
@@ -306,6 +381,61 @@ pub fn parse<T: DeserializeOwned>(body: &[u8]) -> Result<Envelope<T>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn artists_come_in_the_order_of_their_indexes() {
+        let body = br#"{"subsonic-response":{"status":"ok","version":"1.16.1","artists":{"ignoredArticles":"The","index":[{"name":"B","artist":[{"id":"ar2","name":"Bill Evans","coverArt":"ar-2","albumCount":3}]},{"name":"M","artist":[{"id":"ar1","name":"Miles Davis"}]},{"name":"X"}]}}}"#;
+        let artists = parse::<GetArtists>(body)
+            .unwrap()
+            .into_payload()
+            .into_artists();
+        let names: Vec<_> = artists.iter().map(Artist::name).collect();
+        assert_eq!(names, ["Bill Evans", "Miles Davis"]);
+        assert_eq!(artists[0].album_count(), Some(3));
+        assert_eq!(artists[1].cover_art(), None);
+    }
+
+    #[test]
+    fn a_server_with_no_artists_has_an_empty_list() {
+        let body = br#"{"subsonic-response":{"status":"ok","version":"1.16.1","artists":{}}}"#;
+        let artists = parse::<GetArtists>(body)
+            .unwrap()
+            .into_payload()
+            .into_artists();
+        assert!(artists.is_empty());
+    }
+
+    #[test]
+    fn an_artist_comes_with_their_albums() {
+        let body = br#"{"subsonic-response":{"status":"ok","version":"1.16.1","artist":{"id":"ar1","name":"Miles Davis","albumCount":1,"album":[{"id":"a1","name":"Kind of Blue","year":1959}]}}}"#;
+        let (artist, albums) = parse::<GetArtist>(body)
+            .unwrap()
+            .into_payload()
+            .into_artist()
+            .into_parts();
+        assert_eq!(artist.name(), "Miles Davis");
+        assert_eq!(albums[0].name(), "Kind of Blue");
+    }
+
+    #[test]
+    fn no_outside_service_means_no_similar_artists_or_top_songs() {
+        let info = br#"{"subsonic-response":{"status":"ok","version":"1.16.1","artistInfo2":{}}}"#;
+        let similar = parse::<GetArtistInfo2>(info).unwrap().into_payload();
+        assert!(similar.into_similar_artists().is_empty());
+        let top = br#"{"subsonic-response":{"status":"ok","version":"1.16.1","topSongs":{}}}"#;
+        let songs = parse::<GetTopSongs>(top).unwrap().into_payload();
+        assert!(songs.into_songs().is_empty());
+    }
+
+    #[test]
+    fn similar_artists_and_top_songs_are_read() {
+        let info = br#"{"subsonic-response":{"status":"ok","version":"1.16.1","artistInfo2":{"biography":"A trumpeter.","similarArtist":[{"id":"ar2","name":"John Coltrane","albumCount":4}]}}}"#;
+        let similar = parse::<GetArtistInfo2>(info).unwrap().into_payload();
+        assert_eq!(similar.into_similar_artists()[0].name(), "John Coltrane");
+        let top = br#"{"subsonic-response":{"status":"ok","version":"1.16.1","topSongs":{"song":[{"id":"s1","title":"So What"}]}}}"#;
+        let songs = parse::<GetTopSongs>(top).unwrap().into_payload();
+        assert_eq!(songs.into_songs()[0].title(), "So What");
+    }
 
     #[test]
     fn parses_navidrome_ping() {

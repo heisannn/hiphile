@@ -5,16 +5,17 @@ use gpui_kit::component::{
     h_flex,
     input::{Input, InputState},
     resizable::{ResizableState, h_resizable, resizable_panel},
+    spinner::Spinner,
     v_flex,
 };
 use gpui_kit::{
     AnyElement, App, ElementId, Entity, InteractiveElement as _, IntoElement, IsZero as _,
-    ParentElement as _, Pixels, RenderOnce, SharedString, Styled as _, Window, div,
-    prelude::FluentBuilder as _,
+    ParentElement as _, Pixels, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Window, div, prelude::FluentBuilder as _,
 };
 
-use crate::CoverArt;
 use crate::list_navigation::CONTROL_CONTEXT;
+use crate::{ArtistLink, CoverArt};
 
 /// The list's width when first shown, in rem.
 const LIST_WIDTH: f32 = 20.;
@@ -88,7 +89,8 @@ impl RenderOnce for MasterDetail {
 pub struct ListPaneHeader {
     title: &'static str,
     count: Option<usize>,
-    status: Option<AnyElement>,
+    /// What a spinner after the count is for, for screen readers.
+    updating: Option<&'static str>,
     action: Option<AnyElement>,
 }
 
@@ -97,14 +99,15 @@ impl ListPaneHeader {
         Self {
             title,
             count,
-            status: None,
+            updating: None,
             action: None,
         }
     }
 
-    /// Shown after the count, for work under way.
-    pub fn status(mut self, status: impl IntoElement) -> Self {
-        self.status = Some(status.into_any_element());
+    /// Shows a spinner after the count, for an update under way that `label`
+    /// names.
+    pub fn updating(mut self, label: &'static str) -> Self {
+        self.updating = Some(label);
         self
     }
 
@@ -143,7 +146,15 @@ impl RenderOnce for ListPaneHeader {
                         .child(count.to_string()),
                 )
             })
-            .children(self.status)
+            .when_some(self.updating, |this, label| {
+                this.child(
+                    div()
+                        .id("list-pane-updating")
+                        .role(Role::ProgressIndicator)
+                        .aria_label(label)
+                        .child(Spinner::new().small().color(cx.theme().muted_foreground)),
+                )
+            })
             .when_some(self.action, |this, action| {
                 this.child(div().flex_1()).child(action)
             })
@@ -162,13 +173,17 @@ impl ListFilter {
 
 impl RenderOnce for ListFilter {
     fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
-        div().flex_none().px_3().py_2().child(
-            Input::new(&self.0)
-                .small()
-                .prefix(Icon::new(IconName::Search).small())
-                .cleanable(true),
-        )
+        div().flex_none().px_3().py_2().child(filter_input(&self.0))
     }
+}
+
+/// The input that narrows down a list, for a place of its own or in
+/// [`ListFilter`].
+pub fn filter_input(input: &Entity<InputState>) -> Input {
+    Input::new(input)
+        .small()
+        .prefix(Icon::new(IconName::Search).small())
+        .cleanable(true)
 }
 
 /// A failed update of a list still on show below it.
@@ -213,10 +228,11 @@ impl RenderOnce for RefreshFailure {
 pub struct DetailHeader {
     cover_url: Option<SharedString>,
     title: SharedString,
-    subtitle: Option<SharedString>,
+    subtitle: Option<AnyElement>,
     comment: Option<SharedString>,
     summary: SharedString,
     actions: Vec<AnyElement>,
+    is_artist_picture: bool,
 }
 
 impl DetailHeader {
@@ -232,16 +248,34 @@ impl DetailHeader {
             comment: None,
             summary,
             actions: Vec::new(),
+            is_artist_picture: false,
         }
     }
 
     pub fn subtitle(mut self, subtitle: Option<SharedString>) -> Self {
-        self.subtitle = subtitle;
+        self.subtitle = subtitle.map(|subtitle| div().child(subtitle).into_any_element());
+        self
+    }
+
+    /// An artist as the subtitle, whose name can be clicked.
+    pub fn artist(mut self, artist: Option<ArtistLink>) -> Self {
+        self.subtitle = artist.map(|artist| {
+            h_flex()
+                .min_w_0()
+                .child(artist.prominent())
+                .into_any_element()
+        });
         self
     }
 
     pub fn comment(mut self, comment: Option<SharedString>) -> Self {
         self.comment = comment;
+        self
+    }
+
+    /// The picture is of an artist, not a cover.
+    pub fn artist_picture(mut self) -> Self {
+        self.is_artist_picture = true;
         self
     }
 
@@ -261,15 +295,20 @@ impl RenderOnce for DetailHeader {
             .p_6()
             .border_b_1()
             .border_color(cx.theme().border)
-            .child(CoverArt::new(self.cover_url).large())
+            .child(
+                if self.is_artist_picture {
+                    CoverArt::artist(self.cover_url)
+                } else {
+                    CoverArt::new(self.cover_url)
+                }
+                .large(),
+            )
             .child(
                 v_flex()
                     .min_w_0()
                     .gap_1()
                     .child(div().text_2xl().font_semibold().child(self.title))
-                    .when_some(self.subtitle, |this, subtitle| {
-                        this.child(div().child(subtitle))
-                    })
+                    .children(self.subtitle)
                     // The cover sets the header's height, which a long
                     // comment would take from the songs.
                     .when_some(self.comment, |this, comment| {

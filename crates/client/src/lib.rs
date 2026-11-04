@@ -6,14 +6,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::de::DeserializeOwned;
 use subsonic::{
-    Album, AlbumId, AlbumWithSongs, CoverArtId, Credentials, Endpoint, Envelope, GetAlbum,
-    GetAlbumList2, GetIndexes, GetPlaylist, GetPlaylists, GetScanStatus, GetSimilarSongs2, GetSong,
-    Ping, Playlist, PlaylistId, PlaylistWithSongs, ScanStatus, Search3, ServerInfo, Song, SongId,
+    Album, AlbumId, AlbumWithSongs, Artist, ArtistId, ArtistWithAlbums, CoverArtId, Credentials,
+    Endpoint, Envelope, GetAlbum, GetAlbumList2, GetArtist, GetArtistInfo2, GetArtists, GetIndexes,
+    GetPlaylist, GetPlaylists, GetScanStatus, GetSimilarSongs2, GetSong, GetTopSongs, Ping,
+    Playlist, PlaylistId, PlaylistWithSongs, ScanStatus, Search3, ServerInfo, Song, SongId,
 };
 use url::Url;
 
 /// Largest page `getAlbumList2` returns.
 pub const ALBUM_PAGE_SIZE: u32 = 500;
+/// How many songs [`Client::all_songs`] asks for at a time.
+const SONG_PAGE_SIZE: u32 = 500;
 
 /// Longest URL sent as is. Proxies in front of a server commonly refuse more
 /// than 8 KiB of request line, and a playlist lists every one of its songs.
@@ -216,6 +219,53 @@ impl Client {
     pub async fn album(&self, album: &AlbumId) -> Result<AlbumWithSongs, Error> {
         let envelope = self.call::<GetAlbum>(&Endpoint::album(album)).await?;
         Ok(envelope.into_payload().into_album())
+    }
+
+    /// Every artist with an album, in the server's name order.
+    pub async fn artists(&self) -> Result<Vec<Artist>, Error> {
+        let envelope = self.call::<GetArtists>(&Endpoint::artists()).await?;
+        Ok(envelope.into_payload().into_artists())
+    }
+
+    pub async fn artist(&self, artist: &ArtistId) -> Result<ArtistWithAlbums, Error> {
+        let envelope = self.call::<GetArtist>(&Endpoint::artist(artist)).await?;
+        Ok(envelope.into_payload().into_artist())
+    }
+
+    /// Up to `count` artists in the library similar to `artist`; none when the
+    /// server has no outside service to ask.
+    pub async fn similar_artists(
+        &self,
+        artist: &ArtistId,
+        count: u32,
+    ) -> Result<Vec<Artist>, Error> {
+        let envelope = self
+            .call::<GetArtistInfo2>(&Endpoint::artist_info(artist, count))
+            .await?;
+        Ok(envelope.into_payload().into_similar_artists())
+    }
+
+    /// The `count` most listened to songs of the artist called `artist`; none
+    /// when the server has no outside service to ask.
+    pub async fn top_songs(&self, artist: &str, count: u32) -> Result<Vec<Song>, Error> {
+        let envelope = self
+            .call::<GetTopSongs>(&Endpoint::top_songs(artist, count))
+            .await?;
+        Ok(envelope.into_payload().into_songs())
+    }
+
+    /// Every song in the library, fetched page by page.
+    pub async fn all_songs(&self) -> Result<Vec<Song>, Error> {
+        let mut songs = Vec::new();
+        loop {
+            let offset = u32::try_from(songs.len()).unwrap_or(u32::MAX);
+            let page = self.songs_page(SONG_PAGE_SIZE, offset).await?;
+            let last = page.len() < SONG_PAGE_SIZE as usize;
+            songs.extend(page);
+            if last {
+                return Ok(songs);
+            }
+        }
     }
 
     /// Every playlist the user can play.

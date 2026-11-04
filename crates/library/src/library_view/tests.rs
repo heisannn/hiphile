@@ -370,6 +370,11 @@ fn an_album_goes_to_the_playlist_chosen_in_its_menu(cx: &mut TestAppContext) {
 
 /// A server that answers every request with album `a`, returning its URL.
 fn server_of_album_a() -> String {
+    server_answering(json!({ "album": album_a_json() }))
+}
+
+/// A server that answers every request with `fields`, returning its URL.
+fn server_answering(fields: serde_json::Value) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     std::thread::spawn(move || {
@@ -380,12 +385,11 @@ fn server_of_album_a() -> String {
             while request.read_line(&mut line).is_ok_and(|read| read > 2) {
                 line.clear();
             }
-            let body = json!({ "subsonic-response": {
-                "status": "ok",
-                "version": "1.16.1",
-                "album": album_a_json(),
-            }})
-            .to_string();
+            let mut body = json!({ "status": "ok", "version": "1.16.1" });
+            body.as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            let body = json!({ "subsonic-response": body }).to_string();
             let head = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
                  Content-Length: {}\r\nConnection: close\r\n\r\n",
@@ -396,6 +400,63 @@ fn server_of_album_a() -> String {
         }
     });
     url
+}
+
+/// How many of each event `library` emits from here on: the albums and songs
+/// synced, and the syncs that failed.
+fn count_events(library: &Entity<Library>, cx: &mut VisualTestContext) -> Rc<RefCell<[usize; 3]>> {
+    let counts = Rc::new(RefCell::new([0; 3]));
+    let seen = counts.clone();
+    cx.update(|_, cx| {
+        cx.subscribe(library, move |_, event, _| {
+            let ix = match event {
+                LibraryEvent::AlbumsSynced => 0,
+                LibraryEvent::SongsSynced => 1,
+                LibraryEvent::SyncFailed(_) => 2,
+            };
+            seen.borrow_mut()[ix] += 1;
+        })
+        .detach();
+    });
+    counts
+}
+
+fn wait_for(cx: &mut VisualTestContext, done: impl Fn(&mut VisualTestContext) -> bool) {
+    for _ in 0..500 {
+        cx.run_until_parked();
+        if done(cx) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("what was waited for never happened");
+}
+
+#[gpui_kit::test]
+fn a_sync_without_a_saved_copy_says_the_songs_may_have_changed(cx: &mut TestAppContext) {
+    let url = server_answering(json!({ "albumList2": { "album": [] } }));
+    let (library, cx) = library_on(&url, cx);
+    let counts = count_events(&library, cx);
+
+    wait_for(cx, |_| counts.borrow()[0] > 0);
+
+    assert_eq!(counts.borrow()[1], counts.borrow()[0]);
+}
+
+#[gpui_kit::test]
+fn only_a_sync_the_user_asked_for_says_when_it_fails(cx: &mut TestAppContext) {
+    let (library, cx) = library(cx);
+    let counts = count_events(&library, cx);
+    let has_failed = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| matches!(library.read(cx).sync, SyncState::Failed(_)))
+    };
+
+    wait_for(cx, has_failed);
+    assert_eq!(counts.borrow()[2], 0);
+
+    cx.update(|_, cx| library.update(cx, |library, cx| library.refresh_library(cx)));
+    wait_for(cx, |_| counts.borrow()[2] > 0);
+    assert_eq!(counts.borrow()[2], 1);
 }
 
 #[gpui_kit::test]

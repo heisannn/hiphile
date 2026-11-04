@@ -14,6 +14,7 @@ pub struct CoverArt {
     url: Option<SharedString>,
     size: Size,
     fill: bool,
+    placeholder: IconName,
 }
 
 impl CoverArt {
@@ -22,6 +23,15 @@ impl CoverArt {
             url,
             size: Size::Medium,
             fill: false,
+            placeholder: IconName::Disc3,
+        }
+    }
+
+    /// An artist's picture, whose placeholder is a person rather than a disc.
+    pub fn artist(url: Option<SharedString>) -> Self {
+        Self {
+            placeholder: IconName::User,
+            ..Self::new(url)
         }
     }
 
@@ -49,6 +59,7 @@ impl RenderOnce for CoverArt {
         };
         let muted = cx.theme().muted;
         let muted_foreground = cx.theme().muted_foreground;
+        let icon = self.placeholder;
         let placeholder = move || {
             div()
                 .size_full()
@@ -57,11 +68,7 @@ impl RenderOnce for CoverArt {
                 .justify_center()
                 .bg(muted)
                 .text_color(muted_foreground)
-                .child(Icon::new(IconName::Disc3).with_size(if large {
-                    Size::Large
-                } else {
-                    Size::Small
-                }))
+                .child(Icon::new(icon).with_size(if large { Size::Large } else { Size::Small }))
                 .into_any_element()
         };
         let frame = div().flex_none().overflow_hidden().rounded(radius);

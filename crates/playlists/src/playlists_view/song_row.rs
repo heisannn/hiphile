@@ -10,7 +10,7 @@ use gpui_kit::{
 };
 use subsonic::Song;
 use ui::{
-    CoverArt, PlayState, PlayStateIcon, ReorderExt as _, RowText, format_duration, join_details,
+    ArtistLine, CoverArt, PlayState, PlayStateIcon, ReorderExt as _, RowText, format_duration,
 };
 
 use super::Playlists;
@@ -51,7 +51,8 @@ impl RenderOnce for SongRow {
         } = self;
         let muted_foreground = cx.theme().muted_foreground;
         let title = SharedString::from(song.title().to_owned());
-        let details = join_details([song.artist(), song.album()]);
+        let details = ArtistLine::of_song(&song);
+        let has_artist = song.artist_id().is_some();
         let duration = song.duration().map(format_duration).unwrap_or_default();
         let has_album = song.album_id().is_some();
         let on_click = owner.clone();
@@ -83,7 +84,7 @@ impl RenderOnce for SongRow {
                             }),
                     )
                     .child(CoverArt::new(cover).small())
-                    .child(RowText::new(title.clone()).details(details))
+                    .child(RowText::new(title.clone()).detail_line(details))
                     .child(
                         div()
                             .flex_none()
@@ -141,7 +142,10 @@ impl RenderOnce for SongRow {
                 cx,
             );
             menu.when(has_album, |menu| {
-                menu.menu("Show Album", Box::new(ShowAlbum))
+                menu.menu("Go to Album", Box::new(ShowAlbum))
+            })
+            .when(has_artist, |menu| {
+                menu.menu("Go to Artist", Box::new(actions::GoToArtist))
             })
             .when(is_editable, |menu| {
                 menu.separator()

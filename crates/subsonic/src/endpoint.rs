@@ -90,6 +90,33 @@ impl Endpoint {
         Self::new("getIndexes").param("ifModifiedSince", since.to_string())
     }
 
+    /// Every artist with an album, in the server's name order.
+    pub fn artists() -> Self {
+        Self::new("getArtists")
+    }
+
+    pub fn artist(artist: &crate::ArtistId) -> Self {
+        Self::new("getArtist").param("id", artist.as_str())
+    }
+
+    /// What the server knows of `artist` from an outside service such as
+    /// Last.fm, with up to `similar` similar artists that are in the library.
+    pub fn artist_info(artist: &crate::ArtistId, similar: u32) -> Self {
+        Self::new("getArtistInfo2")
+            .param("id", artist.as_str())
+            .param("count", similar.to_string())
+            .param("includeNotPresent", "false")
+    }
+
+    /// The most listened to songs of the artist called `artist`, as far as an
+    /// outside service such as Last.fm tells the server. The protocol goes by
+    /// name here, not by ID.
+    pub fn top_songs(artist: &str, count: u32) -> Self {
+        Self::new("getTopSongs")
+            .param("artist", artist)
+            .param("count", count.to_string())
+    }
+
     pub fn scan_status() -> Self {
         Self::new("getScanStatus")
     }
@@ -366,6 +393,26 @@ mod tests {
         let printed = format!("{:?}", CoverArtRequest::parse(&url).unwrap());
         assert!(!printed.contains("secret"), "{printed}");
         assert!(!printed.contains("alice"), "{printed}");
+    }
+
+    #[test]
+    fn top_songs_go_by_the_artists_name() {
+        let base = Url::parse("https://music.example.com").unwrap();
+        let url = Endpoint::top_songs("Miles & Co", 10).url(&base, &Credentials::api_key("k"));
+        assert_eq!(url.path(), "/rest/getTopSongs");
+        assert_eq!(query(&url, "artist").as_deref(), Some("Miles & Co"));
+        assert_eq!(query(&url, "count").as_deref(), Some("10"));
+    }
+
+    #[test]
+    fn similar_artists_are_only_those_in_the_library() {
+        let base = Url::parse("https://music.example.com").unwrap();
+        let artist = crate::ArtistId::new("ar1");
+        let url = Endpoint::artist_info(&artist, 6).url(&base, &Credentials::api_key("k"));
+        assert_eq!(url.path(), "/rest/getArtistInfo2");
+        assert_eq!(query(&url, "id").as_deref(), Some("ar1"));
+        assert_eq!(query(&url, "count").as_deref(), Some("6"));
+        assert_eq!(query(&url, "includeNotPresent").as_deref(), Some("false"));
     }
 
     #[test]

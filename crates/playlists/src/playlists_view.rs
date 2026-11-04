@@ -568,6 +568,15 @@ impl Playlists {
         }
     }
 
+    fn show_selected_artist(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let artist = self
+            .selected_song()
+            .and_then(|song| song.artist_id().cloned());
+        if let Some(artist) = artist {
+            window.dispatch_action(Box::new(actions::ShowArtist::new(artist)), cx);
+        }
+    }
+
     fn show_selected_album(&self, window: &mut Window, cx: &mut Context<Self>) {
         let album = self
             .selected_song()
@@ -785,6 +794,9 @@ impl Playlists {
             .on_action(
                 cx.listener(|this, _: &ShowAlbum, window, cx| this.show_selected_album(window, cx)),
             )
+            .on_action(cx.listener(|this, _: &actions::GoToArtist, window, cx| {
+                this.show_selected_artist(window, cx)
+            }))
             .on_action(cx.listener(|this, _: &AddToPlaylist, window, cx| {
                 this.choose_playlist_for_selected_song(window, cx)
             }))
