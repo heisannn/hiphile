@@ -14,7 +14,7 @@ mod name_form;
 mod playlists_view;
 mod writes;
 
-use gpui_kit::{App, KeyBinding, NoAction, actions};
+use gpui_kit::{App, KeyBinding, actions};
 use ui::list_navigation::bind_list_navigation;
 
 pub use playlists_view::{Playlists, PlaylistsEvent};
@@ -24,9 +24,6 @@ pub const PLAYLISTS_CONTEXT: &str = "Playlists";
 /// Key context of the focused list of a playlist's songs.
 pub const SONGS_CONTEXT: &str = "PlaylistSongs";
 const ROOT_CONTEXT: &str = "PlaylistsRoot";
-/// Key context of buttons inside the lists, which keep Enter and Space to
-/// themselves.
-const CONTROL_CONTEXT: &str = "PlaylistsControl";
 
 actions!(
     playlists,
@@ -102,7 +99,5 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(show_album, ShowAlbum, Some(SONGS_CONTEXT)),
         KeyBinding::new(add_to_playlist, AddToPlaylist, Some(SONGS_CONTEXT)),
         KeyBinding::new(find, FocusFilter, Some(ROOT_CONTEXT)),
-        KeyBinding::new("enter", NoAction, Some(CONTROL_CONTEXT)),
-        KeyBinding::new("space", NoAction, Some(CONTROL_CONTEXT)),
     ]);
 }

@@ -24,16 +24,13 @@ use gpui_kit::{
     UniformListScrollHandle, WeakEntity, Window, div, prelude::FluentBuilder as _, uniform_list,
 };
 use subsonic::{Album, AlbumId, AlbumWithSongs, PlaylistId, Song, SongId};
-use ui::list_navigation::{
-    Motion, SelectFirst, SelectLast, SelectNext, SelectPageDown, SelectPageUp, SelectPrevious,
-    page_rows,
-};
+use ui::list_navigation::{CONTROL_CONTEXT, ListNavigationExt as _, Motion, page_rows};
 use ui::{CoverArt, format_duration};
 
 use crate::filter::matching_albums;
 use crate::{
-    ALBUMS_CONTEXT, AddAlbumToPlaylist, AddToPlaylist, AddToQueue, Back, CONTROL_CONTEXT,
-    FocusFilter, LIBRARY_CONTEXT, Open, Play, PlayNext, Refresh, SONGS_CONTEXT,
+    ALBUMS_CONTEXT, AddAlbumToPlaylist, AddToPlaylist, AddToQueue, Back, FocusFilter,
+    LIBRARY_CONTEXT, Open, Play, PlayNext, Refresh, SONGS_CONTEXT,
 };
 
 /// Pixel size requested for the detail cover: twice its on-screen size, for
@@ -608,24 +605,7 @@ impl Library {
             .flex_col()
             .track_focus(&self.albums_focus)
             .key_context(ALBUMS_CONTEXT)
-            .on_action(
-                cx.listener(|this, _: &SelectNext, _, cx| this.move_album(Motion::By(1), cx)),
-            )
-            .on_action(
-                cx.listener(|this, _: &SelectPrevious, _, cx| this.move_album(Motion::By(-1), cx)),
-            )
-            .on_action(
-                cx.listener(|this, _: &SelectFirst, _, cx| this.move_album(Motion::First, cx)),
-            )
-            .on_action(cx.listener(|this, _: &SelectLast, _, cx| this.move_album(Motion::Last, cx)))
-            .on_action(
-                cx.listener(|this, _: &SelectPageDown, _, cx| {
-                    this.move_album(Motion::Pages(1), cx)
-                }),
-            )
-            .on_action(
-                cx.listener(|this, _: &SelectPageUp, _, cx| this.move_album(Motion::Pages(-1), cx)),
-            )
+            .on_list_navigation(|this, motion, _, cx| this.move_album(motion, cx), cx)
             .on_action(cx.listener(|this, _: &Open, window, cx| this.open_album(window, cx)))
             .on_action(cx.listener(|this, _: &Play, window, cx| {
                 this.act_on_album(AlbumAction::Play, window, cx)
@@ -773,20 +753,7 @@ impl Library {
             .min_h_0()
             .track_focus(&self.songs_focus)
             .key_context(SONGS_CONTEXT)
-            .on_action(cx.listener(|this, _: &SelectNext, _, cx| this.move_song(Motion::By(1), cx)))
-            .on_action(
-                cx.listener(|this, _: &SelectPrevious, _, cx| this.move_song(Motion::By(-1), cx)),
-            )
-            .on_action(
-                cx.listener(|this, _: &SelectFirst, _, cx| this.move_song(Motion::First, cx)),
-            )
-            .on_action(cx.listener(|this, _: &SelectLast, _, cx| this.move_song(Motion::Last, cx)))
-            .on_action(
-                cx.listener(|this, _: &SelectPageDown, _, cx| this.move_song(Motion::Pages(1), cx)),
-            )
-            .on_action(
-                cx.listener(|this, _: &SelectPageUp, _, cx| this.move_song(Motion::Pages(-1), cx)),
-            )
+            .on_list_navigation(|this, motion, _, cx| this.move_song(motion, cx), cx)
             .on_action(cx.listener(|this, _: &Open, window, cx| {
                 if let Some(ix) = this.selected_song_ix() {
                     this.play_from(ix, window, cx);

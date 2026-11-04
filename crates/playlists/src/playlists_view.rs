@@ -25,10 +25,7 @@ use gpui_kit::{
     prelude::FluentBuilder as _, uniform_list,
 };
 use subsonic::{Playlist, PlaylistId, PlaylistWithSongs, Song, SongId};
-use ui::list_navigation::{
-    Motion, SelectFirst, SelectLast, SelectNext, SelectPageDown, SelectPageUp, SelectPrevious,
-    page_rows,
-};
+use ui::list_navigation::{CONTROL_CONTEXT, ListNavigationExt as _, Motion, page_rows};
 use ui::{CoverArt, DragPreview, format_duration};
 
 use crate::entries::{Entries, EntryId};
@@ -36,7 +33,7 @@ use crate::filter::matching_playlists;
 use crate::name_form::NameForm;
 use crate::writes::{Write, WriteQueue};
 use crate::{
-    AddToPlaylist, AddToQueue, Back, CONTROL_CONTEXT, Delete, FocusFilter, MoveDown, MoveUp, Open,
+    AddToPlaylist, AddToQueue, Back, Delete, FocusFilter, MoveDown, MoveUp, Open,
     PLAYLISTS_CONTEXT, Play, PlayNext, ROOT_CONTEXT, Remove, Rename, SONGS_CONTEXT, ShowAlbum,
 };
 
@@ -1272,24 +1269,10 @@ impl Playlists {
             .flex_col()
             .track_focus(&self.list_focus)
             .key_context(PLAYLISTS_CONTEXT)
-            .on_action(cx.listener(|this, _: &SelectNext, window, cx| {
-                this.move_selection(Motion::By(1), window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &SelectPrevious, window, cx| {
-                this.move_selection(Motion::By(-1), window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &SelectFirst, window, cx| {
-                this.move_selection(Motion::First, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &SelectLast, window, cx| {
-                this.move_selection(Motion::Last, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &SelectPageDown, window, cx| {
-                this.move_selection(Motion::Pages(1), window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &SelectPageUp, window, cx| {
-                this.move_selection(Motion::Pages(-1), window, cx)
-            }))
+            .on_list_navigation(
+                |this, motion, window, cx| this.move_selection(motion, window, cx),
+                cx,
+            )
             .on_action(cx.listener(|this, _: &Open, window, cx| this.open_playlist(window, cx)))
             .on_action(cx.listener(|this, _: &Play, window, cx| {
                 this.on_playlist(SongsCommand::Play, window, cx)
@@ -1463,24 +1446,10 @@ impl Playlists {
             .min_h_0()
             .track_focus(&self.songs_focus)
             .key_context(SONGS_CONTEXT)
-            .on_action(cx.listener(|this, _: &SelectNext, _, cx| {
-                this.move_entry_selection(Motion::By(1), cx)
-            }))
-            .on_action(cx.listener(|this, _: &SelectPrevious, _, cx| {
-                this.move_entry_selection(Motion::By(-1), cx)
-            }))
-            .on_action(cx.listener(|this, _: &SelectFirst, _, cx| {
-                this.move_entry_selection(Motion::First, cx)
-            }))
-            .on_action(cx.listener(|this, _: &SelectLast, _, cx| {
-                this.move_entry_selection(Motion::Last, cx)
-            }))
-            .on_action(cx.listener(|this, _: &SelectPageDown, _, cx| {
-                this.move_entry_selection(Motion::Pages(1), cx)
-            }))
-            .on_action(cx.listener(|this, _: &SelectPageUp, _, cx| {
-                this.move_entry_selection(Motion::Pages(-1), cx)
-            }))
+            .on_list_navigation(
+                |this, motion, _, cx| this.move_entry_selection(motion, cx),
+                cx,
+            )
             .on_action(cx.listener(|this, _: &Open, window, cx| {
                 if let Some(ix) = this.selected_entry_ix() {
                     this.play_from(ix, window, cx);

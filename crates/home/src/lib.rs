@@ -11,16 +11,13 @@ mod layout;
 mod recent;
 mod recommend;
 
-use gpui_kit::{App, KeyBinding, NoAction, actions};
+use gpui_kit::{App, KeyBinding, actions};
 use ui::list_navigation::bind_list_navigation;
 
 pub use home_view::Home;
 
 /// Key context of the focused home screen.
 pub const HOME_CONTEXT: &str = "Home";
-/// Key context around a control inside the screen, whose own use of Enter and
-/// Space comes before the screen's.
-const CONTROL_CONTEXT: &str = "HomeControl";
 
 actions!(
     home,
@@ -66,7 +63,5 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("shift-enter", AddToQueue, Some(HOME_CONTEXT)),
         KeyBinding::new(show_in_library, ShowInLibrary, Some(HOME_CONTEXT)),
         KeyBinding::new(choose_playlist, ChoosePlaylist, Some(HOME_CONTEXT)),
-        KeyBinding::new("enter", NoAction, Some(CONTROL_CONTEXT)),
-        KeyBinding::new("space", NoAction, Some(CONTROL_CONTEXT)),
     ]);
 }

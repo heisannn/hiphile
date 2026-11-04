@@ -19,10 +19,7 @@ use gpui_kit::{
 };
 use playback::EntryId;
 use subsonic::Song;
-use ui::list_navigation::{
-    Motion, SelectFirst, SelectLast, SelectNext, SelectPageDown, SelectPageUp, SelectPrevious,
-    page_rows,
-};
+use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
 use ui::{DragPreview, format_duration};
 
 use crate::{Player, SaveQueue};
@@ -299,24 +296,7 @@ impl QueueView {
             .flex_col()
             .track_focus(&self.focus)
             .key_context(QUEUE_CONTEXT)
-            .on_action(
-                cx.listener(|this, _: &SelectNext, _, cx| this.move_selection(Motion::By(1), cx)),
-            )
-            .on_action(cx.listener(|this, _: &SelectPrevious, _, cx| {
-                this.move_selection(Motion::By(-1), cx)
-            }))
-            .on_action(
-                cx.listener(|this, _: &SelectFirst, _, cx| this.move_selection(Motion::First, cx)),
-            )
-            .on_action(
-                cx.listener(|this, _: &SelectLast, _, cx| this.move_selection(Motion::Last, cx)),
-            )
-            .on_action(cx.listener(|this, _: &SelectPageDown, _, cx| {
-                this.move_selection(Motion::Pages(1), cx)
-            }))
-            .on_action(cx.listener(|this, _: &SelectPageUp, _, cx| {
-                this.move_selection(Motion::Pages(-1), cx)
-            }))
+            .on_list_navigation(|this, motion, _, cx| this.move_selection(motion, cx), cx)
             .on_action(cx.listener(|this, _: &Play, _, cx| this.play_selected(cx)))
             .on_action(cx.listener(|this, _: &PlayNext, _, cx| this.play_selected_next(cx)))
             .on_action(cx.listener(|this, _: &Remove, _, cx| this.remove_selected(cx)))

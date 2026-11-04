@@ -18,7 +18,8 @@ use gpui_kit::{
 };
 use subsonic::{Album, AlbumId, PlaylistId, Song, SongId};
 use ui::list_navigation::{
-    SelectFirst, SelectLast, SelectNext, SelectPageDown, SelectPageUp, SelectPrevious,
+    CONTROL_CONTEXT, SelectFirst, SelectLast, SelectNext, SelectPageDown, SelectPageUp,
+    SelectPrevious,
 };
 use ui::{CoverArt, format_duration};
 
@@ -26,8 +27,8 @@ use crate::layout::{AlbumShelf, Item, Motion, columns_for, step};
 use crate::recent::most_recent;
 use crate::recommend::{Recommendations, fetch_recommended, today};
 use crate::{
-    AddSelectionToPlaylist, AddToQueue, CONTROL_CONTEXT, ChoosePlaylist, HOME_CONTEXT, Open, Play,
-    PlayNext, SelectLeft, SelectRight, ShowInLibrary,
+    AddSelectionToPlaylist, AddToQueue, ChoosePlaylist, HOME_CONTEXT, Open, Play, PlayNext,
+    SelectLeft, SelectRight, ShowInLibrary,
 };
 
 /// How many of the songs played last show.

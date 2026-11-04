@@ -1,7 +1,14 @@
 //! Keyboard movement within a single-selection list, shared by the lists of
 //! every feature.
 
-use gpui_kit::{App, KeyBinding, UniformListScrollHandle, actions, px};
+use gpui_kit::{
+    App, Context, InteractiveElement, KeyBinding, NoAction, UniformListScrollHandle, Window,
+    actions, px,
+};
+
+/// Key context around a button inside a list, whose own use of Enter and Space
+/// comes before the list's.
+pub const CONTROL_CONTEXT: &str = "ListControl";
 
 actions!(
     list,
@@ -16,9 +23,12 @@ actions!(
 );
 
 /// Binds the arrow, Home, End, and page keys to the selection moves in the
-/// list whose key context is `context`.
+/// list whose key context is `context`, and leaves Enter and Space to what is
+/// inside [`CONTROL_CONTEXT`].
 pub fn bind_list_navigation(context: &'static str, cx: &mut App) {
     cx.bind_keys([
+        KeyBinding::new("enter", NoAction, Some(CONTROL_CONTEXT)),
+        KeyBinding::new("space", NoAction, Some(CONTROL_CONTEXT)),
         KeyBinding::new("down", SelectNext, Some(context)),
         KeyBinding::new("up", SelectPrevious, Some(context)),
         KeyBinding::new("home", SelectFirst, Some(context)),
@@ -27,6 +37,37 @@ pub fn bind_list_navigation(context: &'static str, cx: &mut App) {
         KeyBinding::new("pageup", SelectPageUp, Some(context)),
     ]);
 }
+
+/// Handles the selection moves that [`bind_list_navigation`] binds.
+pub trait ListNavigationExt: InteractiveElement + Sized {
+    /// Calls `on_motion` with the move each of them asks for.
+    fn on_list_navigation<V: 'static>(
+        self,
+        on_motion: impl Fn(&mut V, Motion, &mut Window, &mut Context<V>) + Copy + 'static,
+        cx: &mut Context<V>,
+    ) -> Self {
+        self.on_action(cx.listener(move |this, _: &SelectNext, window, cx| {
+            on_motion(this, Motion::By(1), window, cx);
+        }))
+        .on_action(cx.listener(move |this, _: &SelectPrevious, window, cx| {
+            on_motion(this, Motion::By(-1), window, cx);
+        }))
+        .on_action(cx.listener(move |this, _: &SelectFirst, window, cx| {
+            on_motion(this, Motion::First, window, cx);
+        }))
+        .on_action(cx.listener(move |this, _: &SelectLast, window, cx| {
+            on_motion(this, Motion::Last, window, cx);
+        }))
+        .on_action(cx.listener(move |this, _: &SelectPageDown, window, cx| {
+            on_motion(this, Motion::Pages(1), window, cx);
+        }))
+        .on_action(cx.listener(move |this, _: &SelectPageUp, window, cx| {
+            on_motion(this, Motion::Pages(-1), window, cx);
+        }))
+    }
+}
+
+impl<E: InteractiveElement + Sized> ListNavigationExt for E {}
 
 /// A keyboard move within a list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
