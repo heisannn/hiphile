@@ -26,7 +26,7 @@ use gpui_kit::{
 };
 use subsonic::{Playlist, PlaylistId, PlaylistWithSongs, Song, SongId};
 use ui::list_navigation::{CONTROL_CONTEXT, ListNavigationExt as _, Motion, page_rows};
-use ui::{CoverArt, DragPreview, format_duration};
+use ui::{CoverArt, DragPreview, LoadFailure, centered, format_duration, muted_text};
 
 use crate::entries::{Entries, EntryId};
 use crate::filter::matching_playlists;
@@ -1297,7 +1297,7 @@ impl Playlists {
         let playlists = match &self.list {
             List::Loading => return centered(Spinner::new()).into_any_element(),
             List::Failed(error) => {
-                return failure(
+                return LoadFailure::new(
                     "Couldn't load playlists",
                     error.clone(),
                     Button::new("retry-playlists")
@@ -1307,8 +1307,8 @@ impl Playlists {
                             this.list = List::Loading;
                             this.fetch_list(window, cx);
                         })),
-                    cx,
-                );
+                )
+                .into_any_element();
             }
             List::Loaded(playlists) => playlists.clone(),
         };
@@ -1317,7 +1317,7 @@ impl Playlists {
                 v_flex()
                     .items_center()
                     .gap_3()
-                    .child(muted("No playlists yet.", cx))
+                    .child(muted_text("No playlists yet.", cx))
                     .child(
                         div().key_context(CONTROL_CONTEXT).child(
                             Button::new("new-first-playlist")
@@ -1335,7 +1335,7 @@ impl Playlists {
             .into_any_element();
         }
         if self.visible.is_empty() {
-            return centered(muted("No playlists match the filter.", cx)).into_any_element();
+            return centered(muted_text("No playlists match the filter.", cx)).into_any_element();
         }
 
         let visible = self.visible.clone();
@@ -1490,7 +1490,7 @@ impl Playlists {
             Detail::None => return div().size_full().into_any_element(),
             Detail::Loading => return centered(Spinner::new()).into_any_element(),
             Detail::Failed(error) => {
-                return failure(
+                return LoadFailure::new(
                     "Couldn't load this playlist",
                     error.clone(),
                     Button::new("retry-playlist")
@@ -1499,8 +1499,8 @@ impl Playlists {
                             this.songs_focus.focus(window, cx);
                             this.retry_detail(window, cx);
                         })),
-                    cx,
-                );
+                )
+                .into_any_element();
             }
             Detail::Loaded(loaded) => loaded,
         };
@@ -1621,7 +1621,10 @@ impl Playlists {
                     .items_center()
                     .gap_1()
                     .child(div().text_sm().font_medium().child("No songs yet"))
-                    .child(muted("Choose Add to Playlist on any song or album.", cx)),
+                    .child(muted_text(
+                        "Choose Add to Playlist on any song or album.",
+                        cx,
+                    )),
             )
             .into_any_element();
         }
@@ -1936,46 +1939,6 @@ fn playlist_details(playlist: &Playlist, username: &str) -> SharedString {
         .collect::<Vec<_>>()
         .join(" · ")
         .into()
-}
-
-fn centered(child: impl IntoElement) -> gpui_kit::Div {
-    div()
-        .flex_1()
-        .size_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .p_6()
-        .child(child)
-}
-
-fn muted(text: &'static str, cx: &Context<Playlists>) -> impl IntoElement {
-    div()
-        .text_sm()
-        .text_color(cx.theme().muted_foreground)
-        .child(text)
-}
-
-/// A failed load: what failed, why, and a way to try again.
-fn failure(
-    title: &'static str,
-    reason: SharedString,
-    retry: Button,
-    cx: &Context<Playlists>,
-) -> AnyElement {
-    v_flex()
-        .size_full()
-        .p_6()
-        .gap_3()
-        .child(div().font_medium().child(title))
-        .child(
-            div()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(reason),
-        )
-        .child(h_flex().key_context(CONTROL_CONTEXT).child(retry))
-        .into_any_element()
 }
 
 #[cfg(test)]

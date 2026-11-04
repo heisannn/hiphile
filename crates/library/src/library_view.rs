@@ -25,7 +25,7 @@ use gpui_kit::{
 };
 use subsonic::{Album, AlbumId, AlbumWithSongs, PlaylistId, Song, SongId};
 use ui::list_navigation::{CONTROL_CONTEXT, ListNavigationExt as _, Motion, page_rows};
-use ui::{CoverArt, format_duration};
+use ui::{CoverArt, LoadFailure, centered, format_duration, muted_text};
 
 use crate::filter::matching_albums;
 use crate::{
@@ -633,7 +633,7 @@ impl Library {
         let albums = match &self.albums {
             Albums::Loading => return centered(Spinner::new()).into_any_element(),
             Albums::Failed(error) => {
-                return failure(
+                return LoadFailure::new(
                     "Couldn't load albums",
                     error.clone(),
                     Button::new("retry-albums")
@@ -642,16 +642,16 @@ impl Library {
                             this.albums_focus.focus(window, cx);
                             this.refresh_library(cx);
                         })),
-                    cx,
-                );
+                )
+                .into_any_element();
             }
             Albums::Loaded(albums) => albums.clone(),
         };
         if albums.is_empty() {
-            return centered(muted("This server has no albums.", cx)).into_any_element();
+            return centered(muted_text("This server has no albums.", cx)).into_any_element();
         }
         if self.visible.is_empty() {
-            return centered(muted("No albums match the filter.", cx)).into_any_element();
+            return centered(muted_text("No albums match the filter.", cx)).into_any_element();
         }
 
         let visible = self.visible.clone();
@@ -780,7 +780,7 @@ impl Library {
             Detail::None => return div().size_full().into_any_element(),
             Detail::Loading => return centered(Spinner::new()).into_any_element(),
             Detail::Failed(error) => {
-                return failure(
+                return LoadFailure::new(
                     "Couldn't load this album",
                     error.clone(),
                     Button::new("retry-album")
@@ -789,8 +789,8 @@ impl Library {
                             this.songs_focus.focus(window, cx);
                             this.retry_album(cx);
                         })),
-                    cx,
-                );
+                )
+                .into_any_element();
             }
             Detail::Loaded(loaded) => loaded,
         };
@@ -899,7 +899,7 @@ impl Library {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if loaded.songs.is_empty() {
-            return centered(muted("This album has no songs.", cx)).into_any_element();
+            return centered(muted_text("This album has no songs.", cx)).into_any_element();
         }
         let songs = loaded.songs.clone();
         let album_artist = loaded.album.artist().map(str::to_owned);
@@ -1189,46 +1189,6 @@ fn album_details(album: &Album) -> SharedString {
         (None, Some(year)) => year.to_string().into(),
         (None, None) => SharedString::default(),
     }
-}
-
-fn centered(child: impl IntoElement) -> gpui_kit::Div {
-    div()
-        .flex_1()
-        .size_full()
-        .flex()
-        .items_center()
-        .justify_center()
-        .p_6()
-        .child(child)
-}
-
-fn muted(text: &'static str, cx: &Context<Library>) -> impl IntoElement {
-    div()
-        .text_sm()
-        .text_color(cx.theme().muted_foreground)
-        .child(text)
-}
-
-/// A failed load: what failed, why, and a way to try again.
-fn failure(
-    title: &'static str,
-    reason: SharedString,
-    retry: Button,
-    cx: &Context<Library>,
-) -> AnyElement {
-    v_flex()
-        .size_full()
-        .p_6()
-        .gap_3()
-        .child(div().font_medium().child(title))
-        .child(
-            div()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(reason),
-        )
-        .child(h_flex().key_context(CONTROL_CONTEXT).child(retry))
-        .into_any_element()
 }
 
 #[cfg(test)]
