@@ -33,16 +33,19 @@ actions!(
         Back,
         FocusFilter,
         /// Fetches the whole library from the server again.
-        Refresh
+        Refresh,
+        /// Albums: asks which playlist to add the album to. Songs: the
+        /// selected song.
+        AddToPlaylist
     ]
 );
 
 /// Registers key bindings. Call before building the menu bar.
 pub fn init(cx: &mut App) {
-    let (find, refresh) = if cx.platform_info().is_mac() {
-        ("cmd-f", "cmd-r")
+    let (find, refresh, add_to_playlist) = if cx.platform_info().is_mac() {
+        ("cmd-f", "cmd-r", "cmd-shift-p")
     } else {
-        ("ctrl-f", "ctrl-r")
+        ("ctrl-f", "ctrl-r", "ctrl-shift-p")
     };
     for context in [ALBUMS_CONTEXT, SONGS_CONTEXT] {
         bind_list_navigation(context, cx);
@@ -50,6 +53,7 @@ pub fn init(cx: &mut App) {
             KeyBinding::new("enter", Open, Some(context)),
             KeyBinding::new("alt-enter", PlayNext, Some(context)),
             KeyBinding::new("shift-enter", AddToQueue, Some(context)),
+            KeyBinding::new(add_to_playlist, AddToPlaylist, Some(context)),
         ]);
     }
     cx.bind_keys([

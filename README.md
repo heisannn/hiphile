@@ -17,7 +17,7 @@ and configuration crates do not depend on GPUI, so the GUI and the CLI share the
 | Layer | Crates |
 | --- | --- |
 | Binaries | `hiphile` (GUI shell), `hiphile-cli` |
-| GUI features | `account`, `home`, `library`, `player`, `search`, `settings` |
+| GUI features | `account`, `home`, `library`, `player`, `playlists`, `search`, `settings` |
 | GUI shared | `session`, `actions`, `ui` |
 | GPUI-independent | `subsonic`, `net`, `client`, `playback`, `presence`, `audio`, `catalog`, `config` |
 
@@ -70,6 +70,21 @@ songs similar to the albums played last (`getSimilarSongs2`), one album per
 artist, leaving out albums played in the last two weeks and those on the shelves
 of the most played and of new ones. Similar songs need the server to be set up with Last.fm or the like;
 the most played albums past that shelf and random ones fill what they leave open.
+
+## Playlists
+
+The Playlists tab lists the server's playlists and the songs of the one selected.
+Playlists of other users that they don't let you edit can be played but not
+changed. A song can be on a playlist more than once.
+
+Edits show at once and are saved in the order they were made, one at a time. If a
+save fails, the app says so, drops the edits waiting on that playlist and reads it
+again, taking no more changes to its songs until it has; if that fails too, the
+error takes the songs' place. Reordering or removing songs replaces the playlist's
+whole song list (`createPlaylist`), so of two clients editing one playlist the last
+one wins. Removing the last song takes it out by position (`updatePlaylist`)
+instead, as a list of no songs may be read as no change. A request whose URL would
+be too long goes by POST (the `formPost` extension).
 
 ## Scrobbling
 

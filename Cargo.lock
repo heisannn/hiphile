@@ -3711,6 +3711,7 @@ dependencies = [
  "library",
  "net",
  "player",
+ "playlists",
  "session",
  "settings",
  "subsonic",
@@ -5955,6 +5956,7 @@ dependencies = [
 name = "player"
 version = "0.1.0"
 dependencies = [
+ "actions",
  "audio",
  "client",
  "config 0.1.0",
@@ -5963,6 +5965,20 @@ dependencies = [
  "net",
  "playback",
  "presence",
+ "serde_json",
+ "session",
+ "subsonic",
+ "ui",
+]
+
+[[package]]
+name = "playlists"
+version = "0.1.0"
+dependencies = [
+ "actions",
+ "client",
+ "gpui-kit",
+ "net",
  "serde_json",
  "session",
  "subsonic",

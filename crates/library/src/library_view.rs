@@ -30,8 +30,8 @@ use ui::{CoverArt, format_duration};
 
 use crate::filter::matching_albums;
 use crate::{
-    ALBUMS_CONTEXT, AddToQueue, Back, FocusFilter, LIBRARY_CONTEXT, Open, PlayNext, Refresh,
-    SONGS_CONTEXT,
+    ALBUMS_CONTEXT, AddToPlaylist, AddToQueue, Back, FocusFilter, LIBRARY_CONTEXT, Open, PlayNext,
+    Refresh, SONGS_CONTEXT,
 };
 
 /// Pixel size requested for the detail cover: twice its on-screen size, for
@@ -470,6 +470,25 @@ impl Library {
         }
     }
 
+    /// Asks which playlist to add the whole of the album on show to.
+    fn choose_playlist_for_album(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(songs) = self.loaded_songs().filter(|songs| !songs.is_empty()) {
+            window.dispatch_action(Box::new(actions::ChoosePlaylist::new(songs.clone())), cx);
+        }
+    }
+
+    fn choose_playlist_for_selected_song(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let song = self
+            .selected_song_ix()
+            .and_then(|ix| self.loaded_songs()?.get(ix).cloned());
+        if let Some(song) = song {
+            window.dispatch_action(
+                Box::new(actions::ChoosePlaylist::new(Arc::from([song]))),
+                cx,
+            );
+        }
+    }
+
     fn render_albums(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let count = self.loaded_albums().map(|albums| albums.len());
         // While nothing shows, the list itself shows a spinner.
@@ -588,6 +607,9 @@ impl Library {
             }))
             .on_action(cx.listener(|this, _: &AddToQueue, window, cx| {
                 this.enqueue_album(Placement::Last, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &AddToPlaylist, window, cx| {
+                this.choose_playlist_for_album(window, cx)
             }))
             .child(self.render_album_rows(window, cx))
             .into_any_element()
@@ -714,6 +736,9 @@ impl Library {
             .on_action(cx.listener(|this, _: &AddToQueue, window, cx| {
                 this.enqueue_selected_song(Placement::Last, window, cx)
             }))
+            .on_action(cx.listener(|this, _: &AddToPlaylist, window, cx| {
+                this.choose_playlist_for_selected_song(window, cx)
+            }))
             .on_action(cx.listener(|this, _: &Back, window, cx| {
                 this.albums_focus.focus(window, cx);
             }))
@@ -816,15 +841,24 @@ impl Library {
     /// dispatches them there, whichever list has focus.
     fn render_album_menu(&self, loaded: &LoadedAlbum) -> impl IntoElement {
         let albums_focus = self.albums_focus.clone();
+        let songs = loaded.songs.clone();
         Button::new("album-menu")
             .ghost()
             .icon(IconName::Ellipsis)
             .accessibility_label("More")
             .disabled(loaded.songs.is_empty())
-            .dropdown_menu(move |menu, _, _| {
-                menu.action_context(albums_focus.clone())
+            .dropdown_menu(move |menu, window, cx| {
+                let menu = menu
+                    .action_context(albums_focus.clone())
                     .menu("Play Next", Box::new(PlayNext))
                     .menu("Add to Queue", Box::new(AddToQueue))
+                    .separator();
+                actions::add_to_playlist_submenu(
+                    menu,
+                    actions::add_songs_command(songs.clone()),
+                    window,
+                    cx,
+                )
             })
     }
 
@@ -884,6 +918,7 @@ impl Library {
                             };
                             let owner = owner.clone();
                             let songs_focus = songs_focus.clone();
+                            let menu_song = song.clone();
                             Some(
                                 ListItem::new(ElementId::Name(format!("song-{id}").into()))
                                     .selected(is_selected)
@@ -963,11 +998,21 @@ impl Library {
                                             })
                                             .ok();
                                     })
-                                    .context_menu(move |menu, _, _| {
-                                        menu.action_context(songs_focus.clone())
+                                    .context_menu(move |menu, window, cx| {
+                                        let menu = menu
+                                            .action_context(songs_focus.clone())
                                             .menu("Play", Box::new(Open))
                                             .menu("Play Next", Box::new(PlayNext))
                                             .menu("Add to Queue", Box::new(AddToQueue))
+                                            .separator();
+                                        actions::add_to_playlist_submenu(
+                                            menu,
+                                            actions::add_songs_command(Arc::from([
+                                                menu_song.clone()
+                                            ])),
+                                            window,
+                                            cx,
+                                        )
                                     }),
                             )
                         })

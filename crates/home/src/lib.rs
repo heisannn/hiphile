@@ -35,17 +35,26 @@ actions!(
         AddToQueue,
         /// Shows the selected album, or the selected song's, in the library.
         ShowInLibrary,
+        /// Asks which playlist to add the selection to.
+        ChoosePlaylist,
         SelectLeft,
         SelectRight
     ]
 );
 
+/// Adds the selection to `playlist`, or to a new one for `None`.
+#[derive(Clone, Debug, PartialEq, gpui_kit::Action)]
+#[action(namespace = home, no_json)]
+struct AddSelectionToPlaylist {
+    playlist: Option<subsonic::PlaylistId>,
+}
+
 /// Registers key bindings. Call before building the menu bar.
 pub fn init(cx: &mut App) {
-    let (play, show_in_library) = if cx.platform_info().is_mac() {
-        ("cmd-enter", "cmd-l")
+    let (play, show_in_library, choose_playlist) = if cx.platform_info().is_mac() {
+        ("cmd-enter", "cmd-l", "cmd-shift-p")
     } else {
-        ("ctrl-enter", "ctrl-l")
+        ("ctrl-enter", "ctrl-l", "ctrl-shift-p")
     };
     bind_list_navigation(HOME_CONTEXT, cx);
     cx.bind_keys([
@@ -56,6 +65,7 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("alt-enter", PlayNext, Some(HOME_CONTEXT)),
         KeyBinding::new("shift-enter", AddToQueue, Some(HOME_CONTEXT)),
         KeyBinding::new(show_in_library, ShowInLibrary, Some(HOME_CONTEXT)),
+        KeyBinding::new(choose_playlist, ChoosePlaylist, Some(HOME_CONTEXT)),
         KeyBinding::new("enter", NoAction, Some(CONTROL_CONTEXT)),
         KeyBinding::new("space", NoAction, Some(CONTROL_CONTEXT)),
     ]);

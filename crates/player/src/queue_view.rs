@@ -9,22 +9,23 @@ use gpui_kit::component::{
     v_flex,
 };
 use std::cmp::Ordering;
+use std::sync::Arc;
 
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, ElementId, Entity, FocusHandle,
-    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Pixels, Point, Render,
-    ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
+    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, ScrollStrategy,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
     UniformListScrollHandle, Window, actions, div, prelude::FluentBuilder as _, uniform_list,
 };
 use playback::EntryId;
 use subsonic::Song;
-use ui::format_duration;
 use ui::list_navigation::{
     Motion, SelectFirst, SelectLast, SelectNext, SelectPageDown, SelectPageUp, SelectPrevious,
     page_rows,
 };
+use ui::{DragPreview, format_duration};
 
-use crate::Player;
+use crate::{Player, SaveQueue};
 
 /// Key context of the focused queue list.
 pub const QUEUE_CONTEXT: &str = "Queue";
@@ -39,7 +40,9 @@ actions!(
         /// Removes the selected entry, unless it is the current one.
         Remove,
         MoveUp,
-        MoveDown
+        MoveDown,
+        /// Asks which playlist to add the selected entry to.
+        AddToPlaylist
     ]
 );
 
@@ -189,6 +192,19 @@ impl QueueView {
         }
     }
 
+    fn choose_playlist_for_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let song = self.selected_ix(cx).and_then(|ix| {
+            let entries = self.player.read(cx).queue().entries();
+            Some(entries.get(ix)?.item().clone())
+        });
+        if let Some(song) = song {
+            window.dispatch_action(
+                Box::new(actions::ChoosePlaylist::new(Arc::from([song]))),
+                cx,
+            );
+        }
+    }
+
     fn move_selected(&mut self, delta: isize, cx: &mut Context<Self>) {
         let (Some(id), Some(ix)) = (self.selected, self.selected_ix(cx)) else {
             return;
@@ -250,6 +266,14 @@ impl QueueView {
             })
             .child(div().flex_1())
             .child(
+                Button::new("save-queue")
+                    .ghost()
+                    .xsmall()
+                    .label("Save as Playlist…")
+                    .disabled(len == 0)
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(SaveQueue), cx)),
+            )
+            .child(
                 Button::new("clear-queue")
                     .ghost()
                     .xsmall()
@@ -298,6 +322,9 @@ impl QueueView {
             .on_action(cx.listener(|this, _: &Remove, _, cx| this.remove_selected(cx)))
             .on_action(cx.listener(|this, _: &MoveUp, _, cx| this.move_selected(-1, cx)))
             .on_action(cx.listener(|this, _: &MoveDown, _, cx| this.move_selected(1, cx)))
+            .on_action(cx.listener(|this, _: &AddToPlaylist, window, cx| {
+                this.choose_playlist_for_selected(window, cx)
+            }))
             .child(self.render_rows(window, cx))
             .into_any_element()
     }
@@ -349,6 +376,7 @@ impl QueueView {
                             let owner = owner.clone();
                             let focus = focus.clone();
                             let title_for_drag = title.clone();
+                            let menu_song = song.clone();
                             Some(
                                 ListItem::new(ElementId::NamedInteger(
                                     "queue-entry".into(),
@@ -402,10 +430,7 @@ impl QueueView {
                                         title: title_for_drag,
                                     },
                                     |dragged, offset, _, cx| {
-                                        cx.new(|_| DragPreview {
-                                            title: dragged.title.clone(),
-                                            offset,
-                                        })
+                                        cx.new(|_| DragPreview::new(dragged.title.clone(), offset))
                                     },
                                 )
                                 // A line on the edge the entry would land beside.
@@ -430,12 +455,14 @@ impl QueueView {
                                 // Built when it opens, so it reads the queue
                                 // as it is then.
                                 .context_menu(
-                                    move |menu, _, cx| {
+                                    move |menu, window, cx| {
                                         let commands = owner
                                             .upgrade()
                                             .map(|this| this.read(cx).entry_commands(id, cx))
                                             .unwrap_or_default();
-                                        menu.action_context(focus.clone())
+                                        let songs = Arc::from([menu_song.clone()]);
+                                        let menu = menu
+                                            .action_context(focus.clone())
                                             .menu("Play", Box::new(Play))
                                             .menu_with_disabled(
                                                 "Play Next",
@@ -453,12 +480,19 @@ impl QueueView {
                                                 Box::new(MoveDown),
                                                 !commands.move_down,
                                             )
-                                            .separator()
-                                            .menu_with_disabled(
-                                                "Remove",
-                                                Box::new(Remove),
-                                                !commands.remove,
-                                            )
+                                            .separator();
+                                        actions::add_to_playlist_submenu(
+                                            menu,
+                                            actions::add_songs_command(songs),
+                                            window,
+                                            cx,
+                                        )
+                                        .separator()
+                                        .menu_with_disabled(
+                                            "Remove",
+                                            Box::new(Remove),
+                                            !commands.remove,
+                                        )
                                     },
                                 ),
                             )
@@ -480,35 +514,6 @@ struct DraggedEntry {
     /// pointer which side it would land on.
     from_ix: usize,
     title: SharedString,
-}
-
-/// What follows the pointer while an entry is dragged.
-struct DragPreview {
-    title: SharedString,
-    /// The pointer's offset in the row the drag started on.
-    offset: Point<Pixels>,
-}
-
-impl Render for DragPreview {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // The drag draws this from the row's corner, where it was relative to
-        // the pointer; the measured offset brings the chip to the pointer.
-        div().pl(self.offset.x).pt(self.offset.y).child(
-            div()
-                .max_w_64()
-                .px_3()
-                .py_1()
-                .truncate()
-                .text_sm()
-                .rounded(cx.theme().radius)
-                .border_1()
-                .border_color(cx.theme().border)
-                .bg(cx.theme().popover)
-                .text_color(cx.theme().popover_foreground)
-                .shadow_md()
-                .child(self.title.clone()),
-        )
-    }
 }
 
 /// The commands an entry's context menu enables.

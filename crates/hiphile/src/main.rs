@@ -10,13 +10,23 @@ use gpui_kit::{
     size,
 };
 use player::{
-    NextSong, PreviousSong, SeekBackward, SeekForward, ToggleMute, TogglePlayback, VolumeDown,
-    VolumeUp,
+    NextSong, PreviousSong, SaveQueue, SeekBackward, SeekForward, ToggleMute, TogglePlayback,
+    VolumeDown, VolumeUp,
 };
 
 use app_shell::{AppShell, Destination, WORKSPACE_CONTEXT};
 
-actions!(hiphile, [Quit, SignOut, ToggleQueue, ShowHome, ShowLibrary]);
+actions!(
+    hiphile,
+    [
+        Quit,
+        SignOut,
+        ToggleQueue,
+        ShowHome,
+        ShowLibrary,
+        ShowPlaylists
+    ]
+);
 
 fn main() {
     gpui_kit::application()
@@ -31,6 +41,7 @@ fn main() {
             home::init(cx);
             library::init(cx);
             player::init(WORKSPACE_CONTEXT, cx);
+            playlists::init(cx);
             settings::init(cx);
             install_app_commands(cx);
 
@@ -52,21 +63,53 @@ fn main() {
 fn install_app_commands(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
     // Bind keys before `set_menus`: menus read the keymap when they are built.
-    let [quit, toggle_queue, show_home, show_library, refresh] = if cx.platform_info().is_mac() {
-        ["cmd-q", "cmd-alt-u", "cmd-1", "cmd-2", "cmd-r"]
+    let [
+        quit,
+        toggle_queue,
+        show_home,
+        show_library,
+        show_playlists,
+        refresh,
+        new_playlist,
+    ] = if cx.platform_info().is_mac() {
+        [
+            "cmd-q",
+            "cmd-alt-u",
+            "cmd-1",
+            "cmd-2",
+            "cmd-3",
+            "cmd-r",
+            "cmd-n",
+        ]
     } else {
-        ["ctrl-q", "ctrl-alt-u", "ctrl-1", "ctrl-2", "ctrl-r"]
+        [
+            "ctrl-q",
+            "ctrl-alt-u",
+            "ctrl-1",
+            "ctrl-2",
+            "ctrl-3",
+            "ctrl-r",
+            "ctrl-n",
+        ]
     };
     cx.bind_keys([
         KeyBinding::new(quit, Quit, None),
         KeyBinding::new(toggle_queue, ToggleQueue, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new(show_home, ShowHome, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new(show_library, ShowLibrary, Some(WORKSPACE_CONTEXT)),
+        KeyBinding::new(show_playlists, ShowPlaylists, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new(refresh, library::Refresh, Some(WORKSPACE_CONTEXT)),
+        KeyBinding::new(
+            new_playlist,
+            actions::NewPlaylist::empty(),
+            Some(WORKSPACE_CONTEXT),
+        ),
         // Space toggles playback from the lists, never from a text field.
         KeyBinding::new("space", TogglePlayback, Some(home::HOME_CONTEXT)),
         KeyBinding::new("space", TogglePlayback, Some(library::ALBUMS_CONTEXT)),
         KeyBinding::new("space", TogglePlayback, Some(library::SONGS_CONTEXT)),
+        KeyBinding::new("space", TogglePlayback, Some(playlists::PLAYLISTS_CONTEXT)),
+        KeyBinding::new("space", TogglePlayback, Some(playlists::SONGS_CONTEXT)),
     ]);
 }
 
@@ -83,11 +126,18 @@ pub(crate) fn set_menus(queue_shown: bool, destination: Option<Destination>, cx:
             MenuItem::separator(),
             MenuItem::action("Quit hiphile", Quit),
         ]),
-        Menu::new("Library").items([MenuItem::action("Refresh Library", library::Refresh)]),
+        Menu::new("Library").items([
+            MenuItem::action("Refresh Library", library::Refresh),
+            MenuItem::separator(),
+            MenuItem::action("New Playlist…", actions::NewPlaylist::empty()),
+            MenuItem::action("Save Queue as Playlist…", SaveQueue),
+        ]),
         Menu::new("View").items([
             MenuItem::action("Home", ShowHome).checked(destination == Some(Destination::Home)),
             MenuItem::action("Library", ShowLibrary)
                 .checked(destination == Some(Destination::Library)),
+            MenuItem::action("Playlists", ShowPlaylists)
+                .checked(destination == Some(Destination::Playlists)),
             MenuItem::separator(),
             MenuItem::action("Queue", ToggleQueue).checked(queue_shown),
         ]),

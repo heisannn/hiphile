@@ -6,6 +6,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+actions.workspace = true
 audio.workspace = true
 client.workspace = true
 config.workspace = true

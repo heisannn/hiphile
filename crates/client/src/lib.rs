@@ -7,13 +7,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::de::DeserializeOwned;
 use subsonic::{
     Album, AlbumId, AlbumWithSongs, CoverArtId, Credentials, Endpoint, Envelope, GetAlbum,
-    GetAlbumList2, GetIndexes, GetScanStatus, GetSimilarSongs2, GetSong, Ping, ScanStatus, Search3,
-    ServerInfo, Song, SongId,
+    GetAlbumList2, GetIndexes, GetPlaylist, GetPlaylists, GetScanStatus, GetSimilarSongs2, GetSong,
+    Ping, Playlist, PlaylistId, PlaylistWithSongs, ScanStatus, Search3, ServerInfo, Song, SongId,
 };
 use url::Url;
 
 /// Largest page `getAlbumList2` returns.
 pub const ALBUM_PAGE_SIZE: u32 = 500;
+
+/// Longest URL sent as is. Proxies in front of a server commonly refuse more
+/// than 8 KiB of request line, and a playlist lists every one of its songs.
+const LONGEST_URL: usize = 4096;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -214,6 +218,78 @@ impl Client {
         Ok(envelope.into_payload().into_album())
     }
 
+    /// Every playlist the user can play.
+    pub async fn playlists(&self) -> Result<Vec<Playlist>, Error> {
+        let envelope = self.call::<GetPlaylists>(&Endpoint::playlists()).await?;
+        Ok(envelope.into_payload().into_playlists())
+    }
+
+    pub async fn playlist(&self, playlist: &PlaylistId) -> Result<PlaylistWithSongs, Error> {
+        let envelope = self
+            .call::<GetPlaylist>(&Endpoint::playlist(playlist))
+            .await?;
+        Ok(envelope.into_payload().into_playlist())
+    }
+
+    pub async fn create_playlist(
+        &self,
+        name: &str,
+        songs: &[SongId],
+    ) -> Result<PlaylistWithSongs, Error> {
+        let envelope = self
+            .call_with_form::<GetPlaylist>(&Endpoint::create_playlist(name, songs))
+            .await?;
+        Ok(envelope.into_payload().into_playlist())
+    }
+
+    /// Makes `songs`, in this order, the whole of `playlist`.
+    pub async fn replace_playlist_songs(
+        &self,
+        playlist: &PlaylistId,
+        songs: &[SongId],
+    ) -> Result<(), Error> {
+        if songs.is_empty() {
+            return self.clear_playlist(playlist).await;
+        }
+        self.call_with_form::<Ping>(&Endpoint::replace_playlist_songs(playlist, songs))
+            .await?;
+        Ok(())
+    }
+
+    /// Takes every song out of `playlist` by position: `createPlaylist` with no
+    /// songs may be read as no change to them.
+    async fn clear_playlist(&self, playlist: &PlaylistId) -> Result<(), Error> {
+        let count = self.playlist(playlist).await?.songs().len();
+        if count > 0 {
+            self.call_with_form::<Ping>(&Endpoint::remove_from_playlist(playlist, 0..count))
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Adds `songs` after those already in `playlist`.
+    pub async fn add_to_playlist(
+        &self,
+        playlist: &PlaylistId,
+        songs: &[SongId],
+    ) -> Result<(), Error> {
+        self.call_with_form::<Ping>(&Endpoint::add_to_playlist(playlist, songs))
+            .await?;
+        Ok(())
+    }
+
+    pub async fn rename_playlist(&self, playlist: &PlaylistId, name: &str) -> Result<(), Error> {
+        self.call::<Ping>(&Endpoint::rename_playlist(playlist, name))
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete_playlist(&self, playlist: &PlaylistId) -> Result<(), Error> {
+        self.call::<Ping>(&Endpoint::delete_playlist(playlist))
+            .await?;
+        Ok(())
+    }
+
     /// Tells the server `song` was listened to at `played_at`.
     pub async fn scrobble(&self, song: &SongId, played_at: SystemTime) -> Result<(), Error> {
         let played_at = played_at.duration_since(UNIX_EPOCH).map_or(0, |since| {
@@ -272,16 +348,48 @@ impl Client {
         endpoint: &Endpoint,
     ) -> Result<Envelope<T>, Error> {
         let response = self.net.get(self.server.url(endpoint)).await?;
-        let status = response.status();
-        // Subsonic reports protocol errors with HTTP 200; only a body we can
-        // parse should decide. A non-success status with no Subsonic body is a
-        // proxy or routing problem.
-        match subsonic::parse::<T>(response.body()) {
-            Err(subsonic::Error::InvalidResponse(_)) if !status.is_success() => {
-                Err(Error::HttpStatus(status.as_u16()))
-            }
-            result => Ok(result?),
+        decode(response.status(), response.body())
+    }
+
+    /// Like [`Self::call`] for an endpoint whose parameters can outgrow a URL:
+    /// those too long for one go in a form body, which OpenSubsonic servers
+    /// read the same way (the `formPost` extension).
+    async fn call_with_form<T: DeserializeOwned>(
+        &self,
+        endpoint: &Endpoint,
+    ) -> Result<Envelope<T>, Error> {
+        let (url, form) = request_parts(self.server.url(endpoint));
+        let response = match form {
+            Some(form) => self.net.post_form(url, form).await?,
+            None => self.net.get(url).await?,
+        };
+        decode(response.status(), response.body())
+    }
+}
+
+/// `url` as it is when short enough to send, or else without its query, which
+/// is returned to send as a form.
+fn request_parts(mut url: Url) -> (Url, Option<String>) {
+    if url.as_str().len() <= LONGEST_URL {
+        return (url, None);
+    }
+    let form = url.query().map(str::to_owned);
+    url.set_query(None);
+    (url, form)
+}
+
+fn decode<T: DeserializeOwned>(
+    status: net::http::StatusCode,
+    body: &[u8],
+) -> Result<Envelope<T>, Error> {
+    // Subsonic reports protocol errors with HTTP 200; only a body we can
+    // parse should decide. A non-success status with no Subsonic body is a
+    // proxy or routing problem.
+    match subsonic::parse::<T>(body) {
+        Err(subsonic::Error::InvalidResponse(_)) if !status.is_success() => {
+            Err(Error::HttpStatus(status.as_u16()))
         }
+        result => Ok(result?),
     }
 }
 
@@ -308,6 +416,26 @@ mod tests {
         assert!(is_document("text/xml"));
         assert!(!is_document("audio/flac"));
         assert!(!is_document(""));
+    }
+
+    #[test]
+    fn a_url_too_long_to_send_moves_its_query_to_a_form() {
+        let server = Server::new("https://music.example.com", Credentials::api_key("k")).unwrap();
+        let playlist = PlaylistId::new("p1");
+        let few = vec![SongId::new("song"); 3];
+        let endpoint = Endpoint::replace_playlist_songs(&playlist, &few);
+        let (url, form) = request_parts(server.url(&endpoint));
+        assert_eq!(form, None);
+        assert!(url.query().is_some());
+
+        let many = vec![SongId::new("0123456789abcdef0123456789abcdef"); 500];
+        let endpoint = Endpoint::replace_playlist_songs(&playlist, &many);
+        let (url, form) = request_parts(server.url(&endpoint));
+        assert_eq!(url.query(), None);
+        assert_eq!(url.path(), "/rest/createPlaylist");
+        let form = form.unwrap();
+        assert_eq!(form.matches("songId=").count(), 500);
+        assert!(form.contains("apiKey=k"));
     }
 
     #[test]

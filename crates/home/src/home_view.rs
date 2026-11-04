@@ -16,7 +16,7 @@ use gpui_kit::{
     ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
     Window, div, prelude::FluentBuilder as _,
 };
-use subsonic::{Album, AlbumId, Song, SongId};
+use subsonic::{Album, AlbumId, PlaylistId, Song, SongId};
 use ui::list_navigation::{
     SelectFirst, SelectLast, SelectNext, SelectPageDown, SelectPageUp, SelectPrevious,
 };
@@ -26,8 +26,8 @@ use crate::layout::{AlbumShelf, Item, Motion, columns_for, step};
 use crate::recent::most_recent;
 use crate::recommend::{Recommendations, fetch_recommended, today};
 use crate::{
-    AddToQueue, CONTROL_CONTEXT, HOME_CONTEXT, Open, Play, PlayNext, SelectLeft, SelectRight,
-    ShowInLibrary,
+    AddSelectionToPlaylist, AddToQueue, CONTROL_CONTEXT, ChoosePlaylist, HOME_CONTEXT, Open, Play,
+    PlayNext, SelectLeft, SelectRight, ShowInLibrary,
 };
 
 /// How many of the songs played last show.
@@ -147,10 +147,13 @@ enum Part {
 }
 
 /// What to do with an album's songs once they have been fetched.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum AlbumAction {
     Play,
     Enqueue(Placement),
+    /// Add them to this playlist, or to a new one for `None`.
+    AddToPlaylist(Option<PlaylistId>),
+    ChoosePlaylist,
 }
 
 impl Home {
@@ -611,6 +614,37 @@ impl Home {
         }
     }
 
+    /// The selected song on its own, when a song is what's selected.
+    fn selected_song(&self) -> Option<Arc<[Song]>> {
+        let Some(Item::Song(id)) = self.selection_on_screen() else {
+            return None;
+        };
+        let song = self.recent.items().get(self.song_ix(&id)?)?.clone();
+        Some(Arc::from([song]))
+    }
+
+    fn add_to_playlist(
+        &mut self,
+        playlist: Option<PlaylistId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(Item::Album(_, album)) = self.selection_on_screen() {
+            self.act_on_album(album, AlbumAction::AddToPlaylist(playlist), window, cx);
+        } else if let Some(songs) = self.selected_song() {
+            let command = actions::add_songs_command(songs)(playlist.as_ref());
+            window.dispatch_action(command, cx);
+        }
+    }
+
+    fn choose_playlist(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(Item::Album(_, album)) = self.selection_on_screen() {
+            self.act_on_album(album, AlbumAction::ChoosePlaylist, window, cx);
+        } else if let Some(songs) = self.selected_song() {
+            window.dispatch_action(Box::new(actions::ChoosePlaylist::new(songs)), cx);
+        }
+    }
+
     fn show_in_library(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let album = match self.selection_on_screen() {
             Some(Item::Album(_, album)) => Some(album),
@@ -663,6 +697,12 @@ impl Home {
                         AlbumAction::Play => Box::new(PlaySongs::new(songs, 0)),
                         AlbumAction::Enqueue(placement) => {
                             Box::new(EnqueueSongs::new(songs, placement))
+                        }
+                        AlbumAction::AddToPlaylist(playlist) => {
+                            actions::add_songs_command(songs)(playlist.as_ref())
+                        }
+                        AlbumAction::ChoosePlaylist => {
+                            Box::new(actions::ChoosePlaylist::new(songs))
                         }
                     };
                     window.dispatch_action(command, cx);
@@ -877,13 +917,16 @@ impl Home {
                     this.select(Item::Song(id.clone()), window, cx);
                 }),
             )
-            .context_menu(move |menu, _, _| {
-                menu.action_context(focus.clone())
+            .context_menu(move |menu, window, cx| {
+                let menu = menu
+                    .action_context(focus.clone())
                     .menu("Play", Box::new(Play))
                     .menu("Play Next", Box::new(PlayNext))
                     .menu("Add to Queue", Box::new(AddToQueue))
+                    .separator();
+                actions::add_to_playlist_submenu(menu, add_selection_command, window, cx)
                     .when(has_album, |menu| {
-                        menu.separator().menu("Show Album", Box::new(ShowInLibrary))
+                        menu.menu("Show Album", Box::new(ShowInLibrary))
                     })
             })
             .into_any_element()
@@ -990,12 +1033,14 @@ impl Home {
                     this.select(Item::Album(shelf, id.clone()), window, cx);
                 }),
             )
-            .context_menu(move |menu, _, _| {
-                menu.action_context(focus.clone())
+            .context_menu(move |menu, window, cx| {
+                let menu = menu
+                    .action_context(focus.clone())
                     .menu("Play", Box::new(Play))
                     .menu("Play Next", Box::new(PlayNext))
                     .menu("Add to Queue", Box::new(AddToQueue))
-                    .separator()
+                    .separator();
+                actions::add_to_playlist_submenu(menu, add_selection_command, window, cx)
                     .menu("Show in Library", Box::new(ShowInLibrary))
             })
             .into_any_element()
@@ -1059,6 +1104,14 @@ impl Render for Home {
             .on_action(cx.listener(|this, _: &ShowInLibrary, window, cx| {
                 this.show_in_library(window, cx);
             }))
+            .on_action(
+                cx.listener(|this, action: &AddSelectionToPlaylist, window, cx| {
+                    this.add_to_playlist(action.playlist.clone(), window, cx);
+                }),
+            )
+            .on_action(cx.listener(|this, _: &ChoosePlaylist, window, cx| {
+                this.choose_playlist(window, cx);
+            }))
             .child(
                 v_flex()
                     // An element with a scroll handle lists no bounds here;
@@ -1077,6 +1130,14 @@ impl Render for Home {
             )
             .child(Scrollbar::vertical(&self.scroll))
     }
+}
+
+/// What a choice in an Add to Playlist menu runs: an album's songs are only
+/// fetched once the choice is made.
+fn add_selection_command(playlist: Option<&PlaylistId>) -> Box<dyn gpui_kit::Action> {
+    Box::new(AddSelectionToPlaylist {
+        playlist: playlist.cloned(),
+    })
 }
 
 /// What a load of the songs played last found.

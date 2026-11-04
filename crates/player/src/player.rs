@@ -292,6 +292,20 @@ impl Player {
         self.queue.current().is_some()
     }
 
+    /// Whether the queue holds any song, even with playback past its end.
+    pub fn has_queued_songs(&self) -> bool {
+        !self.queue.is_empty()
+    }
+
+    /// Every song in the queue, in order.
+    pub fn queued_songs(&self) -> Arc<[Song]> {
+        self.queue
+            .entries()
+            .iter()
+            .map(|entry| entry.item().clone())
+            .collect()
+    }
+
     /// Replaces the queue with `songs` and plays from `start_ix`.
     pub fn play(&mut self, songs: &[Song], start_ix: usize, cx: &mut Context<Self>) {
         self.queue.replace(songs.to_vec(), start_ix);

@@ -21,6 +21,7 @@ library = { path = "crates/library" }
 net = { path = "crates/net" }
 playback = { path = "crates/playback" }
 player = { path = "crates/player" }
+playlists = { path = "crates/playlists" }
 presence = { path = "crates/presence" }
 search = { path = "crates/search" }
 session = { path = "crates/session" }

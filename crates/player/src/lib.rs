@@ -21,7 +21,9 @@ actions!(
         SeekBackward,
         VolumeUp,
         VolumeDown,
-        ToggleMute
+        ToggleMute,
+        /// Creates a playlist of the songs in the queue.
+        SaveQueue
     ]
 );
 
@@ -49,7 +51,16 @@ pub fn init(context: &'static str, cx: &mut App) {
         Err(_) => cx.set_global(GlobalSongCache(None)),
     }
 
-    let [next, previous, forward, backward, up, down, mute] = if cx.platform_info().is_mac() {
+    let [
+        next,
+        previous,
+        forward,
+        backward,
+        up,
+        down,
+        mute,
+        add_to_playlist,
+    ] = if cx.platform_info().is_mac() {
         [
             "cmd-right",
             "cmd-left",
@@ -58,6 +69,7 @@ pub fn init(context: &'static str, cx: &mut App) {
             "cmd-up",
             "cmd-down",
             "cmd-alt-down",
+            "cmd-shift-p",
         ]
     } else {
         [
@@ -68,6 +80,7 @@ pub fn init(context: &'static str, cx: &mut App) {
             "ctrl-up",
             "ctrl-down",
             "ctrl-alt-down",
+            "ctrl-shift-p",
         ]
     };
     cx.bind_keys([
@@ -88,6 +101,11 @@ pub fn init(context: &'static str, cx: &mut App) {
         KeyBinding::new("backspace", queue_view::Remove, Some(QUEUE_CONTEXT)),
         KeyBinding::new("alt-up", queue_view::MoveUp, Some(QUEUE_CONTEXT)),
         KeyBinding::new("alt-down", queue_view::MoveDown, Some(QUEUE_CONTEXT)),
+        KeyBinding::new(
+            add_to_playlist,
+            queue_view::AddToPlaylist,
+            Some(QUEUE_CONTEXT),
+        ),
         // Space toggles playback from the list, never from a text field.
         KeyBinding::new("space", TogglePlayback, Some(QUEUE_CONTEXT)),
     ]);

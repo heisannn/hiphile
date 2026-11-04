@@ -116,6 +116,22 @@ impl Client {
         self.send(request)
     }
 
+    /// Sends `form`, already URL-encoded, as a form body.
+    pub fn post_form(
+        &self,
+        url: Url,
+        form: String,
+    ) -> impl Future<Output = Result<http::Response<Bytes>, Error>> + Send + 'static {
+        let request = http::Request::post(url.as_str())
+            .header(
+                http::header::CONTENT_TYPE,
+                "application/x-www-form-urlencoded",
+            )
+            .body(Bytes::from(form))
+            .expect("a parsed Url is a valid URI");
+        self.send(request)
+    }
+
     /// Starts a download and resolves once the response headers arrive.
     ///
     /// The body keeps arriving in the background; see [`Download`].

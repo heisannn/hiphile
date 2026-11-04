@@ -27,6 +27,13 @@ impl Endpoint {
         self
     }
 
+    /// One `name` for each of `songs`, in order, as the protocol lists them.
+    fn songs(mut self, name: &'static str, songs: &[crate::SongId]) -> Self {
+        self.params
+            .extend(songs.iter().map(|song| (name, song.as_str().to_owned())));
+        self
+    }
+
     pub fn ping() -> Self {
         Self::new("ping")
     }
@@ -139,6 +146,60 @@ impl Endpoint {
         Self::new("scrobble")
             .param("id", song.as_str())
             .param("submission", "false")
+    }
+
+    pub fn playlists() -> Self {
+        Self::new("getPlaylists")
+    }
+
+    pub fn playlist(playlist: &crate::PlaylistId) -> Self {
+        Self::new("getPlaylist").param("id", playlist.as_str())
+    }
+
+    /// Creates a playlist holding `songs`.
+    pub fn create_playlist(name: &str, songs: &[crate::SongId]) -> Self {
+        Self::new("createPlaylist")
+            .param("name", name)
+            .songs("songId", songs)
+    }
+
+    /// Makes `songs`, in this order, the whole of `playlist`. Its name and
+    /// other details stay as they are.
+    pub fn replace_playlist_songs(playlist: &crate::PlaylistId, songs: &[crate::SongId]) -> Self {
+        Self::new("createPlaylist")
+            .param("playlistId", playlist.as_str())
+            .songs("songId", songs)
+    }
+
+    /// Adds `songs` after those already in `playlist`.
+    pub fn add_to_playlist(playlist: &crate::PlaylistId, songs: &[crate::SongId]) -> Self {
+        Self::new("updatePlaylist")
+            .param("playlistId", playlist.as_str())
+            .songs("songIdToAdd", songs)
+    }
+
+    /// Takes the songs at these positions out of `playlist`.
+    pub fn remove_from_playlist(
+        playlist: &crate::PlaylistId,
+        positions: impl IntoIterator<Item = usize>,
+    ) -> Self {
+        let mut endpoint = Self::new("updatePlaylist").param("playlistId", playlist.as_str());
+        endpoint.params.extend(
+            positions
+                .into_iter()
+                .map(|position| ("songIndexToRemove", position.to_string())),
+        );
+        endpoint
+    }
+
+    pub fn rename_playlist(playlist: &crate::PlaylistId, name: &str) -> Self {
+        Self::new("updatePlaylist")
+            .param("playlistId", playlist.as_str())
+            .param("name", name)
+    }
+
+    pub fn delete_playlist(playlist: &crate::PlaylistId) -> Self {
+        Self::new("deletePlaylist").param("id", playlist.as_str())
     }
 
     /// Original file bytes (`format=raw`), so the client decodes the source itself.
@@ -328,6 +389,63 @@ mod tests {
         assert_eq!(query(&url, "id").as_deref(), Some("s1"));
         assert_eq!(query(&url, "submission").as_deref(), Some("false"));
         assert_eq!(query(&url, "time"), None);
+    }
+
+    #[test]
+    fn replacing_a_playlists_songs_lists_them_in_order_without_a_name() {
+        let base = Url::parse("https://music.example.com").unwrap();
+        let songs = [
+            crate::SongId::new("s2"),
+            crate::SongId::new("s1"),
+            crate::SongId::new("s2"),
+        ];
+        let playlist = crate::PlaylistId::new("p1");
+        let url = Endpoint::replace_playlist_songs(&playlist, &songs)
+            .url(&base, &Credentials::api_key("k"));
+        assert_eq!(url.path(), "/rest/createPlaylist");
+        assert_eq!(query(&url, "playlistId").as_deref(), Some("p1"));
+        assert_eq!(query(&url, "name"), None);
+        let listed: Vec<_> = url
+            .query_pairs()
+            .filter(|(name, _)| name == "songId")
+            .map(|(_, value)| value.into_owned())
+            .collect();
+        assert_eq!(listed, ["s2", "s1", "s2"]);
+    }
+
+    #[test]
+    fn creating_a_playlist_names_it() {
+        let base = Url::parse("https://music.example.com").unwrap();
+        let url = Endpoint::create_playlist("Late & loud", &[crate::SongId::new("s1")])
+            .url(&base, &Credentials::api_key("k"));
+        assert_eq!(query(&url, "name").as_deref(), Some("Late & loud"));
+        assert_eq!(query(&url, "playlistId"), None);
+        assert_eq!(query(&url, "songId").as_deref(), Some("s1"));
+    }
+
+    #[test]
+    fn adding_to_a_playlist_leaves_its_songs_in_place() {
+        let base = Url::parse("https://music.example.com").unwrap();
+        let playlist = crate::PlaylistId::new("p1");
+        let url = Endpoint::add_to_playlist(&playlist, &[crate::SongId::new("s1")])
+            .url(&base, &Credentials::api_key("k"));
+        assert_eq!(url.path(), "/rest/updatePlaylist");
+        assert_eq!(query(&url, "songIdToAdd").as_deref(), Some("s1"));
+    }
+
+    #[test]
+    fn removing_from_a_playlist_lists_the_positions() {
+        let base = Url::parse("https://music.example.com").unwrap();
+        let playlist = crate::PlaylistId::new("p1");
+        let url =
+            Endpoint::remove_from_playlist(&playlist, 0..2).url(&base, &Credentials::api_key("k"));
+        assert_eq!(url.path(), "/rest/updatePlaylist");
+        let listed: Vec<_> = url
+            .query_pairs()
+            .filter(|(name, _)| name == "songIndexToRemove")
+            .map(|(_, value)| value.into_owned())
+            .collect();
+        assert_eq!(listed, ["0", "1"]);
     }
 
     #[test]

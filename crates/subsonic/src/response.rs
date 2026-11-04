@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
-use crate::{Album, AlbumWithSongs, Error, ServerErrorCode, Song};
+use crate::{Album, AlbumWithSongs, Error, Playlist, PlaylistWithSongs, ServerErrorCode, Song};
 
 /// Fields every `subsonic-response` carries.
 #[derive(Clone, Debug, Deserialize)]
@@ -172,6 +172,37 @@ impl ScanStatus {
     }
 }
 
+/// Payload of `getPlaylists`.
+#[derive(Debug, Deserialize)]
+pub struct GetPlaylists {
+    #[serde(default)]
+    playlists: PlaylistList,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct PlaylistList {
+    #[serde(default)]
+    playlist: Vec<Playlist>,
+}
+
+impl GetPlaylists {
+    pub fn into_playlists(self) -> Vec<Playlist> {
+        self.playlists.playlist
+    }
+}
+
+/// Payload of `getPlaylist` and `createPlaylist`.
+#[derive(Debug, Deserialize)]
+pub struct GetPlaylist {
+    playlist: PlaylistWithSongs,
+}
+
+impl GetPlaylist {
+    pub fn into_playlist(self) -> PlaylistWithSongs {
+        self.playlist
+    }
+}
+
 /// Payload of `getAlbum`.
 #[derive(Debug, Deserialize)]
 pub struct GetAlbum {
@@ -314,6 +345,52 @@ mod tests {
         assert_eq!(songs[0].sampling_rate(), Some(96000));
         assert_eq!(songs[0].size(), Some(31_457_280));
         assert_eq!(songs[0].duration().map(|d| d.as_secs()), Some(215));
+    }
+
+    #[test]
+    fn parses_playlists() {
+        let body = br#"{"subsonic-response":{"status":"ok","version":"1.16.1","playlists":{"playlist":[{"id":"p1","name":"Focus","owner":"alice","songCount":2,"duration":300,"coverArt":"pl-p1","readonly":false}]}}}"#;
+        let playlists = parse::<GetPlaylists>(body)
+            .unwrap()
+            .into_payload()
+            .into_playlists();
+        assert_eq!(playlists.len(), 1);
+        assert_eq!(playlists[0].name(), "Focus");
+        assert_eq!(playlists[0].song_count(), Some(2));
+        assert_eq!(playlists[0].duration().map(|d| d.as_secs()), Some(300));
+    }
+
+    #[test]
+    fn no_playlists_is_an_empty_list() {
+        let body = br#"{"subsonic-response":{"status":"ok","version":"1.16.1","playlists":{}}}"#;
+        let payload = parse::<GetPlaylists>(body).unwrap().into_payload();
+        assert!(payload.into_playlists().is_empty());
+    }
+
+    #[test]
+    fn parses_a_playlist_with_its_songs_in_order() {
+        let body = br#"{"subsonic-response":{"status":"ok","version":"1.16.1","playlist":{"id":"p1","name":"Focus","entry":[{"id":"s2","title":"Two"},{"id":"s1","title":"One"},{"id":"s2","title":"Two"}]}}}"#;
+        let loaded = parse::<GetPlaylist>(body)
+            .unwrap()
+            .into_payload()
+            .into_playlist();
+        assert_eq!(loaded.playlist().id().as_str(), "p1");
+        let ids: Vec<_> = loaded
+            .songs()
+            .iter()
+            .map(|song| song.id().as_str())
+            .collect();
+        assert_eq!(ids, ["s2", "s1", "s2"]);
+    }
+
+    #[test]
+    fn a_playlist_without_songs_has_an_empty_list() {
+        let body = br#"{"subsonic-response":{"status":"ok","version":"1.16.1","playlist":{"id":"p1","name":"Focus"}}}"#;
+        let loaded = parse::<GetPlaylist>(body)
+            .unwrap()
+            .into_payload()
+            .into_playlist();
+        assert!(loaded.songs().is_empty());
     }
 
     #[test]
