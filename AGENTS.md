@@ -1,5 +1,12 @@
 # AGENTS.md
 
+## Read the gpui-kit guides first
+
+Before writing or reviewing code in `hiphile`, read both guides and follow them:
+
+- Coding: `.agents/skills/gpui-kit/references/coding-guides.md`
+- UI/UX: `.agents/skills/gpui-kit-design-guides/references/design-guides.md`
+
 ## No self-evident text
 
 Do not add descriptions, notes, hints, legends or tooltips that only repeat what the screen
