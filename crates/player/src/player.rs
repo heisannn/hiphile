@@ -1,6 +1,8 @@
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use audio::{Engine, Event, EventKind, LoadId, OutputSettings, PlaybackFormat};
+use futures::AsyncReadExt as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _,
@@ -9,12 +11,14 @@ use gpui_kit::component::{
     slider::{Slider, SliderEvent, SliderState},
     v_flex,
 };
+use gpui_kit::http_client::AsyncBody;
 use gpui_kit::{
     AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render,
     SharedString, Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _,
 };
 use playback::{Arrival, EntryId, Placement, PlayTally, Queue};
-use subsonic::{Song, SongId};
+use presence::{CoverHost, Presence};
+use subsonic::{CoverArtId, Song, SongId};
 use ui::{CoverArt, format_duration};
 
 use crate::format;
@@ -31,6 +35,9 @@ const SEEK_STEP: Duration = Duration::from_secs(10);
 const VOLUME_STEP: f32 = 0.1;
 /// Pixel size requested for the bar's cover: twice its on-screen size.
 const COVER_PIXELS: u32 = 96;
+/// Pixel size of the cover published for the Discord status, the same as the
+/// library's, so that it is often on disk already.
+const PRESENCE_COVER_PIXELS: u32 = 512;
 
 pub enum PlayerEvent {
     /// What the player is on, for views that mark it.
@@ -45,6 +52,9 @@ pub enum PlayerEvent {
     /// A play of a song has been reported to the server, as far as it could
     /// be, so what the server says was played last may have changed.
     Played,
+    /// A cover was looked for to put on the Discord status, and why it could
+    /// not be published, if it could not.
+    CoverSought { error: Option<SharedString> },
 }
 
 /// The play queue, the audio engine, and the now-playing bar that controls
@@ -74,6 +84,13 @@ pub struct Player {
     resume: Option<Resume>,
     /// How much of this play of the current song has been listened to.
     tally: PlayTally,
+    presence: Presence,
+    cover_host: Arc<CoverHost>,
+    /// Without an API key, no cover goes on the Discord status.
+    cover_key: Option<Arc<str>>,
+    /// The cover being looked for, or last looked for without success, which
+    /// is then not looked for again until another song has had its turn.
+    sought_cover: Option<CoverArtId>,
     cover_url: Option<SharedString>,
     error: Option<SharedString>,
     /// The position as a fraction of the song.
@@ -212,6 +229,7 @@ impl Player {
                 async {}
             }),
         ];
+        let cover_host = Arc::new(CoverHost::imgbb(session.client().net().clone()));
         Self {
             session,
             store,
@@ -226,6 +244,15 @@ impl Player {
             format: None,
             resume: None,
             tally: PlayTally::default(),
+            // Tests play made-up songs, which must not reach the user's status.
+            presence: if cfg!(test) {
+                Presence::disconnected()
+            } else {
+                Presence::spawn()
+            },
+            cover_host,
+            cover_key: None,
+            sought_cover: None,
             cover_url: None,
             error: None,
             position,
@@ -251,6 +278,13 @@ impl Player {
         if self.state == State::Stopped && self.resume.is_some() {
             self.open_current(false, cx);
         }
+    }
+
+    /// Publishes covers with this ImgBB API key from now on, or none without
+    /// one, trying again a cover that the last key could not publish.
+    pub fn set_cover_key(&mut self, key: Option<&str>) {
+        self.cover_key = key.map(Arc::from);
+        self.sought_cover = None;
     }
 
     /// Whether there is a song to play, pause, or skip.
@@ -439,6 +473,7 @@ impl Player {
         if self.state == State::Playing && self.tally.observe(position, self.duration()) {
             self.scrobble_current(cx);
         }
+        self.show_presence(cx);
         if self.scrub.is_none() {
             self.show_position(position, window, cx);
         }
@@ -446,6 +481,79 @@ impl Player {
             self.refreshed_position = position;
             cx.notify();
         }
+    }
+
+    /// Keeps the Discord status on what is playing. A song opening keeps the
+    /// status of the one before, so that skipping does not make it flicker.
+    fn show_presence(&mut self, cx: &mut Context<Self>) {
+        match self.state {
+            State::Playing => {
+                let duration = self.duration();
+                if let Some(song) = self.queue.current() {
+                    self.presence
+                        .listening(song, self.engine.position(), duration);
+                }
+                self.seek_presence_cover(cx);
+            }
+            State::Paused | State::Stopped => self.presence.clear(),
+            State::Opening => {}
+        }
+    }
+
+    /// Finds the current song's cover a public URL for the Discord status.
+    /// Only the status depends on it, so a failure is not shown. It is not
+    /// called off when the song changes: an upload cut short leaves a file up
+    /// with no record of it, and the next play would upload another. It is also
+    /// how a link that has run out gets replaced, for as long as the app runs.
+    fn seek_presence_cover(&mut self, cx: &mut Context<Self>) {
+        let Some(key) = self.cover_key.clone() else {
+            return;
+        };
+        let Some(cover) = self
+            .queue
+            .current()
+            .and_then(Song::cover_art)
+            .filter(|cover| {
+                self.sought_cover.as_ref() != Some(*cover) && !self.presence.has_cover(cover)
+            })
+            .cloned()
+        else {
+            return;
+        };
+        self.sought_cover = Some(cover.clone());
+        let url = self.session.cover_art_url(&cover, PRESENCE_COVER_PIXELS);
+        let http = cx.http_client();
+        let host = self.cover_host.clone();
+        let link = cx.background_spawn(async move {
+            let mut response = http
+                .get(url.as_ref(), AsyncBody::empty(), true)
+                .await
+                .ok()?;
+            let mut image = Vec::new();
+            response.body_mut().read_to_end(&mut image).await.ok()?;
+            Some(host.link(&image, &key).await)
+        });
+        cx.spawn(async move |this, cx| {
+            // Without the image, it is the server that failed, which the rest
+            // of the app shows.
+            let Some(link) = link.await else {
+                return;
+            };
+            this.update(cx, |this, cx| match link {
+                Ok(link) => {
+                    if this.sought_cover.as_ref() == Some(&cover) {
+                        this.sought_cover = None;
+                    }
+                    this.presence.set_cover(cover, link);
+                    cx.emit(PlayerEvent::CoverSought { error: None });
+                }
+                Err(error) => cx.emit(PlayerEvent::CoverSought {
+                    error: Some(error.to_string().into()),
+                }),
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Tells the server the current song was played. The play is kept first,

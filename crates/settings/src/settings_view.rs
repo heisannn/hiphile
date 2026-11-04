@@ -11,12 +11,14 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
+    AppContext as _, Axis, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, Window, div,
 };
 
 use crate::appearance_settings::{AppearanceSettings, CHOICES};
 use crate::audio_settings::{AudioSettings, MATCH_SONG, SYSTEM_DEFAULT};
+use crate::discord_settings::DiscordSettings;
+use crate::imgbb_key_field::ImgbbKeyField;
 use crate::song_cache_field::SongCacheField;
 use crate::song_cache_settings::SongCacheSettings;
 use crate::song_cache_usage::{SongCacheUsage, format_size};
@@ -28,19 +30,23 @@ use crate::{CloseWindow, SETTINGS_CONTEXT};
 const REFRESH: Duration = Duration::from_secs(2);
 
 /// Root view of the settings window. The choices live in
-/// [`AppearanceSettings`], [`AudioSettings`] and [`SongCacheSettings`].
+/// [`AppearanceSettings`], [`AudioSettings`], [`SongCacheSettings`] and
+/// [`DiscordSettings`].
 pub(crate) struct SettingsView {
     appearance: Entity<AppearanceSettings>,
     audio: Entity<AudioSettings>,
     song_cache: Entity<SongCacheSettings>,
     song_cache_field: Entity<SongCacheField>,
     song_cache_usage: Entity<SongCacheUsage>,
+    discord: Entity<DiscordSettings>,
+    imgbb_key_field: Entity<ImgbbKeyField>,
     focus: FocusHandle,
     _appearance_changes: Subscription,
     _system_appearance_changes: Subscription,
     _audio_changes: Subscription,
     _song_cache_changes: Subscription,
     _song_cache_usage_changes: Subscription,
+    _discord_changes: Subscription,
     _refresh: Task<()>,
 }
 
@@ -49,6 +55,7 @@ impl SettingsView {
         appearance: Entity<AppearanceSettings>,
         audio: Entity<AudioSettings>,
         song_cache: Entity<SongCacheSettings>,
+        discord: Entity<DiscordSettings>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -72,6 +79,7 @@ impl SettingsView {
             }
         });
         let song_cache_field = cx.new(|cx| SongCacheField::new(song_cache.clone(), window, cx));
+        let imgbb_key_field = cx.new(|cx| ImgbbKeyField::new(discord.clone(), window, cx));
         Self {
             _appearance_changes: cx.observe(&appearance, |_, _, cx| cx.notify()),
             _system_appearance_changes: crate::follow_system_appearance(window),
@@ -79,6 +87,9 @@ impl SettingsView {
             _audio_changes: cx.observe(&audio, |_, _, cx| cx.notify()),
             _song_cache_changes: cx.observe(&song_cache, |_, _, cx| cx.notify()),
             _song_cache_usage_changes: cx.observe(&song_cache_usage, |_, _, cx| cx.notify()),
+            _discord_changes: cx.observe(&discord, |_, _, cx| cx.notify()),
+            discord,
+            imgbb_key_field,
             audio,
             song_cache,
             song_cache_field,
@@ -170,6 +181,34 @@ impl SettingsView {
             .group(output)
     }
 
+    fn discord_page(&self, cx: &mut Context<Self>) -> SettingPage {
+        let key = SettingField::render({
+            let field = self.imgbb_key_field.clone();
+            move |_, _, _| field.clone()
+        });
+        let errors: Vec<SharedString> = self.discord.read(cx).errors().cloned().collect();
+        let mut covers = SettingGroup::new().item(
+            SettingItem::new("ImgBB API key", key)
+                .layout(Axis::Vertical)
+                .description(
+                    "Shows covers on your Discord status by uploading them to ImgBB, where \
+                     anyone with the link can see them for 180 days. Get a key at api.imgbb.com.",
+                )
+                .keywords(["cover", "presence", "upload"]),
+        );
+        if !errors.is_empty() {
+            covers = covers.footer(move |_, cx| {
+                v_flex()
+                    .gap_1()
+                    .text_color(cx.theme().danger)
+                    .children(errors.iter().cloned())
+            });
+        }
+        SettingPage::new("Discord")
+            .icon(IconName::Globe)
+            .group(covers)
+    }
+
     fn storage_page(&self, cx: &mut Context<Self>) -> SettingPage {
         let limit = SettingField::render({
             let field = self.song_cache_field.clone();
@@ -259,6 +298,7 @@ impl Render for SettingsView {
                         .with_group_variant(GroupBoxVariant::Outline)
                         .page(self.audio_page(cx))
                         .page(self.storage_page(cx))
+                        .page(self.discord_page(cx))
                         .page(self.appearance_page(cx)),
                 ),
             )

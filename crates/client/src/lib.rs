@@ -105,6 +105,11 @@ impl Client {
         &self.server
     }
 
+    /// The transport, for requests that are not to the server.
+    pub fn net(&self) -> &net::Client {
+        &self.net
+    }
+
     pub async fn ping(&self) -> Result<ServerInfo, Error> {
         let envelope = self.call::<Ping>(&Endpoint::ping()).await?;
         Ok(envelope.server().clone())

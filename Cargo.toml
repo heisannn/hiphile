@@ -21,6 +21,7 @@ library = { path = "crates/library" }
 net = { path = "crates/net" }
 playback = { path = "crates/playback" }
 player = { path = "crates/player" }
+presence = { path = "crates/presence" }
 search = { path = "crates/search" }
 session = { path = "crates/session" }
 settings = { path = "crates/settings" }
@@ -37,6 +38,7 @@ clap = { version = "4.6", features = ["derive", "env"] }
 config-rs = { package = "config", version = "0.15", default-features = false, features = ["toml"] }
 cpal = "0.18"
 dirs = "7.0"
+discord-rich-presence = "1.1"
 futures = "0.3"
 http = "1.5"
 gpui-kit = "0.9"

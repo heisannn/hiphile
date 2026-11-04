@@ -19,7 +19,7 @@ and configuration crates do not depend on GPUI, so the GUI and the CLI share the
 | Binaries | `hiphile` (GUI shell), `hiphile-cli` |
 | GUI features | `account`, `home`, `library`, `player`, `search`, `settings` |
 | GUI shared | `session`, `actions`, `ui` |
-| GPUI-independent | `subsonic`, `net`, `client`, `playback`, `audio`, `catalog`, `config` |
+| GPUI-independent | `subsonic`, `net`, `client`, `playback`, `presence`, `audio`, `catalog`, `config` |
 
 Feature crates never depend on each other; they communicate through `actions`.
 `script/check-gpui-free` fails if a GPUI-independent crate gains a GPUI dependency.
@@ -82,6 +82,23 @@ the server has them, so those made without the network are sent with the next
 play or launch. The app also tells the server when a song starts or resumes,
 which shows it as now playing there without counting a play. The CLI does
 neither.
+
+## Discord
+
+While a song plays and Discord is running on the same computer, the user's
+status on Discord says they are listening, with the song's title, artist, album
+and progress. Pausing or stopping takes it away. The CLI does not set a
+status.
+
+The cover shows only with an API key from [ImgBB](https://api.imgbb.com/), set
+in hiphile > Settings… and kept in `config.toml` as `imgbb_api_key`, as plain
+text. `HIPHILE_IMGBB_API_KEY` overrides it. Discord needs a public URL for the
+cover, and the one on the server holds the credentials for it, so the app uploads
+the image to ImgBB when a song with a new cover starts. **Anyone with the link can
+see the image for 180 days**, after which ImgBB deletes it. Nothing but the image
+goes up. `cover_links.sqlite` in the system cache directory
+(`~/Library/Caches/hiphile/` on macOS) records the links, so an image goes up again
+only once its link has run out. Without a key, nothing is uploaded.
 
 ## Library cache
 

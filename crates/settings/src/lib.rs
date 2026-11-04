@@ -2,11 +2,14 @@
 //!
 //! [`AudioSettings`] holds the chosen output and [`SongCacheSettings`] how many
 //! songs to keep, and each saves its own. The app shell hands them to the
-//! player and passes on [`OutputChanged`] and [`SongCacheChanged`]. The
-//! appearance only concerns the theme, which this crate keeps on it.
+//! player and passes on [`OutputChanged`] and [`SongCacheChanged`], and likewise
+//! for [`DiscordSettings`] and [`ImgbbKeyChanged`]. The appearance only concerns
+//! the theme, which this crate keeps on it.
 
 mod appearance_settings;
 mod audio_settings;
+mod discord_settings;
+mod imgbb_key_field;
 mod number_field;
 mod settings_view;
 mod song_cache_field;
@@ -20,6 +23,7 @@ use gpui_kit::{
 };
 
 pub use audio_settings::{AudioSettings, OutputChanged};
+pub use discord_settings::{DiscordSettings, ImgbbKeyChanged};
 pub use song_cache_settings::{SongCacheChanged, SongCacheSettings};
 
 use appearance_settings::AppearanceSettings;
@@ -34,6 +38,7 @@ struct GlobalSettings {
     appearance: Entity<AppearanceSettings>,
     audio: Entity<AudioSettings>,
     song_cache: Entity<SongCacheSettings>,
+    discord: Entity<DiscordSettings>,
     /// The settings window, if one was opened. It may have been closed since.
     window: Option<AnyWindowHandle>,
 }
@@ -47,10 +52,12 @@ pub fn init(cx: &mut App) {
     let appearance = cx.new(AppearanceSettings::new);
     let audio = cx.new(AudioSettings::new);
     let song_cache = cx.new(SongCacheSettings::new);
+    let discord = cx.new(DiscordSettings::new);
     cx.set_global(GlobalSettings {
         appearance,
         audio,
         song_cache,
+        discord,
         window: None,
     });
     // Deferred because an action reaches this handler while its window is being
@@ -71,6 +78,11 @@ pub fn init(cx: &mut App) {
 /// The chosen output, shared by the settings window and the player.
 pub fn audio_settings(cx: &App) -> Entity<AudioSettings> {
     cx.global::<GlobalSettings>().audio.clone()
+}
+
+/// The ImgBB API key, shared by the settings window and the app shell.
+pub fn discord_settings(cx: &App) -> Entity<DiscordSettings> {
+    cx.global::<GlobalSettings>().discord.clone()
 }
 
 /// How many songs to keep, shared by the settings window and the app shell.
@@ -116,8 +128,9 @@ fn open(cx: &mut App) {
     let appearance = cx.global::<GlobalSettings>().appearance.clone();
     let audio = audio_settings(cx);
     let song_cache = song_cache_settings(cx);
+    let discord = discord_settings(cx);
     let opened = gpui_kit::open_window(options, cx, |window, cx| {
-        cx.new(|cx| SettingsView::new(appearance, audio, song_cache, window, cx))
+        cx.new(|cx| SettingsView::new(appearance, audio, song_cache, discord, window, cx))
     });
     if let Ok((window, _)) = opened {
         cx.global_mut::<GlobalSettings>().window = Some(window);

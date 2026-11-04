@@ -58,6 +58,7 @@ struct Settings {
     output_device: Option<String>,
     sample_rate: Option<u32>,
     appearance: Option<String>,
+    imgbb_api_key: Option<String>,
 }
 
 /// The settings directory and its `config.toml`:
@@ -70,6 +71,7 @@ struct Settings {
 /// output_device = "coreaudio:BuiltInSpeakerDevice"
 /// sample_rate = 48000
 /// appearance = "dark"
+/// imgbb_api_key = "..."
 /// ```
 #[derive(Clone, Debug)]
 pub struct Store {
@@ -172,6 +174,13 @@ impl Store {
     pub fn appearance(&self) -> Result<Option<Appearance>, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         self.parse_appearance(settings.appearance.as_deref())
+    }
+
+    /// The API key for publishing covers on ImgBB, if there is one.
+    /// `HIPHILE_IMGBB_API_KEY` takes precedence over the file.
+    pub fn imgbb_api_key(&self) -> Result<Option<String>, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        Ok(usable_key(settings.imgbb_api_key))
     }
 
     fn parse_appearance(&self, value: Option<&str>) -> Result<Option<Appearance>, Error> {
@@ -288,6 +297,17 @@ impl Store {
         })
     }
 
+    /// Records the ImgBB API key, like [`Self::save_profile`]. `None` removes
+    /// the key, and with it the covers on the Discord status.
+    pub fn save_imgbb_api_key(&self, key: Option<&str>) -> Result<(), Error> {
+        self.edit(|document| match key {
+            Some(key) => document["imgbb_api_key"] = toml_edit::value(key),
+            None => {
+                document.remove("imgbb_api_key");
+            }
+        })
+    }
+
     fn edit(&self, change: impl FnOnce(&mut toml_edit::DocumentMut)) -> Result<(), Error> {
         let io_error = |path: &Path| {
             let path = path.to_owned();
@@ -332,6 +352,11 @@ pub fn song_cache_capacity_of(gib: f64) -> Option<u64> {
             (gib * f64::from(1u32 << 30)) as u64
         }
     })
+}
+
+fn usable_key(key: Option<String>) -> Option<String> {
+    key.map(|key| key.trim().to_owned())
+        .filter(|key| !key.is_empty())
 }
 
 #[cfg(test)]
@@ -709,6 +734,38 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(store.config_path()).unwrap(),
             "server = "
+        );
+    }
+
+    #[test]
+    fn the_imgbb_key_is_saved_read_and_removed() {
+        let store = temporary_store("imgbb-key");
+        assert_eq!(read(&store, &[]).imgbb_api_key, None);
+
+        store.save_imgbb_api_key(Some("abc123")).unwrap();
+        assert_eq!(read(&store, &[]).imgbb_api_key.as_deref(), Some("abc123"));
+
+        store.save_imgbb_api_key(None).unwrap();
+        assert_eq!(read(&store, &[]).imgbb_api_key, None);
+    }
+
+    #[test]
+    fn the_environment_overrides_the_imgbb_key() {
+        let store = temporary_store("imgbb-key-env");
+        store.save_imgbb_api_key(Some("file")).unwrap();
+
+        let settings = read(&store, &[("HIPHILE_IMGBB_API_KEY", "env")]);
+
+        assert_eq!(settings.imgbb_api_key.as_deref(), Some("env"));
+    }
+
+    #[test]
+    fn a_blank_imgbb_key_is_no_key() {
+        assert_eq!(usable_key(None), None);
+        assert_eq!(usable_key(Some("  ".to_owned())), None);
+        assert_eq!(
+            usable_key(Some(" abc\n".to_owned())).as_deref(),
+            Some("abc")
         );
     }
 }

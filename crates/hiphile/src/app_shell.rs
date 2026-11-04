@@ -97,6 +97,7 @@ struct Workspace {
     _player_events: Subscription,
     _library_events: Subscription,
     _output_changes: Subscription,
+    _cover_key_changes: Subscription,
     _focus_lost: Subscription,
 }
 
@@ -171,7 +172,13 @@ impl AppShell {
         let library = cx.new(|cx| Library::new(session.clone(), window, cx));
         let audio_settings = settings::audio_settings(cx);
         let output = audio_settings.read(cx).output().clone();
-        let player = cx.new(|cx| Player::new(session.clone(), output, window, cx));
+        let discord_settings = settings::discord_settings(cx);
+        let cover_key = discord_settings.read(cx).imgbb_key().map(str::to_owned);
+        let player = cx.new(|cx| {
+            let mut player = Player::new(session.clone(), output, window, cx);
+            player.set_cover_key(cover_key.as_deref());
+            player
+        });
         let queue = cx.new(|cx| QueueView::new(player.clone(), window, cx));
         let covers = CoverCache::new(cx);
         // The home screen and the library mark the song the player is on; the
@@ -195,6 +202,14 @@ impl AppShell {
                     PlayerEvent::Played => {
                         home.update(cx, |home, cx| home.song_played(cx)).ok();
                     }
+                    PlayerEvent::CoverSought { error } => {
+                        let error = error
+                            .as_ref()
+                            .map(|error| format!("Couldn't upload the cover: {error}.").into());
+                        settings::discord_settings(cx).update(cx, |settings, cx| {
+                            settings.set_upload_error(error, cx);
+                        });
+                    }
                     PlayerEvent::QueueChanged => {}
                 }
                 cx.notify();
@@ -213,6 +228,15 @@ impl AppShell {
                 let output = audio_settings.read(cx).output().clone();
                 player
                     .update(cx, |player, cx| player.set_output(output, cx))
+                    .ok();
+            }
+        });
+        let cover_key_changes = cx.subscribe(&discord_settings, {
+            let player = player.downgrade();
+            move |_, discord_settings, _: &settings::ImgbbKeyChanged, cx| {
+                let key = discord_settings.read(cx).imgbb_key().map(str::to_owned);
+                player
+                    .update(cx, |player, _| player.set_cover_key(key.as_deref()))
                     .ok();
             }
         });
@@ -236,6 +260,7 @@ impl AppShell {
             _player_events: player_events,
             _library_events: library_events,
             _output_changes: output_changes,
+            _cover_key_changes: cover_key_changes,
             _focus_lost: focus_lost,
         };
         workspace.focus_destination(window, cx);
