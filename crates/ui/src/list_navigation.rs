@@ -122,7 +122,103 @@ pub fn page_rows(scroll: &UniformListScrollHandle) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::Motion;
+    use gpui_kit::{
+        Entity, FocusHandle, IntoElement, ParentElement as _, Render, TestAppContext,
+        VisualTestContext, div,
+    };
+
+    use super::*;
+
+    actions!(list_test, [Open]);
+
+    const LIST: &str = "TestList";
+
+    /// A list with a control inside it, which notes what reaches the list.
+    struct TestList {
+        focus: FocusHandle,
+        control_focus: FocusHandle,
+        motions: Vec<Motion>,
+        opened: usize,
+    }
+
+    impl Render for TestList {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .key_context(LIST)
+                .track_focus(&self.focus)
+                .on_list_navigation(
+                    |this: &mut Self, motion, _, _| this.motions.push(motion),
+                    cx,
+                )
+                .on_action(cx.listener(|this, _: &Open, _, _| this.opened += 1))
+                .child(
+                    div()
+                        .key_context(CONTROL_CONTEXT)
+                        .track_focus(&self.control_focus),
+                )
+        }
+    }
+
+    fn list(cx: &mut TestAppContext) -> (Entity<TestList>, &mut VisualTestContext) {
+        cx.update(|cx| {
+            bind_control_keys(cx);
+            bind_list_navigation(LIST, cx);
+            cx.bind_keys([
+                KeyBinding::new("enter", Open, Some(LIST)),
+                KeyBinding::new("space", Open, Some(LIST)),
+            ]);
+        });
+        cx.add_window_view(|_, cx| TestList {
+            focus: cx.focus_handle(),
+            control_focus: cx.focus_handle(),
+            motions: Vec::new(),
+            opened: 0,
+        })
+    }
+
+    fn focus(
+        handle: impl Fn(&TestList) -> FocusHandle,
+        list: &Entity<TestList>,
+        cx: &mut VisualTestContext,
+    ) {
+        cx.update(|window, cx| handle(list.read(cx)).focus(window, cx));
+        cx.run_until_parked();
+    }
+
+    #[gpui_kit::test]
+    fn each_key_asks_for_its_move(cx: &mut TestAppContext) {
+        let (list, cx) = list(cx);
+        focus(|list| list.focus.clone(), &list, cx);
+
+        cx.simulate_keystrokes("down up home end pagedown pageup");
+
+        cx.update(|_, cx| {
+            assert_eq!(
+                list.read(cx).motions,
+                [
+                    Motion::By(1),
+                    Motion::By(-1),
+                    Motion::First,
+                    Motion::Last,
+                    Motion::Pages(1),
+                    Motion::Pages(-1),
+                ]
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn enter_and_space_stay_with_a_control_inside_the_list(cx: &mut TestAppContext) {
+        let (list, cx) = list(cx);
+        focus(|list| list.control_focus.clone(), &list, cx);
+
+        cx.simulate_keystrokes("enter space");
+        cx.update(|_, cx| assert_eq!(list.read(cx).opened, 0));
+
+        focus(|list| list.focus.clone(), &list, cx);
+        cx.simulate_keystrokes("enter space");
+        cx.update(|_, cx| assert_eq!(list.read(cx).opened, 2));
+    }
 
     #[test]
     fn motions_stay_within_the_list() {

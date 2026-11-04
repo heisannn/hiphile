@@ -52,3 +52,115 @@ pub trait ReorderExt: StatefulInteractiveElement + Sized {
 }
 
 impl<E: StatefulInteractiveElement + Sized> ReorderExt for E {}
+
+#[cfg(test)]
+mod tests {
+    use gpui_kit::{
+        Context, Entity, InteractiveElement as _, IntoElement, Modifiers, MouseButton,
+        ParentElement as _, Pixels, Point, Render, TestAppContext, VisualTestContext, div, point,
+        px,
+    };
+
+    use super::*;
+
+    /// Three rows of one kind of id above a row of another, one above the other.
+    #[derive(Default)]
+    struct TestRows {
+        /// What was dropped on what.
+        drops: Vec<(u32, u32)>,
+        other_drops: Vec<(u64, u64)>,
+    }
+
+    impl Render for TestRows {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let owner = cx.entity().downgrade();
+            let row_owner = owner.clone();
+            let rows = (0..3u32).map(move |id| {
+                let owner = row_owner.clone();
+                div().id(("row", id)).w_full().h_10().reorderable(
+                    id,
+                    id as usize,
+                    "row".into(),
+                    move |dragged, _, cx| {
+                        owner
+                            .update(cx, |this, _| this.drops.push((dragged, id)))
+                            .ok();
+                    },
+                )
+            });
+            let other = div().id("other").w_full().h_10().reorderable(
+                9u64,
+                3,
+                "other".into(),
+                move |dragged, _, cx| {
+                    owner
+                        .update(cx, |this, _| this.other_drops.push((dragged, 9)))
+                        .ok();
+                },
+            );
+            div().size_full().children(rows).child(other)
+        }
+    }
+
+    fn rows(cx: &mut TestAppContext) -> (Entity<TestRows>, &mut VisualTestContext) {
+        // The drag line reads the theme.
+        cx.update(gpui_kit::init);
+        let (rows, cx) = cx.add_window_view(|_, _| TestRows::default());
+        cx.run_until_parked();
+        (rows, cx)
+    }
+
+    fn row_center(ix: usize, cx: &mut VisualTestContext) -> Point<Pixels> {
+        let height = cx.update(|window, _| window.rem_size()) * 2.5;
+        point(px(100.), height * (ix as f32 + 0.5))
+    }
+
+    fn drag(from: usize, to: usize, cx: &mut VisualTestContext) {
+        let (from, to) = (row_center(from, cx), row_center(to, cx));
+        let none = Modifiers::default();
+        cx.simulate_mouse_move(from, None, none);
+        cx.simulate_mouse_down(from, MouseButton::Left, none);
+        cx.simulate_mouse_move(to, MouseButton::Left, none);
+        cx.simulate_mouse_move(to, MouseButton::Left, none);
+        cx.simulate_mouse_up(to, MouseButton::Left, none);
+        cx.run_until_parked();
+    }
+
+    #[gpui_kit::test]
+    fn a_row_dropped_on_another_tells_that_row_which_it_was(cx: &mut TestAppContext) {
+        let (rows, cx) = rows(cx);
+
+        drag(0, 2, cx);
+        drag(2, 1, cx);
+
+        cx.update(|_, cx| assert_eq!(rows.read(cx).drops, [(0, 2), (2, 1)]));
+    }
+
+    #[gpui_kit::test]
+    fn a_row_takes_no_drop_from_a_list_of_another_kind_of_id(cx: &mut TestAppContext) {
+        let (rows, cx) = rows(cx);
+
+        drag(0, 3, cx);
+        drag(3, 0, cx);
+
+        cx.update(|_, cx| {
+            assert!(rows.read(cx).drops.is_empty());
+            assert!(rows.read(cx).other_drops.is_empty());
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_short_press_is_no_drag(cx: &mut TestAppContext) {
+        let (rows, cx) = rows(cx);
+        let from = row_center(0, cx);
+        let none = Modifiers::default();
+
+        cx.simulate_mouse_move(from, None, none);
+        cx.simulate_mouse_down(from, MouseButton::Left, none);
+        cx.update(|_, cx| assert!(!cx.has_active_drag()));
+        cx.simulate_mouse_up(from, MouseButton::Left, none);
+        cx.run_until_parked();
+
+        cx.update(|_, cx| assert!(rows.read(cx).drops.is_empty()));
+    }
+}
