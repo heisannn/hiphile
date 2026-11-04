@@ -5,9 +5,8 @@ use std::time::{Duration, Instant};
 use actions::{AlbumAction, EnqueueSongs, Placement, PlaySongs, ShowAlbum};
 use futures::future::join_all;
 use gpui_kit::component::{
-    ActiveTheme as _, Selectable as _, Sizable as _, StyledExt as _, WindowExt as _,
-    button::Button, h_flex, list::ListItem, menu::ContextMenuExt as _,
-    notification::NotificationType, scroll::Scrollbar, spinner::Spinner, v_flex,
+    ActiveTheme as _, Selectable as _, Sizable as _, StyledExt as _, button::Button, h_flex,
+    list::ListItem, menu::ContextMenuExt as _, scroll::Scrollbar, spinner::Spinner, v_flex,
 };
 use gpui_kit::{
     AnyElement, App, AppContext as _, ClickEvent, Context, ElementId, FocusHandle, Focusable,
@@ -652,22 +651,13 @@ impl Home {
     ) {
         let session = self.session.clone();
         self._album_task = cx.spawn_in(window, async move |_, cx| {
-            let loaded = cx
+            let songs = cx
                 .background_spawn(async move { session.album(&album).await })
-                .await;
-            cx.update(|window, cx| match loaded {
-                Ok(loaded) => {
-                    if let Some(command) = action.command(loaded.into_parts().1.into()) {
-                        window.dispatch_action(command, cx);
-                    }
-                }
-                Err(error) => {
-                    let message =
-                        format!("Couldn't load this album. {}", session::describe(&error));
-                    window.push_notification((NotificationType::Error, message), cx);
-                }
-            })
-            .ok();
+                .await
+                .map(|loaded| Arc::from(loaded.into_parts().1))
+                .map_err(|error| session::describe(&error));
+            cx.update(|window, cx| action.finish(songs, window, cx))
+                .ok();
         });
     }
 

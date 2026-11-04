@@ -4,11 +4,10 @@ use actions::{AlbumAction, EnqueueSongs, Placement, PlaySongs};
 use catalog::{Mode, Outcome};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Sizable as _, WindowExt as _,
+    ActiveTheme as _, Disableable as _, Sizable as _,
     button::{Button, ButtonVariants as _},
     input::{InputEvent, InputState},
     menu::DropdownMenu as _,
-    notification::NotificationType,
     resizable::ResizableState,
     spinner::Spinner,
     v_flex,
@@ -449,22 +448,13 @@ impl Library {
         };
         let session = self.session.clone();
         self._album_action_task = cx.spawn_in(window, async move |_, cx| {
-            let loaded = cx
+            let songs = cx
                 .background_spawn(async move { session.album(&album).await })
-                .await;
-            cx.update(|window, cx| match loaded {
-                Ok(loaded) => {
-                    if let Some(command) = action.command(loaded.into_parts().1.into()) {
-                        window.dispatch_action(command, cx);
-                    }
-                }
-                Err(error) => {
-                    let message =
-                        format!("Couldn't load this album. {}", session::describe(&error));
-                    window.push_notification((NotificationType::Error, message), cx);
-                }
-            })
-            .ok();
+                .await
+                .map(|loaded| Arc::from(loaded.into_parts().1))
+                .map_err(|error| session::describe(&error));
+            cx.update(|window, cx| action.finish(songs, window, cx))
+                .ok();
         });
     }
 

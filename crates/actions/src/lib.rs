@@ -4,9 +4,10 @@
 //! and the app shell routes it to `player`. Only cross-feature actions belong
 //! here; a feature's own commands stay in that feature.
 
+use std::fmt::Display;
 use std::sync::Arc;
 
-use gpui_kit::component::menu::PopupMenu;
+use gpui_kit::component::{WindowExt as _, menu::PopupMenu, notification::NotificationType};
 use gpui_kit::{Action, App, Context, Global, SharedString, Window};
 use subsonic::{AlbumId, PlaylistId, Song};
 
@@ -150,6 +151,27 @@ impl AlbumAction {
             Self::AddToPlaylist(playlist) => add_songs_command(songs)(playlist.as_ref()),
             Self::ChoosePlaylist => Box::new(ChoosePlaylist::new(songs)),
         })
+    }
+
+    /// Does this once the album's songs have been fetched, or says why they
+    /// couldn't be.
+    pub fn finish<E: Display>(
+        self,
+        songs: Result<Arc<[Song]>, E>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        match songs {
+            Ok(songs) => {
+                if let Some(command) = self.command(songs) {
+                    window.dispatch_action(command, cx);
+                }
+            }
+            Err(error) => {
+                let message = format!("Couldn't load this album. {error}");
+                window.push_notification((NotificationType::Error, message), cx);
+            }
+        }
     }
 }
 
