@@ -25,7 +25,10 @@ use gpui_kit::{
 };
 use subsonic::{Album, AlbumId, AlbumWithSongs, PlaylistId, Song, SongId};
 use ui::list_navigation::{CONTROL_CONTEXT, ListNavigationExt as _, Motion, page_rows};
-use ui::{CoverArt, LoadFailure, centered, format_duration, muted_text};
+use ui::{
+    CoverArt, LoadFailure, NowPlaying, PlayState, PlayStateIcon, RowText, centered,
+    format_duration, format_song_count, join_details, muted_text,
+};
 
 use crate::filter::matching_albums;
 use crate::{
@@ -98,13 +101,6 @@ enum Detail {
     Loading,
     Loaded(LoadedAlbum),
     Failed(SharedString),
-}
-
-/// The song the player is on, marked in the song list.
-#[derive(Clone, PartialEq, Eq)]
-struct NowPlaying {
-    song: SongId,
-    playing: bool,
 }
 
 struct LoadedAlbum {
@@ -380,7 +376,7 @@ impl Library {
 
     /// Marks `song` in the song list, or clears the mark.
     pub fn set_now_playing(&mut self, song: Option<SongId>, playing: bool, cx: &mut Context<Self>) {
-        let now_playing = song.map(|song| NowPlaying { song, playing });
+        let now_playing = NowPlaying::new(song, playing);
         if self.now_playing != now_playing {
             self.now_playing = now_playing;
             cx.notify();
@@ -657,7 +653,6 @@ impl Library {
         let visible = self.visible.clone();
         let selected = self.selected_album.clone();
         let focused = self.albums_focus.is_focused(window);
-        let muted_foreground = cx.theme().muted_foreground;
         let owner = cx.entity().downgrade();
         let albums_focus = self.albums_focus.clone();
         div()
@@ -687,19 +682,7 @@ impl Library {
                                     .px_4()
                                     .w_full()
                                     .accessibility_label(name.clone())
-                                    .child(
-                                        v_flex()
-                                            .min_w_0()
-                                            .flex_1()
-                                            .child(div().text_sm().truncate().child(name))
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .truncate()
-                                                    .text_color(muted_foreground)
-                                                    .child(details),
-                                            ),
-                                    )
+                                    .child(RowText::new(name).details(details))
                                     .on_click(move |_, window, cx| {
                                         on_click
                                             .update(cx, |this, cx| {
@@ -798,18 +781,11 @@ impl Library {
         let total = album
             .duration()
             .or_else(|| loaded.songs.iter().map(Song::duration).sum());
-        let summary = [
+        let summary = join_details([
             album.year().map(|year| year.to_string()),
-            Some(match loaded.songs.len() {
-                1 => "1 song".to_owned(),
-                count => format!("{count} songs"),
-            }),
+            Some(format_song_count(loaded.songs.len())),
             total.map(format_duration),
-        ]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(" · ");
+        ]);
 
         v_flex()
             .size_full()
@@ -907,7 +883,6 @@ impl Library {
         let now_playing = self.now_playing.clone();
         let focused = self.songs_focus.is_focused(window);
         let muted_foreground = cx.theme().muted_foreground;
-        let primary = cx.theme().primary;
         let owner = cx.entity().downgrade();
         let songs_focus = self.songs_focus.clone();
         div()
@@ -936,16 +911,9 @@ impl Library {
                                 .unwrap_or_default();
                             let duration = song.duration().map(format_duration).unwrap_or_default();
                             // The playing song shows a sound icon in place of its
-                            // number, dimmed while paused.
-                            let marker = now_playing
-                                .as_ref()
-                                .filter(|now| now.song == id)
-                                .map(|now| now.playing);
-                            let label = match marker {
-                                Some(true) => format!("{title}, playing").into(),
-                                Some(false) => format!("{title}, paused").into(),
-                                None => title.clone(),
-                            };
+                            // number.
+                            let marker = now_playing.as_ref().and_then(|now| now.state_of(&id));
+                            let label = PlayState::row_label(&title, marker);
                             let owner = owner.clone();
                             let songs_focus = songs_focus.clone();
                             let menu_song = song.clone();
@@ -970,15 +938,9 @@ impl Library {
                                                     .justify_end()
                                                     .text_color(muted_foreground)
                                                     .map(|this| match marker {
-                                                        Some(playing) => this.child(
-                                                            Icon::new(IconName::AudioLines)
-                                                                .small()
-                                                                .text_color(if playing {
-                                                                    primary
-                                                                } else {
-                                                                    muted_foreground
-                                                                }),
-                                                        ),
+                                                        Some(state) => {
+                                                            this.child(PlayStateIcon::new(state))
+                                                        }
                                                         None => this.child(number),
                                                     }),
                                             )
@@ -1183,12 +1145,10 @@ async fn run_sync(
 
 /// The second line of an album row.
 fn album_details(album: &Album) -> SharedString {
-    match (album.artist(), album.year()) {
-        (Some(artist), Some(year)) => format!("{artist} · {year}").into(),
-        (Some(artist), None) => artist.to_owned().into(),
-        (None, Some(year)) => year.to_string().into(),
-        (None, None) => SharedString::default(),
-    }
+    join_details([
+        album.artist().map(str::to_owned),
+        album.year().map(|year| year.to_string()),
+    ])
 }
 
 #[cfg(test)]

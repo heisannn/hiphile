@@ -1,6 +1,5 @@
-use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, Selectable as _, Sizable as _, StyledExt as _,
+    ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, StyledExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     list::ListItem,
@@ -20,7 +19,7 @@ use gpui_kit::{
 use playback::EntryId;
 use subsonic::Song;
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
-use ui::{DragPreview, format_duration};
+use ui::{DragPreview, PlayState, PlayStateIcon, RowText, format_duration};
 
 use crate::{Player, SaveQueue};
 
@@ -326,7 +325,6 @@ impl QueueView {
         let selected = self.selected;
         let focused = self.focus.is_focused(window);
         let muted_foreground = cx.theme().muted_foreground;
-        let primary = cx.theme().primary;
         let focus = self.focus.clone();
         let owner = cx.entity().downgrade();
         div()
@@ -347,11 +345,11 @@ impl QueueView {
                             // With nothing current, playback ran off the end.
                             let played = current_ix.is_none_or(|current| ix < current);
                             let title = SharedString::from(song.title().to_owned());
-                            let label = match (is_current, playing, played) {
-                                (true, true, _) => format!("{title}, playing").into(),
-                                (true, false, _) => format!("{title}, paused").into(),
-                                (false, _, true) => format!("{title}, played").into(),
-                                (false, _, false) => title.clone(),
+                            let state = is_current.then(|| PlayState::new(playing));
+                            let label = if !is_current && played {
+                                format!("{title}, played").into()
+                            } else {
+                                PlayState::row_label(&title, state)
                             };
                             let owner = owner.clone();
                             let focus = focus.clone();
@@ -368,14 +366,7 @@ impl QueueView {
                                 .px_4()
                                 .w_full()
                                 .accessibility_label(label)
-                                .child(render_entry(
-                                    song,
-                                    title,
-                                    is_current.then_some(playing),
-                                    played,
-                                    muted_foreground,
-                                    primary,
-                                ))
+                                .child(render_entry(song, title, state, played, muted_foreground))
                                 .on_click({
                                     let owner = owner.clone();
                                     move |event, window, cx| {
@@ -505,14 +496,13 @@ struct EntryCommands {
     remove: bool,
 }
 
-/// A row's content. `marker` is `Some(playing)` on the current entry.
+/// A row's content. `state` is there on the current entry.
 fn render_entry(
     song: &Song,
     title: SharedString,
-    marker: Option<bool>,
+    state: Option<PlayState>,
     played: bool,
     muted_foreground: gpui_kit::Hsla,
-    primary: gpui_kit::Hsla,
 ) -> impl IntoElement {
     let artist = song
         .artist()
@@ -528,35 +518,9 @@ fn render_entry(
                 .w_4()
                 .flex_none()
                 .justify_center()
-                .when_some(marker, |this, playing| {
-                    this.child(
-                        Icon::new(IconName::AudioLines)
-                            .small()
-                            .text_color(if playing { primary } else { muted_foreground }),
-                    )
-                }),
+                .when_some(state, |this, state| this.child(PlayStateIcon::new(state))),
         )
-        .child(
-            v_flex()
-                .flex_1()
-                .min_w_0()
-                .child(
-                    div()
-                        .text_sm()
-                        .truncate()
-                        .when(played, |this| this.text_color(muted_foreground))
-                        .child(title),
-                )
-                .when_some(artist, |this, artist| {
-                    this.child(
-                        div()
-                            .text_xs()
-                            .truncate()
-                            .text_color(muted_foreground)
-                            .child(artist),
-                    )
-                }),
-        )
+        .child(RowText::new(title).details(artist).dimmed(played))
         .child(
             div()
                 .flex_none()

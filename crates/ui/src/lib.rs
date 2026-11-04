@@ -2,15 +2,21 @@
 
 mod cover_art;
 mod cover_cache;
+mod details;
 mod drag_preview;
 mod duration;
 pub mod list_navigation;
 mod load_state;
+mod now_playing;
+mod row_text;
 mod sample_rate;
 
 pub use cover_art::CoverArt;
 pub use cover_cache::CoverCache;
+pub use details::{format_song_count, join_details};
 pub use drag_preview::DragPreview;
 pub use duration::format_duration;
 pub use load_state::{LoadFailure, centered, muted_text};
+pub use now_playing::{NowPlaying, PlayState, PlayStateIcon};
+pub use row_text::RowText;
 pub use sample_rate::format_sample_rate;

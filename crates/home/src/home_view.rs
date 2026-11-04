@@ -4,9 +4,8 @@ use std::time::{Duration, Instant};
 
 use actions::{AlbumAction, EnqueueSongs, Placement, PlaySongs, ShowAlbum};
 use futures::future::join_all;
-use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, Selectable as _, Sizable as _, StyledExt as _, WindowExt as _,
+    ActiveTheme as _, Selectable as _, Sizable as _, StyledExt as _, WindowExt as _,
     button::Button, h_flex, list::ListItem, menu::ContextMenuExt as _,
     notification::NotificationType, scroll::Scrollbar, spinner::Spinner, v_flex,
 };
@@ -21,7 +20,7 @@ use ui::list_navigation::{
     CONTROL_CONTEXT, SelectFirst, SelectLast, SelectNext, SelectPageDown, SelectPageUp,
     SelectPrevious,
 };
-use ui::{CoverArt, format_duration};
+use ui::{CoverArt, NowPlaying, PlayState, PlayStateIcon, RowText, format_duration, join_details};
 
 use crate::layout::{AlbumShelf, Item, Motion, columns_for, step};
 use crate::recent::most_recent;
@@ -116,13 +115,6 @@ impl<T> Shelf<T> {
             *self = Self::Loading;
         }
     }
-}
-
-/// The song the player is on, marked in the list.
-#[derive(Clone, PartialEq, Eq)]
-struct NowPlaying {
-    song: SongId,
-    playing: bool,
 }
 
 /// One child of the scrolling list, in order. Each is a direct child so that
@@ -403,7 +395,7 @@ impl Home {
 
     /// Marks `song` in the list, or clears the mark.
     pub fn set_now_playing(&mut self, song: Option<SongId>, playing: bool, cx: &mut Context<Self>) {
-        let now_playing = song.map(|song| NowPlaying { song, playing });
+        let now_playing = NowPlaying::new(song, playing);
         if self.now_playing != now_playing {
             self.now_playing = now_playing;
             cx.notify();
@@ -790,28 +782,14 @@ impl Home {
         let is_selected = self.selection == Some(Item::Song(id.clone()));
         let focused = self.focus.is_focused(window);
         let title = SharedString::from(song.title().to_owned());
-        let details: SharedString = [song.artist(), song.album()]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" · ")
-            .into();
+        let details = join_details([song.artist(), song.album()]);
         let duration = song.duration().map(format_duration).unwrap_or_default();
         let cover = song
             .cover_art()
             .map(|cover_art| self.session.cover_art_url(cover_art, ROW_COVER_PIXELS));
-        let marker = self
-            .now_playing
-            .as_ref()
-            .filter(|now| now.song == id)
-            .map(|now| now.playing);
-        let label: SharedString = match marker {
-            Some(true) => format!("{title}, playing").into(),
-            Some(false) => format!("{title}, paused").into(),
-            None => title.clone(),
-        };
+        let marker = self.now_playing.as_ref().and_then(|now| now.state_of(&id));
+        let label = PlayState::row_label(&title, marker);
         let muted_foreground = cx.theme().muted_foreground;
-        let primary = cx.theme().primary;
         let focus = self.focus.clone();
         let has_album = song.album_id().is_some();
         ListItem::new(ElementId::Name(format!("home-song-{id}").into()))
@@ -828,31 +806,14 @@ impl Home {
                     .min_w_0()
                     .gap_3()
                     .child(CoverArt::new(cover).small())
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .child(div().text_sm().truncate().child(title))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .truncate()
-                                    .text_color(muted_foreground)
-                                    .child(details),
-                            ),
-                    )
+                    .child(RowText::new(title).details(details))
                     .child(
                         // A lane of its own, so the durations stay in line.
-                        h_flex().w_4().flex_none().justify_end().when_some(
-                            marker,
-                            |this, playing| {
-                                this.child(
-                                    Icon::new(IconName::AudioLines).small().text_color(
-                                        if playing { primary } else { muted_foreground },
-                                    ),
-                                )
-                            },
-                        ),
+                        h_flex()
+                            .w_4()
+                            .flex_none()
+                            .justify_end()
+                            .when_some(marker, |this, state| this.child(PlayStateIcon::new(state))),
                     )
                     .child(
                         div()

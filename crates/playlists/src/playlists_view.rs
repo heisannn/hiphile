@@ -26,7 +26,10 @@ use gpui_kit::{
 };
 use subsonic::{Playlist, PlaylistId, PlaylistWithSongs, Song, SongId};
 use ui::list_navigation::{CONTROL_CONTEXT, ListNavigationExt as _, Motion, page_rows};
-use ui::{CoverArt, DragPreview, LoadFailure, centered, format_duration, muted_text};
+use ui::{
+    CoverArt, DragPreview, LoadFailure, NowPlaying, PlayState, PlayStateIcon, RowText, centered,
+    format_duration, format_song_count, join_details, muted_text,
+};
 
 use crate::entries::{Entries, EntryId};
 use crate::filter::matching_playlists;
@@ -114,13 +117,6 @@ struct LoadedPlaylist {
     playlist: Playlist,
     entries: Entries,
     cover_url: Option<SharedString>,
-}
-
-/// The song the player is on, marked in the song list.
-#[derive(Clone, PartialEq, Eq)]
-struct NowPlaying {
-    song: SongId,
-    playing: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -472,7 +468,7 @@ impl Playlists {
 
     /// Marks `song` in the song list, or clears the mark.
     pub fn set_now_playing(&mut self, song: Option<SongId>, playing: bool, cx: &mut Context<Self>) {
-        let now_playing = song.map(|song| NowPlaying { song, playing });
+        let now_playing = NowPlaying::new(song, playing);
         if self.now_playing != now_playing {
             self.now_playing = now_playing;
             cx.notify();
@@ -1341,7 +1337,6 @@ impl Playlists {
         let visible = self.visible.clone();
         let selected = self.selected.clone();
         let focused = self.list_focus.is_focused(window);
-        let muted_foreground = cx.theme().muted_foreground;
         let owner = cx.entity().downgrade();
         let list_focus = self.list_focus.clone();
         let username = self.session.username().to_owned();
@@ -1374,19 +1369,7 @@ impl Playlists {
                                     .px_4()
                                     .w_full()
                                     .accessibility_label(name.clone())
-                                    .child(
-                                        v_flex()
-                                            .min_w_0()
-                                            .flex_1()
-                                            .child(div().text_sm().truncate().child(name))
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .truncate()
-                                                    .text_color(muted_foreground)
-                                                    .child(details),
-                                            ),
-                                    )
+                                    .child(RowText::new(name).details(details))
                                     .on_click(move |_, window, cx| {
                                         on_click
                                             .update(cx, |this, cx| {
@@ -1510,15 +1493,11 @@ impl Playlists {
         let songs = loaded.entries.songs();
         let total: Option<std::time::Duration> = songs.iter().map(Song::duration).sum();
         let total = total.or_else(|| playlist.duration());
-        let summary = [
-            Some(song_count(songs.len())),
+        let summary = join_details([
+            Some(format_song_count(songs.len())),
             total.filter(|_| !songs.is_empty()).map(format_duration),
             (!editable).then(|| "Readonly".to_owned()),
-        ]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(" · ");
+        ]);
         let owner = playlist.owner().filter(|_| !playlist.is_owned_by(username));
 
         v_flex()
@@ -1634,7 +1613,6 @@ impl Playlists {
         let now_playing = self.now_playing.clone();
         let focused = self.songs_focus.is_focused(window);
         let muted_foreground = cx.theme().muted_foreground;
-        let primary = cx.theme().primary;
         let owner = cx.entity().downgrade();
         let songs_focus = self.songs_focus.clone();
         div()
@@ -1654,27 +1632,16 @@ impl Playlists {
                             let song = entry.song().clone();
                             let is_selected = selected == Some(id);
                             let title = SharedString::from(song.title().to_owned());
-                            let details: SharedString = [song.artist(), song.album()]
-                                .into_iter()
-                                .flatten()
-                                .collect::<Vec<_>>()
-                                .join(" · ")
-                                .into();
+                            let details = join_details([song.artist(), song.album()]);
                             let duration = song.duration().map(format_duration).unwrap_or_default();
                             let cover = song.cover_art().map(|cover_art| {
                                 session.cover_art_url(cover_art, ROW_COVER_PIXELS)
                             });
                             // The playing song shows a sound icon in place of
-                            // its number, dimmed while paused.
-                            let marker = now_playing
-                                .as_ref()
-                                .filter(|now| &now.song == song.id())
-                                .map(|now| now.playing);
-                            let label: SharedString = match marker {
-                                Some(true) => format!("{title}, playing").into(),
-                                Some(false) => format!("{title}, paused").into(),
-                                None => title.clone(),
-                            };
+                            // its number.
+                            let marker =
+                                now_playing.as_ref().and_then(|now| now.state_of(song.id()));
+                            let label = PlayState::row_label(&title, marker);
                             let has_album = song.album_id().is_some();
                             let on_click = owner.clone();
                             let on_right_click = owner.clone();
@@ -1704,32 +1671,14 @@ impl Playlists {
                                             .text_sm()
                                             .text_color(muted_foreground)
                                             .map(|this| match marker {
-                                                Some(playing) => this.child(
-                                                    Icon::new(IconName::AudioLines)
-                                                        .small()
-                                                        .text_color(if playing {
-                                                            primary
-                                                        } else {
-                                                            muted_foreground
-                                                        }),
-                                                ),
+                                                Some(state) => {
+                                                    this.child(PlayStateIcon::new(state))
+                                                }
                                                 None => this.child((ix + 1).to_string()),
                                             }),
                                     )
                                     .child(CoverArt::new(cover).small())
-                                    .child(
-                                        v_flex()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .child(div().text_sm().truncate().child(title))
-                                            .child(
-                                                div()
-                                                    .text_xs()
-                                                    .truncate()
-                                                    .text_color(muted_foreground)
-                                                    .child(details),
-                                            ),
-                                    )
+                                    .child(RowText::new(title).details(details))
                                     .child(
                                         div()
                                             .flex_none()
@@ -1913,13 +1862,6 @@ fn open_name_dialog(
     form.update(cx, |form, cx| form.focus_input(window, cx));
 }
 
-fn song_count(count: usize) -> String {
-    match count {
-        1 => "1 song".to_owned(),
-        count => format!("{count} songs"),
-    }
-}
-
 /// The second line of a playlist's row.
 fn playlist_details(playlist: &Playlist, username: &str) -> SharedString {
     let owner = playlist
@@ -1928,17 +1870,12 @@ fn playlist_details(playlist: &Playlist, username: &str) -> SharedString {
         .map(str::to_owned);
     let count = playlist
         .song_count()
-        .map(|count| song_count(count as usize));
+        .map(|count| format_song_count(count as usize));
     let duration = playlist
         .duration()
         .filter(|_| playlist.song_count() != Some(0))
         .map(format_duration);
-    [owner, count, duration]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(" · ")
-        .into()
+    join_details([owner, count, duration])
 }
 
 #[cfg(test)]
