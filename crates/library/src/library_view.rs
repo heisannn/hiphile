@@ -4,15 +4,14 @@ use actions::{AlbumAction, EnqueueSongs, Placement, PlaySongs};
 use catalog::{Mode, Outcome};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, Selectable as _, Sizable as _, StyledExt as _,
-    WindowExt as _,
+    ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{InputEvent, InputState},
     list::ListItem,
     menu::{ContextMenuExt as _, DropdownMenu as _},
     notification::NotificationType,
-    resizable::{ResizableState, h_resizable, resizable_panel},
+    resizable::ResizableState,
     scroll::Scrollbar,
     spinner::Spinner,
     v_flex,
@@ -24,10 +23,11 @@ use gpui_kit::{
     UniformListScrollHandle, WeakEntity, Window, div, prelude::FluentBuilder as _, uniform_list,
 };
 use subsonic::{Album, AlbumId, AlbumWithSongs, PlaylistId, Song, SongId};
-use ui::list_navigation::{CONTROL_CONTEXT, ListNavigationExt as _, Motion, page_rows};
+use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
 use ui::{
-    CoverArt, LoadFailure, NowPlaying, PlayState, PlayStateIcon, RowText, centered,
-    format_duration, format_song_count, join_details, muted_text,
+    DetailHeader, ListFilter, ListPaneHeader, LoadFailure, MasterDetail, NowPlaying, PlayState,
+    PlayStateIcon, RefreshFailure, RowText, centered, format_duration, format_song_count,
+    join_details, muted_text,
 };
 
 use crate::filter::matching_albums;
@@ -39,10 +39,6 @@ use crate::{
 /// Pixel size requested for the detail cover: twice its on-screen size, for
 /// high-density displays.
 const COVER_PIXELS: u32 = 512;
-/// The album list's width when first shown, in rem.
-const ALBUMS_WIDTH: f32 = 20.;
-/// The narrowest the album detail goes, in rem.
-const DETAIL_MIN_WIDTH: f32 = 26.;
 
 pub enum LibraryEvent {
     /// A sync brought the album list up to date with the server.
@@ -362,16 +358,7 @@ impl Library {
     /// The narrowest the library can be while showing its album list at its
     /// current width beside the detail.
     pub fn min_width(&self, window: &Window, cx: &gpui_kit::App) -> gpui_kit::Pixels {
-        let rem = window.rem_size();
-        let albums = self
-            .panes
-            .read(cx)
-            .sizes()
-            .first()
-            .copied()
-            .filter(|width| !gpui_kit::IsZero::is_zero(width))
-            .unwrap_or(rem * ALBUMS_WIDTH);
-        albums + rem * DETAIL_MIN_WIDTH
+        MasterDetail::min_width(&self.panes, window, cx)
     }
 
     /// Marks `song` in the song list, or clears the mark.
@@ -519,71 +506,25 @@ impl Library {
             .size_full()
             .min_h_0()
             .bg(cx.theme().sidebar)
-            .child(
-                h_flex()
-                    .h_10()
-                    .flex_none()
-                    .px_4()
-                    .gap_2()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(div().text_sm().font_medium().child("Albums"))
-                    .when_some(count, |this, count| {
-                        this.child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(count.to_string()),
-                        )
-                    })
-                    .when(updating, |this| {
-                        this.child(
-                            div()
-                                .id("library-updating")
-                                .role(gpui_kit::Role::ProgressIndicator)
-                                .aria_label("Updating the library")
-                                .child(Spinner::new().small().color(cx.theme().muted_foreground)),
-                        )
-                    }),
-            )
-            .child(
-                div().flex_none().px_3().py_2().child(
-                    Input::new(&self.filter)
-                        .small()
-                        .prefix(Icon::new(IconName::Search).small())
-                        .cleanable(true),
-                ),
-            )
-            .when_some(error, |this, error| {
-                this.child(
-                    v_flex()
-                        .flex_none()
-                        .px_4()
-                        .pb_2()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_medium()
-                                .child("Couldn't refresh the library"),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(error),
-                        )
-                        .child(
-                            h_flex().pt_1().child(
-                                Button::new("retry-refresh")
-                                    .label("Retry")
-                                    .small()
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.refresh_library(cx)),
-                                    ),
-                            ),
-                        ),
+            .child(ListPaneHeader::new("Albums", count).when(updating, |this| {
+                this.status(
+                    div()
+                        .id("library-updating")
+                        .role(gpui_kit::Role::ProgressIndicator)
+                        .aria_label("Updating the library")
+                        .child(Spinner::new().small().color(cx.theme().muted_foreground)),
                 )
+            }))
+            .child(ListFilter::new(&self.filter))
+            .when_some(error, |this, error| {
+                this.child(RefreshFailure::new(
+                    "Couldn't refresh the library",
+                    error,
+                    Button::new("retry-refresh")
+                        .label("Retry")
+                        .small()
+                        .on_click(cx.listener(|this, _, _, cx| this.refresh_library(cx))),
+                ))
             })
             .child(self.render_album_list(window, cx))
             .into_any_element()
@@ -792,50 +733,20 @@ impl Library {
             .min_w_0()
             .min_h_0()
             .child(
-                h_flex()
-                    .flex_none()
-                    .items_end()
-                    .gap_6()
-                    .p_6()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(CoverArt::new(loaded.cover_url.clone()).large())
-                    .child(
-                        v_flex()
-                            .min_w_0()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_2xl()
-                                    .font_semibold()
-                                    .child(SharedString::from(album.name().to_owned())),
-                            )
-                            .when_some(album.artist(), |this, artist| {
-                                this.child(div().child(SharedString::from(artist.to_owned())))
-                            })
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(summary),
-                            )
-                            .child(
-                                h_flex()
-                                    .key_context(CONTROL_CONTEXT)
-                                    .pt_3()
-                                    .gap_2()
-                                    .child(
-                                        Button::new("play-album")
-                                            .icon(IconName::Play)
-                                            .label("Play")
-                                            .disabled(loaded.songs.is_empty())
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.play_from(0, window, cx)
-                                            })),
-                                    )
-                                    .child(self.render_album_menu(loaded)),
-                            ),
-                    ),
+                DetailHeader::new(
+                    loaded.cover_url.clone(),
+                    album.name().to_owned().into(),
+                    summary,
+                )
+                .subtitle(album.artist().map(|artist| artist.to_owned().into()))
+                .action(
+                    Button::new("play-album")
+                        .icon(IconName::Play)
+                        .label("Play")
+                        .disabled(loaded.songs.is_empty())
+                        .on_click(cx.listener(|this, _, window, cx| this.play_from(0, window, cx))),
+                )
+                .action(self.render_album_menu(loaded)),
             )
             .child(self.render_songs(loaded, window, cx))
             .into_any_element()
@@ -1026,7 +937,6 @@ impl Focusable for Library {
 
 impl Render for Library {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let rem = window.rem_size();
         div()
             .id("library")
             .key_context(LIBRARY_CONTEXT)
@@ -1036,22 +946,12 @@ impl Render for Library {
                 this.filter.update(cx, |input, cx| input.focus(window, cx));
             }))
             .on_action(cx.listener(|this, _: &Refresh, _, cx| this.refresh_library(cx)))
-            .child(
-                h_resizable("library-panes")
-                    .with_state(&self.panes)
-                    .child(
-                        resizable_panel()
-                            .size(rem * ALBUMS_WIDTH)
-                            .size_range(rem * 14. ..rem * 32.)
-                            .fixed()
-                            .child(self.render_albums(window, cx)),
-                    )
-                    .child(
-                        resizable_panel()
-                            .size_range(rem * DETAIL_MIN_WIDTH..rem * 200.)
-                            .child(self.render_detail(window, cx)),
-                    ),
-            )
+            .child(MasterDetail::new(
+                "library-panes",
+                &self.panes,
+                self.render_albums(window, cx),
+                self.render_detail(window, cx),
+            ))
     }
 }
 

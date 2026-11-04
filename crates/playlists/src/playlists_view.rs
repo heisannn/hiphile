@@ -4,15 +4,15 @@ use std::sync::Arc;
 use actions::{EnqueueSongs, Placement, PlaySongs};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, Selectable as _, Sizable as _, StyledExt as _,
+    ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, StyledExt as _,
     WindowExt as _,
     button::{Button, ButtonVariant, ButtonVariants as _},
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{InputEvent, InputState},
     list::ListItem,
     menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu},
     notification::{Notification, NotificationType},
-    resizable::{ResizableState, h_resizable, resizable_panel},
+    resizable::ResizableState,
     scroll::Scrollbar,
     spinner::Spinner,
     v_flex,
@@ -27,8 +27,9 @@ use gpui_kit::{
 use subsonic::{Playlist, PlaylistId, PlaylistWithSongs, Song, SongId};
 use ui::list_navigation::{CONTROL_CONTEXT, ListNavigationExt as _, Motion, page_rows};
 use ui::{
-    CoverArt, DragPreview, LoadFailure, NowPlaying, PlayState, PlayStateIcon, RowText, centered,
-    format_duration, format_song_count, join_details, muted_text,
+    CoverArt, DetailHeader, DragPreview, ListFilter, ListPaneHeader, LoadFailure, MasterDetail,
+    NowPlaying, PlayState, PlayStateIcon, RefreshFailure, RowText, centered, format_duration,
+    format_song_count, join_details, muted_text,
 };
 
 use crate::entries::{Entries, EntryId};
@@ -45,10 +46,6 @@ use crate::{
 const COVER_PIXELS: u32 = 512;
 /// Pixel size requested for a song row's cover, likewise.
 const ROW_COVER_PIXELS: u32 = 80;
-/// The list's width when first shown, in rem.
-const LIST_WIDTH: f32 = 20.;
-/// The narrowest the detail goes, in rem.
-const DETAIL_MIN_WIDTH: f32 = 26.;
 
 pub enum PlaylistsEvent {
     /// A playlist was created empty, and selected: it has nothing to show
@@ -454,16 +451,7 @@ impl Playlists {
     /// The narrowest the screen can be while showing its list at its current
     /// width beside the detail.
     pub fn min_width(&self, window: &Window, cx: &App) -> gpui_kit::Pixels {
-        let rem = window.rem_size();
-        let list = self
-            .panes
-            .read(cx)
-            .sizes()
-            .first()
-            .copied()
-            .filter(|width| !gpui_kit::IsZero::is_zero(width))
-            .unwrap_or(rem * LIST_WIDTH);
-        list + rem * DETAIL_MIN_WIDTH
+        MasterDetail::min_width(&self.panes, window, cx)
     }
 
     /// Marks `song` in the song list, or clears the mark.
@@ -1173,80 +1161,32 @@ impl Playlists {
             .min_h_0()
             .bg(cx.theme().sidebar)
             .child(
-                h_flex()
-                    .h_10()
-                    .flex_none()
-                    .pl_4()
-                    .pr_2()
-                    .gap_2()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(div().text_sm().font_medium().child("Playlists"))
-                    .when_some(count, |this, count| {
-                        this.child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(count.to_string()),
-                        )
-                    })
-                    .child(div().flex_1())
-                    .child(
-                        Button::new("new-playlist")
-                            .ghost()
-                            .small()
-                            .icon(IconName::Plus)
-                            .accessibility_label("New Playlist…")
-                            .tooltip_with_action(
-                                "New Playlist…",
-                                &actions::NewPlaylist::empty(),
-                                None,
-                            )
-                            .on_click(|_, window, cx| {
-                                window.dispatch_action(Box::new(actions::NewPlaylist::empty()), cx);
-                            }),
-                    ),
+                ListPaneHeader::new("Playlists", count).action(
+                    Button::new("new-playlist")
+                        .ghost()
+                        .small()
+                        .icon(IconName::Plus)
+                        .accessibility_label("New Playlist…")
+                        .tooltip_with_action("New Playlist…", &actions::NewPlaylist::empty(), None)
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(actions::NewPlaylist::empty()), cx);
+                        }),
+                ),
             )
             .when(count.is_some_and(|count| count > 0), |this| {
-                this.child(
-                    div().flex_none().px_3().py_2().child(
-                        Input::new(&self.filter)
-                            .small()
-                            .prefix(Icon::new(IconName::Search).small())
-                            .cleanable(true),
-                    ),
-                )
+                this.child(ListFilter::new(&self.filter))
             })
             .when_some(self.refresh_error.clone(), |this, error| {
-                this.child(
-                    v_flex()
-                        .flex_none()
-                        .px_4()
-                        .pb_2()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_medium()
-                                .child("Couldn't refresh playlists"),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(error),
-                        )
-                        .child(
-                            h_flex().pt_1().child(
-                                Button::new("retry-refresh-playlists")
-                                    .label("Retry")
-                                    .small()
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.refresh(window, cx);
-                                    })),
-                            ),
-                        ),
-                )
+                this.child(RefreshFailure::new(
+                    "Couldn't refresh playlists",
+                    error,
+                    Button::new("retry-refresh-playlists")
+                        .label("Retry")
+                        .small()
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.refresh(window, cx);
+                        })),
+                ))
             })
             .child(self.render_list(window, cx))
             .into_any_element()
@@ -1505,60 +1445,21 @@ impl Playlists {
             .min_w_0()
             .min_h_0()
             .child(
-                h_flex()
-                    .flex_none()
-                    .items_end()
-                    .gap_6()
-                    .p_6()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(CoverArt::new(loaded.cover_url.clone()).large())
-                    .child(
-                        v_flex()
-                            .min_w_0()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_2xl()
-                                    .font_semibold()
-                                    .child(SharedString::from(playlist.name().to_owned())),
-                            )
-                            .when_some(owner, |this, owner| {
-                                this.child(div().child(SharedString::from(owner.to_owned())))
-                            })
-                            // The cover sets the header's height, which a long
-                            // comment would take from the songs.
-                            .when_some(playlist.comment(), |this, comment| {
-                                this.child(
-                                    div()
-                                        .text_ellipsis()
-                                        .line_clamp(2)
-                                        .child(SharedString::from(comment.to_owned())),
-                                )
-                            })
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(summary),
-                            )
-                            .child(
-                                h_flex()
-                                    .key_context(CONTROL_CONTEXT)
-                                    .pt_3()
-                                    .gap_2()
-                                    .child(
-                                        Button::new("play-playlist")
-                                            .icon(IconName::Play)
-                                            .label("Play")
-                                            .disabled(songs.is_empty())
-                                            .on_click(cx.listener(|this, _, window, cx| {
-                                                this.play_from(0, window, cx)
-                                            })),
-                                    )
-                                    .child(self.render_playlist_menu(editable, !songs.is_empty())),
-                            ),
-                    ),
+                DetailHeader::new(
+                    loaded.cover_url.clone(),
+                    playlist.name().to_owned().into(),
+                    summary,
+                )
+                .subtitle(owner.map(|owner| owner.to_owned().into()))
+                .comment(playlist.comment().map(|comment| comment.to_owned().into()))
+                .action(
+                    Button::new("play-playlist")
+                        .icon(IconName::Play)
+                        .label("Play")
+                        .disabled(songs.is_empty())
+                        .on_click(cx.listener(|this, _, window, cx| this.play_from(0, window, cx))),
+                )
+                .action(self.render_playlist_menu(editable, !songs.is_empty())),
             )
             .child(self.render_songs(loaded, editable, window, cx))
             .into_any_element()
@@ -1799,7 +1700,6 @@ impl Focusable for Playlists {
 
 impl Render for Playlists {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let rem = window.rem_size();
         div()
             .id("playlists-root")
             .key_context(ROOT_CONTEXT)
@@ -1808,22 +1708,12 @@ impl Render for Playlists {
             .on_action(cx.listener(|this, _: &FocusFilter, window, cx| {
                 this.filter.update(cx, |input, cx| input.focus(window, cx));
             }))
-            .child(
-                h_resizable("playlists-panes")
-                    .with_state(&self.panes)
-                    .child(
-                        resizable_panel()
-                            .size(rem * LIST_WIDTH)
-                            .size_range(rem * 14. ..rem * 32.)
-                            .fixed()
-                            .child(self.render_list_pane(window, cx)),
-                    )
-                    .child(
-                        resizable_panel()
-                            .size_range(rem * DETAIL_MIN_WIDTH..rem * 200.)
-                            .child(self.render_detail(window, cx)),
-                    ),
-            )
+            .child(MasterDetail::new(
+                "playlists-panes",
+                &self.panes,
+                self.render_list_pane(window, cx),
+                self.render_detail(window, cx),
+            ))
     }
 }
 
