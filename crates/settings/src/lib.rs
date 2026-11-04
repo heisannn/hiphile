@@ -2,8 +2,10 @@
 //!
 //! [`AudioSettings`] holds the chosen output and [`SongCacheSettings`] how many
 //! songs to keep, and each saves its own. The app shell hands them to the
-//! player and passes on [`OutputChanged`] and [`SongCacheChanged`].
+//! player and passes on [`OutputChanged`] and [`SongCacheChanged`]. The
+//! appearance only concerns the theme, which this crate keeps on it.
 
+mod appearance_settings;
 mod audio_settings;
 mod number_field;
 mod settings_view;
@@ -13,13 +15,14 @@ mod song_cache_usage;
 
 use gpui_kit::component::TitleBar;
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext as _, Bounds, Entity, Global, KeyBinding, TitlebarOptions,
-    WindowBounds, WindowOptions, actions, px, size,
+    AnyWindowHandle, App, AppContext as _, Bounds, Entity, Global, KeyBinding, Subscription,
+    TitlebarOptions, Window, WindowBounds, WindowOptions, actions, px, size,
 };
 
 pub use audio_settings::{AudioSettings, OutputChanged};
 pub use song_cache_settings::{SongCacheChanged, SongCacheSettings};
 
+use appearance_settings::AppearanceSettings;
 use settings_view::SettingsView;
 
 /// Key context of the settings window.
@@ -28,6 +31,7 @@ const SETTINGS_CONTEXT: &str = "Settings";
 actions!(settings, [OpenSettings, CloseWindow]);
 
 struct GlobalSettings {
+    appearance: Entity<AppearanceSettings>,
     audio: Entity<AudioSettings>,
     song_cache: Entity<SongCacheSettings>,
     /// The settings window, if one was opened. It may have been closed since.
@@ -36,13 +40,15 @@ struct GlobalSettings {
 
 impl Global for GlobalSettings {}
 
-/// Reads the settings and registers commands. Call before building the menu
-/// bar.
+/// Reads the settings, puts the theme on the chosen appearance and registers
+/// commands. Call before building the menu bar.
 pub fn init(cx: &mut App) {
     number_field::init(cx);
+    let appearance = cx.new(AppearanceSettings::new);
     let audio = cx.new(AudioSettings::new);
     let song_cache = cx.new(SongCacheSettings::new);
     cx.set_global(GlobalSettings {
+        appearance,
         audio,
         song_cache,
         window: None,
@@ -72,6 +78,18 @@ pub fn song_cache_settings(cx: &App) -> Entity<SongCacheSettings> {
     cx.global::<GlobalSettings>().song_cache.clone()
 }
 
+/// Keeps the theme on the system's appearance for as long as the subscription
+/// lives, if that is being followed. Only a window reports a change, so each
+/// window that can be the last one open holds one.
+pub fn follow_system_appearance(window: &Window) -> Subscription {
+    window.observe_window_appearance(|window, cx| {
+        let appearance = cx.global::<GlobalSettings>().appearance.clone();
+        appearance.update(cx, |appearance, cx| {
+            appearance.on_system_appearance_changed(window, cx);
+        });
+    })
+}
+
 /// Brings the settings window forward, opening it if it is not open.
 fn open(cx: &mut App) {
     if let Some(window) = cx.global::<GlobalSettings>().window
@@ -95,10 +113,11 @@ fn open(cx: &mut App) {
         }),
         ..TitleBar::window_options()
     };
+    let appearance = cx.global::<GlobalSettings>().appearance.clone();
     let audio = audio_settings(cx);
     let song_cache = song_cache_settings(cx);
     let opened = gpui_kit::open_window(options, cx, |window, cx| {
-        cx.new(|cx| SettingsView::new(audio, song_cache, window, cx))
+        cx.new(|cx| SettingsView::new(appearance, audio, song_cache, window, cx))
     });
     if let Ok((window, _)) = opened {
         cx.global_mut::<GlobalSettings>().window = Some(window);

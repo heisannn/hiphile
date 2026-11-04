@@ -40,6 +40,13 @@ impl Profile {
     }
 }
 
+/// Light or dark, chosen rather than following the system.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Appearance {
+    Light,
+    Dark,
+}
+
 /// The keys of `config.toml` this crate reads. Others are left alone.
 #[derive(Deserialize)]
 struct Settings {
@@ -49,6 +56,7 @@ struct Settings {
     song_cache_gib: Option<f64>,
     output_device: Option<String>,
     sample_rate: Option<u32>,
+    appearance: Option<String>,
 }
 
 /// The settings directory and its `config.toml`:
@@ -60,6 +68,7 @@ struct Settings {
 /// song_cache_gib = 8
 /// output_device = "coreaudio:BuiltInSpeakerDevice"
 /// sample_rate = 48000
+/// appearance = "dark"
 /// ```
 #[derive(Clone, Debug)]
 pub struct Store {
@@ -141,6 +150,27 @@ impl Store {
         Ok(settings.sample_rate.filter(|rate| *rate > 0))
     }
 
+    /// Light or dark, if one was chosen rather than following the system.
+    /// `HIPHILE_APPEARANCE` takes precedence over the file, and `system` there
+    /// sets a choice in the file aside.
+    pub fn appearance(&self) -> Result<Option<Appearance>, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        self.parse_appearance(settings.appearance.as_deref())
+    }
+
+    fn parse_appearance(&self, value: Option<&str>) -> Result<Option<Appearance>, Error> {
+        match value {
+            None | Some("system") => Ok(None),
+            Some("light") => Ok(Some(Appearance::Light)),
+            Some("dark") => Ok(Some(Appearance::Dark)),
+            Some(_) => Err(Error::InvalidSetting {
+                path: self.config_path(),
+                key: "appearance",
+                expected: "\"system\", \"light\" or \"dark\"",
+            }),
+        }
+    }
+
     fn song_cache_bytes(&self, gib: Option<f64>) -> Result<Option<u64>, Error> {
         let Some(gib) = gib else {
             return Ok(None);
@@ -219,6 +249,18 @@ impl Store {
             Some(gib) => document["song_cache_gib"] = toml_edit::value(gib),
             None => {
                 document.remove("song_cache_gib");
+            }
+        })
+    }
+
+    /// Records the appearance, like [`Self::save_profile`]. `None` removes the
+    /// key, which means following the system.
+    pub fn save_appearance(&self, appearance: Option<Appearance>) -> Result<(), Error> {
+        self.edit(|document| match appearance {
+            Some(Appearance::Light) => document["appearance"] = toml_edit::value("light"),
+            Some(Appearance::Dark) => document["appearance"] = toml_edit::value("dark"),
+            None => {
+                document.remove("appearance");
             }
         })
     }
@@ -494,6 +536,60 @@ mod tests {
         let settings = read(&store, &[]);
         assert_eq!(settings.song_cache_gib, None);
         assert_eq!(settings.volume, Some(0.5));
+    }
+
+    #[test]
+    fn appearance_round_trips_and_clears() {
+        let store = temporary_store("appearance");
+        store.save_volume(0.5).unwrap();
+        let appearance = |env: &[(&str, &str)]| {
+            store
+                .parse_appearance(read(&store, env).appearance.as_deref())
+                .unwrap()
+        };
+        assert_eq!(appearance(&[]), None);
+
+        store.save_appearance(Some(Appearance::Dark)).unwrap();
+        assert_eq!(appearance(&[]), Some(Appearance::Dark));
+        store.save_appearance(Some(Appearance::Light)).unwrap();
+        assert_eq!(appearance(&[]), Some(Appearance::Light));
+
+        store.save_appearance(None).unwrap();
+        assert_eq!(appearance(&[]), None);
+        assert_eq!(read(&store, &[]).volume, Some(0.5));
+    }
+
+    #[test]
+    fn environment_overrides_the_saved_appearance() {
+        let store = temporary_store("appearance-environment");
+        store.save_appearance(Some(Appearance::Light)).unwrap();
+        let appearance = |value| {
+            store
+                .parse_appearance(
+                    read(&store, &[("HIPHILE_APPEARANCE", value)])
+                        .appearance
+                        .as_deref(),
+                )
+                .unwrap()
+        };
+        assert_eq!(appearance("dark"), Some(Appearance::Dark));
+        assert_eq!(appearance("system"), None);
+    }
+
+    #[test]
+    fn an_unknown_appearance_is_an_error_that_leaves_other_settings_readable() {
+        let store = temporary_store("appearance-unknown");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        std::fs::write(store.config_path(), "appearance = \"blue\"\nvolume = 0.5\n").unwrap();
+        let settings = read(&store, &[]);
+        assert_eq!(settings.volume, Some(0.5));
+        assert!(matches!(
+            store.parse_appearance(settings.appearance.as_deref()),
+            Err(Error::InvalidSetting {
+                key: "appearance",
+                ..
+            })
+        ));
     }
 
     #[test]

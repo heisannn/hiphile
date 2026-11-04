@@ -47,6 +47,10 @@ Settings… also sets the song cache's limit, `song_cache_gib`, which
 `HIPHILE_SONG_CACHE_GIB` overrides, shows how much the cache takes, and clears
 it.
 
+Settings… also switches between light and dark, kept as `appearance` (`"light"`
+or `"dark"`). Without it, the app follows the system. `HIPHILE_APPEARANCE`
+overrides it, and takes `system` as well.
+
 ## Home
 
 The app opens on albums to try, the songs played last and the albums added last,

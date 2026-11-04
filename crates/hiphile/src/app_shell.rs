@@ -49,6 +49,7 @@ pub struct AppShell {
     /// enough for it.
     queue_shown: bool,
     _song_cache_changes: Subscription,
+    _system_appearance_changes: Subscription,
 }
 
 enum Screen {
@@ -132,6 +133,7 @@ impl AppShell {
             screen,
             queue_shown,
             _song_cache_changes: song_cache_changes,
+            _system_appearance_changes: settings::follow_system_appearance(window),
         }
     }
 

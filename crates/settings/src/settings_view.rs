@@ -6,6 +6,7 @@ use gpui_kit::component::{
     button::Button,
     group_box::GroupBoxVariant,
     h_flex,
+    radio::{Radio, RadioGroup},
     setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
     v_flex,
 };
@@ -14,6 +15,7 @@ use gpui_kit::{
     ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, Window, div,
 };
 
+use crate::appearance_settings::{AppearanceSettings, CHOICES};
 use crate::audio_settings::{AudioSettings, MATCH_SONG, SYSTEM_DEFAULT};
 use crate::song_cache_field::SongCacheField;
 use crate::song_cache_settings::SongCacheSettings;
@@ -25,14 +27,17 @@ use crate::{CloseWindow, SETTINGS_CONTEXT};
 /// Neither reports a change that reaches here.
 const REFRESH: Duration = Duration::from_secs(2);
 
-/// Root view of the settings window. The choices live in [`AudioSettings`] and
-/// [`SongCacheSettings`].
+/// Root view of the settings window. The choices live in
+/// [`AppearanceSettings`], [`AudioSettings`] and [`SongCacheSettings`].
 pub(crate) struct SettingsView {
+    appearance: Entity<AppearanceSettings>,
     audio: Entity<AudioSettings>,
     song_cache: Entity<SongCacheSettings>,
     song_cache_field: Entity<SongCacheField>,
     song_cache_usage: Entity<SongCacheUsage>,
     focus: FocusHandle,
+    _appearance_changes: Subscription,
+    _system_appearance_changes: Subscription,
     _audio_changes: Subscription,
     _song_cache_changes: Subscription,
     _song_cache_usage_changes: Subscription,
@@ -41,6 +46,7 @@ pub(crate) struct SettingsView {
 
 impl SettingsView {
     pub(crate) fn new(
+        appearance: Entity<AppearanceSettings>,
         audio: Entity<AudioSettings>,
         song_cache: Entity<SongCacheSettings>,
         window: &mut Window,
@@ -67,6 +73,9 @@ impl SettingsView {
         });
         let song_cache_field = cx.new(|cx| SongCacheField::new(song_cache.clone(), window, cx));
         Self {
+            _appearance_changes: cx.observe(&appearance, |_, _, cx| cx.notify()),
+            _system_appearance_changes: crate::follow_system_appearance(window),
+            appearance,
             _audio_changes: cx.observe(&audio, |_, _, cx| cx.notify()),
             _song_cache_changes: cx.observe(&song_cache, |_, _, cx| cx.notify()),
             _song_cache_usage_changes: cx.observe(&song_cache_usage, |_, _, cx| cx.notify()),
@@ -77,6 +86,39 @@ impl SettingsView {
             focus,
             _refresh: refresh,
         }
+    }
+
+    fn appearance_page(&self, cx: &mut Context<Self>) -> SettingPage {
+        let theme = SettingField::render({
+            let appearance = self.appearance.clone();
+            move |_, _, cx| {
+                let selected = appearance.read(cx).appearance();
+                let appearance = appearance.clone();
+                RadioGroup::horizontal("appearance")
+                    .selected_index(CHOICES.iter().position(|(choice, _)| *choice == selected))
+                    .children(
+                        CHOICES
+                            .iter()
+                            .enumerate()
+                            .map(|(ix, (_, label))| Radio::new(("appearance", ix)).label(*label)),
+                    )
+                    .on_click(move |ix, _, cx| {
+                        let (choice, _) = CHOICES[*ix];
+                        appearance.update(cx, |appearance, cx| {
+                            appearance.set_appearance(choice, cx);
+                        });
+                    })
+            }
+        });
+
+        let mut group = SettingGroup::new().item(SettingItem::new("Theme", theme));
+        if let Some(error) = self.appearance.read(cx).error().cloned() {
+            group =
+                group.footer(move |_, cx| div().text_color(cx.theme().danger).child(error.clone()));
+        }
+        SettingPage::new("Appearance")
+            .icon(IconName::Palette)
+            .group(group)
     }
 
     fn audio_page(&self, cx: &mut Context<Self>) -> SettingPage {
@@ -216,7 +258,8 @@ impl Render for SettingsView {
                     Settings::new("settings")
                         .with_group_variant(GroupBoxVariant::Outline)
                         .page(self.audio_page(cx))
-                        .page(self.storage_page(cx)),
+                        .page(self.storage_page(cx))
+                        .page(self.appearance_page(cx)),
                 ),
             )
     }
