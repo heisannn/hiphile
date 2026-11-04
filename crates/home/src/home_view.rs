@@ -917,7 +917,6 @@ impl Home {
         let cover = album
             .cover_art()
             .map(|cover_art| self.session.cover_art_url(cover_art, CARD_COVER_PIXELS));
-        let radius = cx.theme().radius;
         // Selected, with or without focus, reads apart from hovered.
         let outline = if is_selected && focused {
             cx.theme().primary
@@ -946,12 +945,12 @@ impl Home {
                     .relative()
                     .w_full()
                     .child(CoverArt::new(cover).fill())
-                    // Over the cover, so that showing it moves nothing.
+                    // Over the cover, so that showing it moves nothing. Square
+                    // like the cover, whose corners a rounded frame does not clip.
                     .child(
                         div()
                             .absolute()
                             .inset_0()
-                            .rounded(radius)
                             .border_2()
                             .border_color(outline)
                             .group_hover(CARD_GROUP, |this| this.border_color(hover_outline)),
