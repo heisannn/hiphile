@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/heisannn/hiphile/compare/v0.1.0...v0.2.0) - 2026-11-05
+
+### Added
+
+- *(favorites)* add favorite songs, albums and artists
+- *(player)* move lyrics and queue beside the volume, Settings to the title bar
+- *(settings)* turn the Discord status off
+- *(search)* notify when the dictionaries can't be had
+- *(search)* find kanji by romaji across the library
+- *(audio)* offer 705.6 and 768 kHz sample rates
+- *(home)* reload the recommendations
+- *(player)* answer to the system's media controls
+
+### Fixed
+
+- *(covers)* ask for covers close to the size they show
+- *(audio)* keep playback whole and controls live on a slow connection
+
 ## [0.1.0](https://github.com/heisannn/hiphile/releases/tag/v0.1.0) - 2026-11-04
 
 ### Added
