@@ -35,4 +35,6 @@ pub use reorder::ReorderExt;
 pub use row_list::row_list;
 pub use row_text::RowText;
 pub use sample_rate::format_sample_rate;
-pub use section::{section_failure, section_heading, section_loading, song_with_cover};
+pub use section::{
+    section_failure, section_heading, section_heading_with_action, section_loading, song_with_cover,
+};

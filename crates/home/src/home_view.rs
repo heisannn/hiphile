@@ -4,13 +4,19 @@ use std::time::{Duration, Instant};
 
 use actions::{AlbumAction, EnqueueSongs, GoToArtist, Placement, PlaySongs, ShowAlbum, ShowArtist};
 use futures::future::join_all;
+use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme as _, Selectable as _, Sizable as _, button::Button, list::ListItem,
-    menu::ContextMenuExt as _, scroll::Scrollbar, v_flex,
+    ActiveTheme as _, Selectable as _, Sizable as _, WindowExt as _,
+    button::{Button, ButtonVariants as _},
+    list::ListItem,
+    menu::ContextMenuExt as _,
+    notification::NotificationType,
+    scroll::Scrollbar,
+    v_flex,
 };
 use gpui_kit::{
-    AnyElement, App, AppContext as _, ClickEvent, Context, ElementId, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, Role,
+    AnyElement, AnyWindowHandle, App, AppContext as _, ClickEvent, Context, ElementId, FocusHandle,
+    Focusable, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, Role,
     ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
     Window, div, prelude::FluentBuilder as _,
 };
@@ -21,7 +27,7 @@ use ui::list_navigation::{
 };
 use ui::{
     ArtistLine, CoverArt, NowPlaying, PlayState, Shelf, format_duration, section_failure,
-    section_heading, section_loading, song_with_cover,
+    section_heading, section_heading_with_action, section_loading, song_with_cover,
 };
 
 use crate::layout::{AlbumShelf, Item};
@@ -57,9 +63,9 @@ const RECOMMENDED_RETRY_AFTER: Duration = Duration::from_secs(10 * 60);
 /// The lists come from the server, which alone knows every play. An item stays
 /// on show while a reload that replaces it is on its way or fails.
 ///
-/// The albums to try stay the same all day, so they are kept in the catalog
-/// and picked again on the first occasion of another day: opening, coming back
-/// to the screen or the window, a play or a library sync.
+/// The albums to try stay the same all day, unless asked to reload, so they are
+/// kept in the catalog and picked again on the first occasion of another day:
+/// opening, coming back to the screen or the window, a play or a library sync.
 pub struct Home {
     session: session::Session,
     focus: FocusHandle,
@@ -195,6 +201,16 @@ impl Home {
     }
 
     fn pick_recommended(&mut self, cx: &mut Context<Self>) {
+        self.start_pick(None, cx);
+    }
+
+    /// Picks new albums now, whichever day the ones on show are from. A pick
+    /// that leaves them there says why in `window`, as the shelf looks the same.
+    fn reload_recommended(&mut self, window: &Window, cx: &mut Context<Self>) {
+        self.start_pick(Some(window.window_handle()), cx);
+    }
+
+    fn start_pick(&mut self, report_to: Option<AnyWindowHandle>, cx: &mut Context<Self>) {
         self.recommending = true;
         self.recommended_retry = None;
         self.recommended.begin();
@@ -206,25 +222,41 @@ impl Home {
                     fetch_recommended(&client, NEW_ALBUMS, MOST_PLAYED).await
                 })
                 .await;
-            this.update(cx, |this, cx| {
-                let result = result.map_err(|error| session::describe(&error).into());
-                this.finish_recommended(result, day, cx);
-            })
-            .ok();
+            let kept = this
+                .update(cx, |this, cx| {
+                    let result = result.map_err(|error| session::describe(&error).into());
+                    this.finish_recommended(result, day, cx)
+                })
+                .ok()
+                .flatten();
+            if let (Some(window), Some(message)) = (report_to, kept) {
+                cx.update_window(window, |_, window, cx| {
+                    window.push_notification((NotificationType::Error, message), cx);
+                })
+                .ok();
+            }
         });
         cx.notify();
     }
 
     /// Takes in a pick made for `day`. Only a complete one settles the day; the
     /// next occasion tries again after one that went wrong. Albums on show stay
-    /// there unless a complete pick found others.
+    /// there unless a complete pick found others. Returns why, when something
+    /// went wrong and they did.
     fn finish_recommended(
         &mut self,
         result: Result<Recommendations, SharedString>,
         day: String,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Option<SharedString> {
         self.recommending = false;
+        let kept = (!self.recommended.items().is_empty())
+            .then(|| match &result {
+                Ok(found) if found.complete => None,
+                Ok(_) => Some("Couldn't get new recommendations. Try again later.".into()),
+                Err(error) => Some(format!("Couldn't get new recommendations. {error}").into()),
+            })
+            .flatten();
         match result {
             Ok(found) => {
                 if found.complete {
@@ -247,6 +279,7 @@ impl Home {
         }
         self.keep_shelves_off_recommended();
         cx.notify();
+        kept
     }
 
     fn keep_recommended(&self, day: &str, albums: &[Album], cx: &mut Context<Self>) {
@@ -673,7 +706,7 @@ impl Home {
 
     fn render_part(&self, part: &Part, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         match part {
-            Part::RecommendedHeading => section_heading("Recommended").into_any_element(),
+            Part::RecommendedHeading => self.render_recommended_heading(cx),
             Part::RecommendedStatus => self.render_recommended_status(cx),
             Part::RecentHeading => section_heading("Recently played").into_any_element(),
             Part::MostPlayedHeading => section_heading("Most played").into_any_element(),
@@ -686,6 +719,27 @@ impl Home {
                 self.render_album_row(*shelf, range.clone(), window, cx)
             }
         }
+    }
+
+    /// The heading, with a way to reload once there are albums to replace:
+    /// until then the status below it shows the wait or offers to retry.
+    fn render_recommended_heading(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.recommended.items().is_empty() {
+            return section_heading("Recommended").into_any_element();
+        }
+        section_heading_with_action(
+            "Recommended",
+            Button::new("reload-recommended")
+                .ghost()
+                .small()
+                .icon(IconName::RefreshCw)
+                .accessibility_label("Reload recommendations")
+                .loading(self.recommending)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.reload_recommended(window, cx);
+                })),
+        )
+        .into_any_element()
     }
 
     fn render_recommended_status(&self, cx: &mut Context<Self>) -> AnyElement {

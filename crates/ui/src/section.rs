@@ -5,23 +5,36 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, App, InteractiveElement as _, IntoElement, ParentElement as _, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, div, prelude::FluentBuilder as _,
+    AnyElement, App, Div, InteractiveElement as _, IntoElement, ParentElement as _, Role,
+    SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, div,
+    prelude::FluentBuilder as _,
 };
 
 use crate::list_navigation::CONTROL_CONTEXT;
 use crate::{CoverArt, PlayState, PlayStateIcon};
 
 pub fn section_heading(title: &'static str) -> impl IntoElement {
+    heading_title(title).flex_none().px_6().pt_6().pb_2()
+}
+
+/// A [`section_heading`] with a control for the whole section at its end.
+pub fn section_heading_with_action(title: &'static str, action: Button) -> impl IntoElement {
+    h_flex()
+        .flex_none()
+        .justify_between()
+        .px_6()
+        .pt_6()
+        .pb_2()
+        .child(heading_title(title))
+        .child(h_flex().key_context(CONTROL_CONTEXT).child(action))
+}
+
+fn heading_title(title: &'static str) -> Stateful<Div> {
     div()
         .id(title)
         .role(Role::Heading)
         .aria_level(2)
         .aria_label(title)
-        .flex_none()
-        .px_6()
-        .pt_6()
-        .pb_2()
         .font_semibold()
         .child(title)
 }

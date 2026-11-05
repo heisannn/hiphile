@@ -37,11 +37,9 @@ fn catalog_in(dir: &tempfile::TempDir) -> catalog::Catalog {
     catalog::Catalog::open(dir.path()).unwrap()
 }
 
-/// A home screen for `alice` that keeps its picks in `catalog`.
-fn home_with(
-    catalog: Option<catalog::Catalog>,
-    cx: &mut TestAppContext,
-) -> (Entity<Home>, &mut VisualTestContext) {
+/// A session for `alice` that keeps her picks in `catalog`, with a server that
+/// cannot be reached.
+fn session_with(catalog: Option<catalog::Catalog>, cx: &mut TestAppContext) -> session::Session {
     // The failing requests wake the test from the network's own thread.
     cx.executor().allow_parking();
     cx.update(|cx| {
@@ -52,14 +50,34 @@ fn home_with(
     let net = net::Client::new("hiphile-test").unwrap();
     let server = client::Server::new("http://127.0.0.1:9", Credentials::api_key("k")).unwrap();
     let info = serde_json::from_value(json!({ "version": "1.16.1" })).unwrap();
-    let session = session::Session::new(
+    session::Session::new(
         client::Client::new(net, server),
         "alice".to_owned(),
         info,
         catalog,
         None,
-    );
+    )
+}
+
+/// A home screen for `alice` that keeps its picks in `catalog`.
+fn home_with(
+    catalog: Option<catalog::Catalog>,
+    cx: &mut TestAppContext,
+) -> (Entity<Home>, &mut VisualTestContext) {
+    let session = session_with(catalog, cx);
     cx.add_window_view(|window, cx| Home::new(session, window, cx))
+}
+
+/// A home screen in a window that can show notifications.
+fn home_in_root(cx: &mut TestAppContext) -> (Entity<Home>, &mut VisualTestContext) {
+    let session = session_with(None, cx);
+    let mut home = None;
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|cx| Home::new(session, window, cx));
+        home = Some(view.clone());
+        gpui_kit::base::Root::new(view, window, cx)
+    });
+    (home.unwrap(), cx)
 }
 
 fn update(
@@ -496,6 +514,94 @@ fn retry_does_not_wait(cx: &mut TestAppContext) {
         assert!(home.recommending);
         assert_eq!(home.recommended_retry, None);
     });
+}
+
+#[gpui_kit::test]
+fn a_pick_that_leaves_albums_on_show_says_why(cx: &mut TestAppContext) {
+    let (home, cx) = home(cx);
+    update(&home, cx, |home, cx| {
+        fill(home, &[], 0);
+        home.recommended = Shelf::Loaded(recommended(1).into());
+        let kept = home.finish_recommended(Err("offline".into()), today(), cx);
+        assert_eq!(
+            kept.as_deref(),
+            Some("Couldn't get new recommendations. offline")
+        );
+        let kept = home.finish_recommended(found(&["other"], false), today(), cx);
+        assert!(kept.is_some());
+        assert_eq!(shown(home), ["r0"]);
+
+        assert_eq!(
+            home.finish_recommended(found(&["r1"], true), today(), cx),
+            None
+        );
+        assert_eq!(shown(home), ["r1"]);
+    });
+}
+
+#[gpui_kit::test]
+fn a_failure_that_shows_on_the_shelf_needs_no_other_word(cx: &mut TestAppContext) {
+    let (home, cx) = home(cx);
+    update(&home, cx, |home, cx| {
+        fill(home, &[], 0);
+        home.recommended = Shelf::Loading;
+        assert_eq!(
+            home.finish_recommended(Err("offline".into()), today(), cx),
+            None
+        );
+        assert!(matches!(home.recommended, Shelf::Failed(_)));
+    });
+}
+
+/// `key` presses a focused reload, which picks again though today's albums are
+/// on show. The server cannot be reached, so they stay and a notification says so.
+fn key_reloads_recommended(key: &str, cx: &mut TestAppContext) {
+    let (home, cx) = home_in_root(cx);
+    update(&home, cx, |home, cx| {
+        fill(home, &[], 1);
+        home.recommended = Shelf::Loaded(recommended(1).into());
+        home.recommended_day = Some(today());
+        cx.notify();
+    });
+    cx.update(|window, cx| {
+        let focus = home.read(cx).focus.clone();
+        focus.focus(window, cx);
+    });
+    cx.run_until_parked();
+    cx.update(|window, cx| window.focus_next(cx));
+    cx.run_until_parked();
+
+    cx.simulate_keystrokes(key);
+    let os = cx.update(|_, cx| cx.platform_info().os);
+    cx.simulate_event(KeyUpEvent {
+        keystroke: Keystroke::parse_with_os(key, os).unwrap(),
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut retry_set = false;
+    while Instant::now() < deadline && !retry_set {
+        std::thread::sleep(Duration::from_millis(5));
+        cx.run_until_parked();
+        retry_set = cx.update(|_, cx| home.read(cx).recommended_retry.is_some());
+    }
+    assert!(retry_set, "the pick never finished");
+    cx.update(|_, cx| {
+        let home = home.read(cx);
+        assert!(!home.recommending);
+        assert_eq!(shown(home), ["r0"]);
+        assert_eq!(home.recommended_day, Some(today()));
+    });
+    assert_eq!(cx.update(|window, cx| window.notifications(cx).len()), 1);
+}
+
+#[gpui_kit::test]
+fn enter_reloads_the_recommendations(cx: &mut TestAppContext) {
+    key_reloads_recommended("enter", cx);
+}
+
+#[gpui_kit::test]
+fn space_reloads_the_recommendations(cx: &mut TestAppContext) {
+    key_reloads_recommended("space", cx);
 }
 
 #[gpui_kit::test]
