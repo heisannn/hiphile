@@ -27,6 +27,9 @@ settings.workspace = true
 songs.workspace = true
 ui.workspace = true
 
+[build-dependencies]
+embed-resource.workspace = true
+
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }
 

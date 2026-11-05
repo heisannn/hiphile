@@ -3,6 +3,7 @@
 # Usage: script/package-macos <version> <target-dir> <output.dmg>
 set -euo pipefail
 
+repo="$(cd "$(dirname "$0")/.." && pwd)"
 version="$1"
 target_dir="$2"
 output="$3"
@@ -11,8 +12,9 @@ root="$(mktemp -d)"
 trap 'rm -rf "$root"' EXIT
 app="$root/hiphile.app"
 
-mkdir -p "$app/Contents/MacOS"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$target_dir/hiphile" "$app/Contents/MacOS/hiphile"
+cp "$repo/assets/icon.icns" "$app/Contents/Resources/icon.icns"
 ln -s /Applications "$root/Applications"
 
 cat >"$app/Contents/Info.plist" <<PLIST
@@ -22,6 +24,8 @@ cat >"$app/Contents/Info.plist" <<PLIST
 <dict>
   <key>CFBundleExecutable</key>
   <string>hiphile</string>
+  <key>CFBundleIconFile</key>
+  <string>icon</string>
   <key>CFBundleIdentifier</key>
   <string>dev.heisannn.hiphile</string>
   <key>CFBundleInfoDictionaryVersion</key>
