@@ -20,6 +20,7 @@ Hiphile is developed on macOS. Windows and Linux are not regularly tested.
 - **Lyrics:** Synced lyrics, highlighted word by word or line by line.
 - **Local cache:** Library data, cover art and songs are cached on disk, and library data syncs in the background.
 - **Scrobbling:** Report plays and the current song to your server. Plays made offline are sent later.
+- **Media controls:** Control playback with the media keys and see the current song in your system's media controls.
 - **Discord:** Show the current song as your Discord status.
 - **CLI:** Sync, search and play from the terminal.
 

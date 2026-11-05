@@ -9,12 +9,13 @@ use gpui_kit::component::{
     slider::{SliderEvent, SliderState},
     v_flex,
 };
-use gpui_kit::http_client::AsyncBody;
+use gpui_kit::http_client::{AsyncBody, HttpClient};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _,
     IntoElement, ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _,
     Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _, relative, rems,
 };
+use media_controls::{CoverFile, MediaCommand, MediaControls, MediaStatus};
 use playback::{Arrival, EntryId, Placement, PlayTally, Queue, RepeatMode};
 use presence::{CoverHost, Presence};
 use subsonic::{CoverArtId, Song, SongId};
@@ -38,9 +39,10 @@ const VOLUME_STEP: f32 = 0.1;
 const COVER_PIXELS: u32 = 48;
 /// Pixel size requested for the lyrics view's cover, likewise.
 const LARGE_COVER_PIXELS: u32 = 512;
-/// Pixel size of the cover published for the Discord status, the same as the
-/// lyrics view's, so that it is often on disk already.
-const PRESENCE_COVER_PIXELS: u32 = 512;
+/// Pixel size of the cover published for the Discord status and given to the
+/// system's media controls, the same as the lyrics view's, so that it is often
+/// on disk already.
+const PUBLISHED_COVER_PIXELS: u32 = 512;
 /// How much of the foreground a cover takes on under the pointer.
 const COVER_HOVER_OPACITY: f32 = 0.08;
 /// How much of the foreground a cover takes on while pressed.
@@ -120,6 +122,11 @@ pub struct Player {
     /// The cover being looked for, or last looked for without success, which
     /// is then not looked for again until another song has had its turn.
     sought_cover: Option<CoverArtId>,
+    media_controls: MediaControls,
+    /// The cover being looked for, or last looked for without success, for the
+    /// system's media controls, which is then not looked for again until the
+    /// next song.
+    sought_media_cover: Option<CoverArtId>,
     cover_url: Option<SharedString>,
     large_cover_url: Option<SharedString>,
     /// Whether the bar leaves out its cover, for another that stands in for it.
@@ -138,6 +145,8 @@ pub struct Player {
     muted: bool,
     _open: Task<()>,
     _now_playing: Task<()>,
+    _media_cover: Task<()>,
+    _media_commands: Task<()>,
     _events: Task<()>,
     _refresh: Task<()>,
     /// The volume to save once the save in progress is done.
@@ -190,6 +199,19 @@ impl Player {
             while let Ok(event) = events.recv().await {
                 if this
                     .update(cx, |this, cx| this.on_engine_event(event, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let (media_controls, media_commands) = MediaControls::connect(window);
+        let media_commands = cx.spawn_in(window, async move |this, cx| {
+            while let Ok(command) = media_commands.recv().await {
+                if this
+                    .update_in(cx, |this, window, cx| {
+                        this.on_media_command(command, window, cx);
+                    })
                     .is_err()
                 {
                     break;
@@ -259,6 +281,7 @@ impl Player {
             // wait for it, so shut it down here, while the process still runs.
             cx.on_app_quit(|this, _| {
                 this.engine.shutdown();
+                this.media_controls.clear();
                 async {}
             }),
         ];
@@ -287,6 +310,8 @@ impl Player {
             cover_host,
             cover_key: None,
             sought_cover: None,
+            media_controls,
+            sought_media_cover: None,
             cover_url: None,
             large_cover_url: None,
             is_cover_hidden: false,
@@ -299,6 +324,8 @@ impl Player {
             muted: false,
             _open: Task::ready(()),
             _now_playing: Task::ready(()),
+            _media_cover: Task::ready(()),
+            _media_commands: media_commands,
             _events: events,
             _refresh: refresh,
             unsaved_volume: None,
@@ -584,12 +611,20 @@ impl Player {
     }
 
     pub fn seek_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let target = self.engine.position().saturating_add(SEEK_STEP);
-        self.seek_to(target, window, cx);
+        self.seek_forward_by(SEEK_STEP, window, cx);
     }
 
     pub fn seek_backward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let target = self.engine.position().saturating_sub(SEEK_STEP);
+        self.seek_backward_by(SEEK_STEP, window, cx);
+    }
+
+    fn seek_forward_by(&mut self, by: Duration, window: &mut Window, cx: &mut Context<Self>) {
+        let target = self.engine.position().saturating_add(by);
+        self.seek_to(target, window, cx);
+    }
+
+    fn seek_backward_by(&mut self, by: Duration, window: &mut Window, cx: &mut Context<Self>) {
+        let target = self.engine.position().saturating_sub(by);
         self.seek_to(target, window, cx);
     }
 
@@ -655,6 +690,7 @@ impl Player {
             self.scrobble_current(cx);
         }
         self.show_presence(cx);
+        self.show_in_media_controls(cx);
         if self.scrub.is_none() {
             self.show_position(position, window, cx);
         }
@@ -705,16 +741,11 @@ impl Player {
             return;
         };
         self.sought_cover = Some(cover.clone());
-        let url = self.session.cover_art_url(&cover, PRESENCE_COVER_PIXELS);
+        let url = self.session.cover_art_url(&cover, PUBLISHED_COVER_PIXELS);
         let http = cx.http_client();
         let host = self.cover_host.clone();
         let link = cx.background_spawn(async move {
-            let mut response = http
-                .get(url.as_ref(), AsyncBody::empty(), true)
-                .await
-                .ok()?;
-            let mut image = Vec::new();
-            response.body_mut().read_to_end(&mut image).await.ok()?;
+            let image = fetch_image(http, url).await?;
             Some(host.link(&image, &key).await)
         });
         cx.spawn(async move |this, cx| {
@@ -738,6 +769,95 @@ impl Player {
             .ok();
         })
         .detach();
+    }
+
+    /// Keeps the system's media controls on the current song.
+    fn show_in_media_controls(&mut self, cx: &mut Context<Self>) {
+        let status = self.media_status();
+        let (position, duration) = (self.position_now(), self.duration());
+        self.media_controls
+            .show(self.queue.current(), duration, status, position);
+        self.seek_media_cover(cx);
+    }
+
+    fn media_status(&self) -> MediaStatus {
+        if self.state == State::Stopped {
+            MediaStatus::Stopped
+        } else if self.is_playing() {
+            MediaStatus::Playing
+        } else {
+            MediaStatus::Paused
+        }
+    }
+
+    /// Finds the current song's cover for the system's media controls, calling
+    /// off the search for the song before. They show the song without it if it
+    /// cannot be had, so a failure is not shown.
+    fn seek_media_cover(&mut self, cx: &mut Context<Self>) {
+        if !self.media_controls.is_connected() {
+            return;
+        }
+        let Some(cover) = self
+            .queue
+            .current()
+            .and_then(Song::cover_art)
+            .filter(|cover| {
+                self.sought_media_cover.as_ref() != Some(*cover)
+                    && !self.media_controls.has_cover(cover)
+            })
+            .cloned()
+        else {
+            return;
+        };
+        self.sought_media_cover = Some(cover.clone());
+        let url = self.session.cover_art_url(&cover, PUBLISHED_COVER_PIXELS);
+        let http = cx.http_client();
+        let file = cx.background_spawn(async move {
+            let image = fetch_image(http, url).await?;
+            CoverFile::write(&image).ok()
+        });
+        self._media_cover = cx.spawn(async move |this, cx| {
+            if let Some(file) = file.await {
+                this.update(cx, |this, _| this.media_controls.set_cover(cover, file))
+                    .ok();
+            }
+        });
+    }
+
+    fn on_media_command(
+        &mut self,
+        command: MediaCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match command {
+            MediaCommand::Play if !self.is_playing() => self.toggle_playback(cx),
+            MediaCommand::Pause if self.is_playing() => self.toggle_playback(cx),
+            MediaCommand::Play | MediaCommand::Pause => {}
+            MediaCommand::Toggle => self.toggle_playback(cx),
+            // Pauses at the start rather than stopping: the player stops only
+            // past the end of the queue or on a failure, and what is added to the
+            // queue after that goes on from the song after the current one.
+            MediaCommand::Stop => {
+                if self.is_playing() {
+                    self.toggle_playback(cx);
+                }
+                self.seek_to(Duration::ZERO, window, cx);
+            }
+            MediaCommand::Next => self.next(cx),
+            MediaCommand::Previous => self.previous(cx),
+            MediaCommand::SeekForward(by) => {
+                self.seek_forward_by(by.unwrap_or(SEEK_STEP), window, cx);
+            }
+            MediaCommand::SeekBackward(by) => {
+                self.seek_backward_by(by.unwrap_or(SEEK_STEP), window, cx);
+            }
+            MediaCommand::SeekTo(target) => self.seek_to(target, window, cx),
+            MediaCommand::Raise => {
+                cx.activate(true);
+                window.activate_window();
+            }
+        }
     }
 
     /// Tells the server the current song was played. The play is kept first,
@@ -918,6 +1038,7 @@ impl Player {
 
     /// Shows `song`, now current, as about to play.
     fn show_opening(&mut self, song: &Song, cx: &mut Context<Self>) {
+        self.sought_media_cover = None;
         self.format = None;
         self.buffering = false;
         self.error = None;
@@ -1097,6 +1218,7 @@ impl Player {
             song: self.queue.current().map(|song| song.id().clone()),
             playing: self.is_playing(),
         });
+        self.show_in_media_controls(cx);
         cx.notify();
     }
 
@@ -1197,6 +1319,20 @@ fn reveal(id: &'static str, shown: bool, window: &mut Window, cx: &mut Context<P
     let motion = cx.theme().motion_tokens();
     let policy = Transition::new(motion.duration_slow).easing(motion.easing_move.clone());
     transition(id, if shown { 1. } else { 0. }, policy, window, cx)
+}
+
+/// The image at `url`, if it can be had.
+async fn fetch_image(http: Arc<dyn HttpClient>, url: SharedString) -> Option<Vec<u8>> {
+    let mut response = http
+        .get(url.as_ref(), AsyncBody::empty(), true)
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let mut image = Vec::new();
+    response.body_mut().read_to_end(&mut image).await.ok()?;
+    Some(image)
 }
 
 /// The songs kept on this computer, if there are any to be had.
@@ -1369,6 +1505,147 @@ mod tests {
         let bar = cx.debug_bounds("player-bar").unwrap();
         let controls = cx.debug_bounds("player-controls").unwrap();
         bar.center().y + gpui_kit::px(0.5) - controls.center().y
+    }
+
+    #[gpui_kit::test]
+    fn play_and_pause_from_the_system_only_change_what_they_name(cx: &mut TestAppContext) {
+        let (player, cx) = idle_player(cx);
+        let song: Song = serde_json::from_value(json!({ "id": "a", "title": "a" })).unwrap();
+        let send = |command, cx: &mut VisualTestContext| {
+            cx.update(|window, cx| {
+                player.update(cx, |player, cx| {
+                    player.on_media_command(command, window, cx);
+                });
+            });
+        };
+        let is_playing = |cx: &mut VisualTestContext| player.read_with(cx, |p, _| p.is_playing());
+        player.update(cx, |player, cx| {
+            player.fill_queue(std::slice::from_ref(&song), 0);
+            player.pretend_playing(true, cx);
+        });
+
+        send(MediaCommand::Play, cx);
+        assert!(is_playing(cx));
+        send(MediaCommand::Pause, cx);
+        assert!(!is_playing(cx));
+        send(MediaCommand::Pause, cx);
+        assert!(!is_playing(cx));
+        send(MediaCommand::Play, cx);
+        assert!(is_playing(cx));
+        send(MediaCommand::Toggle, cx);
+        assert!(!is_playing(cx));
+    }
+
+    fn named_song(id: &str) -> Song {
+        serde_json::from_value(json!({ "id": id, "title": id, "duration": 100 })).unwrap()
+    }
+
+    fn send_media_command(
+        player: &Entity<Player>,
+        command: MediaCommand,
+        cx: &mut VisualTestContext,
+    ) {
+        cx.update(|window, cx| {
+            player.update(cx, |player, cx| {
+                player.on_media_command(command, window, cx);
+            });
+        });
+    }
+
+    fn current_title(player: &Entity<Player>, cx: &mut VisualTestContext) -> Option<String> {
+        player.read_with(cx, |player, _| {
+            player.current_song().map(|song| song.title().to_owned())
+        })
+    }
+
+    #[gpui_kit::test]
+    fn next_and_previous_from_the_system_move_in_the_queue(cx: &mut TestAppContext) {
+        let (player, cx) = idle_player(cx);
+        player.update(cx, |player, _| {
+            player.fill_queue(&[named_song("a"), named_song("b")], 0);
+        });
+        send_media_command(&player, MediaCommand::Next, cx);
+        assert_eq!(current_title(&player, cx).as_deref(), Some("b"));
+        send_media_command(&player, MediaCommand::Previous, cx);
+        assert_eq!(current_title(&player, cx).as_deref(), Some("a"));
+    }
+
+    #[gpui_kit::test]
+    fn stop_from_the_system_keeps_the_song_for_what_is_added_next(cx: &mut TestAppContext) {
+        let (player, cx) = idle_player(cx);
+        player.update(cx, |player, cx| {
+            player.fill_queue(&[named_song("a"), named_song("b")], 0);
+            player.pretend_playing(true, cx);
+        });
+        send_media_command(&player, MediaCommand::Stop, cx);
+        assert!(!player.read_with(cx, |player, _| player.is_playing()));
+
+        player.update(cx, |player, cx| {
+            player.enqueue(&[named_song("c")], Placement::Last, cx);
+        });
+        assert_eq!(current_title(&player, cx).as_deref(), Some("a"));
+        assert!(!player.read_with(cx, |player, _| player.is_playing()));
+    }
+
+    #[gpui_kit::test]
+    fn seeks_from_the_system_move_the_position(cx: &mut TestAppContext) {
+        let (player, cx) = idle_player(cx);
+        player.update(cx, |player, cx| {
+            player.fill_queue(&[named_song("a"), named_song("b")], 0);
+            player.pretend_playing(true, cx);
+        });
+        let shown = |cx: &mut VisualTestContext| {
+            player.read_with(cx, |player, cx| {
+                player.position_state().read(cx).value().end()
+            })
+        };
+        let seconds = Duration::from_secs;
+
+        send_media_command(&player, MediaCommand::SeekTo(seconds(50)), cx);
+        assert_eq!(shown(cx), 0.5);
+        send_media_command(&player, MediaCommand::SeekForward(None), cx);
+        assert_eq!(shown(cx), 0.1);
+        send_media_command(&player, MediaCommand::SeekForward(Some(seconds(20))), cx);
+        assert_eq!(shown(cx), 0.2);
+        send_media_command(&player, MediaCommand::SeekBackward(None), cx);
+        assert_eq!(shown(cx), 0.0);
+
+        send_media_command(&player, MediaCommand::SeekTo(seconds(100)), cx);
+        assert_eq!(current_title(&player, cx).as_deref(), Some("b"));
+    }
+
+    #[gpui_kit::test]
+    fn the_system_hears_how_the_song_stands(cx: &mut TestAppContext) {
+        let (player, cx) = idle_player(cx);
+        player.update(cx, |player, cx| {
+            player.fill_queue(&[named_song("a")], 0);
+            assert_eq!(player.media_status(), MediaStatus::Stopped);
+
+            player.pretend_playing(true, cx);
+            assert_eq!(player.media_status(), MediaStatus::Playing);
+            player.pretend_playing(false, cx);
+            assert_eq!(player.media_status(), MediaStatus::Paused);
+
+            // Opening is playing, unless a pause has come in the meantime.
+            player.state = State::Opening;
+            assert_eq!(player.media_status(), MediaStatus::Playing);
+            player.resume = Some(Resume {
+                position: Duration::ZERO,
+                paused: true,
+            });
+            assert_eq!(player.media_status(), MediaStatus::Paused);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_cover_not_found_is_looked_for_again_with_the_next_song(cx: &mut TestAppContext) {
+        let (player, cx) = idle_player(cx);
+        player.update(cx, |player, cx| {
+            player.fill_queue(&[named_song("a"), named_song("b")], 0);
+            player.sought_media_cover = Some(CoverArtId::new("c"));
+            player.next(cx);
+            assert_eq!(player.sought_media_cover, None);
+        });
     }
 
     #[gpui_kit::test]
