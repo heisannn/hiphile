@@ -34,7 +34,7 @@ use crate::{
 };
 
 /// Pixel size requested for a row's cover, the same as the player's.
-const ROW_COVER_PIXELS: u32 = 96;
+const ROW_COVER_PIXELS: u32 = 48;
 
 /// The favorites' screen: one kind of favorite at a time. Owns the favorites,
 /// the selection of each kind, and the writes on their way to the server, and
