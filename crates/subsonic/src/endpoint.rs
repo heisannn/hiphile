@@ -34,6 +34,16 @@ impl Endpoint {
         self
     }
 
+    /// Names `target` the way the protocol tells the three apart: `id` alone
+    /// would mean a folder for an album or an artist.
+    fn target(self, target: &crate::StarTarget) -> Self {
+        match target {
+            crate::StarTarget::Song(song) => self.param("id", song.as_str()),
+            crate::StarTarget::Album(album) => self.param("albumId", album.as_str()),
+            crate::StarTarget::Artist(artist) => self.param("artistId", artist.as_str()),
+        }
+    }
+
     pub fn ping() -> Self {
         Self::new("ping")
     }
@@ -229,6 +239,21 @@ impl Endpoint {
         Self::new("deletePlaylist").param("id", playlist.as_str())
     }
 
+    /// Every song, album and artist the user marked as a favorite.
+    pub fn starred() -> Self {
+        Self::new("getStarred2")
+    }
+
+    /// Marks `target` as a favorite of the user.
+    pub fn star(target: &crate::StarTarget) -> Self {
+        Self::new("star").target(target)
+    }
+
+    /// Takes `target` out of the user's favorites.
+    pub fn unstar(target: &crate::StarTarget) -> Self {
+        Self::new("unstar").target(target)
+    }
+
     /// Original file bytes (`format=raw`), so the client decodes the source itself.
     pub fn stream_original(song: &crate::SongId) -> Self {
         Self::new("stream")
@@ -393,6 +418,34 @@ mod tests {
         let printed = format!("{:?}", CoverArtRequest::parse(&url).unwrap());
         assert!(!printed.contains("secret"), "{printed}");
         assert!(!printed.contains("alice"), "{printed}");
+    }
+
+    #[test]
+    fn each_kind_of_favorite_goes_by_its_own_parameter() {
+        let base = Url::parse("https://music.example.com").unwrap();
+        let credentials = Credentials::api_key("k");
+        let cases = [
+            (crate::StarTarget::Song(crate::SongId::new("s")), "id", "s"),
+            (
+                crate::StarTarget::Album(crate::AlbumId::new("al")),
+                "albumId",
+                "al",
+            ),
+            (
+                crate::StarTarget::Artist(crate::ArtistId::new("ar")),
+                "artistId",
+                "ar",
+            ),
+        ];
+        for (target, name, value) in cases {
+            let star = Endpoint::star(&target).url(&base, &credentials);
+            assert_eq!(star.path(), "/rest/star");
+            assert_eq!(query(&star, name).as_deref(), Some(value));
+
+            let unstar = Endpoint::unstar(&target).url(&base, &credentials);
+            assert_eq!(unstar.path(), "/rest/unstar");
+            assert_eq!(query(&unstar, name).as_deref(), Some(value));
+        }
     }
 
     #[test]

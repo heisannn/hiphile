@@ -1,0 +1,23 @@
+[package]
+name = "favorites"
+description = "Feature: the songs, albums and artists the user marked as favorites."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+actions.workspace = true
+client.workspace = true
+gpui-kit.workspace = true
+session.workspace = true
+subsonic.workspace = true
+ui.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }
+net.workspace = true
+serde_json.workspace = true

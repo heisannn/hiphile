@@ -7,7 +7,7 @@ use gpui_kit::{
     App, ElementId, FocusHandle, IntoElement, MouseButton, ParentElement as _, RenderOnce,
     SharedString, Styled as _, WeakEntity, Window, div, prelude::FluentBuilder as _,
 };
-use subsonic::Song;
+use subsonic::{Song, StarTarget};
 use ui::{AlbumLink, PlayState, PlayStateIcon, format_duration, song_artist_link};
 
 use super::{Songs, columns};
@@ -89,18 +89,19 @@ impl RenderOnce for SongRow {
                     .menu("Play Next", Box::new(PlayNext))
                     .menu("Add to Queue", Box::new(AddToQueue))
                     .separator();
-                actions::add_to_playlist_submenu(
+                let menu = actions::add_to_playlist_submenu(
                     menu,
                     actions::add_songs_command(Arc::from([song.clone()])),
                     window,
                     cx,
-                )
-                .when(has_album, |menu| {
-                    menu.menu("Go to Album", Box::new(GoToAlbum))
-                })
-                .when(has_artist, |menu| {
-                    menu.menu("Go to Artist", Box::new(actions::GoToArtist))
-                })
+                );
+                actions::favorite_menu_item(menu, &StarTarget::Song(song.id().clone()), cx)
+                    .when(has_album, |menu| {
+                        menu.menu("Go to Album", Box::new(GoToAlbum))
+                    })
+                    .when(has_artist, |menu| {
+                        menu.menu("Go to Artist", Box::new(actions::GoToArtist))
+                    })
             })
     }
 }

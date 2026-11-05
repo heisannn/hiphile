@@ -886,6 +886,13 @@ impl Playlists {
             .on_action(cx.listener(|this, _: &actions::GoToArtist, window, cx| {
                 this.show_selected_artist(window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &actions::ToggleFavorite, window, cx| {
+                    if let Some(song) = this.selected_song() {
+                        actions::toggle_favorite(actions::Favorite::Song(song), window, cx);
+                    }
+                }),
+            )
             .on_action(cx.listener(|this, _: &AddToPlaylist, window, cx| {
                 this.choose_playlist_for_selected_song(window, cx)
             }))

@@ -579,6 +579,32 @@ fn the_keys_queue_the_selected_song_and_go_to_its_album_and_artist(cx: &mut Test
 }
 
 #[gpui_kit::test]
+fn the_favorite_key_goes_by_whether_the_selected_song_is_one(cx: &mut TestAppContext) {
+    let (_view, cx) = table(cx);
+    let key = if cfg!(target_os = "macos") {
+        "cmd-d"
+    } else {
+        "ctrl-d"
+    };
+    let target = subsonic::StarTarget::Song(SongId::new("a"));
+
+    // Nothing to go by until the favorites are known.
+    let asked: Vec<actions::SetFavorite> = dispatched_by(key, cx);
+    assert!(asked.is_empty());
+
+    cx.update(|_, cx| actions::set_known_favorites(Some(Default::default()), cx));
+    let asked: Vec<actions::SetFavorite> = dispatched_by(key, cx);
+    assert_eq!(asked[0].favorite().target(), target);
+    assert!(asked[0].is_favorite());
+
+    cx.update(|_, cx| {
+        actions::set_known_favorites(Some([target.clone()].into_iter().collect()), cx);
+    });
+    let asked: Vec<actions::SetFavorite> = dispatched_by(key, cx);
+    assert!(!asked.last().unwrap().is_favorite());
+}
+
+#[gpui_kit::test]
 fn the_song_playing_is_marked_only_when_it_changes(cx: &mut TestAppContext) {
     let (view, cx) = table(cx);
     cx.update(|_, cx| {

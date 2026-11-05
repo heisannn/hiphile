@@ -210,6 +210,32 @@ fn select_ix(view: &Entity<Playlists>, ix: usize, cx: &mut VisualTestContext) {
 }
 
 #[gpui_kit::test]
+fn the_favorite_key_follows_the_song_selected(cx: &mut TestAppContext) {
+    let (view, cx) = playlists(cx);
+    select_ix(&view, 1, cx);
+    focus_songs(&view, cx);
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    cx.update(|_, cx| {
+        actions::set_known_favorites(Some(Default::default()), cx);
+        let asked = asked.clone();
+        cx.on_action(move |action: &actions::SetFavorite, _| {
+            asked.borrow_mut().push(action.favorite().target());
+        });
+    });
+
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-d"
+    } else {
+        "ctrl-d"
+    });
+
+    assert_eq!(
+        *asked.borrow(),
+        [subsonic::StarTarget::Song(SongId::new("2"))]
+    );
+}
+
+#[gpui_kit::test]
 fn the_list_is_sorted_by_name_ignoring_case(cx: &mut TestAppContext) {
     let (view, cx) = playlists(cx);
     cx.update(|_, cx| {

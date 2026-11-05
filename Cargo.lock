@@ -2198,6 +2198,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
+name = "favorites"
+version = "0.1.0"
+dependencies = [
+ "actions",
+ "client",
+ "gpui-kit",
+ "net",
+ "serde_json",
+ "session",
+ "subsonic",
+ "ui",
+]
+
+[[package]]
 name = "fax"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3811,6 +3825,7 @@ dependencies = [
  "actions",
  "artists",
  "config 0.1.0",
+ "favorites",
  "futures",
  "gpui-kit",
  "home",

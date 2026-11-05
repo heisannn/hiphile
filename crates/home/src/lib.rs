@@ -65,4 +65,5 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(choose_playlist, ChoosePlaylist, Some(HOME_CONTEXT)),
     ]);
     actions::bind_go_to_artist(HOME_CONTEXT, cx);
+    actions::bind_toggle_favorite(HOME_CONTEXT, cx);
 }

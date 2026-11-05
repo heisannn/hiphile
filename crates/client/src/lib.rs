@@ -8,8 +8,9 @@ use serde::de::DeserializeOwned;
 use subsonic::{
     Album, AlbumId, AlbumWithSongs, Artist, ArtistId, ArtistWithAlbums, CoverArtId, Credentials,
     Endpoint, Envelope, GetAlbum, GetAlbumList2, GetArtist, GetArtistInfo2, GetArtists, GetIndexes,
-    GetPlaylist, GetPlaylists, GetScanStatus, GetSimilarSongs2, GetSong, GetTopSongs, Ping,
-    Playlist, PlaylistId, PlaylistWithSongs, ScanStatus, Search3, ServerInfo, Song, SongId,
+    GetPlaylist, GetPlaylists, GetScanStatus, GetSimilarSongs2, GetSong, GetStarred2, GetTopSongs,
+    Ping, Playlist, PlaylistId, PlaylistWithSongs, ScanStatus, Search3, ServerInfo, Song, SongId,
+    StarTarget, Starred,
 };
 use url::Url;
 
@@ -337,6 +338,24 @@ impl Client {
     pub async fn delete_playlist(&self, playlist: &PlaylistId) -> Result<(), Error> {
         self.call::<Ping>(&Endpoint::delete_playlist(playlist))
             .await?;
+        Ok(())
+    }
+
+    /// Every song, album and artist the user marked as a favorite.
+    pub async fn starred(&self) -> Result<Starred, Error> {
+        let envelope = self.call::<GetStarred2>(&Endpoint::starred()).await?;
+        Ok(envelope.into_payload().into_starred())
+    }
+
+    /// Marks `target` as a favorite of the user.
+    pub async fn star(&self, target: &StarTarget) -> Result<(), Error> {
+        self.call::<Ping>(&Endpoint::star(target)).await?;
+        Ok(())
+    }
+
+    /// Takes `target` out of the user's favorites.
+    pub async fn unstar(&self, target: &StarTarget) -> Result<(), Error> {
+        self.call::<Ping>(&Endpoint::unstar(target)).await?;
         Ok(())
     }
 

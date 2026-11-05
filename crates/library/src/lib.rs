@@ -65,6 +65,7 @@ pub fn init(cx: &mut App) {
             KeyBinding::new(add_to_playlist, AddToPlaylist, Some(context)),
         ]);
         actions::bind_go_to_artist(context, cx);
+        actions::bind_toggle_favorite(context, cx);
     }
     cx.bind_keys([
         KeyBinding::new("right", Open, Some(ALBUMS_CONTEXT)),

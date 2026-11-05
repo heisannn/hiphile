@@ -1,8 +1,10 @@
 use account::{SignIn, SignInEvent, Start};
 use actions::{
-    AddToPlaylist, ChoosePlaylist, EnqueueSongs, NewPlaylist, PlaySongs, ShowAlbum, ShowArtist,
+    AddToPlaylist, ChoosePlaylist, EnqueueSongs, NewPlaylist, PlaySongs, SetFavorite, ShowAlbum,
+    ShowArtist,
 };
 use artists::{Artists, ArtistsEvent};
+use favorites::{Favorites, FavoritesEvent};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _, TitleBar, WindowExt as _,
@@ -37,7 +39,8 @@ use ui::CoverCache;
 use crate::library_activity::{ActivityChanged, LibraryActivity, NoticeChange};
 use crate::navigation::{History, Location};
 use crate::{
-    GoBack, GoForward, ShowAlbums, ShowArtists, ShowHome, ShowPlaylists, ShowSongs, SignOut,
+    GoBack, GoForward, ShowAlbums, ShowArtists, ShowFavorites, ShowHome, ShowPlaylists, ShowSongs,
+    SignOut,
 };
 
 /// The queue's width when first shown, in rem.
@@ -87,16 +90,18 @@ pub(crate) enum Destination {
     Albums,
     Songs,
     Playlists,
+    Favorites,
 }
 
 impl Destination {
     /// In the order the title bar shows them.
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Home,
         Self::Artists,
         Self::Albums,
         Self::Songs,
         Self::Playlists,
+        Self::Favorites,
     ];
 
     fn label(self) -> &'static str {
@@ -106,6 +111,7 @@ impl Destination {
             Self::Albums => "Albums",
             Self::Songs => "Songs",
             Self::Playlists => "Playlists",
+            Self::Favorites => "Favorites",
         }
     }
 }
@@ -128,6 +134,9 @@ struct Workspace {
     songs: Entity<Songs>,
     /// Kept while another screen shows: the other screens' menus add to it.
     playlists: Entity<Playlists>,
+    /// Kept while another screen shows: the other screens' menus go by it and
+    /// add to it.
+    favorites: Entity<Favorites>,
     /// The palette over every screen, with the library it has read.
     search: Entity<Search>,
     /// What the notice of the sync and the reading shows.
@@ -144,6 +153,7 @@ struct Workspace {
     _library_events: Subscription,
     _artists_events: Subscription,
     _playlists_events: Subscription,
+    _favorites_events: Subscription,
     _search_events: Subscription,
     _activity_changes: Subscription,
     _output_changes: Subscription,
@@ -167,6 +177,7 @@ impl Workspace {
             Destination::Playlists => {
                 Location::Playlists(self.playlists.read(cx).selected_playlist_id().cloned())
             }
+            Destination::Favorites => Location::Favorites,
         }
     }
 
@@ -180,6 +191,7 @@ impl Workspace {
             Destination::Artists => self.artists.focus_handle(cx),
             Destination::Songs => self.songs.focus_handle(cx),
             Destination::Playlists => self.playlists.focus_handle(cx),
+            Destination::Favorites => self.favorites.focus_handle(cx),
         };
         focus.focus(window, cx);
     }
@@ -285,6 +297,7 @@ impl AppShell {
         let artists = cx.new(|cx| Artists::new(session.clone(), window, cx));
         let songs = cx.new(|cx| Songs::new(session.clone(), window, cx));
         let playlists = cx.new(|cx| Playlists::new(session.clone(), window, cx));
+        let favorites = cx.new(|cx| Favorites::new(session.clone(), window, cx));
         let search = cx.new(|cx| Search::new(session.clone(), window, cx));
         let search_events = cx.subscribe_in(&search, window, Self::on_search_event);
         let activity = cx.new(|cx| LibraryActivity::new(session.clone(), cx));
@@ -317,6 +330,7 @@ impl AppShell {
             let artists = artists.downgrade();
             let songs = songs.downgrade();
             let playlists = playlists.downgrade();
+            let favorites = favorites.downgrade();
             move |this, _, event, cx| {
                 match event {
                     PlayerEvent::NowPlaying { song, playing } => {
@@ -349,6 +363,11 @@ impl AppShell {
                                 playlists.set_now_playing(song.clone(), *playing, cx)
                             })
                             .ok();
+                        favorites
+                            .update(cx, |favorites, cx| {
+                                favorites.set_now_playing(song.clone(), *playing, cx)
+                            })
+                            .ok();
                     }
                     PlayerEvent::Played => {
                         home.update(cx, |home, cx| home.song_played(cx)).ok();
@@ -377,6 +396,7 @@ impl AppShell {
             }
         });
         let playlists_events = cx.subscribe_in(&playlists, window, Self::on_playlists_event);
+        let favorites_events = cx.subscribe_in(&favorites, window, Self::on_favorites_event);
         let output_changes = cx.subscribe(&audio_settings, {
             let player = player.downgrade();
             move |_, audio_settings, _: &settings::OutputChanged, cx| {
@@ -403,6 +423,7 @@ impl AppShell {
             artists,
             songs,
             playlists,
+            favorites,
             search,
             activity,
             player,
@@ -414,6 +435,7 @@ impl AppShell {
             _library_events: library_events,
             _artists_events: artists_events,
             _playlists_events: playlists_events,
+            _favorites_events: favorites_events,
             _search_events: search_events,
             _activity_changes: activity_changes,
             _output_changes: output_changes,
@@ -460,6 +482,29 @@ impl AppShell {
                 self.remember(Location::Playlists(Some(playlist.clone())), cx);
             }
         }
+    }
+
+    fn on_favorites_event(
+        &mut self,
+        _: &Entity<Favorites>,
+        event: &FavoritesEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let FavoritesEvent::LoadFailed(error) = event;
+        // The favorites' own screen says so where the list would be.
+        if !self.is_showing_favorites() {
+            let message =
+                format!("Couldn't load favorites. {error} Choose Refresh Library to try again.");
+            window.push_notification((NotificationType::Error, message), cx);
+        }
+    }
+
+    fn is_showing_favorites(&self) -> bool {
+        matches!(
+            &self.screen,
+            Screen::Workspace(workspace) if matches!(workspace.destination, Destination::Favorites)
+        )
     }
 
     fn on_library_activity(
@@ -606,6 +651,9 @@ impl AppShell {
             Destination::Playlists => workspace
                 .playlists
                 .update(cx, |playlists, cx| playlists.refresh(window, cx)),
+            Destination::Favorites => workspace
+                .favorites
+                .update(cx, |favorites, cx| favorites.refresh(cx)),
             Destination::Artists => workspace
                 .artists
                 .update(cx, |artists, cx| artists.activate(cx)),
@@ -670,7 +718,8 @@ impl AppShell {
             | Location::Artists(None)
             | Location::Albums(None)
             | Location::Songs
-            | Location::Playlists(None) => {}
+            | Location::Playlists(None)
+            | Location::Favorites => {}
         }
         cx.notify();
     }
@@ -722,14 +771,29 @@ impl AppShell {
         let Screen::Workspace(workspace) = &self.screen else {
             return;
         };
-        if workspace.destination == Destination::Playlists {
-            workspace
+        match workspace.destination {
+            Destination::Playlists => workspace
                 .playlists
-                .update(cx, |playlists, cx| playlists.refresh(window, cx));
-        } else {
-            workspace
+                .update(cx, |playlists, cx| playlists.refresh(window, cx)),
+            Destination::Favorites => workspace
+                .favorites
+                .update(cx, |favorites, cx| favorites.refresh(cx)),
+            _ => workspace
                 .library
-                .update(cx, |library, cx| library.refresh_library(cx));
+                .update(cx, |library, cx| library.refresh_library(cx)),
+        }
+    }
+
+    /// Tries favorites that failed to load again from any screen, whose stars
+    /// and menus are waiting on them. The favorites' own screen reads them
+    /// anyway.
+    fn retry_favorites(&self, cx: &mut Context<Self>) {
+        if let Screen::Workspace(workspace) = &self.screen
+            && !self.is_showing_favorites()
+        {
+            workspace
+                .favorites
+                .update(cx, |favorites, cx| favorites.reload_if_failed(cx));
         }
     }
 
@@ -973,6 +1037,7 @@ impl AppShell {
                     Destination::Artists => workspace.artists.clone().into_any_element(),
                     Destination::Songs => workspace.songs.clone().into_any_element(),
                     Destination::Playlists => workspace.playlists.clone().into_any_element(),
+                    Destination::Favorites => workspace.favorites.clone().into_any_element(),
                 },
             ))
             .child(
@@ -1190,12 +1255,25 @@ impl Render for AppShell {
                 .on_action(cx.listener(|this, _: &ShowPlaylists, window, cx| {
                     this.show_destination(Destination::Playlists, window, cx);
                 }))
+                .on_action(cx.listener(|this, _: &ShowFavorites, window, cx| {
+                    this.show_destination(Destination::Favorites, window, cx);
+                }))
+                .on_action(cx.listener(|this, action: &SetFavorite, window, cx| {
+                    if let Screen::Workspace(workspace) = &this.screen {
+                        workspace.favorites.update(cx, |favorites, cx| {
+                            let favorite = action.favorite().clone();
+                            favorites.set_favorite(favorite, action.is_favorite(), window, cx);
+                        });
+                    }
+                }))
                 .on_action(cx.listener(|this, action: &ShowAlbum, window, cx| {
                     this.show_album(action.album(), window, cx);
                 }))
                 .on_action(cx.listener(|this, action: &ShowArtist, window, cx| {
                     this.show_artist(action.artist(), window, cx);
                 }))
+                // On the way in, as the albums' screen runs Refresh itself.
+                .capture_action(cx.listener(|this, _: &Refresh, _, cx| this.retry_favorites(cx)))
                 .on_action(cx.listener(|this, _: &Refresh, window, cx| this.refresh(window, cx)))
                 .on_action(cx.listener(|this, action: &AddToPlaylist, window, cx| {
                     this.update_playlists(window, cx, |playlists, window, cx| {

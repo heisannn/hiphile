@@ -135,6 +135,8 @@ impl Artists {
         let list_focus = cx.focus_handle().tab_stop(true);
         let detail_focus = cx.focus_handle().tab_stop(true);
         let mut subscriptions = vec![
+            // The artist on show has a star that says.
+            actions::observe_favorites(cx),
             cx.subscribe_in(&filter, window, |this, _, event, window, cx| match event {
                 InputEvent::Change => this.apply_filter(cx),
                 InputEvent::PressEnter { .. } => this.list_focus.focus(window, cx),
@@ -780,6 +782,13 @@ impl Artists {
             .on_action(cx.listener(|this, _: &AddToPlaylist, window, cx| {
                 this.act_on_selected_artist(AlbumAction::ChoosePlaylist, window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &actions::ToggleFavorite, window, cx| {
+                    if let Some(artist) = this.selected_artist_whole() {
+                        actions::toggle_favorite(actions::Favorite::Artist(artist), window, cx);
+                    }
+                }),
+            )
             .child(self.render_rows(window, cx))
             .into_any_element()
     }

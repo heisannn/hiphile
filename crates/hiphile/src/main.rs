@@ -31,6 +31,7 @@ actions!(
         ShowArtists,
         ShowSongs,
         ShowPlaylists,
+        ShowFavorites,
         GoBack,
         GoForward
     ]
@@ -53,6 +54,7 @@ fn main() {
             songs::init(cx);
             player::init(WORKSPACE_CONTEXT, cx);
             playlists::init(cx);
+            favorites::init(cx);
             search::init(WORKSPACE_CONTEXT, cx);
             settings::init(cx);
             install_app_commands(cx);
@@ -83,6 +85,7 @@ fn install_app_commands(cx: &mut App) {
         show_albums,
         show_songs,
         show_playlists,
+        show_favorites,
         refresh,
         new_playlist,
         go_back,
@@ -96,6 +99,7 @@ fn install_app_commands(cx: &mut App) {
             "cmd-3",
             "cmd-4",
             "cmd-5",
+            "cmd-6",
             "cmd-r",
             "cmd-n",
             "cmd-[",
@@ -110,6 +114,7 @@ fn install_app_commands(cx: &mut App) {
             "ctrl-3",
             "ctrl-4",
             "ctrl-5",
+            "ctrl-6",
             "ctrl-r",
             "ctrl-n",
             "alt-left",
@@ -124,6 +129,7 @@ fn install_app_commands(cx: &mut App) {
         KeyBinding::new(show_albums, ShowAlbums, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new(show_songs, ShowSongs, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new(show_playlists, ShowPlaylists, Some(WORKSPACE_CONTEXT)),
+        KeyBinding::new(show_favorites, ShowFavorites, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new(go_back, GoBack, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new(go_forward, GoForward, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new(refresh, library::Refresh, Some(WORKSPACE_CONTEXT)),
@@ -141,6 +147,7 @@ fn install_app_commands(cx: &mut App) {
         KeyBinding::new("space", TogglePlayback, Some(songs::SONGS_CONTEXT)),
         KeyBinding::new("space", TogglePlayback, Some(playlists::PLAYLISTS_CONTEXT)),
         KeyBinding::new("space", TogglePlayback, Some(playlists::SONGS_CONTEXT)),
+        KeyBinding::new("space", TogglePlayback, Some(favorites::FAVORITES_CONTEXT)),
     ]);
 }
 
@@ -185,6 +192,8 @@ pub(crate) fn set_menus(
             MenuItem::action("Songs", ShowSongs).checked(destination == Some(Destination::Songs)),
             MenuItem::action("Playlists", ShowPlaylists)
                 .checked(destination == Some(Destination::Playlists)),
+            MenuItem::action("Favorites", ShowFavorites)
+                .checked(destination == Some(Destination::Favorites)),
             MenuItem::separator(),
             MenuItem::action("Queue", ToggleQueue).checked(queue_shown),
             MenuItem::action("Lyrics", ToggleLyrics).checked(lyrics_open),

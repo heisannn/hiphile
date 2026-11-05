@@ -12,6 +12,7 @@ pub(crate) enum Location {
     Albums(Option<AlbumId>),
     Songs,
     Playlists(Option<PlaylistId>),
+    Favorites,
 }
 
 impl Location {
@@ -22,6 +23,7 @@ impl Location {
             Self::Albums(_) => Destination::Albums,
             Self::Songs => Destination::Songs,
             Self::Playlists(_) => Destination::Playlists,
+            Self::Favorites => Destination::Favorites,
         }
     }
 

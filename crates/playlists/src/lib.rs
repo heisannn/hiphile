@@ -90,4 +90,5 @@ pub fn init(cx: &mut App) {
         KeyBinding::new(find, FocusFilter, Some(ROOT_CONTEXT)),
     ]);
     actions::bind_go_to_artist(SONGS_CONTEXT, cx);
+    actions::bind_toggle_favorite(SONGS_CONTEXT, cx);
 }

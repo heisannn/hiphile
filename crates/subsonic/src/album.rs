@@ -8,7 +8,7 @@ use crate::{AlbumId, ArtistId, CoverArtId, Song};
 ///
 /// Serializes to the server's own JSON form, so a stored copy reads back
 /// like a response.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Album {
     id: AlbumId,

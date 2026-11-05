@@ -15,7 +15,7 @@ use gpui_kit::{
     prelude::FluentBuilder as _,
 };
 use playback::EntryId;
-use subsonic::Song;
+use subsonic::{Song, StarTarget};
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
 use ui::{
     ArtistLine, PlayState, PlayStateIcon, ReorderExt as _, RowText, format_duration, row_list,
@@ -207,6 +207,16 @@ impl QueueView {
         }
     }
 
+    fn toggle_selected_favorite(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let song = self.selected_ix(cx).and_then(|ix| {
+            let entries = self.player.read(cx).queue().entries();
+            Some(entries.get(ix)?.item().clone())
+        });
+        if let Some(song) = song {
+            actions::toggle_favorite(actions::Favorite::Song(song), window, cx);
+        }
+    }
+
     fn choose_playlist_for_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let song = self.selected_ix(cx).and_then(|ix| {
             let entries = self.player.read(cx).queue().entries();
@@ -326,6 +336,11 @@ impl QueueView {
             .on_action(cx.listener(|this, _: &actions::GoToArtist, window, cx| {
                 this.go_to_selected_artist(window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &actions::ToggleFavorite, window, cx| {
+                    this.toggle_selected_favorite(window, cx)
+                }),
+            )
             .child(self.render_rows(window, cx))
             .into_any_element()
     }
@@ -502,17 +517,18 @@ impl RenderOnce for EntryRow {
                     .menu_with_disabled("Move Up", Box::new(MoveUp), !commands.move_up)
                     .menu_with_disabled("Move Down", Box::new(MoveDown), !commands.move_down)
                     .separator();
-                actions::add_to_playlist_submenu(
+                let menu = actions::add_to_playlist_submenu(
                     menu,
                     actions::add_songs_command(Arc::from([song.clone()])),
                     window,
                     cx,
-                )
-                .when(has_artist, |menu| {
-                    menu.menu("Go to Artist", Box::new(actions::GoToArtist))
-                })
-                .separator()
-                .menu_with_disabled("Remove", Box::new(Remove), !commands.remove)
+                );
+                actions::favorite_menu_item(menu, &StarTarget::Song(song.id().clone()), cx)
+                    .when(has_artist, |menu| {
+                        menu.menu("Go to Artist", Box::new(actions::GoToArtist))
+                    })
+                    .separator()
+                    .menu_with_disabled("Remove", Box::new(Remove), !commands.remove)
             })
     }
 }

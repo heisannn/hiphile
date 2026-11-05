@@ -156,6 +156,7 @@ pub fn init(context: &'static str, cx: &mut App) {
         KeyBinding::new("space", TogglePlayback, Some(QUEUE_CONTEXT)),
     ]);
     actions::bind_go_to_artist(QUEUE_CONTEXT, cx);
+    actions::bind_toggle_favorite(QUEUE_CONTEXT, cx);
 }
 
 /// Keeps at most about `capacity` bytes of songs from now on, or the default

@@ -18,6 +18,7 @@ audio = { path = "crates/audio" }
 catalog = { path = "crates/catalog" }
 client = { path = "crates/client" }
 config = { path = "crates/config" }
+favorites = { path = "crates/favorites" }
 fuzzy = { path = "crates/fuzzy" }
 home = { path = "crates/home" }
 library = { path = "crates/library" }

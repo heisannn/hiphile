@@ -320,6 +320,49 @@ fn the_arrow_keys_move_from_the_recommendations_to_the_songs(cx: &mut TestAppCon
 }
 
 #[gpui_kit::test]
+fn the_favorite_key_follows_the_song_or_album_selected(cx: &mut TestAppContext) {
+    let (home, cx) = home(cx);
+    update(&home, cx, |home, cx| {
+        fill(home, &["s"], 0);
+        home.recommended = Shelf::Loaded(recommended(1).into());
+        home.selection = Some(Item::Album(AlbumShelf::Recommended, AlbumId::new("r0")));
+        cx.notify();
+    });
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    cx.update(|window, cx| {
+        actions::set_known_favorites(Some(Default::default()), cx);
+        let asked = asked.clone();
+        cx.on_action(move |action: &actions::SetFavorite, _| {
+            asked.borrow_mut().push(action.favorite().target());
+        });
+        let focus = home.read(cx).focus.clone();
+        focus.focus(window, cx);
+    });
+    cx.run_until_parked();
+    let key = if cfg!(target_os = "macos") {
+        "cmd-d"
+    } else {
+        "ctrl-d"
+    };
+
+    cx.simulate_keystrokes(key);
+    update(&home, cx, |home, cx| {
+        home.selection = Some(Item::Song(SongId::new("s")));
+        cx.notify();
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes(key);
+
+    assert_eq!(
+        *asked.borrow(),
+        [
+            StarTarget::Album(AlbumId::new("r0")),
+            StarTarget::Song(SongId::new("s")),
+        ]
+    );
+}
+
+#[gpui_kit::test]
 fn enter_shows_a_recommended_album_in_the_library(cx: &mut TestAppContext) {
     let (home, cx) = home(cx);
     update(&home, cx, |home, cx| {

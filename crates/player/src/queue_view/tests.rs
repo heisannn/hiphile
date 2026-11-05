@@ -25,6 +25,7 @@ fn queue<'a>(
         gpui_kit::init(cx);
         bind_control_keys(cx);
         bind_list_navigation(QUEUE_CONTEXT, cx);
+        actions::bind_toggle_favorite(QUEUE_CONTEXT, cx);
     });
     let net = net::Client::new("hiphile-test").unwrap();
     let server = client::Server::new("http://127.0.0.1:9", Credentials::api_key("k")).unwrap();
@@ -110,6 +111,34 @@ fn drag(from: usize, to: usize, view: &Entity<QueueView>, cx: &mut VisualTestCon
     cx.simulate_mouse_move(to, MouseButton::Left, none);
     cx.simulate_mouse_up(to, MouseButton::Left, none);
     cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn the_favorite_command_follows_the_entry_selected(cx: &mut TestAppContext) {
+    let (view, cx) = queue(&["a", "b"], 0, cx);
+    focus(&view, cx);
+    cx.update(|_, cx| view.update(cx, |view, cx| view.select(1, cx)));
+    let asked = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    cx.update(|_, cx| {
+        actions::set_known_favorites(Some(Default::default()), cx);
+        let asked = asked.clone();
+        cx.on_action(move |action: &actions::SetFavorite, _| {
+            asked.borrow_mut().push(action.favorite().target());
+        });
+    });
+
+    let key = if cfg!(target_os = "macos") {
+        "cmd-d"
+    } else {
+        "ctrl-d"
+    };
+    cx.simulate_keystrokes(key);
+    cx.run_until_parked();
+
+    assert_eq!(
+        *asked.borrow(),
+        [subsonic::StarTarget::Song(subsonic::SongId::new("b"))]
+    );
 }
 
 #[test]

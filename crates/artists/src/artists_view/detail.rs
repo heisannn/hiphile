@@ -1,7 +1,10 @@
 use std::ops::Range;
 use std::sync::Arc;
 
-use actions::{AlbumAction, EnqueueSongs, GoToArtist, Placement, PlaySongs, ShowAlbum, ShowArtist};
+use actions::{
+    AlbumAction, EnqueueSongs, Favorite, GoToArtist, Placement, PlaySongs, ShowAlbum, ShowArtist,
+    ToggleFavorite,
+};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _,
@@ -19,7 +22,7 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled as _, Window, div, list, prelude::FluentBuilder as _,
     px,
 };
-use subsonic::{Album, AlbumId, Artist, ArtistId, Song, SongId};
+use subsonic::{Album, AlbumId, Artist, ArtistId, Song, SongId, StarTarget};
 use ui::card_grid::{GridMotion, card_row, card_row_height, columns_for, media_card, step};
 use ui::list_navigation::{
     CONTROL_CONTEXT, SelectFirst, SelectLast, SelectNext, SelectPageDown, SelectPageUp,
@@ -436,6 +439,47 @@ impl Artists {
         }
     }
 
+    /// The selected artist, as the list has them or as the detail does once it
+    /// has their name.
+    pub(super) fn selected_artist_whole(&self) -> Option<Artist> {
+        let selected = self.selected_artist.as_ref()?;
+        let listed = self
+            .loaded_artists()
+            .and_then(|artists| artists.iter().find(|artist| artist.id() == selected));
+        match (listed, &self.detail) {
+            (Some(artist), _) => Some(artist.clone()),
+            (None, Some(detail)) if detail.id == *selected && detail.name.is_some() => {
+                Some(shown_as_artist(detail))
+            }
+            (None, _) => None,
+        }
+    }
+
+    /// Adds the song, album or artist selected in the detail to the favorites,
+    /// or takes it out.
+    fn toggle_selection_favorite(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(detail) = &self.detail else {
+            return;
+        };
+        let favorite = match self.selection_on_screen() {
+            Some(Item::Song(id)) => self
+                .top_song(&id)
+                .map(|(_, song)| Favorite::Song(song.clone())),
+            Some(Item::Album(id)) => self.album(&id).cloned().map(Favorite::Album),
+            Some(Item::Artist(id)) => detail
+                .similar
+                .items()
+                .iter()
+                .find(|artist| *artist.id() == id)
+                .cloned()
+                .map(Favorite::Artist),
+            None => None,
+        };
+        if let Some(favorite) = favorite {
+            actions::toggle_favorite(favorite, window, cx);
+        }
+    }
+
     fn go_to_album(&self, window: &mut Window, cx: &mut Context<Self>) {
         let album = match self.selection_on_screen() {
             Some(Item::Album(album)) => Some(album),
@@ -531,6 +575,9 @@ impl Artists {
             .on_action(
                 cx.listener(|this, _: &GoToArtist, window, cx| this.go_to_artist(window, cx)),
             )
+            .on_action(cx.listener(|this, _: &ToggleFavorite, window, cx| {
+                this.toggle_selection_favorite(window, cx)
+            }))
             .child(self.render_detail_content(cx))
             .into_any_element()
     }
@@ -675,6 +722,15 @@ impl Artists {
                         this.act_on_selected_artist(AlbumAction::Play, window, cx);
                     })),
             )
+            .action({
+                let artist = self
+                    .selected_artist_whole()
+                    .filter(|artist| *artist.id() == detail.id);
+                let is_nameless = artist.is_none();
+                let artist = artist.unwrap_or_else(|| shown_as_artist(detail));
+                ui::favorite_button("favorite-artist", Favorite::Artist(artist), cx)
+                    .when(is_nameless, |button| button.disabled(true))
+            })
             .action(self.render_artist_menu(has_songs))
             .into_any_element()
     }
@@ -794,6 +850,7 @@ impl Artists {
             return div().into_any_element();
         };
         let id = song.id().clone();
+        let target = StarTarget::Song(id.clone());
         let is_selected = self.selection == Some(Item::Song(id.clone()));
         let is_focused = self.detail_focus.is_focused(window);
         let title = SharedString::from(song.title().to_owned());
@@ -849,7 +906,9 @@ impl Artists {
                     .menu("Play Next", Box::new(PlayNext))
                     .menu("Add to Queue", Box::new(AddToQueue))
                     .separator();
-                actions::add_to_playlist_submenu(menu, add_selection_command, window, cx)
+                let menu =
+                    actions::add_to_playlist_submenu(menu, add_selection_command, window, cx);
+                actions::favorite_menu_item(menu, &target, cx)
                     .when(has_album, |menu| {
                         menu.menu("Go to Album", Box::new(GoToAlbum))
                     })
@@ -867,6 +926,7 @@ impl Artists {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = album.id().clone();
+        let target = StarTarget::Album(id.clone());
         let item = Item::Album(id.clone());
         let is_selected = self.selection.as_ref() == Some(&item);
         let cover = album
@@ -911,7 +971,8 @@ impl Artists {
                 .menu("Play Next", Box::new(PlayNext))
                 .menu("Add to Queue", Box::new(AddToQueue))
                 .separator();
-            actions::add_to_playlist_submenu(menu, add_selection_command, window, cx)
+            let menu = actions::add_to_playlist_submenu(menu, add_selection_command, window, cx);
+            actions::favorite_menu_item(menu, &target, cx)
                 .menu("Show in Albums", Box::new(GoToAlbum))
         })
         .into_any_element()
@@ -924,6 +985,7 @@ impl Artists {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = artist.id().clone();
+        let target = StarTarget::Artist(id.clone());
         let item = Item::Artist(id.clone());
         let is_selected = self.selection.as_ref() == Some(&item);
         let cover = artist
@@ -970,9 +1032,24 @@ impl Artists {
                 .menu("Play Next", Box::new(PlayNext))
                 .menu("Add to Queue", Box::new(AddToQueue))
                 .separator();
-            actions::add_to_playlist_submenu(menu, add_selection_command, window, cx)
+            let menu = actions::add_to_playlist_submenu(menu, add_selection_command, window, cx);
+            actions::favorite_menu_item(menu, &target, cx)
                 .menu("Go to Artist", Box::new(GoToArtist))
         })
         .into_any_element()
     }
+}
+
+/// The artist on show, as far as the detail knows them.
+fn shown_as_artist(detail: &ShownArtist) -> Artist {
+    let albums = match &detail.albums {
+        Shelf::Loaded(albums) => u32::try_from(albums.len()).ok(),
+        Shelf::Loading | Shelf::Failed(_) => None,
+    };
+    Artist::new(
+        detail.id.clone(),
+        detail.name.clone().unwrap_or_default().to_string(),
+        detail.cover_art.clone(),
+        albums,
+    )
 }

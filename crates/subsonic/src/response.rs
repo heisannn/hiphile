@@ -302,6 +302,36 @@ impl GetSong {
     }
 }
 
+/// Payload of `getStarred2`.
+#[derive(Debug, Deserialize)]
+pub struct GetStarred2 {
+    #[serde(rename = "starred2", default)]
+    starred: Starred,
+}
+
+impl GetStarred2 {
+    pub fn into_starred(self) -> Starred {
+        self.starred
+    }
+}
+
+/// What the user marked as a favorite, in the server's order.
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct Starred {
+    #[serde(default, rename = "song")]
+    songs: Vec<Song>,
+    #[serde(default, rename = "album")]
+    albums: Vec<Album>,
+    #[serde(default, rename = "artist")]
+    artists: Vec<Artist>,
+}
+
+impl Starred {
+    pub fn into_parts(self) -> (Vec<Song>, Vec<Album>, Vec<Artist>) {
+        (self.songs, self.albums, self.artists)
+    }
+}
+
 /// Payload of `search3`.
 #[derive(Debug, Deserialize)]
 pub struct Search3 {
@@ -381,6 +411,34 @@ pub fn parse<T: DeserializeOwned>(body: &[u8]) -> Result<Envelope<T>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn favorites_come_in_three_kinds() {
+        let body = br#"{"subsonic-response":{"status":"ok","version":"1.16.1","starred2":{"artist":[{"id":"ar","name":"Miles Davis","starred":"2026-11-05T00:00:00Z"}],"album":[{"id":"al","name":"Kind of Blue"}],"song":[{"id":"s","title":"So What"}]}}}"#;
+        let (songs, albums, artists) = parse::<GetStarred2>(body)
+            .unwrap()
+            .into_payload()
+            .into_starred()
+            .into_parts();
+        assert_eq!(songs[0].title(), "So What");
+        assert_eq!(albums[0].name(), "Kind of Blue");
+        assert_eq!(artists[0].name(), "Miles Davis");
+    }
+
+    #[test]
+    fn no_favorites_is_an_empty_list_however_the_server_says_it() {
+        for body in [
+            &br#"{"subsonic-response":{"status":"ok","version":"1.16.1","starred2":{}}}"#[..],
+            &br#"{"subsonic-response":{"status":"ok","version":"1.16.1"}}"#[..],
+        ] {
+            let (songs, albums, artists) = parse::<GetStarred2>(body)
+                .unwrap()
+                .into_payload()
+                .into_starred()
+                .into_parts();
+            assert!(songs.is_empty() && albums.is_empty() && artists.is_empty());
+        }
+    }
 
     #[test]
     fn artists_come_in_the_order_of_their_indexes() {

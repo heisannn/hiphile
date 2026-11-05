@@ -4,12 +4,15 @@
 //! and the app shell routes it to `player`. Only cross-feature actions belong
 //! here; a feature's own commands stay in that feature.
 
+use std::collections::HashSet;
 use std::fmt::Display;
 use std::sync::Arc;
 
 use gpui_kit::component::{WindowExt as _, menu::PopupMenu, notification::NotificationType};
-use gpui_kit::{Action, App, Context, Global, KeyBinding, SharedString, Window, actions};
-use subsonic::{AlbumId, ArtistId, PlaylistId, Song};
+use gpui_kit::{
+    Action, App, Context, Global, KeyBinding, SharedString, Subscription, Window, actions,
+};
+use subsonic::{Album, AlbumId, Artist, ArtistId, PlaylistId, Song, StarTarget};
 
 /// Add `songs` after those already in `playlist`.
 #[derive(Clone, Debug, PartialEq, Action)]
@@ -228,6 +231,121 @@ pub fn bind_go_to_artist(context: &'static str, cx: &mut App) {
     cx.bind_keys([KeyBinding::new(key, GoToArtist, Some(context))]);
 }
 
+/// A song, an album or an artist, whole, as the favorites' screen lists it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Favorite {
+    Song(Song),
+    Album(Album),
+    Artist(Artist),
+}
+
+impl Favorite {
+    pub fn target(&self) -> StarTarget {
+        match self {
+            Self::Song(song) => StarTarget::Song(song.id().clone()),
+            Self::Album(album) => StarTarget::Album(album.id().clone()),
+            Self::Artist(artist) => StarTarget::Artist(artist.id().clone()),
+        }
+    }
+}
+
+/// Make `favorite` one of the user's favorites, or stop it being one.
+#[derive(Clone, Debug, PartialEq, Action)]
+#[action(namespace = hiphile, no_json)]
+pub struct SetFavorite {
+    favorite: Favorite,
+    is_favorite: bool,
+}
+
+impl SetFavorite {
+    pub fn new(favorite: Favorite, is_favorite: bool) -> Self {
+        Self {
+            favorite,
+            is_favorite,
+        }
+    }
+
+    pub fn favorite(&self) -> &Favorite {
+        &self.favorite
+    }
+
+    pub fn is_favorite(&self) -> bool {
+        self.is_favorite
+    }
+}
+
+actions!(
+    hiphile,
+    [
+        /// Adds what is selected to the favorites, or takes it out. The view
+        /// with the selection handles it, through [`toggle_favorite`].
+        ToggleFavorite
+    ]
+);
+
+/// Binds the key for [`ToggleFavorite`] in the view whose key context is
+/// `context`.
+pub fn bind_toggle_favorite(context: &'static str, cx: &mut App) {
+    let key = if cx.platform_info().is_mac() {
+        "cmd-d"
+    } else {
+        "ctrl-d"
+    };
+    cx.bind_keys([KeyBinding::new(key, ToggleFavorite, Some(context))]);
+}
+
+/// What the user's favorites are, which the feature owning them keeps up to
+/// date for every other feature. Holds nothing until the server has said.
+#[derive(Default)]
+struct KnownFavorites(Option<HashSet<StarTarget>>);
+
+impl Global for KnownFavorites {}
+
+/// Replaces what [`is_favorite`] goes by; `None` when it is not known.
+pub fn set_known_favorites(favorites: Option<HashSet<StarTarget>>, cx: &mut App) {
+    cx.set_global(KnownFavorites(favorites));
+}
+
+/// Whether `target` is a favorite, once that is known.
+pub fn is_favorite(target: &StarTarget, cx: &App) -> Option<bool> {
+    let favorites = cx.try_global::<KnownFavorites>()?.0.as_ref()?;
+    Some(favorites.contains(target))
+}
+
+/// Calls for `view` to render again whenever the favorites change, for as long
+/// as the subscription lives.
+pub fn observe_favorites<V: 'static>(cx: &mut Context<V>) -> Subscription {
+    cx.observe_global::<KnownFavorites>(|_, cx| cx.notify())
+}
+
+/// What [`ToggleFavorite`] does to `target` now, as a command's label says it.
+pub fn favorite_command_label(target: &StarTarget, cx: &App) -> &'static str {
+    if is_favorite(target, cx) == Some(true) {
+        "Remove from Favorites"
+    } else {
+        "Add to Favorites"
+    }
+}
+
+/// Adds the item for [`ToggleFavorite`] on `target` to a context or dropdown
+/// menu, whose action context handles it. It stays disabled until the
+/// favorites are known, as it could not say which way it goes.
+pub fn favorite_menu_item(menu: PopupMenu, target: &StarTarget, cx: &App) -> PopupMenu {
+    menu.menu_with_disabled(
+        favorite_command_label(target, cx),
+        Box::new(ToggleFavorite),
+        is_favorite(target, cx).is_none(),
+    )
+}
+
+/// Dispatches what [`ToggleFavorite`] means for `favorite`. Does nothing until
+/// the favorites are known.
+pub fn toggle_favorite(favorite: Favorite, window: &mut Window, cx: &mut App) {
+    if let Some(is_favorite) = is_favorite(&favorite.target(), cx) {
+        window.dispatch_action(Box::new(SetFavorite::new(favorite, !is_favorite)), cx);
+    }
+}
+
 /// Replace the play queue with `songs` and start playing.
 #[derive(Clone, Debug, PartialEq, Action)]
 #[action(namespace = hiphile, no_json)]
@@ -292,5 +410,42 @@ impl EnqueueSongs {
 
     pub fn placement(&self) -> Placement {
         self.placement
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui_kit::TestAppContext;
+    use subsonic::{AlbumId, SongId};
+
+    use super::*;
+
+    #[gpui_kit::test]
+    fn a_favorite_is_unknown_until_they_are_told_then_goes_by_its_kind(cx: &mut TestAppContext) {
+        let song = StarTarget::Song(SongId::new("x"));
+        let album = StarTarget::Album(AlbumId::new("x"));
+        cx.update(|cx| {
+            assert_eq!(is_favorite(&song, cx), None);
+
+            set_known_favorites(Some(HashSet::from([song.clone()])), cx);
+            assert_eq!(is_favorite(&song, cx), Some(true));
+            assert_eq!(is_favorite(&album, cx), Some(false));
+
+            set_known_favorites(None, cx);
+            assert_eq!(is_favorite(&song, cx), None);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn the_command_says_which_way_it_goes(cx: &mut TestAppContext) {
+        let song = StarTarget::Song(SongId::new("x"));
+        let other = StarTarget::Song(SongId::new("y"));
+        cx.update(|cx| {
+            assert_eq!(favorite_command_label(&song, cx), "Add to Favorites");
+
+            set_known_favorites(Some(HashSet::from([song.clone()])), cx);
+            assert_eq!(favorite_command_label(&song, cx), "Remove from Favorites");
+            assert_eq!(favorite_command_label(&other, cx), "Add to Favorites");
+        });
     }
 }

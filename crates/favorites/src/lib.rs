@@ -1,0 +1,71 @@
+//! Feature: the user's favorites.
+//!
+//! The songs, albums and artists the user marked as favorites on the server,
+//! one kind at a time. Every other feature adds to them and takes from them
+//! through `actions::SetFavorite`, which the app shell routes to [`Favorites`],
+//! and reads them through `actions::is_favorite`, which [`Favorites`] keeps up
+//! to date. Dispatches `actions::PlaySongs`, `actions::EnqueueSongs`,
+//! `actions::ShowAlbum`, `actions::ShowArtist` and the playlist actions.
+
+mod favorites_view;
+mod lists;
+
+use gpui_kit::{App, KeyBinding, actions};
+use ui::list_navigation::bind_list_navigation;
+
+pub use favorites_view::{Favorites, FavoritesEvent};
+
+/// Key context of the focused list of favorites.
+pub const FAVORITES_CONTEXT: &str = "Favorites";
+
+actions!(
+    favorites,
+    [
+        /// Songs: play from the selection. Albums and artists: show it on its
+        /// own screen.
+        Open,
+        /// Plays the selected song or album.
+        Play,
+        /// Queues the selected song or album right after the current song.
+        PlayNext,
+        /// Queues the selected song or album after every other song.
+        AddToQueue,
+        /// Asks which playlist to add the selected song or album to.
+        AddToPlaylist,
+        /// Shows the selected song's album on the albums' screen.
+        GoToAlbum,
+        /// Shows the kind of favorites before the one on show.
+        PreviousSection,
+        /// Shows the kind of favorites after the one on show.
+        NextSection
+    ]
+);
+
+/// Adds the selected song or album to `playlist`, or to a new one for `None`.
+#[derive(Clone, Debug, PartialEq, gpui_kit::Action)]
+#[action(namespace = favorites, no_json)]
+struct AddSelectionToPlaylist {
+    playlist: Option<subsonic::PlaylistId>,
+}
+
+/// Registers key bindings. Call before building the menu bar.
+pub fn init(cx: &mut App) {
+    let (play, add_to_playlist, go_to_album) = if cx.platform_info().is_mac() {
+        ("cmd-enter", "cmd-p", "cmd-l")
+    } else {
+        ("ctrl-enter", "ctrl-p", "ctrl-l")
+    };
+    bind_list_navigation(FAVORITES_CONTEXT, cx);
+    cx.bind_keys([
+        KeyBinding::new("enter", Open, Some(FAVORITES_CONTEXT)),
+        KeyBinding::new(play, Play, Some(FAVORITES_CONTEXT)),
+        KeyBinding::new("alt-enter", PlayNext, Some(FAVORITES_CONTEXT)),
+        KeyBinding::new("shift-enter", AddToQueue, Some(FAVORITES_CONTEXT)),
+        KeyBinding::new(add_to_playlist, AddToPlaylist, Some(FAVORITES_CONTEXT)),
+        KeyBinding::new(go_to_album, GoToAlbum, Some(FAVORITES_CONTEXT)),
+        KeyBinding::new("left", PreviousSection, Some(FAVORITES_CONTEXT)),
+        KeyBinding::new("right", NextSection, Some(FAVORITES_CONTEXT)),
+    ]);
+    actions::bind_go_to_artist(FAVORITES_CONTEXT, cx);
+    actions::bind_toggle_favorite(FAVORITES_CONTEXT, cx);
+}

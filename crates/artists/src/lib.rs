@@ -68,6 +68,7 @@ pub fn init(cx: &mut App) {
             KeyBinding::new("shift-enter", AddToQueue, Some(context)),
             KeyBinding::new(add_to_playlist, AddToPlaylist, Some(context)),
         ]);
+        actions::bind_toggle_favorite(context, cx);
     }
     cx.bind_keys([
         KeyBinding::new("right", Open, Some(ARTISTS_CONTEXT)),

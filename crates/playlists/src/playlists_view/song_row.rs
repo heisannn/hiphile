@@ -8,7 +8,7 @@ use gpui_kit::{
     App, ElementId, FocusHandle, IntoElement, MouseButton, ParentElement as _, RenderOnce,
     SharedString, Styled as _, WeakEntity, Window, div, prelude::FluentBuilder as _,
 };
-use subsonic::Song;
+use subsonic::{Song, StarTarget};
 use ui::{
     ArtistLine, CoverArt, PlayState, PlayStateIcon, ReorderExt as _, RowText, format_duration,
 };
@@ -141,16 +141,17 @@ impl RenderOnce for SongRow {
                 window,
                 cx,
             );
-            menu.when(has_album, |menu| {
-                menu.menu("Go to Album", Box::new(ShowAlbum))
-            })
-            .when(has_artist, |menu| {
-                menu.menu("Go to Artist", Box::new(actions::GoToArtist))
-            })
-            .when(is_editable, |menu| {
-                menu.separator()
-                    .menu("Remove from Playlist", Box::new(Remove))
-            })
+            actions::favorite_menu_item(menu, &StarTarget::Song(song.id().clone()), cx)
+                .when(has_album, |menu| {
+                    menu.menu("Go to Album", Box::new(ShowAlbum))
+                })
+                .when(has_artist, |menu| {
+                    menu.menu("Go to Artist", Box::new(actions::GoToArtist))
+                })
+                .when(is_editable, |menu| {
+                    menu.separator()
+                        .menu("Remove from Playlist", Box::new(Remove))
+                })
         })
     }
 }

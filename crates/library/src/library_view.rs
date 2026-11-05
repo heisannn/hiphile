@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use actions::{AlbumAction, EnqueueSongs, GoToArtist, Placement, PlaySongs, ShowArtist};
+use actions::{
+    AlbumAction, EnqueueSongs, Favorite, GoToArtist, Placement, PlaySongs, ShowArtist,
+    ToggleFavorite,
+};
 use catalog::{Mode, Outcome};
 use futures::StreamExt as _;
 use futures::channel::mpsc;
@@ -148,6 +151,8 @@ impl Library {
         let albums_focus = cx.focus_handle().tab_stop(true);
         let songs_focus = cx.focus_handle().tab_stop(true);
         let subscriptions = vec![
+            // The album on show has a star that says.
+            actions::observe_favorites(cx),
             cx.subscribe_in(&filter, window, |this, _, event, window, cx| match event {
                 InputEvent::Change => this.apply_filter(cx),
                 InputEvent::PressEnter { .. } => this.albums_focus.focus(window, cx),
@@ -587,6 +592,34 @@ impl Library {
         }
     }
 
+    /// The selected album, from the detail when it is on show there and it has
+    /// yet to reach the list.
+    fn selected_album_listing(&self) -> Option<&Album> {
+        let selected = self.selected_album.as_ref()?;
+        let listed = self
+            .loaded_albums()
+            .and_then(|albums| albums.iter().find(|album| album.id() == selected));
+        listed.or(match &self.detail {
+            Detail::Loaded(loaded) if loaded.album.id() == selected => Some(&loaded.album),
+            _ => None,
+        })
+    }
+
+    fn toggle_album_favorite(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(album) = self.selected_album_listing() {
+            actions::toggle_favorite(Favorite::Album(album.clone()), window, cx);
+        }
+    }
+
+    fn toggle_song_favorite(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let song = self
+            .selected_song_ix()
+            .and_then(|ix| self.loaded_songs()?.get(ix));
+        if let Some(song) = song {
+            actions::toggle_favorite(Favorite::Song(song.clone()), window, cx);
+        }
+    }
+
     fn go_to_song_artist(&self, window: &mut Window, cx: &mut Context<Self>) {
         let artist = self
             .selected_song_ix()
@@ -662,6 +695,9 @@ impl Library {
             .on_action(
                 cx.listener(|this, _: &GoToArtist, window, cx| this.go_to_album_artist(window, cx)),
             )
+            .on_action(cx.listener(|this, _: &ToggleFavorite, window, cx| {
+                this.toggle_album_favorite(window, cx)
+            }))
             .child(self.render_album_rows(window, cx))
             .into_any_element()
     }
@@ -745,6 +781,9 @@ impl Library {
             .on_action(
                 cx.listener(|this, _: &GoToArtist, window, cx| this.go_to_song_artist(window, cx)),
             )
+            .on_action(cx.listener(|this, _: &ToggleFavorite, window, cx| {
+                this.toggle_song_favorite(window, cx)
+            }))
             .on_action(cx.listener(|this, _: &Back, window, cx| {
                 this.albums_focus.focus(window, cx);
             }))
@@ -799,6 +838,11 @@ impl Library {
                         .disabled(loaded.songs.is_empty())
                         .on_click(cx.listener(|this, _, window, cx| this.play_whole(window, cx))),
                 )
+                .action(ui::favorite_button(
+                    "favorite-album",
+                    Favorite::Album(album.clone()),
+                    cx,
+                ))
                 .action(self.render_album_menu(loaded)),
             )
             .child(self.render_songs(loaded, window, cx))

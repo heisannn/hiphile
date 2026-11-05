@@ -376,6 +376,47 @@ fn an_album_goes_to_the_playlist_chosen_in_its_menu(cx: &mut TestAppContext) {
     assert_eq!(song_ids(created[0].songs()), ["a1", "a2"]);
 }
 
+#[gpui_kit::test]
+fn the_favorite_key_goes_to_the_album_or_the_song_with_focus(cx: &mut TestAppContext) {
+    let (library, cx) = library(cx);
+    init_keys(cx);
+    show_album_a(&library, cx);
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    cx.update(|_, cx| {
+        actions::set_known_favorites(Some(Default::default()), cx);
+        library.update(cx, |library, cx| {
+            library.selected_album = Some(AlbumId::new("a"));
+            library.select_song(1, cx);
+        });
+        let asked = asked.clone();
+        cx.on_action(move |action: &actions::SetFavorite, _| {
+            asked.borrow_mut().push(action.favorite().target());
+        });
+    });
+    let key = if cfg!(target_os = "macos") {
+        "cmd-d"
+    } else {
+        "ctrl-d"
+    };
+
+    for (focus, target) in [
+        (
+            library.read_with(cx, |library, _| library.albums_focus.clone()),
+            subsonic::StarTarget::Album(AlbumId::new("a")),
+        ),
+        (
+            library.read_with(cx, |library, _| library.songs_focus.clone()),
+            subsonic::StarTarget::Song(SongId::new("a2")),
+        ),
+    ] {
+        cx.update(|window, cx| focus.focus(window, cx));
+        cx.run_until_parked();
+        cx.simulate_keystrokes(key);
+        cx.run_until_parked();
+        assert_eq!(asked.borrow().last(), Some(&target));
+    }
+}
+
 /// A server that answers every request with album `a`, returning its URL.
 fn server_of_album_a() -> String {
     server_answering(json!({ "album": album_a_json() }))

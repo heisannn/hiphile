@@ -535,6 +535,77 @@ fn the_go_to_artist_key_follows_the_song_selected(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn the_favorite_key_follows_what_is_selected_in_each_pane(cx: &mut TestAppContext) {
+    let (view, cx) = view(cx);
+    update(&view, cx, |view, cx| {
+        show(view, 1, vec![artist("x", "Similar")], cx);
+    });
+    cx.update(|_, cx| actions::set_known_favorites(Some(Default::default()), cx));
+    let key = if cfg!(target_os = "macos") {
+        "cmd-d"
+    } else {
+        "ctrl-d"
+    };
+
+    let asked: Vec<actions::SetFavorite> =
+        dispatched_by(key, |view| view.list_focus.clone(), &view, cx);
+    assert_eq!(
+        asked[0].favorite().target(),
+        subsonic::StarTarget::Artist(ArtistId::new("m"))
+    );
+
+    for (item, target) in [
+        (
+            Item::Song(SongId::new("s0")),
+            subsonic::StarTarget::Song(SongId::new("s0")),
+        ),
+        (
+            Item::Album(AlbumId::new("a1")),
+            subsonic::StarTarget::Album(AlbumId::new("a1")),
+        ),
+        (
+            Item::Artist(ArtistId::new("x")),
+            subsonic::StarTarget::Artist(ArtistId::new("x")),
+        ),
+    ] {
+        select(&view, item, cx);
+        let asked: Vec<actions::SetFavorite> =
+            dispatched_by(key, |view| view.detail_focus.clone(), &view, cx);
+        assert_eq!(asked.last().unwrap().favorite().target(), target);
+    }
+}
+
+#[gpui_kit::test]
+fn an_artist_cannot_become_a_favorite_before_their_name_is_known(cx: &mut TestAppContext) {
+    let (view, cx) = view(cx);
+    update(&view, cx, |view, cx| {
+        show(view, 0, Vec::new(), cx);
+        view.select_artist(ArtistId::new("unlisted"), cx);
+    });
+    cx.update(|_, cx| actions::set_known_favorites(Some(Default::default()), cx));
+    let key = if cfg!(target_os = "macos") {
+        "cmd-d"
+    } else {
+        "ctrl-d"
+    };
+
+    let asked: Vec<actions::SetFavorite> =
+        dispatched_by(key, |view| view.list_focus.clone(), &view, cx);
+    assert!(asked.is_empty());
+
+    update(&view, cx, |view, cx| {
+        view.detail.as_mut().unwrap().name = Some("Unlisted".into());
+        cx.notify();
+    });
+    let asked: Vec<actions::SetFavorite> =
+        dispatched_by(key, |view| view.list_focus.clone(), &view, cx);
+    let actions::Favorite::Artist(artist) = asked[0].favorite() else {
+        panic!("not an artist");
+    };
+    assert_eq!(artist.name(), "Unlisted");
+}
+
+#[gpui_kit::test]
 fn revealing_an_artist_the_filter_hides_clears_the_filter(cx: &mut TestAppContext) {
     let (view, cx) = view(cx);
     update(&view, cx, |view, cx| show(view, 0, Vec::new(), cx));

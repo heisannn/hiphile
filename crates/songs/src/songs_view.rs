@@ -408,6 +408,12 @@ impl Songs {
         }
     }
 
+    fn toggle_selected_favorite(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(song) = self.selected_song() {
+            actions::toggle_favorite(actions::Favorite::Song(song.clone()), window, cx);
+        }
+    }
+
     fn go_to_album(&self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(album) = self.selected_song().and_then(Song::album_id) {
             window.dispatch_action(Box::new(ShowAlbum::new(album.clone())), cx);
@@ -520,6 +526,11 @@ impl Songs {
             .on_action(cx.listener(|this, _: &GoToAlbum, window, cx| this.go_to_album(window, cx)))
             .on_action(
                 cx.listener(|this, _: &GoToArtist, window, cx| this.go_to_artist(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &actions::ToggleFavorite, window, cx| {
+                    this.toggle_selected_favorite(window, cx)
+                }),
             )
             .child(self.render_rows(window, cx))
             .into_any_element()

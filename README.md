@@ -14,7 +14,7 @@ Hiphile is developed on macOS. Windows and Linux are not regularly tested.
 
 ## Features
 
-- **Library:** Browse albums, artists and songs, get daily recommendations on the home screen, and edit playlists.
+- **Library:** Browse albums, artists and songs, get daily recommendations on the home screen, edit playlists, and keep favorites.
 - **Playback:** Gapless playback, repeat, shuffle and an editable queue.
 - **Audio output:** Choose an output device, and switch its sample rate automatically to match each file.
 - **Lyrics:** Synced lyrics, highlighted word by word or line by line.

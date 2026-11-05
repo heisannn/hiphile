@@ -20,7 +20,7 @@ use gpui_kit::{
     ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
     Window, div, prelude::FluentBuilder as _,
 };
-use subsonic::{Album, AlbumId, PlaylistId, Song, SongId};
+use subsonic::{Album, AlbumId, PlaylistId, Song, SongId, StarTarget};
 use ui::card_grid::{GridMotion as Motion, card_row, columns_for, media_card, step};
 use ui::list_navigation::{
     SelectFirst, SelectLast, SelectNext, SelectPageDown, SelectPageUp, SelectPrevious,
@@ -660,6 +660,25 @@ impl Home {
         }
     }
 
+    /// Adds the selected song or album to the favorites, or takes it out.
+    fn toggle_favorite(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let favorite = match self.selection_on_screen() {
+            Some(Item::Album(shelf, id)) => self
+                .albums(shelf)
+                .iter()
+                .find(|album| album.id() == &id)
+                .cloned()
+                .map(actions::Favorite::Album),
+            Some(Item::Song(id)) => self
+                .song_ix(&id)
+                .map(|ix| actions::Favorite::Song(self.recent.items()[ix].clone())),
+            None => None,
+        };
+        if let Some(favorite) = favorite {
+            actions::toggle_favorite(favorite, window, cx);
+        }
+    }
+
     /// Plays or queues `album`, through its saved songs when there are any.
     /// Replaces an action still waiting for its songs: the latest one counts.
     fn act_on_album(
@@ -812,6 +831,7 @@ impl Home {
             return div().into_any_element();
         };
         let id = song.id().clone();
+        let target = StarTarget::Song(id.clone());
         let is_selected = self.selection == Some(Item::Song(id.clone()));
         let focused = self.focus.is_focused(window);
         let title = SharedString::from(song.title().to_owned());
@@ -865,7 +885,9 @@ impl Home {
                     .menu("Play Next", Box::new(PlayNext))
                     .menu("Add to Queue", Box::new(AddToQueue))
                     .separator();
-                actions::add_to_playlist_submenu(menu, add_selection_command, window, cx)
+                let menu =
+                    actions::add_to_playlist_submenu(menu, add_selection_command, window, cx);
+                actions::favorite_menu_item(menu, &target, cx)
                     .when(has_album, |menu| {
                         menu.menu("Go to Album", Box::new(ShowInLibrary))
                     })
@@ -899,6 +921,7 @@ impl Home {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let id = album.id().clone();
+        let target = StarTarget::Album(id.clone());
         let is_selected = self.selection == Some(Item::Album(shelf, id.clone()));
         let focused = self.focus.is_focused(window);
         let name = SharedString::from(album.name().to_owned());
@@ -937,7 +960,8 @@ impl Home {
                 .menu("Play Next", Box::new(PlayNext))
                 .menu("Add to Queue", Box::new(AddToQueue))
                 .separator();
-            actions::add_to_playlist_submenu(menu, add_selection_command, window, cx)
+            let menu = actions::add_to_playlist_submenu(menu, add_selection_command, window, cx);
+            actions::favorite_menu_item(menu, &target, cx)
                 .menu("Show in Albums", Box::new(ShowInLibrary))
                 .when(has_artist, |menu| {
                     menu.menu("Go to Artist", Box::new(GoToArtist))
@@ -1007,6 +1031,11 @@ impl Render for Home {
             .on_action(cx.listener(|this, _: &GoToArtist, window, cx| {
                 this.go_to_artist(window, cx);
             }))
+            .on_action(
+                cx.listener(|this, _: &actions::ToggleFavorite, window, cx| {
+                    this.toggle_favorite(window, cx);
+                }),
+            )
             .on_action(
                 cx.listener(|this, action: &AddSelectionToPlaylist, window, cx| {
                     this.add_to_playlist(action.playlist.clone(), window, cx);

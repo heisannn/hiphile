@@ -19,11 +19,11 @@ pub use artist::{Artist, ArtistWithAlbums};
 pub use auth::Credentials;
 pub use endpoint::{CLIENT_NAME, CoverArtRequest, Endpoint, PROTOCOL_VERSION};
 pub use error::{Error, ServerErrorCode};
-pub use id::{AlbumId, ArtistId, CoverArtId, PlaylistId, SongId};
+pub use id::{AlbumId, ArtistId, CoverArtId, PlaylistId, SongId, StarTarget};
 pub use playlist::{Playlist, PlaylistWithSongs};
 pub use response::{
     Envelope, GetAlbum, GetAlbumList2, GetArtist, GetArtistInfo2, GetArtists, GetIndexes,
-    GetPlaylist, GetPlaylists, GetScanStatus, GetSimilarSongs2, GetSong, GetTopSongs, Ping,
-    ScanStatus, Search3, ServerInfo, parse,
+    GetPlaylist, GetPlaylists, GetScanStatus, GetSimilarSongs2, GetSong, GetStarred2, GetTopSongs,
+    Ping, ScanStatus, Search3, ServerInfo, Starred, parse,
 };
 pub use song::Song;

@@ -11,6 +11,7 @@ account.workspace = true
 actions.workspace = true
 artists.workspace = true
 config.workspace = true
+favorites.workspace = true
 futures.workspace = true
 gpui-kit.workspace = true
 home.workspace = true

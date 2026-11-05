@@ -45,3 +45,11 @@ define_id!(
     /// Server-assigned cover art ID. Opaque; never parse it.
     CoverArtId
 );
+
+/// A song, an album or an artist, as something the user can mark as a favorite.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum StarTarget {
+    Song(SongId),
+    Album(AlbumId),
+    Artist(ArtistId),
+}

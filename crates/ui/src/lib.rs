@@ -8,6 +8,7 @@ mod cover_cache;
 mod details;
 mod drag_preview;
 mod duration;
+mod favorite_button;
 pub mod list_navigation;
 mod load_state;
 mod master_detail;
@@ -26,6 +27,7 @@ pub use cover_cache::CoverCache;
 pub use details::{format_album_count, format_song_count, join_details};
 pub use drag_preview::DragPreview;
 pub use duration::format_duration;
+pub use favorite_button::favorite_button;
 pub use load_state::{LoadFailure, Shelf, centered, muted_text, no_matches};
 pub use master_detail::{
     DetailHeader, ListFilter, ListPaneHeader, MasterDetail, RefreshFailure, filter_input,

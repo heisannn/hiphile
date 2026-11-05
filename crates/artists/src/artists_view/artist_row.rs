@@ -3,7 +3,7 @@ use gpui_kit::{
     App, ElementId, FocusHandle, IntoElement, MouseButton, ParentElement as _, RenderOnce,
     SharedString, Styled as _, WeakEntity, Window,
 };
-use subsonic::{Artist, ArtistId};
+use subsonic::{Artist, ArtistId, StarTarget};
 use ui::{RowText, format_album_count};
 
 use super::{Artists, add_selection_command};
@@ -56,6 +56,7 @@ impl RenderOnce for ArtistRow {
         } = self;
         let on_click = owner.clone();
         let click_id = id.clone();
+        let id_for_menu = id.clone();
         ListItem::new(ElementId::Name(format!("artist-row-{id}").into()))
             .selected(is_selected)
             .secondary_selected(is_focused && is_selected)
@@ -89,7 +90,9 @@ impl RenderOnce for ArtistRow {
                     .menu("Play Next", Box::new(PlayNext))
                     .menu("Add to Queue", Box::new(AddToQueue))
                     .separator();
-                actions::add_to_playlist_submenu(menu, add_selection_command, window, cx)
+                let menu =
+                    actions::add_to_playlist_submenu(menu, add_selection_command, window, cx);
+                actions::favorite_menu_item(menu, &StarTarget::Artist(id_for_menu.clone()), cx)
             })
     }
 }
