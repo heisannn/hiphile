@@ -1,11 +1,21 @@
 use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use audio::OutputSettings;
 use gpui_kit::{Modifiers, ScrollDelta, ScrollEvent, TestAppContext, VisualTestContext, point};
 use serde_json::json;
 use subsonic::Credentials;
 
+use config::LyricsHighlight;
+use futures::FutureExt as _;
+use lyrics::{Lyrics, TimedLine, TrackQuery};
+use subsonic::SongId;
+
+use super::current::{FindLyrics, Lookup, describe, query_for};
+use super::lines::{
+    CURRENT_LINE_AT, ELEMENT_FADE, LINE_FADE, Lit, SCROLL_DURATION, SEEK_ROUNDING, emphasis,
+    line_runs,
+};
 use super::*;
 use crate::CloseLyrics;
 
@@ -150,7 +160,8 @@ fn stand(
             player.fill_queue(&[song("a"), song("b")], 0);
             player
         });
-        let view = cx.new(|cx| LyricsView::with_find_lyrics(player.clone(), finds.source(), cx));
+        let lyrics = cx.new(|_| CurrentLyrics::with_find_lyrics(player.clone(), finds.source()));
+        let view = cx.new(|cx| LyricsView::new(player.clone(), lyrics, cx));
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         Stand {
@@ -167,6 +178,32 @@ fn stand(
 
 fn view(stand: &Entity<Stand>, cx: &mut VisualTestContext) -> Entity<LyricsView> {
     cx.read(|cx| stand.read(cx).view.clone())
+}
+
+fn lines<'a>(view: &Entity<LyricsView>, cx: &'a App) -> &'a LyricsLines {
+    view.read(cx).lines.read(cx)
+}
+
+fn lookup<'a>(view: &Entity<LyricsView>, cx: &'a App) -> &'a Lookup {
+    &lines(view, cx).lyrics.read(cx).lookup
+}
+
+fn update_lines<R>(
+    view: &Entity<LyricsView>,
+    cx: &mut VisualTestContext,
+    update: impl FnOnce(&mut LyricsLines, &mut Context<LyricsLines>) -> R,
+) -> R {
+    let lines = cx.read(|cx| view.read(cx).lines.clone());
+    lines.update(cx, update)
+}
+
+fn update_current<R>(
+    view: &Entity<LyricsView>,
+    cx: &mut VisualTestContext,
+    update: impl FnOnce(&mut CurrentLyrics, &mut Context<CurrentLyrics>) -> R,
+) -> R {
+    let current = cx.read(|cx| lines(view, cx).lyrics.clone());
+    current.update(cx, update)
 }
 
 fn draw(cx: &mut VisualTestContext) {
@@ -382,7 +419,7 @@ fn the_current_line_comes_to_rest_at_its_place(cx: &mut TestAppContext) {
     draw(cx);
     advance(SCROLL_DURATION * 2, cx);
 
-    let scroll = cx.read(|cx| view.read(cx).scroll.clone());
+    let scroll = cx.read(|cx| lines(&view, cx).scroll.clone());
     let list = scroll.bounds();
     // The room before the lines is the first child, so line 18 is child 19
     let line = scroll.bounds_for_item(19).unwrap();
@@ -411,7 +448,7 @@ fn scrolling_stops_following_until_asked_to_or_a_line_is_chosen(cx: &mut TestApp
     open_with(&stand, lyrics(40), cx);
     assert!(cx.debug_bounds("lyrics-back-to-current").is_none());
 
-    let scroll = cx.read(|cx| view.read(cx).scroll.clone());
+    let scroll = cx.read(|cx| lines(&view, cx).scroll.clone());
     let over_lines = scroll.bounds().center();
     cx.simulate_event(ScrollEvent {
         position: over_lines,
@@ -419,7 +456,7 @@ fn scrolling_stops_following_until_asked_to_or_a_line_is_chosen(cx: &mut TestApp
         ..ScrollEvent::default()
     });
     draw(cx);
-    assert!(!cx.read(|cx| view.read(cx).is_following));
+    assert!(!cx.read(|cx| lines(&view, cx).is_following));
     let scrolled_to = scroll.offset().y;
     assert!(scrolled_to < px(0.));
     // The lines stay where the user took them as the song goes on
@@ -432,7 +469,7 @@ fn scrolling_stops_following_until_asked_to_or_a_line_is_chosen(cx: &mut TestApp
         .debug_bounds("lyrics-back-to-current")
         .expect("the button");
     cx.simulate_click(back.center(), Modifiers::default());
-    assert!(cx.read(|cx| view.read(cx).is_following));
+    assert!(cx.read(|cx| lines(&view, cx).is_following));
     draw(cx);
     assert!(cx.debug_bounds("lyrics-back-to-current").is_none());
 
@@ -443,9 +480,9 @@ fn scrolling_stops_following_until_asked_to_or_a_line_is_chosen(cx: &mut TestApp
         ..ScrollEvent::default()
     });
     draw(cx);
-    assert!(!cx.read(|cx| view.read(cx).is_following));
+    assert!(!cx.read(|cx| lines(&view, cx).is_following));
     cx.simulate_click(over_lines, Modifiers::default());
-    assert!(cx.read(|cx| view.read(cx).is_following));
+    assert!(cx.read(|cx| lines(&view, cx).is_following));
 }
 
 #[gpui_kit::test]
@@ -465,7 +502,7 @@ fn the_sync_button_sits_over_the_lines_and_keeps_its_click_from_them(cx: &mut Te
     });
     open_with(&stand, lyrics(40), cx);
 
-    let scroll = cx.read(|cx| view.read(cx).scroll.clone());
+    let scroll = cx.read(|cx| lines(&view, cx).scroll.clone());
     cx.simulate_event(ScrollEvent {
         position: scroll.bounds().center(),
         delta: ScrollDelta::Pixels(point(px(0.), px(-400.))),
@@ -489,7 +526,7 @@ fn the_sync_button_sits_over_the_lines_and_keeps_its_click_from_them(cx: &mut Te
     };
     let before = shown(cx);
     cx.simulate_click(center, Modifiers::default());
-    assert!(cx.read(|cx| view.read(cx).is_following));
+    assert!(cx.read(|cx| lines(&view, cx).is_following));
     assert_eq!(shown(cx), before, "the line behind was not sought to");
 }
 
@@ -499,7 +536,7 @@ fn the_wheel_over_the_sync_button_still_scrolls_the_lines(cx: &mut TestAppContex
     let view = view(&stand, cx);
     open_with(&stand, lyrics(40), cx);
 
-    let scroll = cx.read(|cx| view.read(cx).scroll.clone());
+    let scroll = cx.read(|cx| lines(&view, cx).scroll.clone());
     cx.simulate_event(ScrollEvent {
         position: scroll.bounds().center(),
         delta: ScrollDelta::Pixels(point(px(0.), px(-400.))),
@@ -545,36 +582,60 @@ fn a_new_song_starts_over_and_found_lyrics_are_kept(cx: &mut TestAppContext) {
     player.update(cx, |player, _| {
         player.fill_queue(&[song("b"), song("a")], 0)
     });
-    view.update(cx, |view, cx| {
-        view.is_following = false;
-        view.look_up_current(cx);
-    });
+    update_lines(&view, cx, |lines, _| lines.is_following = false);
+    update_current(&view, cx, |current, cx| current.look_up_current(cx));
     cx.read(|cx| {
-        let view = view.read(cx);
-        assert!(matches!(view.lookup, Lookup::Loading(ref song) if song.to_string() == "b"));
-        assert!(view.is_following);
+        assert!(matches!(lookup(&view, cx), Lookup::Loading(song) if song.to_string() == "b"));
+        assert!(lines(&view, cx).is_following);
     });
     assert_eq!(finds.asked().len(), 2);
 
     // An answer about the song before is out of date
-    view.update(cx, |view, cx| {
-        view.finish_lookup(SongId::new("a"), Ok(Lyrics::NotFound), cx);
+    update_current(&view, cx, |current, cx| {
+        current.finish_lookup(SongId::new("a"), Ok(Lyrics::NotFound), cx);
     });
     cx.read(|cx| {
-        assert!(matches!(view.read(cx).lookup, Lookup::Loading(_)));
-        assert_eq!(view.read(cx).found.len(), 1);
+        assert!(matches!(lookup(&view, cx), Lookup::Loading(_)));
+        assert_eq!(lines(&view, cx).lyrics.read(cx).found.len(), 1);
     });
 
     // Back to the first song, whose lyrics are at hand
     player.update(cx, |player, _| {
         player.fill_queue(&[song("a"), song("b")], 0)
     });
-    view.update(cx, |view, cx| view.look_up_current(cx));
+    update_current(&view, cx, |current, cx| current.look_up_current(cx));
     cx.read(|cx| {
-        let lookup = &view.read(cx).lookup;
-        assert!(matches!(lookup, Lookup::Done(song, _) if song.to_string() == "a"));
+        assert!(matches!(lookup(&view, cx), Lookup::Done(song, _) if song.to_string() == "a"));
     });
     assert_eq!(finds.asked().len(), 2);
+}
+
+#[gpui_kit::test]
+fn all_that_show_the_lyrics_share_one_lookup(cx: &mut TestAppContext) {
+    let (stand, cx) = stand(1200., 760., cx);
+    let view = view(&stand, cx);
+    let finds = cx.read(|cx| stand.read(cx).finds.clone());
+    let player = cx.read(|cx| stand.read(cx).player.clone());
+    let current = cx.read(|cx| lines(&view, cx).lyrics.clone());
+    let other =
+        cx.update(|_, cx| cx.new(|cx| LyricsLines::new(player.clone(), current, lines_fit, cx)));
+
+    open_with(&stand, lyrics(3), cx);
+    other.update(cx, |other, cx| other.set_active(true, cx));
+    draw(cx);
+    assert_eq!(finds.asked().len(), 1);
+
+    // Either finding new lines puts both back on the current one
+    update_lines(&view, cx, |lines, _| lines.is_following = false);
+    other.update(cx, |other, _| other.is_following = false);
+    player.update(cx, |player, cx| {
+        player.fill_queue(&[song("b"), song("a")], 0);
+        player.pretend_playing(true, cx);
+    });
+    draw(cx);
+    assert_eq!(finds.asked().len(), 2);
+    assert!(cx.read(|cx| lines(&view, cx).is_following));
+    assert!(cx.read(|cx| other.read(cx).is_following));
 }
 
 #[gpui_kit::test]
@@ -585,12 +646,12 @@ fn a_failed_lookup_says_so_and_can_be_retried(cx: &mut TestAppContext) {
     finds.answer_with(Err(lyrics::Error::InvalidResponse));
     set_open(&stand, true, cx);
     advance(OPEN_DURATION, cx);
-    cx.read(|cx| assert!(matches!(view.read(cx).lookup, Lookup::Failed(..))));
+    cx.read(|cx| assert!(matches!(lookup(&view, cx), Lookup::Failed(..))));
 
     finds.answer_with(Ok(lyrics(2)));
-    view.update(cx, |view, cx| view.retry(cx));
+    update_lines(&view, cx, |lines, cx| lines.retry(cx));
     draw(cx);
-    cx.read(|cx| assert!(matches!(view.read(cx).lookup, Lookup::Done(..))));
+    cx.read(|cx| assert!(matches!(lookup(&view, cx), Lookup::Done(..))));
     assert_eq!(finds.asked().len(), 2);
 }
 
@@ -603,12 +664,12 @@ fn pausing_or_resuming_does_not_look_again_but_a_new_song_does(cx: &mut TestAppC
     finds.answer_with(Err(lyrics::Error::InvalidResponse));
     set_open(&stand, true, cx);
     advance(OPEN_DURATION, cx);
-    cx.read(|cx| assert!(matches!(view.read(cx).lookup, Lookup::Failed(..))));
+    cx.read(|cx| assert!(matches!(lookup(&view, cx), Lookup::Failed(..))));
 
     player.update(cx, |player, cx| player.pretend_playing(true, cx));
     player.update(cx, |player, cx| player.pretend_playing(false, cx));
     draw(cx);
-    cx.read(|cx| assert!(matches!(view.read(cx).lookup, Lookup::Failed(..))));
+    cx.read(|cx| assert!(matches!(lookup(&view, cx), Lookup::Failed(..))));
     assert_eq!(finds.asked().len(), 1);
 
     player.update(cx, |player, cx| {
@@ -632,19 +693,17 @@ fn an_answer_after_the_song_changed_is_kept_for_going_back(cx: &mut TestAppConte
     });
     draw(cx);
 
-    view.update(cx, |view, cx| {
-        view.finish_lookup(SongId::new("a"), Ok(lyrics(2)), cx);
+    update_current(&view, cx, |current, cx| {
+        current.finish_lookup(SongId::new("a"), Ok(lyrics(2)), cx);
     });
-    cx.read(|cx| {
-        assert!(matches!(view.read(cx).lookup, Lookup::Loading(ref s) if s.to_string() == "b"))
-    });
+    cx.read(|cx| assert!(matches!(lookup(&view, cx), Lookup::Loading(s) if s.to_string() == "b")));
 
     player.update(cx, |player, cx| {
         player.fill_queue(&[song("a"), song("b")], 0);
         player.pretend_playing(true, cx);
     });
     draw(cx);
-    cx.read(|cx| assert!(matches!(view.read(cx).lookup, Lookup::Done(..))));
+    cx.read(|cx| assert!(matches!(lookup(&view, cx), Lookup::Done(..))));
     assert_eq!(finds.asked().len(), 2);
 }
 
@@ -653,7 +712,7 @@ fn the_refresh_runs_only_while_open_and_playing(cx: &mut TestAppContext) {
     let (stand, cx) = stand(1200., 760., cx);
     let view = view(&stand, cx);
     let player = cx.read(|cx| stand.read(cx).player.clone());
-    let is_running = |cx: &mut VisualTestContext| cx.read(|cx| view.read(cx).refresh.is_some());
+    let is_running = |cx: &mut VisualTestContext| cx.read(|cx| lines(&view, cx).refresh.is_some());
 
     player.update(cx, |player, cx| player.pretend_playing(true, cx));
     draw(cx);
@@ -697,7 +756,7 @@ fn following_again_eases_from_where_the_user_left_the_lines(cx: &mut TestAppCont
     let view = view(&stand, cx);
     let player = cx.read(|cx| stand.read(cx).player.clone());
     open_with(&stand, lyrics(40), cx);
-    let scroll = cx.read(|cx| view.read(cx).scroll.clone());
+    let scroll = cx.read(|cx| lines(&view, cx).scroll.clone());
     cx.simulate_event(ScrollEvent {
         position: scroll.bounds().center(),
         delta: ScrollDelta::Pixels(point(px(0.), px(-200.))),
@@ -707,7 +766,7 @@ fn following_again_eases_from_where_the_user_left_the_lines(cx: &mut TestAppCont
     let left_at = scroll.offset().y;
     player.update(cx, |player, _| player.place_at(secs(150.)));
 
-    view.update(cx, |view, cx| view.follow_again(cx));
+    update_lines(&view, cx, |lines, cx| lines.follow_again(cx));
     draw(cx);
     assert!((scroll.offset().y - left_at).abs() < px(1.));
 
@@ -1052,11 +1111,11 @@ fn the_view_lights_as_it_is_told(cx: &mut TestAppContext) {
     open_with(&stand, lyrics(2), cx);
     player.update(cx, |player, _| player.place_at(secs(12.5)));
     draw(cx);
-    let lit_elements = |cx: &mut VisualTestContext| cx.read(|cx| view.read(cx).lit.elements);
+    let lit_elements = |cx: &mut VisualTestContext| cx.read(|cx| lines(&view, cx).lit.elements);
     assert_eq!(lit_elements(cx), 2);
 
-    view.update(cx, |view, cx| {
-        view.set_highlight(LyricsHighlight::ByLine, cx);
+    update_current(&view, cx, |current, cx| {
+        current.set_highlight(LyricsHighlight::ByLine, cx);
     });
     draw(cx);
     assert_eq!(lit_elements(cx), 0);

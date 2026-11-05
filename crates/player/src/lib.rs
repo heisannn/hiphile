@@ -1,6 +1,7 @@
 mod format;
 mod hover_slider;
 mod lyrics_view;
+mod mini_player;
 mod player;
 mod queue_view;
 mod transport;
@@ -8,7 +9,10 @@ mod transport;
 use gpui_kit::{Action, App, Global, KeyBinding, actions};
 use ui::list_navigation::bind_list_navigation;
 
-pub use lyrics_view::{LYRICS_CONTEXT, LyricsReveal, LyricsView};
+use mini_player::MINI_PLAYER_CONTEXT;
+
+pub use lyrics_view::{CurrentLyrics, LYRICS_CONTEXT, LyricsReveal, LyricsView};
+pub use mini_player::MiniPlayer;
 pub use playback::{Placement, RepeatMode};
 pub use player::{Panels, Player, PlayerEvent};
 pub use queue_view::{QUEUE_CONTEXT, QueueView};
@@ -30,7 +34,12 @@ actions!(
         ToggleLyrics,
         CloseLyrics,
         /// Shows or hides the queue, or goes back to it from the lyrics.
-        ToggleQueue
+        ToggleQueue,
+        /// Opens the mini player, or closes it if it is open.
+        ToggleMiniPlayer,
+        /// Closes the mini player from its own window. Apart from the toggle, whose
+        /// menu item would otherwise show this key.
+        CloseMiniPlayer
     ]
 );
 
@@ -72,6 +81,10 @@ pub fn init(context: &'static str, cx: &mut App) {
         Err(_) => cx.set_global(GlobalSongCache(None)),
     }
 
+    bind_commands(context, cx);
+}
+
+fn bind_commands(context: &'static str, cx: &mut App) {
     let [
         next,
         previous,
@@ -84,6 +97,8 @@ pub fn init(context: &'static str, cx: &mut App) {
         repeat,
         lyrics,
         add_to_playlist,
+        mini_player,
+        close_window,
     ] = if cx.platform_info().is_mac() {
         [
             "cmd-right",
@@ -97,6 +112,8 @@ pub fn init(context: &'static str, cx: &mut App) {
             "cmd-alt-r",
             "cmd-l",
             "cmd-p",
+            "cmd-alt-m",
+            "cmd-w",
         ]
     } else {
         [
@@ -111,19 +128,29 @@ pub fn init(context: &'static str, cx: &mut App) {
             "ctrl-alt-r",
             "ctrl-l",
             "ctrl-p",
+            "ctrl-alt-m",
+            "ctrl-w",
         ]
     };
+    for context in [context, MINI_PLAYER_CONTEXT] {
+        cx.bind_keys([
+            KeyBinding::new(next, NextSong, Some(context)),
+            KeyBinding::new(previous, PreviousSong, Some(context)),
+            KeyBinding::new(forward, SeekForward, Some(context)),
+            KeyBinding::new(backward, SeekBackward, Some(context)),
+            KeyBinding::new(up, VolumeUp, Some(context)),
+            KeyBinding::new(down, VolumeDown, Some(context)),
+            KeyBinding::new(mute, ToggleMute, Some(context)),
+            KeyBinding::new(shuffle, ToggleShuffle, Some(context)),
+            KeyBinding::new(repeat, CycleRepeat, Some(context)),
+            KeyBinding::new(mini_player, ToggleMiniPlayer, Some(context)),
+        ]);
+    }
     cx.bind_keys([
-        KeyBinding::new(next, NextSong, Some(context)),
-        KeyBinding::new(previous, PreviousSong, Some(context)),
-        KeyBinding::new(forward, SeekForward, Some(context)),
-        KeyBinding::new(backward, SeekBackward, Some(context)),
-        KeyBinding::new(up, VolumeUp, Some(context)),
-        KeyBinding::new(down, VolumeDown, Some(context)),
-        KeyBinding::new(mute, ToggleMute, Some(context)),
-        KeyBinding::new(shuffle, ToggleShuffle, Some(context)),
-        KeyBinding::new(repeat, CycleRepeat, Some(context)),
         KeyBinding::new(lyrics, ToggleLyrics, Some(context)),
+        KeyBinding::new(close_window, CloseMiniPlayer, Some(MINI_PLAYER_CONTEXT)),
+        // Space toggles playback from the window, never from a focused control
+        KeyBinding::new("space", TogglePlayback, Some(MINI_PLAYER_CONTEXT)),
         KeyBinding::new("escape", CloseLyrics, Some(LYRICS_CONTEXT)),
         // Space toggles playback from the lyrics, never from a focused control
         KeyBinding::new("space", TogglePlayback, Some(LYRICS_CONTEXT)),
@@ -147,6 +174,7 @@ pub fn init(context: &'static str, cx: &mut App) {
     ]);
     actions::bind_go_to_artist(QUEUE_CONTEXT, cx);
     actions::bind_toggle_favorite(QUEUE_CONTEXT, cx);
+    mini_player::init(cx);
 }
 
 /// Keeps at most about `capacity` bytes of songs from now on, or the default

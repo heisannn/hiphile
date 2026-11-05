@@ -71,6 +71,7 @@ pub enum PlayerEvent {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Panels {
     pub is_lyrics_open: bool,
+    pub is_mini_player_open: bool,
     /// Whether the queue is to be shown, when it fits.
     pub is_queue_shown: bool,
     pub queue_fits: bool,
@@ -124,6 +125,9 @@ pub struct Player {
     error: Option<SharedString>,
     /// The position as a fraction of the song.
     position: Entity<SliderState>,
+    /// The same for the mini player. A slider keeps where it was last painted,
+    /// for reading the pointer by, so one slider cannot be in two windows.
+    mini_position: Entity<SliderState>,
     /// While the position is being dragged, the fraction under the pointer.
     scrub: Option<f32>,
     /// The position at the last refresh, to redraw when it moves while
@@ -236,7 +240,9 @@ impl Player {
             .and_then(|store| store.volume().ok().flatten())
             .unwrap_or(1.0);
         engine.set_volume(gain(level, false));
-        let position = cx.new(|_| SliderState::new().min(0.).max(1.).step(0.001));
+        let position_slider = || SliderState::new().min(0.).max(1.).step(0.001);
+        let position = cx.new(|_| position_slider());
+        let mini_position = cx.new(|_| position_slider());
         let volume = cx.new(|_| {
             SliderState::new()
                 .min(0.)
@@ -245,22 +251,8 @@ impl Player {
                 .default_value(level)
         });
         let subscriptions = vec![
-            cx.subscribe_in(
-                &position,
-                window,
-                |this, _, event, window, cx| match event {
-                    SliderEvent::Change(value) => {
-                        this.scrub = Some(value.end());
-                        cx.notify();
-                    }
-                    SliderEvent::Release(value) => {
-                        this.scrub = None;
-                        if let Some(duration) = this.duration() {
-                            this.seek_to(duration.mul_f32(value.end()), window, cx);
-                        }
-                    }
-                },
-            ),
+            cx.subscribe_in(&position, window, Self::on_position_slider),
+            cx.subscribe_in(&mini_position, window, Self::on_position_slider),
             cx.subscribe(&volume, |this, _, event, cx| match event {
                 SliderEvent::Change(value) => this.apply_volume(value.end(), cx),
                 SliderEvent::Release(value) => this.save_volume(value.end(), cx),
@@ -306,6 +298,7 @@ impl Player {
             panels: Box::new(|_, _| Panels::default()),
             error: None,
             position,
+            mini_position,
             scrub: None,
             refreshed_position: Duration::ZERO,
             volume,
@@ -475,6 +468,10 @@ impl Player {
 
     pub(crate) fn position_state(&self) -> &Entity<SliderState> {
         &self.position
+    }
+
+    pub(crate) fn mini_position_state(&self) -> &Entity<SliderState> {
+        &self.mini_position
     }
 
     pub(crate) fn volume_state(&self) -> &Entity<SliderState> {
@@ -881,9 +878,41 @@ impl Player {
         let fraction = self.duration().map_or(0.0, |duration| {
             (position.as_secs_f32() / duration.as_secs_f32()).min(1.0)
         });
-        if self.position.read(cx).value().end() != fraction {
-            self.position
-                .update(cx, |slider, cx| slider.set_value(fraction, window, cx));
+        for slider in [&self.position, &self.mini_position] {
+            if slider.read(cx).value().end() != fraction {
+                slider.update(cx, |slider, cx| slider.set_value(fraction, window, cx));
+            }
+        }
+    }
+
+    /// Ends a drag that closing the window cut short, which no release would
+    /// otherwise end. It seeks to where it had got to if the window is still there
+    /// to pass that on.
+    pub(crate) fn finish_mini_position_drag(&mut self, cx: &mut Context<Self>) {
+        self.mini_position
+            .update(cx, |slider, cx| slider.handle_release(cx));
+        self.scrub = None;
+        cx.notify();
+    }
+
+    fn on_position_slider(
+        &mut self,
+        _: &Entity<SliderState>,
+        event: &SliderEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SliderEvent::Change(value) => {
+                self.scrub = Some(value.end());
+                cx.notify();
+            }
+            SliderEvent::Release(value) => {
+                self.scrub = None;
+                if let Some(duration) = self.duration() {
+                    self.seek_to(duration.mul_f32(value.end()), window, cx);
+                }
+            }
         }
     }
 
@@ -1196,6 +1225,10 @@ impl Player {
         cx.notify();
     }
 
+    pub(crate) fn error(&self) -> Option<&SharedString> {
+        self.error.as_ref()
+    }
+
     pub(crate) fn render_song_status(&self, song: &Song, cx: &App) -> AnyElement {
         match &self.error {
             Some(error) => div()
@@ -1403,6 +1436,10 @@ impl Player {
         self.is_cover_hidden
     }
 
+    pub(crate) fn is_scrubbing(&self) -> bool {
+        self.scrub.is_some()
+    }
+
     pub(crate) fn set_error(&mut self, error: &'static str) {
         self.error = Some(error.into());
     }
@@ -1564,6 +1601,10 @@ mod tests {
 
         send_media_command(&player, MediaCommand::SeekTo(seconds(50)), cx);
         assert_eq!(shown(cx), 0.5);
+        let in_mini_player = player.read_with(cx, |player, cx| {
+            player.mini_position_state().read(cx).value().end()
+        });
+        assert_eq!(in_mini_player, 0.5);
         send_media_command(&player, MediaCommand::SeekForward(None), cx);
         assert_eq!(shown(cx), 0.1);
         send_media_command(&player, MediaCommand::SeekForward(Some(seconds(20))), cx);

@@ -24,9 +24,10 @@ use gpui_kit::{
 use home::Home;
 use library::{Library, LibraryEvent, Refresh};
 use player::{
-    CloseLyrics, CycleRepeat, LyricsView, NextSong, Panels, Player, PlayerEvent, PreviousSong,
-    QueueView, RepeatMode, SaveQueue, SeekBackward, SeekForward, SetRepeat, ToggleLyrics,
-    ToggleMute, TogglePlayback, ToggleQueue, ToggleShuffle, VolumeDown, VolumeUp,
+    CloseLyrics, CurrentLyrics, CycleRepeat, LyricsView, MiniPlayer, NextSong, Panels, Player,
+    PlayerEvent, PreviousSong, QueueView, RepeatMode, SaveQueue, SeekBackward, SeekForward,
+    SetRepeat, ToggleLyrics, ToggleMiniPlayer, ToggleMute, TogglePlayback, ToggleQueue,
+    ToggleShuffle, VolumeDown, VolumeUp,
 };
 use playlists::{Playlists, PlaylistsEvent};
 use search::{OpenSearch, Search, SearchEvent};
@@ -141,6 +142,7 @@ struct Workspace {
     queue: Entity<QueueView>,
     /// Over the screen and the player when open; the rest stay as they were.
     lyrics: Entity<LyricsView>,
+    mini_player: Entity<MiniPlayer>,
     panes: Entity<ResizableState>,
     /// Holds the session's decoded covers, so signing out frees them.
     covers: Entity<CoverCache>,
@@ -153,7 +155,7 @@ struct Workspace {
     _activity_changes: Subscription,
     _output_changes: Subscription,
     _discord_changes: [Subscription; 2],
-    _lyrics_highlight_changes: Subscription,
+    _lyrics_changes: [Subscription; 2],
     _focus_lost: Subscription,
 }
 
@@ -214,7 +216,7 @@ impl AppShell {
         let keychain = config::Keychain::system().ok();
         let screen = Self::sign_in(&net, keychain.clone(), Start::Resume, window, cx);
         let queue_shown = true;
-        crate::set_menus(queue_shown, false, None, false, RepeatMode::Off, cx);
+        crate::set_menus(queue_shown, false, false, None, false, RepeatMode::Off, cx);
         let song_cache_changes = cx.subscribe(
             &settings::song_cache_settings(cx),
             |_, song_cache, _: &settings::CacheLimitChanged, cx| {
@@ -316,7 +318,7 @@ impl AppShell {
             player
         });
         let queue = cx.new(|cx| QueueView::new(player.clone(), window, cx));
-        let (lyrics, lyrics_highlight_changes) = lyrics_view(&session, &player, cx);
+        let (lyrics, mini_player, lyrics_changes) = lyrics_views(&session, &player, window, cx);
         let covers = CoverCache::new(cx);
         // Every screen marks the song the player is on; the shell also
         // re-renders, which updates which commands are available.
@@ -425,6 +427,7 @@ impl AppShell {
             player,
             queue,
             lyrics,
+            mini_player,
             panes: cx.new(|_| ResizableState::default()),
             covers,
             _player_events: player_events,
@@ -436,7 +439,7 @@ impl AppShell {
             _activity_changes: activity_changes,
             _output_changes: output_changes,
             _discord_changes: discord_changes,
-            _lyrics_highlight_changes: lyrics_highlight_changes,
+            _lyrics_changes: lyrics_changes,
             _focus_lost: focus_lost,
         };
         workspace.focus_destination(window, cx);
@@ -600,6 +603,7 @@ impl AppShell {
         crate::set_menus(
             self.queue_shown && !is_lyrics_open,
             is_lyrics_open,
+            self.is_mini_player_open(cx),
             self.destination(),
             shuffled,
             repeat,
@@ -846,6 +850,13 @@ impl AppShell {
         }
     }
 
+    fn is_mini_player_open(&self, cx: &App) -> bool {
+        match &self.screen {
+            Screen::Workspace(workspace) => workspace.mini_player.read(cx).is_open(),
+            Screen::SignIn { .. } => false,
+        }
+    }
+
     fn set_lyrics_open(&mut self, is_open: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Screen::Workspace(workspace) = &self.screen else {
             return;
@@ -907,6 +918,7 @@ impl AppShell {
     fn panels(&self, window: &Window, cx: &App) -> Panels {
         Panels {
             is_lyrics_open: self.is_lyrics_open(cx),
+            is_mini_player_open: self.is_mini_player_open(cx),
             is_queue_shown: self.queue_shown,
             queue_fits: self.queue_fits(window, cx),
         }
@@ -946,6 +958,13 @@ impl AppShell {
             this.on_action(cx.listener(|this, _: &ToggleLyrics, window, cx| {
                 let is_open = this.is_lyrics_open(cx);
                 this.set_lyrics_open(!is_open, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleMiniPlayer, window, cx| {
+                if let Screen::Workspace(workspace) = &this.screen {
+                    workspace
+                        .mini_player
+                        .update(cx, |mini_player, cx| mini_player.toggle(window, cx));
+                }
             }))
             .on_action(cx.listener(|this, _: &TogglePlayback, window, cx| {
                 this.update_player(window, cx, |player, _, cx| player.toggle_playback(cx));
@@ -1165,30 +1184,38 @@ fn title_bar_controls() -> Div {
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
 }
 
-/// The lyrics of what `player` plays, kept on the chosen highlight for as long as
-/// the subscription lives.
-fn lyrics_view(
+/// What shows the lyrics of what `player` plays, kept on the chosen highlight for
+/// as long as the subscriptions live.
+fn lyrics_views(
     session: &Session,
     player: &Entity<Player>,
+    window: &Window,
     cx: &mut Context<AppShell>,
-) -> (Entity<LyricsView>, Subscription) {
+) -> (Entity<LyricsView>, Entity<MiniPlayer>, [Subscription; 2]) {
     let finder = lyrics::Finder::user(session.client().net().clone());
     let lyrics_settings = settings::lyrics_settings(cx);
     let highlight = lyrics_settings.read(cx).highlight();
-    let view = cx.new(|cx| {
-        let mut view = LyricsView::new(player.clone(), finder, cx);
-        view.set_highlight(highlight, cx);
-        view
+    let current = cx.new(|cx| {
+        let mut current = CurrentLyrics::new(player.clone(), finder);
+        current.set_highlight(highlight, cx);
+        current
     });
-    let changes = cx.subscribe(&lyrics_settings, {
-        let view = view.downgrade();
+    let highlight_changes = cx.subscribe(&lyrics_settings, {
+        let current = current.downgrade();
         move |_, lyrics_settings, _: &settings::LyricsHighlightChanged, cx| {
             let highlight = lyrics_settings.read(cx).highlight();
-            view.update(cx, |view, cx| view.set_highlight(highlight, cx))
+            current
+                .update(cx, |current, cx| current.set_highlight(highlight, cx))
                 .ok();
         }
     });
-    (view, changes)
+    let view = cx.new(|cx| LyricsView::new(player.clone(), current.clone(), cx));
+    let mini_player = cx.new(|cx| MiniPlayer::new(player.clone(), current, window, cx));
+    let mini_player_changes = cx.observe(&mini_player, |this, _, cx| {
+        this.update_menus(cx);
+        cx.notify();
+    });
+    (view, mini_player, [highlight_changes, mini_player_changes])
 }
 
 impl Render for AppShell {

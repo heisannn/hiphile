@@ -13,6 +13,7 @@ gpui_kit::assets::icon_assets!(
         Disc3,
         ListMusic,
         MicVocal,
+        PictureInPicture2,
         Repeat,
         Repeat1,
         Settings,

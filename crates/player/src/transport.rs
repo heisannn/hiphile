@@ -3,6 +3,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, Selectable as _, Sizable as _, Size,
     button::{Button, ButtonVariants as _},
     h_flex,
+    slider::SliderState,
     spinner::Spinner,
 };
 use gpui_kit::{
@@ -15,7 +16,8 @@ use ui::format_duration;
 use crate::hover_slider::HoverSlider;
 use crate::player::Player;
 use crate::{
-    CycleRepeat, NextSong, PreviousSong, ToggleLyrics, TogglePlayback, ToggleQueue, ToggleShuffle,
+    CycleRepeat, NextSong, PreviousSong, ToggleLyrics, ToggleMiniPlayer, TogglePlayback,
+    ToggleQueue, ToggleShuffle,
 };
 
 /// The kit's play and pause icons, filled in, as it has no such icons.
@@ -143,6 +145,8 @@ pub(crate) struct PositionLine {
     /// How far open it is, from `0.0` to `1.0`.
     shown: f32,
     in_bar: bool,
+    /// In place of the player's main slider, for a line in another window.
+    slider: Option<Entity<SliderState>>,
 }
 
 impl PositionLine {
@@ -153,6 +157,7 @@ impl PositionLine {
             player,
             shown,
             in_bar: true,
+            slider: None,
         }
     }
 
@@ -161,7 +166,13 @@ impl PositionLine {
             player,
             shown: 1.,
             in_bar: false,
+            slider: None,
         }
+    }
+
+    pub(crate) fn slider(mut self, slider: Entity<SliderState>) -> Self {
+        self.slider = Some(slider);
+        self
     }
 }
 
@@ -172,6 +183,9 @@ impl RenderOnce for PositionLine {
         let seekable = player.is_started() && duration.is_some();
         let position = player.shown_position();
         let buffering = player.is_buffering();
+        let slider = self
+            .slider
+            .unwrap_or_else(|| player.position_state().clone());
         h_flex()
             .when(self.in_bar, |this| {
                 this.debug_selector(|| "player-position".to_owned())
@@ -207,7 +221,7 @@ impl RenderOnce for PositionLine {
                             )
                         }),
                 )
-                .child(HoverSlider::new(player.position_state(), "Position").disabled(!seekable))
+                .child(HoverSlider::new(&slider, "Position").disabled(!seekable))
                 .child(
                     div()
                         .flex_none()
@@ -269,6 +283,20 @@ impl RenderOnce for PanelToggles {
                     .toggled(is_queue_selected)
                     .disabled(!panels.queue_fits)
                     .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleQueue), cx)),
+            )
+            .child(
+                Button::new("toggle-mini-player")
+                    .ghost()
+                    .small()
+                    .icon(IconName::PictureInPicture2)
+                    .accessibility_label("Mini player")
+                    .tooltip_with_action("Mini player", &ToggleMiniPlayer, None)
+                    .selected(panels.is_mini_player_open)
+                    .toggled(panels.is_mini_player_open)
+                    .disabled(!has_song)
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(Box::new(ToggleMiniPlayer), cx);
+                    }),
             )
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "player"
-description = "Feature: the play queue, transport controls, the now-playing bar, and the lyrics of what is playing."
+description = "Feature: the play queue, transport controls, the now-playing bar, the lyrics of what is playing, and the mini player."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true

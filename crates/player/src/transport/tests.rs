@@ -20,18 +20,23 @@ struct Stand {
     panels: Panels,
     lyrics_toggled: Rc<Cell<u32>>,
     queue_toggled: Rc<Cell<u32>>,
+    mini_player_toggled: Rc<Cell<u32>>,
 }
 
 impl Render for Stand {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let lyrics_toggled = self.lyrics_toggled.clone();
         let queue_toggled = self.queue_toggled.clone();
+        let mini_player_toggled = self.mini_player_toggled.clone();
         v_flex()
             .id("stand")
             .track_focus(&self.focus)
             .size_full()
             .on_action(move |_: &ToggleLyrics, _, _| lyrics_toggled.set(lyrics_toggled.get() + 1))
             .on_action(move |_: &ToggleQueue, _, _| queue_toggled.set(queue_toggled.get() + 1))
+            .on_action(move |_: &ToggleMiniPlayer, _, _| {
+                mini_player_toggled.set(mini_player_toggled.get() + 1);
+            })
             .child(div().flex_1().min_h_0())
             .child(self.player.clone())
             .text_color(cx.theme().foreground)
@@ -76,6 +81,7 @@ fn stand(with_song: bool, cx: &mut TestAppContext) -> (Entity<Stand>, &mut Visua
             panels: Panels::default(),
             lyrics_toggled: Rc::default(),
             queue_toggled: Rc::default(),
+            mini_player_toggled: Rc::default(),
         }
     });
     cx.simulate_resize(size(px(1200.), px(400.)));
@@ -89,13 +95,12 @@ fn toggles(cx: &mut VisualTestContext) -> Bounds<Pixels> {
     cx.debug_bounds("panel-toggles").expect("the toggles")
 }
 
-fn click_toggle(second: bool, bounds: Bounds<Pixels>, cx: &mut VisualTestContext) {
-    let quarter = bounds.size.width / 4.;
-    let x = if second {
-        bounds.right() - quarter
-    } else {
-        bounds.left() + quarter
-    };
+const LYRICS_TOGGLE: usize = 0;
+const QUEUE_TOGGLE: usize = 1;
+const MINI_PLAYER_TOGGLE: usize = 2;
+
+fn click_toggle(ix: usize, bounds: Bounds<Pixels>, cx: &mut VisualTestContext) {
+    let x = bounds.left() + bounds.size.width * ((ix as f32 + 0.5) / 3.);
     cx.simulate_click(point(x, bounds.center().y), Modifiers::default());
     cx.run_until_parked();
 }
@@ -117,7 +122,7 @@ fn the_toggles_stand_just_left_of_the_volume(cx: &mut TestAppContext) {
 fn the_lyrics_toggle_asks_for_the_lyrics_when_there_is_a_song(cx: &mut TestAppContext) {
     let (stand_with_song, cx) = stand(true, cx);
 
-    click_toggle(false, toggles(cx), cx);
+    click_toggle(LYRICS_TOGGLE, toggles(cx), cx);
 
     let toggled = cx.read(|cx| stand_with_song.read(cx).lyrics_toggled.get());
     assert_eq!(toggled, 1);
@@ -127,16 +132,40 @@ fn the_lyrics_toggle_asks_for_the_lyrics_when_there_is_a_song(cx: &mut TestAppCo
 fn the_lyrics_toggle_does_nothing_without_a_song(cx: &mut TestAppContext) {
     let (stand, cx) = stand(false, cx);
 
-    click_toggle(false, toggles(cx), cx);
+    click_toggle(LYRICS_TOGGLE, toggles(cx), cx);
 
     assert_eq!(cx.read(|cx| stand.read(cx).lyrics_toggled.get()), 0);
+}
+
+#[gpui_kit::test]
+fn the_mini_player_toggle_asks_for_it_when_there_is_a_song(cx: &mut TestAppContext) {
+    let (with_song, cx) = stand(true, cx);
+
+    click_toggle(MINI_PLAYER_TOGGLE, toggles(cx), cx);
+
+    assert_eq!(
+        cx.read(|cx| with_song.read(cx).mini_player_toggled.get()),
+        1
+    );
+}
+
+#[gpui_kit::test]
+fn the_mini_player_toggle_does_nothing_without_a_song(cx: &mut TestAppContext) {
+    let (without_song, cx) = stand(false, cx);
+
+    click_toggle(MINI_PLAYER_TOGGLE, toggles(cx), cx);
+
+    assert_eq!(
+        cx.read(|cx| without_song.read(cx).mini_player_toggled.get()),
+        0
+    );
 }
 
 #[gpui_kit::test]
 fn the_queue_toggle_follows_whether_the_queue_fits(cx: &mut TestAppContext) {
     let (stand, cx) = stand(true, cx);
 
-    click_toggle(true, toggles(cx), cx);
+    click_toggle(QUEUE_TOGGLE, toggles(cx), cx);
     assert_eq!(cx.read(|cx| stand.read(cx).queue_toggled.get()), 0);
 
     // Told only to what lays the panels out, as when the window has been widened
@@ -147,6 +176,6 @@ fn the_queue_toggle_follows_whether_the_queue_fits(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     let bounds = cx.debug_bounds("panel-toggles").expect("the toggles");
-    click_toggle(true, bounds, cx);
+    click_toggle(QUEUE_TOGGLE, bounds, cx);
     assert_eq!(cx.read(|cx| stand.read(cx).queue_toggled.get()), 1);
 }
