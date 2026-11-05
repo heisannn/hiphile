@@ -106,6 +106,8 @@ pub struct Player {
     following: Option<Following>,
     queue: Queue<Song>,
     state: State,
+    /// Whether the engine says the song is silent for want of its data.
+    buffering: bool,
     format: Option<PlaybackFormat>,
     /// Where the stopped song picks back up, after its output failed.
     resume: Option<Resume>,
@@ -272,6 +274,7 @@ impl Player {
             following: None,
             queue: Queue::new(),
             state: State::Stopped,
+            buffering: false,
             format: None,
             resume: None,
             tally: PlayTally::default(),
@@ -419,7 +422,16 @@ impl Player {
     /// Whether the current song is playing or about to, rather than paused
     /// or stopped.
     pub(crate) fn is_playing(&self) -> bool {
-        matches!(self.state, State::Playing | State::Opening)
+        match self.state {
+            State::Playing => true,
+            State::Opening => !self.resume.is_some_and(|resume| resume.paused),
+            State::Paused | State::Stopped => false,
+        }
+    }
+
+    /// Whether the song is silent for now, as its data has yet to arrive.
+    pub(crate) fn is_buffering(&self) -> bool {
+        self.buffering && self.is_playing()
     }
 
     /// Asks `panels` how they stand whenever the toggles are drawn, as that can
@@ -435,11 +447,6 @@ impl Player {
     pub(crate) fn set_cover_hidden(&mut self, is_hidden: bool, cx: &mut Context<Self>) {
         self.is_cover_hidden = is_hidden;
         cx.notify();
-    }
-
-    /// Whether the current song's download is starting or its decoder opening.
-    pub(crate) fn is_opening(&self) -> bool {
-        self.state == State::Opening
     }
 
     pub(crate) fn current_song(&self) -> Option<&Song> {
@@ -528,9 +535,29 @@ impl Player {
                 self.set_state(State::Playing, cx);
                 self.announce_current(cx);
             }
-            State::Stopped if self.resume.is_some() => self.open_current(false, cx),
+            State::Stopped if self.resume.is_some() => {
+                // Asked to play, whatever it was when it stopped.
+                if let Some(resume) = &mut self.resume {
+                    resume.paused = false;
+                }
+                self.open_current(false, cx);
+            }
             State::Stopped if self.has_song() => self.play_current(cx),
-            State::Stopped | State::Opening => {}
+            State::Opening => {
+                let resume = self.resume.get_or_insert_default();
+                resume.paused = !resume.paused;
+                let paused = resume.paused;
+                // Otherwise it is yet to load, which goes by `resume`.
+                if self.load.is_some() {
+                    if paused {
+                        self.engine.pause();
+                    } else {
+                        self.engine.resume();
+                    }
+                }
+                self.set_state(State::Opening, cx);
+            }
+            State::Stopped => {}
         }
     }
 
@@ -824,6 +851,7 @@ impl Player {
         self.arrival = None;
         self.following = None;
         self.format = None;
+        self.buffering = false;
         self.resume = None;
         if !self.has_song() {
             self.cover_url = None;
@@ -891,6 +919,7 @@ impl Player {
     /// Shows `song`, now current, as about to play.
     fn show_opening(&mut self, song: &Song, cx: &mut Context<Self>) {
         self.format = None;
+        self.buffering = false;
         self.error = None;
         self.scrub = None;
         self.cover_url = song
@@ -1014,6 +1043,10 @@ impl Player {
                 self.format = Some(format);
                 cx.notify();
             }
+            EventKind::Buffering(buffering) => {
+                self.buffering = buffering;
+                cx.notify();
+            }
             EventKind::Ended { next } => self.song_ended(next, cx),
             // The song fetched again plays from a download, not a kept
             // file, so a song is fetched again at most once per play.
@@ -1053,6 +1086,7 @@ impl Player {
         self.arrival = None;
         self.following = None;
         self.format = None;
+        self.buffering = false;
         self.error = Some(format!("Couldn't play “{}”. {reason}", song.title()).into());
         self.set_state(State::Stopped, cx);
     }
@@ -1061,7 +1095,7 @@ impl Player {
         self.state = state;
         cx.emit(PlayerEvent::NowPlaying {
             song: self.queue.current().map(|song| song.id().clone()),
-            playing: matches!(state, State::Playing | State::Opening),
+            playing: self.is_playing(),
         });
         cx.notify();
     }
@@ -1823,6 +1857,97 @@ mod tests {
         });
         let tries = server.streamed();
         assert_eq!(tries.iter().filter(|id| *id == "b").count(), 2, "{tries:?}");
+    }
+
+    /// Pausing while the song opens holds for when it has: it starts paused,
+    /// and the controls say so all along. Again, and it plays.
+    #[gpui_kit::test]
+    #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
+    fn a_pause_while_a_song_opens_holds(cx: &mut TestAppContext) {
+        let server = Server::default();
+        let songs = [server.add("a", wav(5_000))];
+        let (player, cx) = player(&server, cx);
+        player.update(cx, |player, cx| {
+            player.play(&songs, 0, cx);
+            assert_eq!(player.state, State::Opening);
+            assert!(player.is_playing());
+            player.toggle_playback(cx);
+            assert_eq!(player.state, State::Opening);
+            assert!(!player.is_playing());
+        });
+        wait_until(&player, cx, "the song to start", |player| {
+            player.is_started()
+        });
+        player.update(cx, |player, cx| {
+            assert_eq!(player.state, State::Paused);
+            player.toggle_playback(cx);
+            assert_eq!(player.state, State::Playing);
+        });
+        player.update(cx, |player, cx| player.stop(cx));
+    }
+
+    /// Pausing a song that opens and then fails does not stay: Play plays it.
+    #[gpui_kit::test]
+    #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
+    fn a_pause_does_not_outlast_a_song_that_failed_to_open(cx: &mut TestAppContext) {
+        let server = Server::default();
+        let song = server.add("a", wav(1_000));
+        let body = server.songs.lock().unwrap().remove("a").unwrap();
+        let (player, cx) = player(&server, cx);
+        player.update(cx, |player, cx| {
+            player.play(std::slice::from_ref(&song), 0, cx);
+            player.toggle_playback(cx);
+        });
+        wait_until(&player, cx, "the failure", |player| player.error.is_some());
+
+        server.songs.lock().unwrap().insert("a".to_owned(), body);
+        player.update(cx, |player, cx| player.toggle_playback(cx));
+        wait_until(&player, cx, "the song to start", |player| {
+            player.is_started()
+        });
+        player.read_with(cx, |player, _| assert_eq!(player.state, State::Playing));
+        player.update(cx, |player, cx| player.stop(cx));
+    }
+
+    /// A song whose data has stopped arriving shows that it waits, and still
+    /// pauses and plays at once. It sounds again once the data has come.
+    #[gpui_kit::test]
+    #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
+    fn a_song_waiting_for_its_data_answers_the_controls(cx: &mut TestAppContext) {
+        let server = Server::default();
+        // Half of it arrives, which sounds before it runs out.
+        let songs = [server.add("a", wav(6_000))];
+        *server.held.lock().unwrap() = Some("a".to_owned());
+        let (player, cx) = player(&server, cx);
+        player.update(cx, |player, cx| player.play(&songs, 0, cx));
+        wait_until(&player, cx, "the song to wait", |player| {
+            player.is_started() && player.is_buffering()
+        });
+        cx.update(|window, _| window.refresh());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("player-buffering").is_some());
+
+        player.update(cx, |player, cx| {
+            player.toggle_playback(cx);
+            assert_eq!(player.state, State::Paused);
+            assert!(!player.is_buffering());
+        });
+        wait_until(&player, cx, "the wait to stop counting", |player| {
+            !player.buffering
+        });
+        player.update(cx, |player, cx| {
+            player.toggle_playback(cx);
+            assert_eq!(player.state, State::Playing);
+        });
+        wait_until(&player, cx, "the song to wait again", |player| {
+            player.is_buffering()
+        });
+
+        server.released.store(true, Ordering::SeqCst);
+        wait_until(&player, cx, "the song to sound", |player| {
+            !player.is_buffering()
+        });
+        player.update(cx, |player, cx| player.stop(cx));
     }
 
     /// A pause that crosses the events of the next song starting stays: the

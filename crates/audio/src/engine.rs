@@ -7,14 +7,23 @@ use std::time::{Duration, Instant};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 use crate::convert::Converter;
-use crate::decode::Decoder;
 use crate::device::device_name;
+use crate::feed::{Feed, Item, Opening, Polled};
 use crate::output::{self, ConfigRange, OutputSettings, Spec};
 use crate::track::Cancel;
 use crate::{Error, Track};
 
-/// Decoded audio kept ahead of the device.
+/// Audio kept in the ring buffer, ahead of the device. More waits decoded in
+/// the track's [`Feed`].
 const BUFFER_AHEAD: Duration = Duration::from_millis(500);
+/// How much of a track must be ready before it sounds. Each time it then runs
+/// out, as its data comes too slowly, it waits for twice as much, up to
+/// [`LONGEST_HOLD`], so that the gaps get rarer instead of the sound choppy.
+const FIRST_HOLD: Duration = Duration::from_secs(2);
+const LONGEST_HOLD: Duration = Duration::from_secs(30);
+/// How long a track must wait for its data for that to be reported. Most
+/// waits are over before anyone could tell.
+const BUFFERING_NOTICE: Duration = Duration::from_millis(300);
 /// How often the engine thread tops up the buffer while playing.
 const FILL_INTERVAL: Duration = Duration::from_millis(5);
 /// How long the device keeps the rate of the last track once nothing plays.
@@ -59,8 +68,12 @@ pub enum EventKind {
     OutputChanged(PlaybackFormat),
     /// The track played to its end. `next` is the [`Engine::set_next`] load
     /// that goes on from here and reports [`EventKind::Started`] or
-    /// [`EventKind::Failed`] next; with `None`, nothing else plays.
+    /// [`EventKind::Failed`] next, perhaps after [`EventKind::Buffering`]; with
+    /// `None`, nothing else plays.
     Ended { next: Option<LoadId> },
+    /// The track has been silent for a while waiting for its data, while
+    /// opening or playing, or has stopped doing so. Not reported while paused.
+    Buffering(bool),
     /// The track stopped because of an error.
     Failed(Error),
 }
@@ -326,8 +339,6 @@ impl Engine {
         self.send(Command::ClearNext);
     }
 
-    /// Takes effect once the engine thread is not waiting for the track's
-    /// data; [`Self::stop`] and [`Self::load`] do not have to wait.
     pub fn pause(&self) {
         self.send(Command::Pause);
     }
@@ -340,8 +351,9 @@ impl Engine {
     ///
     /// The position reads `to` right away and the old audio goes silent; the
     /// new audio starts once the track's data at `to` is available, which
-    /// for a download may mean waiting for it to arrive. A track that cannot
-    /// seek fails with [`EventKind::Failed`].
+    /// for a download may mean waiting for it to arrive, and the position
+    /// then reads where it could go on from. A track that cannot seek fails
+    /// with [`EventKind::Failed`].
     pub fn seek(&self, to: Duration) {
         self.send(Command::Seek(to));
     }
@@ -442,54 +454,45 @@ fn serve(
     };
     let mut output = OutputSettings::default();
     let mut current: Option<Playback> = None;
+    // The track to play once it has opened, before which there is no current.
+    let mut pending: Option<Pending> = None;
     let mut next: Option<Next> = None;
+    let mut buffering = BufferingReport::default();
     let mut idle_since: Option<Instant> = None;
-    // A command that arrived behind a run of seeks.
-    let mut deferred: Option<Command> = None;
     loop {
-        if current.is_some() {
+        if current.is_some() || pending.is_some() {
             idle_since = None;
         } else {
             idle_since.get_or_insert_with(Instant::now);
         }
+        buffering.update(
+            pending
+                .as_ref()
+                .filter(|pending| !pending.start.paused)
+                .map(|pending| pending.track.generation)
+                .or_else(|| current.as_ref().and_then(Playback::waiting_generation)),
+            &emit,
+        );
         let playing = current.as_ref().is_some_and(|playback| !playback.paused);
-        let timeout = if playing {
+        let timeout = if playing || pending.is_some() {
             Some(FILL_INTERVAL)
         } else {
             idle_since
                 .filter(|_| restore.is_some())
                 .map(|since| RESTORE_DELAY.saturating_sub(since.elapsed()))
         };
-        let command = match (deferred.take(), timeout) {
-            (Some(command), _) => Some(command),
-            (None, Some(timeout)) => match commands.recv_timeout(timeout) {
+        let command = match timeout {
+            Some(timeout) => match commands.recv_timeout(timeout) {
                 Ok(command) => Some(command),
                 Err(mpsc::RecvTimeoutError::Timeout) => None,
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
             },
-            (None, None) => match commands.recv() {
+            None => match commands.recv() {
                 Ok(command) => Some(command),
                 Err(_) => return,
             },
         };
-        // Each seek may wait on the network; of seeks queued meanwhile, only
-        // the last matters.
-        let command = match command {
-            Some(Command::Seek(mut to)) => {
-                while let Ok(next) = commands.try_recv() {
-                    match next {
-                        Command::Seek(later) => to = later,
-                        other => {
-                            deferred = Some(other);
-                            break;
-                        }
-                    }
-                }
-                Some(Command::Seek(to))
-            }
-            command => command,
-        };
-        if command.is_none() && current.is_none() {
+        if command.is_none() && current.is_none() && pending.is_none() {
             // Nothing has played for `RESTORE_DELAY`; no next track is coming.
             if let Some(restore) = restore.take() {
                 restore.apply();
@@ -503,26 +506,19 @@ fn serve(
             Some(Command::Load(generation, track)) => {
                 // Release the device before opening it again.
                 current = None;
+                pending = None;
                 next = None;
+                buffering = BufferingReport::default();
                 // A newer request already replaced this one; dropping the
                 // track releases its source.
                 if shared.is_current(generation) {
-                    let opened = Playback::start(
-                        track,
-                        generation,
-                        &output,
-                        shared,
-                        command_sender,
-                        restore,
-                    );
-                    adopt(opened, generation, shared, &emit).map(|playback| current = playback)
-                } else {
-                    Ok(())
+                    pending = Some(Pending::load(generation, track));
                 }
+                Ok(())
             }
             Some(Command::SetNext(generation, track)) => {
                 let abandoned = abandon_next(&mut current, shared, &emit);
-                if current.is_some() {
+                if current.is_some() || pending.is_some() {
                     next = Some(Next::open(generation, track));
                 } else {
                     shared.release_next(generation);
@@ -533,17 +529,30 @@ fn serve(
                 next = None;
                 abandon_next(&mut current, shared, &emit)
             }
-            Some(Command::Pause) => current.as_mut().map_or(Ok(()), |playback| {
-                playback
-                    .pause()
-                    .map_err(|error| (playback.generation, error))
-            }),
-            Some(Command::Resume) => current.as_mut().map_or(Ok(()), |playback| {
-                playback
-                    .resume()
-                    .map_err(|error| (playback.generation, error))
-            }),
+            Some(Command::Pause) => {
+                if let Some(pending) = &mut pending {
+                    pending.start.paused = true;
+                }
+                current.as_mut().map_or(Ok(()), |playback| {
+                    playback
+                        .pause()
+                        .map_err(|error| (playback.generation, error))
+                })
+            }
+            Some(Command::Resume) => {
+                if let Some(pending) = &mut pending {
+                    pending.start.paused = false;
+                }
+                current.as_mut().map_or(Ok(()), |playback| {
+                    playback
+                        .resume()
+                        .map_err(|error| (playback.generation, error))
+                })
+            }
             Some(Command::Seek(to)) => {
+                if let Some(pending) = &mut pending {
+                    pending.seek(to);
+                }
                 return_to_sounding(&mut current, &mut next, shared, &emit);
                 current.as_mut().map_or(Ok(()), |playback| {
                     playback
@@ -590,7 +599,9 @@ fn serve(
             }
             Some(Command::Stop) => {
                 current = None;
+                pending = None;
                 next = None;
+                buffering = BufferingReport::default();
                 Ok(())
             }
             Some(Command::OutputFailed(generation, message)) => current
@@ -614,10 +625,34 @@ fn serve(
 
         report_crossing(&mut current, shared, &emit);
 
+        if let Some(waiting) = pending.take() {
+            match waiting.poll() {
+                Err(waiting) => pending = Some(waiting),
+                Ok((generation, opened, start)) if shared.is_current(generation) => {
+                    let opened = opened.and_then(|feed| {
+                        Playback::begin(
+                            feed,
+                            start,
+                            generation,
+                            &output,
+                            shared,
+                            command_sender,
+                            restore,
+                        )
+                    });
+                    match adopt(opened, generation, shared, &emit) {
+                        Ok(playback) => current = playback,
+                        Err((failed, error)) => emit(failed, EventKind::Failed(error)),
+                    }
+                }
+                Ok(_) => {}
+            }
+        }
+
         if let Some(playback) = current.as_mut().filter(|playback| !playback.paused) {
             let generation = playback.generation;
             next = next.and_then(|next| playback.join(next, &output, shared));
-            let fill = playback.fill();
+            let fill = playback.fill(shared);
             if matches!(fill, Ok(Fill::Playing)) {
                 continue;
             }
@@ -643,25 +678,44 @@ fn serve(
                         }
                         let next = Some(LoadId(started));
                         emit(generation, EventKind::Ended { next });
-                        // Superseding it cancels the wait for it to open.
-                        let opened = following.into_decoder().and_then(|decoder| {
-                            Playback::begin(
-                                decoder,
-                                Start::BEGINNING,
-                                started,
-                                &output,
-                                shared,
-                                command_sender,
-                                restore,
-                            )
+                        pending = Some(Pending {
+                            track: following,
+                            start: Start::BEGINNING,
                         });
-                        match adopt(opened, started, shared, &emit) {
-                            Ok(playback) => current = playback,
-                            Err((failed, error)) => emit(failed, EventKind::Failed(error)),
-                        }
                     }
                 },
             }
+        }
+    }
+}
+
+/// Reports when a track has been silent for [`BUFFERING_NOTICE`] waiting for
+/// its data, and when that is over.
+#[derive(Default)]
+struct BufferingReport {
+    waiting_since: Option<Instant>,
+    /// The track told about it.
+    reported: Option<Generation>,
+}
+
+impl BufferingReport {
+    /// `waiting` names the track now waiting for its data, if any.
+    fn update(&mut self, waiting: Option<Generation>, emit: &impl Fn(Generation, EventKind)) {
+        let Some(generation) = waiting else {
+            self.waiting_since = None;
+            if let Some(reported) = self.reported.take() {
+                emit(reported, EventKind::Buffering(false));
+            }
+            return;
+        };
+        // Another track took over; the wait told about is no longer anyone's.
+        if self.reported.is_some_and(|reported| reported != generation) {
+            *self = Self::default();
+        }
+        let since = *self.waiting_since.get_or_insert_with(Instant::now);
+        if self.reported.is_none() && since.elapsed() >= BUFFERING_NOTICE {
+            self.reported = Some(generation);
+            emit(generation, EventKind::Buffering(true));
         }
     }
 }
@@ -703,6 +757,8 @@ fn report_crossing(
         return;
     };
     let ended = std::mem::replace(&mut playback.generation, joined.generation);
+    // How long the last track had to wait is no reason for this one to.
+    playback.hold = FIRST_HOLD;
     if shared.promote(ended, joined.generation) {
         let next = Some(LoadId(joined.generation));
         emit(ended, EventKind::Ended { next });
@@ -775,66 +831,88 @@ struct Next {
 
 enum NextState {
     /// On a thread of its own, as that may wait on the network.
-    Opening(mpsc::Receiver<Result<Decoder, Error>>),
-    Ready(Decoder),
+    Opening(Opening),
+    Ready(Feed),
     /// Reported when its turn comes.
     Failed(Error),
 }
 
 impl Next {
     fn open(generation: Generation, track: Track) -> Self {
-        let (opened, receiver) = mpsc::channel();
-        let thread = thread::Builder::new()
-            .name("hiphile-audio-next".to_owned())
-            .spawn(move || {
-                opened.send(Decoder::open(track)).ok();
-            });
-        let state = match thread {
-            Ok(_) => NextState::Opening(receiver),
-            Err(error) => NextState::Failed(Error::Read(error.to_string())),
+        let state = match Opening::start(track, FIRST_HOLD) {
+            Ok(opening) => NextState::Opening(opening),
+            Err(error) => NextState::Failed(error),
         };
         Self { generation, state }
     }
 
-    /// Takes the decoder in once it has opened.
-    fn poll(&mut self) {
-        if let NextState::Opening(receiver) = &self.state {
-            match receiver.try_recv() {
-                Ok(Ok(decoder)) => self.state = NextState::Ready(decoder),
-                Ok(Err(error)) => self.state = NextState::Failed(error),
-                Err(mpsc::TryRecvError::Empty) => {}
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    self.state = NextState::Failed(open_stopped());
-                }
-            }
-        }
-    }
-
-    /// The decoder, waiting for it to open. A read it is blocked on returns
-    /// once the track's cancel hook runs.
-    fn into_decoder(self) -> Result<Decoder, Error> {
-        match self.state {
-            NextState::Opening(receiver) => receiver.recv().unwrap_or_else(|_| Err(open_stopped())),
-            NextState::Ready(decoder) => Ok(decoder),
-            NextState::Failed(error) => Err(error),
-        }
-    }
-
-    /// Back at its first sample, after decoding some.
-    fn rewound(self) -> Self {
+    /// Takes the feed in once it has opened.
+    fn polled(self) -> Self {
         let state = match self.state {
-            NextState::Ready(mut decoder) => match decoder.seek(Duration::ZERO) {
-                Ok(_) => NextState::Ready(decoder),
-                Err(error) => NextState::Failed(error),
+            NextState::Opening(opening) => match opening.poll() {
+                Polled::Waiting(opening) => NextState::Opening(opening),
+                Polled::Opened(feed) => NextState::Ready(feed),
+                Polled::Failed(error) => NextState::Failed(error),
             },
             state => state,
         };
         Self { state, ..self }
     }
+
+    /// Back at its first sample, after decoding some.
+    fn rewound(self) -> Self {
+        if let NextState::Ready(feed) = &self.state {
+            feed.seek(Duration::ZERO);
+        }
+        self
+    }
 }
 
-fn open_stopped() -> Error {
-    Error::Decode("opening the file stopped unexpectedly".to_owned())
+/// The current track while it opens. Everything asked of it meanwhile goes in
+/// [`Self::start`].
+struct Pending {
+    track: Next,
+    start: Start,
+}
+
+impl Pending {
+    fn load(generation: Generation, track: Track) -> Self {
+        let position = track.start_at;
+        let paused = track.start_paused;
+        let mut pending = Self {
+            track: Next::open(generation, track),
+            start: Start {
+                position: Duration::ZERO,
+                paused,
+            },
+        };
+        // From the beginning, no seek is needed.
+        if !position.is_zero() {
+            pending.seek(position);
+        }
+        pending
+    }
+
+    fn seek(&mut self, to: Duration) {
+        self.start.position = to;
+        match &self.track.state {
+            NextState::Opening(opening) => opening.seek(to),
+            NextState::Ready(feed) => feed.seek(to),
+            NextState::Failed(_) => {}
+        }
+    }
+
+    /// What became of the track once it has opened or failed to.
+    fn poll(self) -> Result<(Generation, Result<Feed, Error>, Start), Self> {
+        let Self { track, start } = self;
+        let track = track.polled();
+        let generation = track.generation;
+        match track.state {
+            NextState::Opening(_) => Err(Self { track, start }),
+            NextState::Ready(feed) => Ok((generation, Ok(feed), start)),
+            NextState::Failed(error) => Ok((generation, Err(error), start)),
+        }
+    }
 }
 
 /// The track still sounding while a next one is written behind it, kept to go
@@ -842,7 +920,7 @@ fn open_stopped() -> Error {
 struct Joined {
     /// Of the next track; the playback still has the sounding one's.
     generation: Generation,
-    decoder: Decoder,
+    feed: Feed,
     /// `None` when the next track goes through the same one.
     converter: Option<Converter>,
     format: PlaybackFormat,
@@ -972,26 +1050,13 @@ fn keep_device_rate(
 struct Start {
     position: Duration,
     paused: bool,
-    /// The position is at or past the end of the track.
-    past_end: bool,
 }
 
 impl Start {
     const BEGINNING: Self = Self {
         position: Duration::ZERO,
         paused: false,
-        past_end: false,
     };
-
-    /// Moves `decoder` to the position, which ends up where it could seek to.
-    fn seek(self, decoder: &mut Decoder) -> Result<Self, Error> {
-        let resumed = decoder.seek(self.position)?;
-        Ok(Self {
-            position: resumed.unwrap_or(self.position),
-            past_end: resumed.is_none(),
-            ..self
-        })
-    }
 }
 
 /// A device stream and the track it plays. Lives on the engine thread only;
@@ -1001,19 +1066,22 @@ impl Start {
 struct Playback {
     /// Of the track being written, which may be behind the one sounding; see
     /// [`Self::joined`].
-    decoder: Decoder,
+    feed: Feed,
     converter: Converter,
     producer: rtrb::Producer<f32>,
     capacity: usize,
     /// Converted samples not yet in the ring buffer.
     pending: Vec<f32>,
     pending_ix: usize,
-    decoded: Vec<f32>,
-    /// The decoder has no more samples; the converter may still hold some.
+    /// The feed has no more samples; the converter may still hold some.
     decoded_all: bool,
     /// The converter has given up its last samples too.
     finished: bool,
     paused: bool,
+    /// Nothing goes to the device, which plays silence and whose position
+    /// stands still, until the feed has [`Self::hold`] ready.
+    holding: bool,
+    hold: Duration,
     /// Of the track being written.
     format: PlaybackFormat,
     /// Of the track sounding.
@@ -1043,31 +1111,6 @@ struct Playback {
 }
 
 impl Playback {
-    fn start(
-        track: Track,
-        generation: Generation,
-        settings: &OutputSettings,
-        shared: &Arc<Shared>,
-        commands: &mpsc::Sender<Command>,
-        restore: &mut Option<RateRestore>,
-    ) -> Result<Self, Error> {
-        let start = Start {
-            position: track.start_at,
-            paused: track.start_paused,
-            past_end: false,
-        };
-        let mut decoder = Decoder::open(track)?;
-        // From the beginning, no seek is needed.
-        let start = if start.position.is_zero() {
-            start
-        } else {
-            start.seek(&mut decoder)?
-        };
-        Self::begin(
-            decoder, start, generation, settings, shared, commands, restore,
-        )
-    }
-
     /// Goes on from the same position on `settings`, paused if it was.
     fn reopen(
         self,
@@ -1079,20 +1122,17 @@ impl Playback {
         let start = Start {
             position: shared.position(),
             paused: self.paused,
-            past_end: false,
         };
         let Self {
-            mut decoder,
+            feed,
             generation,
             stream,
             ..
         } = self;
         // Release the device before opening it again.
         drop(stream);
-        let start = start.seek(&mut decoder)?;
-        Self::begin(
-            decoder, start, generation, settings, shared, commands, restore,
-        )
+        feed.seek(start.position);
+        Self::begin(feed, start, generation, settings, shared, commands, restore)
     }
 
     /// [`Self::reopen`], leaving out a track superseded meanwhile. An error
@@ -1116,9 +1156,9 @@ impl Playback {
         }
     }
 
-    /// Opens a stream for `decoder`, which is at `start`, and starts it.
+    /// Opens a stream for `feed`, which is at `start`, and starts it.
     fn begin(
-        decoder: Decoder,
+        feed: Feed,
         start: Start,
         generation: Generation,
         settings: &OutputSettings,
@@ -1127,7 +1167,7 @@ impl Playback {
         restore: &mut Option<RateRestore>,
     ) -> Result<Self, Error> {
         let mut playback = Self::open(
-            decoder,
+            feed,
             generation,
             settings,
             start.position,
@@ -1135,10 +1175,8 @@ impl Playback {
             commands,
             restore,
         )?;
-        // Past the end, the track ends once the device has played out.
-        playback.finished = start.past_end;
-        // Start with a full buffer so the first callbacks are not silent.
-        playback.fill()?;
+        // Whatever is ready by now, so the first callbacks need not be silent.
+        playback.fill(shared)?;
         if start.paused {
             playback.pause()?;
         } else {
@@ -1147,10 +1185,10 @@ impl Playback {
         Ok(playback)
     }
 
-    /// Opens a stream for `decoder`, which has yet to be filled and started.
-    /// `position` is where the decoder is in the track.
+    /// Opens a stream for `feed`, which has yet to be filled and started.
+    /// `position` is where the feed is in the track.
     fn open(
-        decoder: Decoder,
+        feed: Feed,
         generation: Generation,
         settings: &OutputSettings,
         position: Duration,
@@ -1158,7 +1196,7 @@ impl Playback {
         commands: &mpsc::Sender<Command>,
         restore: &mut Option<RateRestore>,
     ) -> Result<Self, Error> {
-        let source = decoder.spec();
+        let source = feed.spec();
 
         let device = find_device(settings)?;
         let device_id = cfg!(target_os = "macos")
@@ -1229,17 +1267,18 @@ impl Playback {
                 source_channels: source.channels,
                 output_rate: output.rate,
                 output_channels: output.channels,
-                duration: decoder.duration(),
+                duration: feed.duration(),
             },
-            decoder,
+            feed,
             producer,
             capacity,
             pending: Vec::new(),
             pending_ix: 0,
-            decoded: Vec::new(),
             decoded_all: false,
             finished: false,
             paused: false,
+            holding: true,
+            hold: FIRST_HOLD,
             generation,
             opened_for: generation,
             ranges,
@@ -1266,26 +1305,34 @@ impl Playback {
         Ok(())
     }
 
+    /// The track the device has to wait for, as it plays silence for want of
+    /// data.
+    fn waiting_generation(&self) -> Option<Generation> {
+        (self.holding && !self.paused).then_some(self.generation)
+    }
+
     fn seek(&mut self, to: Duration, shared: &Shared) -> Result<(), Error> {
-        let rate = f64::from(self.format.output_rate);
-        let frames = |time: Duration| (time.as_secs_f64() * rate) as u64;
         // Silence what is buffered at once; the seek may wait for data.
         self.flush_until.store(self.written, Ordering::Release);
-        shared.frames_played.store(frames(to), Ordering::Relaxed);
-        let resumed = self.decoder.seek(to)?;
-        if let Some(resumed) = resumed {
-            shared
-                .frames_played
-                .store(frames(resumed), Ordering::Relaxed);
-        }
+        shared
+            .frames_played
+            .store(self.frames_in(to), Ordering::Relaxed);
+        self.feed.seek(to);
         self.converter.reset()?;
         self.pending.clear();
         self.pending_ix = 0;
-        // Past the end, the track ends once the device has played out.
-        self.finished = resumed.is_none();
+        self.finished = false;
         self.decoded_all = false;
         self.emptied_at = None;
+        self.holding = true;
+        // Whoever seeks is waiting to hear it, so not as long as it may have
+        // taken to play on before.
+        self.hold = FIRST_HOLD;
         Ok(())
+    }
+
+    fn frames_in(&self, time: Duration) -> u64 {
+        (time.as_secs_f64() * f64::from(self.format.output_rate)) as u64
     }
 
     /// Writes `next` behind the current track, if `next` plays on this stream
@@ -1295,8 +1342,8 @@ impl Playback {
     /// A next track with the same source format goes through the same
     /// converter. A resampler flushed at the end of a track dents the audio
     /// on either side of the joint, so this is tried before it is flushed.
-    fn join(&mut self, mut next: Next, settings: &OutputSettings, shared: &Shared) -> Option<Next> {
-        next.poll();
+    fn join(&mut self, next: Next, settings: &OutputSettings, shared: &Shared) -> Option<Next> {
+        let next = next.polled();
         let all_written = self.finished && self.pending_ix == self.pending.len();
         let ready = all_written || (self.decoded_all && !self.finished);
         if !ready || self.joined.is_some() || self.failure.is_some() {
@@ -1307,20 +1354,23 @@ impl Playback {
             rate: self.format.output_rate,
             channels: self.format.output_channels,
         };
-        let decoder = match next.state {
-            NextState::Ready(decoder)
+        let feed = match next.state {
+            NextState::Ready(feed)
                 if output::plan(
                     &self.ranges,
                     output.rate,
-                    decoder.spec(),
+                    feed.spec(),
                     settings.fixed_rate(),
-                ) == Some(output) =>
+                ) == Some(output)
+                    // Otherwise it would sound what little has arrived, and
+                    // then go silent. It goes on at its turn instead.
+                    && feed.has_ahead(FIRST_HOLD) =>
             {
-                decoder
+                feed
             }
             state => return Some(Next { generation, state }),
         };
-        let source = decoder.spec();
+        let source = feed.spec();
         let converter = if self.finished {
             match Converter::new(source, output) {
                 Ok(converter) => Some(converter),
@@ -1334,7 +1384,7 @@ impl Playback {
         {
             None
         } else {
-            let state = NextState::Ready(decoder);
+            let state = NextState::Ready(feed);
             return Some(Next { generation, state });
         };
         let next_at = self.written
@@ -1345,11 +1395,11 @@ impl Playback {
             source_channels: source.channels,
             output_rate: output.rate,
             output_channels: output.channels,
-            duration: decoder.duration(),
+            duration: feed.duration(),
         };
         self.joined = Some(Joined {
             generation,
-            decoder: std::mem::replace(&mut self.decoder, decoder),
+            feed: std::mem::replace(&mut self.feed, feed),
             converter: converter.map(|converter| std::mem::replace(&mut self.converter, converter)),
             format: std::mem::replace(&mut self.format, format),
         });
@@ -1373,7 +1423,7 @@ impl Playback {
 
     /// Goes back to writing the sounding track, and returns the track that
     /// joined it, unless the device has reached that one. Follow with a seek:
-    /// the sounding track's decoder is at its end, and its next samples are
+    /// the sounding track's feed is at its end, and its next samples are
     /// the ones to play after what the ring buffer holds is flushed.
     fn take_back(&mut self) -> Option<Next> {
         self.joined.as_ref()?;
@@ -1383,14 +1433,14 @@ impl Playback {
             return None;
         }
         let joined = self.joined.take()?;
-        let decoder = std::mem::replace(&mut self.decoder, joined.decoder);
+        let feed = std::mem::replace(&mut self.feed, joined.feed);
         if let Some(converter) = joined.converter {
             self.converter = converter;
         }
         self.format = joined.format;
         let state = match self.failure.take() {
             Some(error) => NextState::Failed(error),
-            None => NextState::Ready(decoder),
+            None => NextState::Ready(feed),
         };
         Some(Next {
             generation: joined.generation,
@@ -1399,7 +1449,7 @@ impl Playback {
     }
 
     /// Tops the ring buffer up; returns whether the track has fully played.
-    fn fill(&mut self) -> Result<Fill, Error> {
+    fn fill(&mut self, shared: &Shared) -> Result<Fill, Error> {
         // A next track's failure is not the sounding track's, whose last
         // samples may still be on their way here.
         if self.joined.is_some() && self.failure.is_some() {
@@ -1409,13 +1459,32 @@ impl Playback {
         if let Some(error) = self.failure.take() {
             return Err(error);
         }
-        match self.write_ahead() {
+        if self.holding && !self.feed.has_ahead(self.hold) {
+            return Ok(Fill::Playing);
+        }
+        self.holding = false;
+        let filled = match self.write_ahead(shared) {
             Err(error) if self.joined.is_some() => {
                 self.give_up_on_joined(error);
                 Ok(Fill::Playing)
             }
             filled => filled,
+        };
+        if self.has_run_out() {
+            self.holding = true;
+            self.hold = (self.hold * 2).min(LONGEST_HOLD);
         }
+        filled
+    }
+
+    /// Whether the device has taken all there is of a track with more to
+    /// come, which it should wait for.
+    fn has_run_out(&self) -> bool {
+        self.joined.is_none()
+            && !self.finished
+            && !self.decoded_all
+            && self.pending_ix == self.pending.len()
+            && self.producer.slots() == self.capacity
     }
 
     /// Stops writing the track that joined, which `error` ended, and makes
@@ -1453,7 +1522,7 @@ impl Playback {
         true
     }
 
-    fn write_ahead(&mut self) -> Result<Fill, Error> {
+    fn write_ahead(&mut self, shared: &Shared) -> Result<Fill, Error> {
         loop {
             if !self.write_pending() {
                 return Ok(Fill::Playing);
@@ -1477,14 +1546,28 @@ impl Playback {
                 self.finished = true;
                 continue;
             }
-            self.decoded.clear();
-            if self.decoder.decode_into(&mut self.decoded)? {
-                self.converter.process(&self.decoded, &mut self.pending)?;
-            } else {
-                // Leaves a next track its chance to join before the converter
-                // is flushed.
-                self.decoded_all = true;
-                return Ok(Fill::Playing);
+            match self.feed.take() {
+                None => return Ok(Fill::Playing),
+                Some(Item::Samples(samples)) => {
+                    self.converter.process(&samples, &mut self.pending)?;
+                }
+                // A track that joined rewound to its start, while the device
+                // is still in the sounding one.
+                Some(Item::Seeked(Some(_))) if self.joined.is_some() => {}
+                Some(Item::Seeked(Some(resumed))) => {
+                    shared
+                        .frames_played
+                        .store(self.frames_in(resumed), Ordering::Relaxed);
+                }
+                // Past the end, the track ends once the device has played out.
+                Some(Item::Seeked(None)) => self.finished = true,
+                Some(Item::End) => {
+                    // Leaves a next track its chance to join before the
+                    // converter is flushed.
+                    self.decoded_all = true;
+                    return Ok(Fill::Playing);
+                }
+                Some(Item::Failed(error)) => return Err(error),
             }
         }
     }
@@ -1580,7 +1663,11 @@ mod tests {
     use crate::test_wav::wav;
 
     fn next_event(events: &async_channel::Receiver<Event>) -> Event {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        next_event_within(events, Duration::from_secs(10))
+    }
+
+    fn next_event_within(events: &async_channel::Receiver<Event>, wait: Duration) -> Event {
+        let deadline = Instant::now() + wait;
         loop {
             match events.try_recv() {
                 Ok(event) => return event,
@@ -1949,6 +2036,257 @@ mod tests {
             .unwrap_or(0)
     }
 
+    /// Hands over `bytes` at `bytes_per_second`, as a slow connection does.
+    /// Reads stop waiting once the track is canceled.
+    fn slow_track(bytes: Vec<u8>, bytes_per_second: f64) -> Track {
+        struct Slow {
+            bytes: Cursor<Vec<u8>>,
+            started: Instant,
+            bytes_per_second: f64,
+            canceled: Arc<AtomicBool>,
+        }
+        impl std::io::Read for Slow {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                loop {
+                    if self.canceled.load(Ordering::Acquire) {
+                        return Err(std::io::Error::other("canceled"));
+                    }
+                    let arrived =
+                        (self.started.elapsed().as_secs_f64() * self.bytes_per_second) as u64;
+                    let room = arrived.saturating_sub(self.bytes.position());
+                    let end = self.bytes.position() >= self.bytes.get_ref().len() as u64;
+                    if room > 0 || end {
+                        let len = buffer
+                            .len()
+                            .min(usize::try_from(room).unwrap_or(usize::MAX));
+                        return std::io::Read::read(&mut self.bytes, &mut buffer[..len]);
+                    }
+                    thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
+        impl std::io::Seek for Slow {
+            fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+                std::io::Seek::seek(&mut self.bytes, to)
+            }
+        }
+        let canceled = Arc::new(AtomicBool::new(false));
+        let source = Slow {
+            bytes: Cursor::new(bytes),
+            started: Instant::now(),
+            bytes_per_second,
+            canceled: canceled.clone(),
+        };
+        Track::new(source)
+            .extension("wav")
+            .cancel_with(move || canceled.store(true, Ordering::Release))
+    }
+
+    /// The length of each silent stretch in `heard`, longer than the wave ever
+    /// is near zero.
+    fn gaps(heard: &[f32], rate: u32) -> Vec<usize> {
+        let audible = rate as usize / 1_000;
+        heard
+            .split(|sample| sample.abs() > 0.01)
+            .map(<[f32]>::len)
+            .filter(|len| *len >= audible)
+            .collect()
+    }
+
+    /// Data that arrives slower than it plays comes out in long stretches of
+    /// whole wave, not in scraps, and the wait is reported.
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_track_slower_than_it_plays_sounds_in_long_stretches() {
+        let (device, id) = loopback_device();
+        let rate = current_rate(&id);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id), None));
+        let (stream, heard) = record(&device, rate);
+
+        let seconds = 12;
+        let bytes_per_second = f64::from(rate) * 4.0 * 0.4;
+        let load = engine.load(slow_track(
+            sine_wav(rate, 0, rate * seconds),
+            bytes_per_second,
+        ));
+        let mut started = false;
+        let mut waits = 0;
+        let mut waited_out = 0;
+        loop {
+            let event = next_event_within(&events, Duration::from_secs(60));
+            assert_eq!(event.load, load);
+            match event.kind {
+                EventKind::Started(_) => started = true,
+                EventKind::Buffering(true) => waits += 1,
+                EventKind::Buffering(false) => waited_out += 1,
+                EventKind::Ended { .. } => break,
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(started);
+        // At the start, and each time it runs out.
+        assert!(waits >= 2 && waits == waited_out, "{waits}, {waited_out}");
+        thread::sleep(Duration::from_millis(200));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let sound = sounding_part(&heard);
+        let gaps = gaps(sound, rate);
+        assert!(gaps.len() <= 5, "{gaps:?}");
+        // Four seconds of it take ten to arrive, twice the wait at the start.
+        let first = gaps.iter().find(|len| **len > rate as usize / 2);
+        let first = *first.expect("no long wait") as f64 / f64::from(rate);
+        assert!(first > 8.0, "the first wait took {first} seconds: {gaps:?}");
+        let played = sound.iter().filter(|sample| sample.abs() > 0.01).count();
+        let whole = (rate * seconds) as usize;
+        assert!(played * 100 > whole * 95, "{played} of {whole}");
+    }
+
+    /// A next track with little of it arrived does not sound that between the
+    /// current one and the wait for the rest: the two meet at the wait.
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_slow_next_track_waits_at_the_joint() {
+        let (device, id) = loopback_device();
+        let rate = current_rate(&id);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id), None));
+        let (stream, heard) = record(&device, rate);
+
+        let a = engine.load(Track::new(Cursor::new(sine_wav(rate, 0, rate))));
+        let b = engine.set_next(slow_track(
+            sine_wav(rate, rate, rate * 4),
+            f64::from(rate) * 4.0 * 0.5,
+        ));
+        let mut ended = false;
+        loop {
+            let event = next_event_within(&events, Duration::from_secs(30));
+            match event.kind {
+                EventKind::Started(_) | EventKind::Buffering(_) => {}
+                EventKind::Ended { next } if event.load == a => {
+                    assert_eq!(next, Some(b));
+                    ended = true;
+                }
+                EventKind::Ended { next: None } if event.load == b => break,
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(ended);
+        thread::sleep(Duration::from_millis(200));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let sound = sounding_part(&heard);
+        let silence = gaps(sound, rate);
+        assert!(silence.len() <= 3, "{silence:?}");
+        let wait = *silence
+            .iter()
+            .find(|len| **len > rate as usize / 2)
+            .expect("no long wait");
+        let before_the_wait = sound
+            .windows(wait)
+            .position(|window| window.iter().all(|sample| sample.abs() <= 0.01))
+            .unwrap();
+        let of_a = rate as usize;
+        assert!(
+            before_the_wait.abs_diff(of_a) < of_a / 10,
+            "{before_the_wait} frames before the wait, against {of_a}"
+        );
+    }
+
+    /// A pause and a seek made while the track opens hold once it has.
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn what_is_asked_while_a_track_opens_holds_once_it_has() {
+        struct Delayed(Cursor<Vec<u8>>, Option<Duration>);
+        impl std::io::Read for Delayed {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if let Some(delay) = self.1.take() {
+                    thread::sleep(delay);
+                }
+                std::io::Read::read(&mut self.0, buffer)
+            }
+        }
+        impl std::io::Seek for Delayed {
+            fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+                std::io::Seek::seek(&mut self.0, to)
+            }
+        }
+        let device = device_to_open_by_id();
+        let id = device.id().unwrap().to_owned();
+        let rate = current_rate(&id);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id), None));
+
+        let source = Delayed(
+            Cursor::new(wav(rate, 2, rate * 10, 0)),
+            Some(Duration::from_millis(500)),
+        );
+        engine.load(Track::new(source).extension("wav"));
+        engine.pause();
+        engine.seek(Duration::from_secs(5));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        // Nor does a paused track count as waiting for its data.
+        assert_no_event(&events);
+        let position = engine.position();
+        assert!(position >= Duration::from_secs(5), "{position:?}");
+        assert!(position < Duration::from_millis(5_100), "{position:?}");
+
+        engine.resume();
+        thread::sleep(Duration::from_millis(300));
+        assert!(engine.position() > position);
+        engine.shutdown();
+    }
+
+    /// While a read waits on the network, the engine does what it is asked
+    /// straight away.
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_track_waiting_for_its_data_is_still_controlled() {
+        let device = device_to_open_by_id();
+        let id = device.id().unwrap().to_owned();
+        let rate = current_rate(&id);
+        let (engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id.clone()), None));
+
+        // The header and some audio arrive quickly, the rest hardly at all.
+        let mut bytes = wav(rate, 2, rate * 60, 0);
+        bytes.truncate(rate as usize);
+        let load = engine.load(slow_start_track(bytes));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        let waiting = next_event(&events);
+        assert_eq!(waiting.load, load);
+        assert!(matches!(waiting.kind, EventKind::Buffering(true)));
+
+        // The next two take no time, and the wait is not reported as paused.
+        engine.pause();
+        let done = next_event(&events);
+        assert!(matches!(done.kind, EventKind::Buffering(false)), "{done:?}");
+        engine.resume();
+        let waiting = next_event(&events);
+        assert!(matches!(waiting.kind, EventKind::Buffering(true)));
+
+        // Moving to other settings means asking for data that will not come.
+        engine.seek(Duration::from_secs(50));
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(engine.position(), Duration::from_secs(50));
+        engine.set_output(OutputSettings::new(
+            Some(id),
+            Some(another_supported_rate()),
+        ));
+        let moved = next_event(&events);
+        assert!(
+            matches!(moved.kind, EventKind::OutputChanged(_)),
+            "{moved:?}"
+        );
+
+        engine.stop();
+        shutdown_within_deadline(engine);
+    }
+
     /// One wave split across three files comes out of the device as one wave,
     /// with not a sample missing at the joints.
     #[test]
@@ -2246,6 +2584,9 @@ mod tests {
         assert_eq!(next_event(&events).load, a);
         let ended = next_event(&events);
         assert!(matches!(ended.kind, EventKind::Ended { next } if next == Some(b)));
+        let waiting = next_event(&events);
+        assert_eq!(waiting.load, b);
+        assert!(matches!(waiting.kind, EventKind::Buffering(true)));
         assert_no_event(&events);
         engine.stop();
         assert_no_event(&events);
@@ -2593,6 +2934,39 @@ mod tests {
             *gate.canceled.lock().unwrap() = true;
             gate.changed.notify_all();
         })
+    }
+
+    /// `start`, and then reads that wait until the track is canceled.
+    fn slow_start_track(start: Vec<u8>) -> Track {
+        let canceled = Arc::new(AtomicBool::new(false));
+        struct Stuck {
+            bytes: Cursor<Vec<u8>>,
+            canceled: Arc<AtomicBool>,
+        }
+        impl std::io::Read for Stuck {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let len = std::io::Read::read(&mut self.bytes, buffer)?;
+                if len > 0 {
+                    return Ok(len);
+                }
+                while !self.canceled.load(Ordering::Acquire) {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(std::io::Error::other("canceled"))
+            }
+        }
+        impl std::io::Seek for Stuck {
+            fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+                std::io::Seek::seek(&mut self.bytes, to)
+            }
+        }
+        let source = Stuck {
+            bytes: Cursor::new(start),
+            canceled: canceled.clone(),
+        };
+        Track::new(source)
+            .extension("wav")
+            .cancel_with(move || canceled.store(true, Ordering::Release))
     }
 
     fn assert_no_event(events: &async_channel::Receiver<Event>) {

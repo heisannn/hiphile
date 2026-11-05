@@ -5,6 +5,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, Selectable as _, Sizable as _, Size,
     button::{Button, ButtonVariants as _},
     h_flex,
+    spinner::Spinner,
 };
 use gpui_kit::{
     App, Entity, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce, Styled as _,
@@ -55,7 +56,6 @@ impl RenderOnce for TransportControls {
         let player = self.player.read(cx);
         let has_song = player.has_song();
         let playing = player.is_playing();
-        let opening = player.is_opening();
         let shuffled = player.is_shuffled();
         let repeat = player.repeat();
         let (icon, label) = if playing {
@@ -114,7 +114,7 @@ impl RenderOnce for TransportControls {
                     .icon(Icon::default().data(icon))
                     .accessibility_label(label)
                     .tooltip_with_action(label, &TogglePlayback, None)
-                    .disabled(!has_song || opening)
+                    .disabled(!has_song)
                     .on_click(on_click(Player::toggle_playback)),
             )
             .child(
@@ -176,6 +176,7 @@ impl RenderOnce for PositionLine {
         let duration = player.duration();
         let seekable = player.is_started() && duration.is_some();
         let position = player.shown_position();
+        let buffering = player.is_buffering();
         h_flex()
             .when(self.in_bar, |this| {
                 this.debug_selector(|| "player-position".to_owned())
@@ -191,7 +192,25 @@ impl RenderOnce for PositionLine {
                     h_flex()
                         .flex_none()
                         .when(self.in_bar, |this| this.min_w_9().justify_end())
-                        .child(format_duration(position)),
+                        .relative()
+                        // Keeps its room, so that the line does not move.
+                        .child(
+                            div()
+                                .when(buffering, |this| this.opacity(0.))
+                                .child(format_duration(position)),
+                        )
+                        .when(buffering, |this| {
+                            this.child(
+                                h_flex()
+                                    .debug_selector(|| "player-buffering".to_owned())
+                                    .absolute()
+                                    .inset_0()
+                                    .justify_end()
+                                    .child(
+                                        Spinner::new().xsmall().color(cx.theme().muted_foreground),
+                                    ),
+                            )
+                        }),
                 )
                 .child(HoverSlider::new(player.position_state(), "Position").disabled(!seekable))
                 .child(

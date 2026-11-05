@@ -381,6 +381,10 @@ fn play_track(
                 println!("  {}", describe_format(&format));
             }
             Ok(audio::Event {
+                kind: audio::EventKind::Buffering(_),
+                ..
+            }) => {}
+            Ok(audio::Event {
                 kind: audio::EventKind::Ended { .. },
                 ..
             }) => {
