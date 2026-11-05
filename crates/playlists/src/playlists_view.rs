@@ -43,11 +43,11 @@ use crate::{
     PLAYLISTS_CONTEXT, Play, PlayNext, ROOT_CONTEXT, Remove, Rename, SONGS_CONTEXT, ShowAlbum,
 };
 
-/// Pixel size requested for the detail cover: twice its on-screen size, for
-/// high-density displays.
-const COVER_PIXELS: u32 = 512;
-/// Pixel size requested for a song row's cover, likewise.
-const ROW_COVER_PIXELS: u32 = 80;
+/// Pixel size requested for the detail cover. The renderer aliases an image
+/// drawn at less than half its size, so this stays close to the on-screen size.
+const COVER_PIXELS: u32 = 256;
+/// Pixel size requested for a song row's cover, the same as the player's.
+const ROW_COVER_PIXELS: u32 = 48;
 
 pub enum PlaylistsEvent {
     /// A playlist was created empty, and selected: it has nothing to show

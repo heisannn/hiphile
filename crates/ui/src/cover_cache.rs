@@ -5,8 +5,8 @@ use gpui_kit::{
     Resource, WeakEntity, Window,
 };
 
-/// How many decoded covers stay in memory once out of sight. A 512-pixel cover
-/// takes about 1 MiB.
+/// How many decoded covers stay in memory once out of sight. A 256-pixel cover
+/// takes about 256 KiB.
 const CAPACITY: usize = 64;
 
 struct CachedCover {

@@ -42,9 +42,9 @@ use crate::{
 
 /// Pixel size requested for a card's cover or the artist's picture, the same as
 /// the albums' screen's, so that opening an album needs no second image.
-const CARD_COVER_PIXELS: u32 = 512;
+const CARD_COVER_PIXELS: u32 = 256;
 /// Pixel size requested for a song row's cover, the same as the player's.
-const ROW_COVER_PIXELS: u32 = 96;
+const ROW_COVER_PIXELS: u32 = 48;
 
 /// Something in the detail that can be selected, by identity, so that the
 /// selection survives a reload.

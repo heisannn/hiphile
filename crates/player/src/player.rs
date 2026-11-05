@@ -33,13 +33,13 @@ const RESTART_THRESHOLD: Duration = Duration::from_secs(3);
 const SEEK_STEP: Duration = Duration::from_secs(10);
 /// How much Volume Up and Volume Down change the volume.
 const VOLUME_STEP: f32 = 0.1;
-/// Pixel size requested for the bar's cover: twice its on-screen size.
-const COVER_PIXELS: u32 = 96;
-/// Pixel size requested for the lyrics view's cover, which fills about half of
-/// a tall window on a high-density display.
-const LARGE_COVER_PIXELS: u32 = 1024;
+/// Pixel size requested for the bar's cover. The renderer aliases an image drawn
+/// at less than half its size, so this stays close to the on-screen size.
+const COVER_PIXELS: u32 = 48;
+/// Pixel size requested for the lyrics view's cover, likewise.
+const LARGE_COVER_PIXELS: u32 = 512;
 /// Pixel size of the cover published for the Discord status, the same as the
-/// library's, so that it is often on disk already.
+/// lyrics view's, so that it is often on disk already.
 const PRESENCE_COVER_PIXELS: u32 = 512;
 /// How much of the foreground a cover takes on under the pointer.
 const COVER_HOVER_OPACITY: f32 = 0.08;

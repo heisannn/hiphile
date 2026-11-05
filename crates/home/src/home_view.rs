@@ -48,9 +48,9 @@ const NEW_ALBUM_ROWS: usize = 2;
 const NEW_ALBUMS: u32 = 24;
 /// Pixel size requested for an album card's cover, the same as the library's
 /// album cover, so that opening the album needs no second image.
-const CARD_COVER_PIXELS: u32 = 512;
+const CARD_COVER_PIXELS: u32 = 256;
 /// Pixel size requested for a song row's cover, the same as the player's.
-const ROW_COVER_PIXELS: u32 = 96;
+const ROW_COVER_PIXELS: u32 = 48;
 /// How long to wait before picking again after a pick that went wrong. A pick
 /// takes the server's outside service several seconds per album, and windows
 /// can come to the front often.

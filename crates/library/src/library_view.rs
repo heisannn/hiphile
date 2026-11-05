@@ -43,9 +43,9 @@ use crate::{
     LIBRARY_CONTEXT, Open, Play, PlayNext, Refresh, SONGS_CONTEXT,
 };
 
-/// Pixel size requested for the detail cover: twice its on-screen size, for
-/// high-density displays.
-const COVER_PIXELS: u32 = 512;
+/// Pixel size requested for the detail cover. The renderer aliases an image
+/// drawn at less than half its size, so this stays close to the on-screen size.
+const COVER_PIXELS: u32 = 256;
 
 /// What a sync is fetching.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
