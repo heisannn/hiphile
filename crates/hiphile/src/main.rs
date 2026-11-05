@@ -65,10 +65,18 @@ fn main() {
                 app_id: Some("dev.heisannn.hiphile".into()),
                 ..TitleBar::window_options()
             };
-            gpui_kit::open_window(options, cx, |window, cx| {
+            let (main_window, _) = gpui_kit::open_window(options, cx, |window, cx| {
                 cx.new(|cx| AppShell::new(net, window, cx))
             })
             .expect("failed to open the main window");
+            // A window left open such as Settings must not keep the app alive without this one
+            let main_window = main_window.window_id();
+            cx.on_window_closed(move |cx, closed| {
+                if closed == main_window {
+                    cx.quit();
+                }
+            })
+            .detach();
             cx.activate(true);
         });
 }
