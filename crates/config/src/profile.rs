@@ -69,6 +69,7 @@ struct Settings {
     appearance: Option<String>,
     lyrics_highlight: Option<String>,
     romaji_search: Option<bool>,
+    discord_presence: Option<bool>,
     imgbb_api_key: Option<String>,
 }
 
@@ -84,6 +85,7 @@ struct Settings {
 /// sample_rate = 48000
 /// appearance = "dark"
 /// lyrics_highlight = "line"
+/// discord_presence = false
 /// imgbb_api_key = "..."
 /// ```
 #[derive(Clone, Debug)]
@@ -218,6 +220,13 @@ impl Store {
     pub fn romaji_search(&self) -> Result<bool, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         Ok(settings.romaji_search.unwrap_or(true))
+    }
+
+    /// Whether the song playing goes on the Discord status. On unless the file
+    /// says otherwise. `HIPHILE_DISCORD_PRESENCE` takes precedence over the file.
+    pub fn discord_presence(&self) -> Result<bool, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        Ok(settings.discord_presence.unwrap_or(true))
     }
 
     /// The API key for publishing covers on ImgBB, if there is one.
@@ -378,6 +387,12 @@ impl Store {
     /// [`Self::save_profile`].
     pub fn save_romaji_search(&self, is_on: bool) -> Result<(), Error> {
         self.edit(|document| document["romaji_search"] = toml_edit::value(is_on))
+    }
+
+    /// Records whether the song playing goes on the Discord status, like
+    /// [`Self::save_profile`].
+    pub fn save_discord_presence(&self, is_on: bool) -> Result<(), Error> {
+        self.edit(|document| document["discord_presence"] = toml_edit::value(is_on))
     }
 
     /// Records the ImgBB API key, like [`Self::save_profile`]. `None` removes
@@ -757,6 +772,18 @@ mod tests {
         store.save_romaji_search(false).unwrap();
         assert!(!is_on(&[]));
         assert!(is_on(&[("HIPHILE_ROMAJI_SEARCH", "true")]));
+    }
+
+    #[test]
+    fn discord_presence_round_trips_and_is_on_unless_told_otherwise() {
+        let store = temporary_store("discord-presence");
+        store.save_volume(0.5).unwrap();
+        let is_on = |env: &[(&str, &str)]| read(&store, env).discord_presence.unwrap_or(true);
+        assert!(is_on(&[]));
+
+        store.save_discord_presence(false).unwrap();
+        assert!(!is_on(&[]));
+        assert!(is_on(&[("HIPHILE_DISCORD_PRESENCE", "true")]));
     }
 
     #[test]

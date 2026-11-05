@@ -57,6 +57,7 @@ cargo run -p hiphile-cli -- --help   # CLIの使用方法を表示する
 | `appearance` (`"light"` または `"dark"`) | `HIPHILE_APPEARANCE` (`system` も指定可能) | システム設定 |
 | `lyrics_highlight` (`"word"` または `"line"`) | `HIPHILE_LYRICS_HIGHLIGHT` | `"word"` |
 | `romaji_search` (漢字をローマ字で検索。辞書をダウンロードします) | `HIPHILE_ROMAJI_SEARCH` | `true` |
+| `discord_presence` (Discord のステータスに現在再生中の曲を表示) | `HIPHILE_DISCORD_PRESENCE` | `true` |
 | `imgbb_api_key` | `HIPHILE_IMGBB_API_KEY` | なし |
 
 ## ロードマップ

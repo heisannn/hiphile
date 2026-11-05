@@ -148,7 +148,7 @@ struct Workspace {
     _search_events: Subscription,
     _activity_changes: Subscription,
     _output_changes: Subscription,
-    _cover_key_changes: Subscription,
+    _discord_changes: [Subscription; 2],
     _lyrics_highlight_changes: Subscription,
     _focus_lost: Subscription,
 }
@@ -294,9 +294,11 @@ impl AppShell {
         let output = audio_settings.read(cx).output().clone();
         let discord_settings = settings::discord_settings(cx);
         let cover_key = discord_settings.read(cx).imgbb_key().map(str::to_owned);
+        let is_presence_on = discord_settings.read(cx).is_presence_on();
         let player = cx.new(|cx| {
             let mut player = Player::new(session.clone(), output, window, cx);
             player.set_cover_key(cover_key.as_deref());
+            player.set_presence_on(is_presence_on);
             player
         });
         let queue = cx.new(|cx| QueueView::new(player.clone(), window, cx));
@@ -379,15 +381,7 @@ impl AppShell {
                     .ok();
             }
         });
-        let cover_key_changes = cx.subscribe(&discord_settings, {
-            let player = player.downgrade();
-            move |_, discord_settings, _: &settings::ImgbbKeyChanged, cx| {
-                let key = discord_settings.read(cx).imgbb_key().map(str::to_owned);
-                player
-                    .update(cx, |player, _| player.set_cover_key(key.as_deref()))
-                    .ok();
-            }
-        });
+        let discord_changes = follow_discord_settings(&discord_settings, &player, cx);
         // A focused control that goes away, such as Retry once loading starts,
         // would leave no focus and no working shortcuts.
         let focus_lost = cx.on_focus_lost(window, |this, window, cx| {
@@ -418,7 +412,7 @@ impl AppShell {
             _search_events: search_events,
             _activity_changes: activity_changes,
             _output_changes: output_changes,
-            _cover_key_changes: cover_key_changes,
+            _discord_changes: discord_changes,
             _lyrics_highlight_changes: lyrics_highlight_changes,
             _focus_lost: focus_lost,
         };
@@ -1089,6 +1083,33 @@ impl AppShell {
             )
             .into_any_element()
     }
+}
+
+/// Keeps `player` on the ImgBB key and on whether the Discord status shows.
+fn follow_discord_settings(
+    discord_settings: &Entity<settings::DiscordSettings>,
+    player: &Entity<Player>,
+    cx: &mut Context<AppShell>,
+) -> [Subscription; 2] {
+    let key_changes = cx.subscribe(discord_settings, {
+        let player = player.downgrade();
+        move |_, discord_settings, _: &settings::ImgbbKeyChanged, cx| {
+            let key = discord_settings.read(cx).imgbb_key().map(str::to_owned);
+            player
+                .update(cx, |player, _| player.set_cover_key(key.as_deref()))
+                .ok();
+        }
+    });
+    let presence_changes = cx.subscribe(discord_settings, {
+        let player = player.downgrade();
+        move |_, discord_settings, _: &settings::PresenceChanged, cx| {
+            let is_on = discord_settings.read(cx).is_presence_on();
+            player
+                .update(cx, |player, _| player.set_presence_on(is_on))
+                .ok();
+        }
+    });
+    [key_changes, presence_changes]
 }
 
 /// The lyrics of what `player` plays, kept on the chosen highlight for as long as

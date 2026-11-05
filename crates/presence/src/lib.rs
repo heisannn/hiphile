@@ -42,6 +42,9 @@ const TEXT_UNITS: std::ops::RangeInclusive<usize> = 2..=128;
 /// dropping it takes the status away.
 pub struct Presence {
     updates: Sender<Option<Listening>>,
+    /// Whether the user wants a status at all. While not, Discord hears nothing
+    /// and is not connected to for it.
+    is_on: bool,
     /// `None` for no status.
     shown: Option<Shown>,
     /// The covers given so far, each at its public URL for a limited time.
@@ -80,14 +83,31 @@ impl Presence {
     fn sending_to(updates: Sender<Option<Listening>>) -> Self {
         Self {
             updates,
+            is_on: true,
             shown: None,
             covers: HashMap::new(),
+        }
+    }
+
+    pub fn is_on(&self) -> bool {
+        self.is_on
+    }
+
+    /// Turns the status on, for the next song or refresh to show, or off, which
+    /// takes it away.
+    pub fn set_on(&mut self, is_on: bool) {
+        self.is_on = is_on;
+        if !is_on {
+            self.clear();
         }
     }
 
     /// Shows that `song` is at `position` right now. Cheap enough to call on
     /// every refresh: Discord hears of a new song or a seek only.
     pub fn listening(&mut self, song: &Song, position: Duration, duration: Option<Duration>) {
+        if !self.is_on {
+            return;
+        }
         let now = SystemTime::now();
         let started = now.checked_sub(position).unwrap_or(now);
         let unchanged = self.shown.as_ref().is_some_and(|shown| {
@@ -614,6 +634,28 @@ mod tests {
         let sent: Vec<_> = received.try_iter().map(|update| update.is_some()).collect();
         assert_eq!(sent, [true, false, true]);
     }
+
+    #[test]
+    fn turned_off_the_status_goes_away_and_stays_away_until_turned_on() {
+        let (mut presence, received) = presence();
+        let song = song("1");
+        presence.listening(&song, Duration::ZERO, None);
+
+        presence.set_on(false);
+        presence.listening(&song, Duration::ZERO, None);
+        presence.set_cover(CoverArtId::new("cover-1"), live_link("https://i.ibb.co/1"));
+
+        let sent: Vec<_> = received.try_iter().map(|update| update.is_some()).collect();
+        assert_eq!(sent, [true, false]);
+
+        presence.set_on(true);
+        assert_eq!(received.try_iter().count(), 0);
+        presence.listening(&song, Duration::ZERO, None);
+        let sent: Vec<_> = received.try_iter().collect();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].is_some());
+    }
+
     #[test]
     fn a_cover_goes_on_the_status_as_a_large_image() {
         let mut listening = listening("Song");

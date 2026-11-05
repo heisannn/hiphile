@@ -306,6 +306,14 @@ impl Player {
         self.sought_cover = None;
     }
 
+    /// Shows what is playing on the Discord status from now on, or takes it
+    /// away and publishes no more covers. Turning it on tries again a cover that
+    /// could not be published before.
+    pub fn set_presence_on(&mut self, is_on: bool) {
+        self.presence.set_on(is_on);
+        self.sought_cover = None;
+    }
+
     /// Whether there is a song to play, pause, or skip.
     pub fn has_song(&self) -> bool {
         self.queue.current().is_some()
@@ -627,6 +635,9 @@ impl Player {
     /// with no record of it, and the next play would upload another. It is also
     /// how a link that has run out gets replaced, for as long as the app runs.
     fn seek_presence_cover(&mut self, cx: &mut Context<Self>) {
+        if !self.presence.is_on() {
+            return;
+        }
         let Some(key) = self.cover_key.clone() else {
             return;
         };

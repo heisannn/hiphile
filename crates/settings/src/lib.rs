@@ -3,7 +3,7 @@
 //! [`AudioSettings`] holds the chosen output and a [`CacheLimit`] each how many
 //! songs and covers to keep, and each saves its own. The app shell hands them to
 //! those who use them and passes on [`OutputChanged`] and [`CacheLimitChanged`], and likewise
-//! for [`DiscordSettings`] and [`ImgbbKeyChanged`], and for [`LyricsSettings`] and
+//! for [`DiscordSettings`], [`ImgbbKeyChanged`] and [`PresenceChanged`], and for [`LyricsSettings`] and
 //! [`LyricsHighlightChanged`]. The appearance only concerns
 //! the theme, which this crate keeps on it.
 
@@ -27,7 +27,7 @@ use gpui_kit::{
 
 pub use audio_settings::{AudioSettings, OutputChanged};
 pub use cache_limit::{CacheLimit, CacheLimitChanged};
-pub use discord_settings::{DiscordSettings, ImgbbKeyChanged};
+pub use discord_settings::{DiscordSettings, ImgbbKeyChanged, PresenceChanged};
 pub use lyrics_settings::{LyricsHighlightChanged, LyricsSettings};
 
 use appearance_settings::AppearanceSettings;
@@ -90,7 +90,8 @@ pub fn audio_settings(cx: &App) -> Entity<AudioSettings> {
     cx.global::<GlobalSettings>().audio.clone()
 }
 
-/// The ImgBB API key, shared by the settings window and the app shell.
+/// The Discord status and ImgBB API key, shared by the settings window and the
+/// app shell.
 pub fn discord_settings(cx: &App) -> Entity<DiscordSettings> {
     cx.global::<GlobalSettings>().discord.clone()
 }

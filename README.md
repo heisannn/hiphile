@@ -59,6 +59,7 @@ Change settings in the app under **hiphile > Settings…**. They are saved to
 | `appearance` (`"light"` or `"dark"`) | `HIPHILE_APPEARANCE` (also accepts `system`) | System setting |
 | `lyrics_highlight` (`"word"` or `"line"`) | `HIPHILE_LYRICS_HIGHLIGHT` | `"word"` |
 | `romaji_search` (find kanji by romaji; downloads a dictionary) | `HIPHILE_ROMAJI_SEARCH` | `true` |
+| `discord_presence` (show the current song as your Discord status) | `HIPHILE_DISCORD_PRESENCE` | `true` |
 | `imgbb_api_key` | `HIPHILE_IMGBB_API_KEY` | None |
 
 ## Roadmap

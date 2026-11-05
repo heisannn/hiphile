@@ -240,18 +240,33 @@ impl SettingsView {
             let field = self.imgbb_key_field.clone();
             move |_, _, _| field.clone()
         });
-        let errors: Vec<SharedString> = self.discord.read(cx).errors().cloned().collect();
-        let mut covers = SettingGroup::new().item(
+        let status = SettingField::switch(
+            {
+                let discord = self.discord.clone();
+                move |cx| discord.read(cx).is_presence_on()
+            },
+            {
+                let discord = self.discord.clone();
+                move |is_on, cx| discord.update(cx, |it, cx| it.set_presence_on(is_on, cx))
+            },
+        );
+        let discord = self.discord.read(cx);
+        let is_presence_on = discord.is_presence_on();
+        let errors: Vec<SharedString> = discord.errors().cloned().collect();
+        let mut group = SettingGroup::new().items([
+            SettingItem::new("Show current song as status", status)
+                .keywords(["presence", "rich presence"]),
             SettingItem::new("ImgBB API key", key)
+                .disabled(!is_presence_on)
                 .layout(Axis::Vertical)
                 .description(
                     "Shows covers on your Discord status by uploading them to ImgBB, where \
                      anyone with the link can see them for 180 days. Get a key at api.imgbb.com.",
                 )
                 .keywords(["cover", "presence", "upload"]),
-        );
+        ]);
         if !errors.is_empty() {
-            covers = covers.footer(move |_, cx| {
+            group = group.footer(move |_, cx| {
                 v_flex()
                     .gap_1()
                     .text_color(cx.theme().danger)
@@ -260,7 +275,7 @@ impl SettingsView {
         }
         SettingPage::new("Discord")
             .icon(IconName::Globe)
-            .group(covers)
+            .group(group)
     }
 
     fn storage_page(&self, cx: &mut Context<Self>) -> SettingPage {
