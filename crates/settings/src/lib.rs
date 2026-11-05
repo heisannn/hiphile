@@ -1,11 +1,5 @@
-//! Feature: the settings window.
-//!
-//! [`AudioSettings`] holds the chosen output and a [`CacheLimit`] each how many
-//! songs and covers to keep, and each saves its own. The app shell hands them to
-//! those who use them and passes on [`OutputChanged`] and [`CacheLimitChanged`], and likewise
-//! for [`DiscordSettings`], [`ImgbbKeyChanged`] and [`PresenceChanged`], and for [`LyricsSettings`] and
-//! [`LyricsHighlightChanged`]. The appearance only concerns
-//! the theme, which this crate keeps on it.
+//! Each setting saves itself. The app shell hands the settings to those who use them and passes
+//! on their change events. The appearance only concerns the theme, which this crate keeps on it.
 
 mod appearance_settings;
 mod audio_settings;
@@ -33,7 +27,6 @@ pub use lyrics_settings::{LyricsHighlightChanged, LyricsSettings};
 use appearance_settings::AppearanceSettings;
 use settings_view::SettingsView;
 
-/// Key context of the settings window.
 const SETTINGS_CONTEXT: &str = "Settings";
 
 actions!(settings, [OpenSettings, CloseWindow]);
@@ -45,14 +38,13 @@ struct GlobalSettings {
     cover_cache: Entity<CacheLimit>,
     discord: Entity<DiscordSettings>,
     lyrics: Entity<LyricsSettings>,
-    /// The settings window, if one was opened. It may have been closed since.
+    /// It may have been closed since.
     window: Option<AnyWindowHandle>,
 }
 
 impl Global for GlobalSettings {}
 
-/// Reads the settings, puts the theme on the chosen appearance and registers
-/// commands. Call before building the menu bar.
+/// Call before building the menu bar.
 pub fn init(cx: &mut App) {
     number_field::init(cx);
     let appearance = cx.new(AppearanceSettings::new);
@@ -85,28 +77,22 @@ pub fn init(cx: &mut App) {
     ]);
 }
 
-/// The chosen output, shared by the settings window and the player.
 pub fn audio_settings(cx: &App) -> Entity<AudioSettings> {
     cx.global::<GlobalSettings>().audio.clone()
 }
 
-/// The Discord status and ImgBB API key, shared by the settings window and the
-/// app shell.
 pub fn discord_settings(cx: &App) -> Entity<DiscordSettings> {
     cx.global::<GlobalSettings>().discord.clone()
 }
 
-/// How lyrics light up, shared by the settings window and the app shell.
 pub fn lyrics_settings(cx: &App) -> Entity<LyricsSettings> {
     cx.global::<GlobalSettings>().lyrics.clone()
 }
 
-/// How many songs to keep, shared by the settings window and the app shell.
 pub fn song_cache_settings(cx: &App) -> Entity<CacheLimit> {
     cx.global::<GlobalSettings>().song_cache.clone()
 }
 
-/// How many covers to keep, shared by the settings window and the app shell.
 pub fn cover_cache_settings(cx: &App) -> Entity<CacheLimit> {
     cx.global::<GlobalSettings>().cover_cache.clone()
 }
@@ -123,7 +109,6 @@ pub fn follow_system_appearance(window: &Window) -> Subscription {
     })
 }
 
-/// Brings the settings window forward, opening it if it is not open.
 fn open(cx: &mut App) {
     if let Some(window) = cx.global::<GlobalSettings>().window
         && window
@@ -132,7 +117,7 @@ fn open(cx: &mut App) {
     {
         return;
     }
-    // Window geometry is a platform boundary, so it is given in pixels.
+    // Window geometry is a platform boundary, so it is given in pixels
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
             None,

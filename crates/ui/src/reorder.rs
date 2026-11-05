@@ -7,8 +7,7 @@ use gpui_kit::{
 
 use crate::DragPreview;
 
-/// A row being dragged to a new place. Rows of lists with different `Id`s take
-/// no drops from each other.
+/// Rows of lists with different `Id`s take no drops from each other.
 struct DraggedRow<Id> {
     id: Id,
     /// Where it was when the drag started, which tells the rows under the
@@ -17,7 +16,6 @@ struct DraggedRow<Id> {
     title: SharedString,
 }
 
-/// Lets a row be dragged to a new place in its list.
 pub trait ReorderExt: StatefulInteractiveElement + Sized {
     /// Makes this the row of `id` at `ix`, titled `title` while dragged.
     /// `on_drop` is given the id of a row dropped on this one.
@@ -38,7 +36,6 @@ pub trait ReorderExt: StatefulInteractiveElement + Sized {
                 cx.new(|_| DragPreview::new(dragged.title.clone(), offset))
             },
         )
-        // A line on the edge the row would land beside.
         .drag_over::<DraggedRow<Id>>(move |style, dragged, _, cx| {
             let line = cx.theme().drag_border;
             match dragged.from_ix.cmp(&ix) {
@@ -63,10 +60,8 @@ mod tests {
 
     use super::*;
 
-    /// Three rows of one kind of id above a row of another, one above the other.
     #[derive(Default)]
     struct TestRows {
-        /// What was dropped on what.
         drops: Vec<(u32, u32)>,
         other_drops: Vec<(u64, u64)>,
     }
@@ -103,7 +98,7 @@ mod tests {
     }
 
     fn rows(cx: &mut TestAppContext) -> (Entity<TestRows>, &mut VisualTestContext) {
-        // The drag line reads the theme.
+        // The drag line reads the theme
         cx.update(gpui_kit::init);
         let (rows, cx) = cx.add_window_view(|_, _| TestRows::default());
         cx.run_until_parked();

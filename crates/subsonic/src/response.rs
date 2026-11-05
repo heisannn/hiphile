@@ -6,7 +6,6 @@ use crate::{
     ServerErrorCode, Song,
 };
 
-/// Fields every `subsonic-response` carries.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerInfo {
@@ -19,7 +18,6 @@ pub struct ServerInfo {
 }
 
 impl ServerInfo {
-    /// Subsonic protocol version the server implements.
     pub fn version(&self) -> &str {
         &self.version
     }
@@ -45,7 +43,6 @@ impl ServerInfo {
     }
 }
 
-/// A successful response: server info plus the method's payload.
 #[derive(Debug)]
 pub struct Envelope<T> {
     server: ServerInfo,
@@ -66,11 +63,9 @@ impl<T> Envelope<T> {
     }
 }
 
-/// Payload of `ping`, which has no fields of its own.
 #[derive(Debug, Deserialize)]
 pub struct Ping {}
 
-/// Payload of `getAlbumList2`.
 #[derive(Debug, Deserialize)]
 pub struct GetAlbumList2 {
     #[serde(rename = "albumList2")]
@@ -89,7 +84,6 @@ impl GetAlbumList2 {
     }
 }
 
-/// Payload of `getSimilarSongs2`.
 #[derive(Debug, Deserialize)]
 pub struct GetSimilarSongs2 {
     #[serde(rename = "similarSongs2", default)]
@@ -108,7 +102,6 @@ impl GetSimilarSongs2 {
     }
 }
 
-/// Payload of `getArtists`.
 #[derive(Debug, Deserialize)]
 pub struct GetArtists {
     #[serde(default)]
@@ -135,7 +128,6 @@ impl GetArtists {
     }
 }
 
-/// Payload of `getArtist`.
 #[derive(Debug, Deserialize)]
 pub struct GetArtist {
     artist: ArtistWithAlbums,
@@ -147,7 +139,7 @@ impl GetArtist {
     }
 }
 
-/// Payload of `getArtistInfo2`; only the similar artists are read.
+/// Only the similar artists are read.
 #[derive(Debug, Deserialize)]
 pub struct GetArtistInfo2 {
     #[serde(rename = "artistInfo2", default)]
@@ -167,7 +159,6 @@ impl GetArtistInfo2 {
     }
 }
 
-/// Payload of `getTopSongs`.
 #[derive(Debug, Deserialize)]
 pub struct GetTopSongs {
     #[serde(rename = "topSongs", default)]
@@ -180,7 +171,7 @@ impl GetTopSongs {
     }
 }
 
-/// Payload of `getIndexes`; only when the library last changed is read.
+/// Only when the library last changed is read.
 #[derive(Debug, Deserialize)]
 pub struct GetIndexes {
     #[serde(default)]
@@ -201,7 +192,6 @@ impl GetIndexes {
     }
 }
 
-/// Payload of `getScanStatus`.
 #[derive(Debug, Deserialize)]
 pub struct GetScanStatus {
     #[serde(rename = "scanStatus")]
@@ -214,8 +204,6 @@ impl GetScanStatus {
     }
 }
 
-/// Whether the server is scanning its media, how many items it counted, and
-/// when its last scan ran.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanStatus {
@@ -247,7 +235,6 @@ impl ScanStatus {
     }
 }
 
-/// Payload of `getPlaylists`.
 #[derive(Debug, Deserialize)]
 pub struct GetPlaylists {
     #[serde(default)]
@@ -266,7 +253,7 @@ impl GetPlaylists {
     }
 }
 
-/// Payload of `getPlaylist` and `createPlaylist`.
+/// Also the payload of `createPlaylist`.
 #[derive(Debug, Deserialize)]
 pub struct GetPlaylist {
     playlist: PlaylistWithSongs,
@@ -278,7 +265,6 @@ impl GetPlaylist {
     }
 }
 
-/// Payload of `getAlbum`.
 #[derive(Debug, Deserialize)]
 pub struct GetAlbum {
     album: AlbumWithSongs,
@@ -290,7 +276,6 @@ impl GetAlbum {
     }
 }
 
-/// Payload of `getSong`.
 #[derive(Debug, Deserialize)]
 pub struct GetSong {
     song: Song,
@@ -302,7 +287,6 @@ impl GetSong {
     }
 }
 
-/// Payload of `getStarred2`.
 #[derive(Debug, Deserialize)]
 pub struct GetStarred2 {
     #[serde(rename = "starred2", default)]
@@ -332,7 +316,6 @@ impl Starred {
     }
 }
 
-/// Payload of `search3`.
 #[derive(Debug, Deserialize)]
 pub struct Search3 {
     #[serde(rename = "searchResult3")]

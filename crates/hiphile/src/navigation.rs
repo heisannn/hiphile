@@ -1,10 +1,7 @@
-//! Where the window has been, for going back and forward.
-
 use subsonic::{AlbumId, ArtistId, PlaylistId};
 
 use crate::app_shell::Destination;
 
-/// A place to go back to: a screen and what was selected on it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Location {
     Home,
@@ -59,14 +56,12 @@ impl<T> History<T> {
         self.ahead.clear();
     }
 
-    /// The place before `current`, which then lies ahead.
     pub(crate) fn back(&mut self, current: T) -> Option<T> {
         let previous = self.behind.pop()?;
         self.ahead.push(current);
         Some(previous)
     }
 
-    /// The place after `current`, which then lies behind.
     pub(crate) fn forward(&mut self, current: T) -> Option<T> {
         let next = self.ahead.pop()?;
         self.behind.push(current);

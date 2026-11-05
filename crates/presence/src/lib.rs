@@ -18,7 +18,6 @@ use discord_rich_presence::activity::{Activity, ActivityType, Assets, Timestamps
 use discord_rich_presence::{DiscordIpc, DiscordIpcClient};
 use subsonic::{CoverArtId, Song, SongId};
 
-/// The application on Discord that the status belongs to.
 const CLIENT_ID: &str = "1567455781450678443";
 /// Discord limits how fast a status may change, so skipping through songs
 /// sends only where it ended up.
@@ -32,26 +31,20 @@ const KEEP_ALIVE: Duration = Duration::from_secs(15);
 /// A start time that moved less than this is the position's usual jitter
 /// rather than a seek.
 const LONGEST_DRIFT: Duration = Duration::from_secs(2);
-/// The frame Discord sends when it closes the connection.
 const OPCODE_CLOSE: u32 = 2;
 /// Discord rejects a whole status over one text outside these lengths, counted
 /// in UTF-16 units.
 const TEXT_UNITS: std::ops::RangeInclusive<usize> = 2..=128;
 
-/// The user's Discord status. Connects once there is something to show, and
-/// dropping it takes the status away.
+/// Connects once there is something to show, and dropping it takes the status away.
 pub struct Presence {
     updates: Sender<Option<Listening>>,
-    /// Whether the user wants a status at all. While not, Discord hears nothing
-    /// and is not connected to for it.
+    /// While off, Discord hears nothing and is not connected to for it.
     is_on: bool,
-    /// `None` for no status.
     shown: Option<Shown>,
-    /// The covers given so far, each at its public URL for a limited time.
     covers: HashMap<CoverArtId, CoverLink>,
 }
 
-/// The song last asked for.
 struct Shown {
     song: SongId,
     cover: Option<CoverArtId>,
@@ -66,7 +59,7 @@ impl Presence {
             let mut client = DiscordIpcClient::new(CLIENT_ID);
             client.connect().ok().map(|()| client)
         };
-        // Without the thread the updates go nowhere, and there is no status.
+        // Without the thread the updates go nowhere, and there is no status
         thread::Builder::new()
             .name("discord-presence".into())
             .spawn(move || run(received, connect, TIMING))
@@ -74,7 +67,6 @@ impl Presence {
         Self::sending_to(updates)
     }
 
-    /// One that never reaches Discord, for tests that play songs.
     pub fn disconnected() -> Self {
         let (updates, _) = mpsc::channel();
         Self::sending_to(updates)
@@ -93,8 +85,7 @@ impl Presence {
         self.is_on
     }
 
-    /// Turns the status on, for the next song or refresh to show, or off, which
-    /// takes it away.
+    /// Turning it on shows nothing until the next song or refresh.
     pub fn set_on(&mut self, is_on: bool) {
         self.is_on = is_on;
         if !is_on {
@@ -102,8 +93,7 @@ impl Presence {
         }
     }
 
-    /// Shows that `song` is at `position` right now. Cheap enough to call on
-    /// every refresh: Discord hears of a new song or a seek only.
+    /// Cheap enough to call on every refresh: Discord hears of a new song or a seek only.
     pub fn listening(&mut self, song: &Song, position: Duration, duration: Option<Duration>) {
         if !self.is_on {
             return;
@@ -146,8 +136,6 @@ impl Presence {
             .filter(|link| link.is_live(SystemTime::now()))
     }
 
-    /// Gives the public URL of `cover`, which goes on the status if the song
-    /// showing has that cover.
     pub fn set_cover(&mut self, cover: CoverArtId, link: CoverLink) {
         if let Some(shown) = &mut self.shown
             && shown.cover.as_ref() == Some(&cover)
@@ -158,7 +146,6 @@ impl Presence {
         self.covers.insert(cover, link);
     }
 
-    /// Takes the status away, as nothing is playing.
     pub fn clear(&mut self) {
         if self.shown.take().is_some() {
             self.updates.send(None).ok();
@@ -166,7 +153,6 @@ impl Presence {
     }
 }
 
-/// What the status says.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Listening {
     title: Option<String>,
@@ -176,7 +162,6 @@ struct Listening {
     started: i64,
     /// Likewise, if the song's length is known. With it, Discord shows a bar.
     ends: Option<i64>,
-    /// The public URL of the song's cover, once it has one.
     cover: Option<String>,
 }
 
@@ -279,7 +264,7 @@ fn run<C: DiscordIpc>(
         match updates.recv_timeout(due.saturating_duration_since(Instant::now())) {
             Ok(update) => {
                 wanted = update;
-                // Only the first of several, so that they cannot put it off.
+                // Only the first of several, so that they cannot put it off
                 if !changed {
                     changed = true;
                     due = next_allowed.max(Instant::now() + timing.settle);
@@ -291,7 +276,7 @@ fn run<C: DiscordIpc>(
         }
         deliver(&mut connection, wanted.as_ref(), &mut connect);
         let now = Instant::now();
-        // Sending the same status again must not hold back a new one.
+        // Sending the same status again must not hold back a new one
         if changed {
             next_allowed = now + timing.min_gap;
             changed = false;
@@ -394,8 +379,6 @@ mod tests {
         }
     }
 
-    /// Stands in for Discord behind the crate's own `set_activity`, keeping
-    /// the frames it would have written.
     struct FakeDiscord {
         frames: Arc<Mutex<Vec<Value>>>,
         /// The opcode to answer each frame with; `None` is a broken socket.
@@ -430,7 +413,6 @@ mod tests {
         }
     }
 
-    /// Connections that answer as told, in order, and the frames sent to any.
     fn fake_connections(
         connections: Vec<Vec<Option<u32>>>,
     ) -> (impl FnMut() -> Option<FakeDiscord>, Arc<Mutex<Vec<Value>>>) {
@@ -547,7 +529,7 @@ mod tests {
         let (updates, received) = mpsc::channel();
         updates.send(Some(listening("First"))).unwrap();
         updates.send(Some(listening("Last"))).unwrap();
-        // Both are queued before the thread starts, so it takes in both first.
+        // Both are queued before the thread starts, so it takes in both first
         let run = thread::spawn(move || run(received, connect, timing(SHORT, NEVER)));
         while frames.lock().unwrap().is_empty() {
             thread::sleep(SHORT);
@@ -579,7 +561,7 @@ mod tests {
         let (connect, frames) = fake_connections(vec![vec![Some(1); 64]]);
         let (updates, received) = mpsc::channel();
         let run = thread::spawn(move || run(received, connect, timing(NEVER, SHORT)));
-        // Keep-alives pass with nothing to show.
+        // Keep-alives pass with nothing to show
         thread::sleep(SHORT * 4);
         updates.send(Some(listening("Song"))).unwrap();
         let asked = Instant::now();

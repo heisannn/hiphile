@@ -16,7 +16,6 @@ static EDITING: Mutex<()> = Mutex::new(());
 /// Numbers temporary files, so no two writes ever share one.
 static TEMPORARY: AtomicU64 = AtomicU64::new(0);
 
-/// The server and user last signed in to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Profile {
     server: String,
@@ -40,14 +39,12 @@ impl Profile {
     }
 }
 
-/// Light or dark, chosen rather than following the system.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Appearance {
     Light,
     Dark,
 }
 
-/// How lyrics light up as they are sung, where they have the times for it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LyricsHighlight {
     #[default]
@@ -117,9 +114,7 @@ impl Store {
         self.dir.join("config.toml")
     }
 
-    /// The last profile signed in to, with `HIPHILE_SERVER` and
-    /// `HIPHILE_USERNAME` taking precedence over the file. `None` until both
-    /// are known.
+    /// `None` until both the server and the user are known.
     pub fn last_profile(&self) -> Result<Option<Profile>, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         Ok(settings
@@ -144,7 +139,6 @@ impl Store {
     }
 
     /// The playback volume from `0.0` to `1.0`, if one was saved.
-    /// `HIPHILE_VOLUME` takes precedence over the file.
     pub fn volume(&self) -> Result<Option<f32>, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         Ok(settings
@@ -153,16 +147,14 @@ impl Store {
             .map(|volume| volume.clamp(0.0, 1.0)))
     }
 
-    /// How many bytes of songs may be kept on this computer, if the file
-    /// says: `song_cache_gib`, in GiB, where `0` means no limit.
-    /// `HIPHILE_SONG_CACHE_GIB` takes precedence over the file. A negative
-    /// number is an error, not a reason to keep the default.
+    /// How many bytes of songs may be kept on this computer, if the file says:
+    /// `song_cache_gib`, in GiB, where `0` means no limit. A negative number is an error, not a
+    /// reason to keep the default.
     pub fn song_cache_capacity(&self) -> Result<Option<u64>, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         self.cache_bytes("song_cache_gib", settings.song_cache_gib)
     }
 
-    /// `song_cache_gib`, as [`Self::song_cache_capacity`] reads it.
     pub fn song_cache_gib(&self) -> Result<Option<f64>, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         self.cache_bytes("song_cache_gib", settings.song_cache_gib)?;
@@ -170,77 +162,65 @@ impl Store {
     }
 
     /// How many bytes of covers may be kept on this computer, if the file says:
-    /// `cover_cache_gib`, in GiB, where `0` means no limit.
-    /// `HIPHILE_COVER_CACHE_GIB` takes precedence over the file. A negative
-    /// number is an error, not a reason to keep the default.
+    /// `cover_cache_gib`, in GiB, where `0` means no limit. A negative number is an error, not a
+    /// reason to keep the default.
     pub fn cover_cache_capacity(&self) -> Result<Option<u64>, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         self.cache_bytes("cover_cache_gib", settings.cover_cache_gib)
     }
 
-    /// `cover_cache_gib`, as [`Self::cover_cache_capacity`] reads it.
     pub fn cover_cache_gib(&self) -> Result<Option<f64>, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         self.cache_bytes("cover_cache_gib", settings.cover_cache_gib)?;
         Ok(settings.cover_cache_gib)
     }
 
-    /// The id of the output device to play on, if one was chosen rather than
-    /// the system's default. `HIPHILE_OUTPUT_DEVICE` takes precedence over the
-    /// file.
+    /// The id of the output device to play on, if one was chosen rather than the system's
+    /// default.
     pub fn output_device(&self) -> Result<Option<String>, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         Ok(settings.output_device)
     }
 
-    /// The rate in Hz to run the output device at, if one was chosen rather
-    /// than each song's own. `HIPHILE_SAMPLE_RATE` takes precedence over the
-    /// file.
+    /// The rate in Hz to run the output device at, if one was chosen rather than each song's
+    /// own.
     pub fn sample_rate(&self) -> Result<Option<u32>, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         Ok(settings.sample_rate.filter(|rate| *rate > 0))
     }
 
-    /// Light or dark, if one was chosen rather than following the system.
-    /// `HIPHILE_APPEARANCE` takes precedence over the file, and `system` there
-    /// sets a choice in the file aside.
+    /// Light or dark, if one was chosen rather than following the system. `system` in
+    /// `HIPHILE_APPEARANCE` sets a choice in the file aside.
     pub fn appearance(&self) -> Result<Option<Appearance>, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         self.parse_appearance(settings.appearance.as_deref())
     }
 
-    /// How lyrics light up, by word unless the file says otherwise.
-    /// `HIPHILE_LYRICS_HIGHLIGHT` takes precedence over the file.
+    /// By word unless the file says otherwise.
     pub fn lyrics_highlight(&self) -> Result<LyricsHighlight, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         self.parse_lyrics_highlight(settings.lyrics_highlight.as_deref())
     }
 
-    /// Whether kanji can be searched for by romaji, which takes dictionaries
-    /// that are downloaded for it. On unless the file says otherwise.
-    /// `HIPHILE_ROMAJI_SEARCH` takes precedence over the file.
+    /// Whether kanji can be searched for by romaji, which takes dictionaries that are
+    /// downloaded for it. On unless the file says otherwise.
     pub fn romaji_search(&self) -> Result<bool, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         Ok(settings.romaji_search.unwrap_or(true))
     }
 
-    /// Whether the song playing goes on the Discord status. On unless the file
-    /// says otherwise. `HIPHILE_DISCORD_PRESENCE` takes precedence over the file.
+    /// On unless the file says otherwise.
     pub fn discord_presence(&self) -> Result<bool, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         Ok(settings.discord_presence.unwrap_or(true))
     }
 
-    /// Whether new versions are looked for and installed without being asked.
-    /// On unless the file says otherwise. `HIPHILE_AUTO_UPDATE` takes precedence
-    /// over the file.
+    /// On unless the file says otherwise.
     pub fn auto_update(&self) -> Result<bool, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         Ok(settings.auto_update.unwrap_or(true))
     }
 
-    /// The API key for publishing covers on ImgBB, if there is one.
-    /// `HIPHILE_IMGBB_API_KEY` takes precedence over the file.
     pub fn imgbb_api_key(&self) -> Result<Option<String>, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         Ok(usable_key(settings.imgbb_api_key))
@@ -319,15 +299,13 @@ impl Store {
         })
     }
 
-    /// Records the playback volume, like [`Self::save_profile`].
     pub fn save_volume(&self, volume: f32) -> Result<(), Error> {
-        // Two decimals are plenty, and keep the file readable.
+        // Two decimals are plenty, and keep the file readable
         let volume = (f64::from(volume.clamp(0.0, 1.0)) * 100.0).round() / 100.0;
         self.edit(|document| document["volume"] = toml_edit::value(volume))
     }
 
-    /// Records the output device, like [`Self::save_profile`]. `None` removes
-    /// the key, which means the system's default device.
+    /// `None` removes the key, which means the system's default device.
     pub fn save_output_device(&self, device: Option<&str>) -> Result<(), Error> {
         self.edit(|document| match device {
             Some(device) => document["output_device"] = toml_edit::value(device),
@@ -337,8 +315,7 @@ impl Store {
         })
     }
 
-    /// Records the output rate in Hz, like [`Self::save_profile`]. `None`
-    /// removes the key, which means each song's own rate.
+    /// `None` removes the key, which means each song's own rate.
     pub fn save_sample_rate(&self, sample_rate: Option<u32>) -> Result<(), Error> {
         self.edit(|document| match sample_rate {
             Some(rate) => document["sample_rate"] = toml_edit::value(i64::from(rate)),
@@ -348,10 +325,8 @@ impl Store {
         })
     }
 
-    /// Records how many GiB of songs to keep, like [`Self::save_profile`].
-    /// `None` removes the key, which means the default amount. A negative
-    /// number would make the setting unreadable, so callers keep to `0` or
-    /// more.
+    /// `None` removes the key, which means the default amount. A negative number would make
+    /// the setting unreadable, so callers keep to `0` or more.
     pub fn save_song_cache_gib(&self, gib: Option<f64>) -> Result<(), Error> {
         self.edit(|document| match gib {
             Some(gib) => document["song_cache_gib"] = toml_edit::value(gib),
@@ -372,8 +347,7 @@ impl Store {
         })
     }
 
-    /// Records the appearance, like [`Self::save_profile`]. `None` removes the
-    /// key, which means following the system.
+    /// `None` removes the key, which means following the system.
     pub fn save_appearance(&self, appearance: Option<Appearance>) -> Result<(), Error> {
         self.edit(|document| match appearance {
             Some(Appearance::Light) => document["appearance"] = toml_edit::value("light"),
@@ -384,7 +358,6 @@ impl Store {
         })
     }
 
-    /// Records how lyrics light up, like [`Self::save_profile`].
     pub fn save_lyrics_highlight(&self, highlight: LyricsHighlight) -> Result<(), Error> {
         let value = match highlight {
             LyricsHighlight::ByWord => "word",
@@ -393,25 +366,19 @@ impl Store {
         self.edit(|document| document["lyrics_highlight"] = toml_edit::value(value))
     }
 
-    /// Records whether kanji can be searched for by romaji, like
-    /// [`Self::save_profile`].
     pub fn save_romaji_search(&self, is_on: bool) -> Result<(), Error> {
         self.edit(|document| document["romaji_search"] = toml_edit::value(is_on))
     }
 
-    /// Records whether the song playing goes on the Discord status, like
-    /// [`Self::save_profile`].
     pub fn save_discord_presence(&self, is_on: bool) -> Result<(), Error> {
         self.edit(|document| document["discord_presence"] = toml_edit::value(is_on))
     }
 
-    /// Writes [`Self::auto_update`] back, leaving the rest of the file as it is.
     pub fn save_auto_update(&self, is_on: bool) -> Result<(), Error> {
         self.edit(|document| document["auto_update"] = toml_edit::value(is_on))
     }
 
-    /// Records the ImgBB API key, like [`Self::save_profile`]. `None` removes
-    /// the key, and with it the covers on the Discord status.
+    /// `None` removes the key, and with it the covers on the Discord status.
     pub fn save_imgbb_api_key(&self, key: Option<&str>) -> Result<(), Error> {
         self.edit(|document| match key {
             Some(key) => document["imgbb_api_key"] = toml_edit::value(key),
@@ -443,7 +410,7 @@ impl Store {
         change(&mut document);
 
         std::fs::create_dir_all(&self.dir).map_err(io_error(&self.dir))?;
-        // Write then rename, so a crash never leaves a half-written file.
+        // Write then rename, so a crash never leaves a half-written file
         let temporary = path.with_extension(format!(
             "toml.{}.{}.tmp",
             std::process::id(),
@@ -461,7 +428,7 @@ pub fn cache_capacity_of(gib: f64) -> Option<u64> {
         if gib == 0.0 {
             u64::MAX
         } else {
-            // Saturates for sizes no disk has.
+            // Saturates for sizes no disk has
             (gib * f64::from(1u32 << 30)) as u64
         }
     })

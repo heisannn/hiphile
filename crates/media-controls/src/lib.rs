@@ -24,7 +24,6 @@ const LONGEST_DRIFT: Duration = Duration::from_secs(1);
 /// asks for one about this often.
 const POSITION_RESEND: Duration = Duration::from_secs(5);
 
-/// What the system's media controls ask of the player.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MediaCommand {
     Play,
@@ -38,7 +37,6 @@ pub enum MediaCommand {
     /// By this much, or by the player's own step.
     SeekBackward(Option<Duration>),
     SeekTo(Duration),
-    /// Brings the app to the front.
     Raise,
 }
 
@@ -62,7 +60,6 @@ impl MediaCommand {
     }
 }
 
-/// How the song shown stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MediaStatus {
     Playing,
@@ -72,13 +69,12 @@ pub enum MediaStatus {
 
 /// A cover written where the system can read it. Dropping it removes the file.
 pub struct CoverFile {
-    /// Removes the file on drop.
     _path: TempPath,
     url: String,
 }
 
 impl CoverFile {
-    /// Writes `image` to a file of its own. Blocks on the disk.
+    /// Blocks on the disk.
     ///
     /// A file rather than the cover's URL, as that carries the user's
     /// credentials, and MPRIS would show it to every program on the session bus.
@@ -104,7 +100,6 @@ fn file_url(path: &Path, is_windows: bool) -> io::Result<String> {
         .map_err(|()| io::Error::from(io::ErrorKind::InvalidFilename))
 }
 
-/// Where the system shows the song, which is not there for tests.
 trait Surface {
     /// Whether it went through.
     fn set_metadata(&mut self, metadata: MediaMetadata<'_>) -> bool;
@@ -138,7 +133,6 @@ pub struct MediaControls {
     surface: Option<Box<dyn Surface>>,
     shown: Option<Shown>,
     cover: Option<(CoverArtId, CoverFile)>,
-    /// Whether a position has to be sent again for the system to move on.
     resends_position: bool,
 }
 
@@ -163,7 +157,6 @@ impl MediaControls {
         )
     }
 
-    /// Whether the system hears of what is shown.
     pub fn is_connected(&self) -> bool {
         self.surface.is_some()
     }
@@ -223,7 +216,7 @@ impl MediaControls {
                 cover_url: cover.map(|(_, file)| file.url.as_str()),
                 duration,
             };
-            // Windows gives up on all of it over a cover it cannot open.
+            // Windows gives up on all of it over a cover it cannot open
             if !surface.set_metadata(metadata.clone()) && metadata.cover_url.is_some() {
                 surface.set_metadata(MediaMetadata {
                     cover_url: None,
@@ -231,7 +224,7 @@ impl MediaControls {
                 });
             }
         }
-        // New metadata takes the position with it on macOS, so it goes after.
+        // New metadata takes the position with it on macOS, so it goes after
         let is_on_course = is_same_song
             && self.shown.as_ref().is_some_and(|shown| {
                 let is_resend_due = self.resends_position
@@ -468,7 +461,7 @@ mod tests {
             now + seconds(5),
         );
         assert_eq!(recording.take(), [playing(5)]);
-        // The time starts over from what was sent.
+        // The time starts over from what was sent
         controls.show_at(
             Some(&song),
             MINUTE,
@@ -478,7 +471,7 @@ mod tests {
         );
         assert_eq!(recording.take(), []);
 
-        // A song paused stays where it is, so there is nothing to send.
+        // A song paused stays where it is, so there is nothing to send
         controls.show_at(
             Some(&song),
             MINUTE,
@@ -505,7 +498,7 @@ mod tests {
             recording.take(),
             [metadata("a", true), metadata("a", false), playing(0)]
         );
-        // It is not tried over and over.
+        // It is not tried over and over
         controls.show_at(Some(&song), MINUTE, MediaStatus::Playing, start, now);
         assert_eq!(recording.take(), []);
     }
@@ -543,7 +536,7 @@ mod tests {
             now + seconds(1),
         );
         assert_eq!(recording.take(), [playing(40)]);
-        // Waiting for data, the position stands still as time goes on.
+        // Waiting for data, the position stands still as time goes on
         controls.show_at(
             Some(&song),
             MINUTE,

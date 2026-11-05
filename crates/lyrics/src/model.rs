@@ -1,5 +1,3 @@
-//! A song's lyrics, whatever kind of them there are.
-
 use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,10 +6,8 @@ use std::time::Duration;
 /// that a pause for breath does not dim it. A longer gap is a break.
 const BREAK: Duration = Duration::from_secs(4);
 
-/// What was found for a song.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Lyrics {
-    /// With times, by the line or finer.
     Timed(TimedLyrics),
     Plain(PlainLyrics),
     Instrumental,
@@ -20,7 +16,6 @@ pub enum Lyrics {
     NotFound,
 }
 
-/// Lyrics with no times.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlainLyrics {
     text: Arc<str>,
@@ -73,7 +68,7 @@ impl TimedLyrics {
     }
 }
 
-/// A line and when its parts start, from the start of the song.
+/// Times are from the start of the song.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TimedLine {
     text: Arc<str>,
@@ -104,7 +99,6 @@ impl TimedLine {
     }
 }
 
-/// A part of a line that starts at its own time.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TimedTextElement {
     range: Range<usize>,
@@ -220,7 +214,6 @@ fn settle_ends(lines: &mut [TimedLine]) {
     }
 }
 
-/// Seconds as a duration, unless they are negative or not a number.
 fn seconds(seconds: f64) -> Option<Duration> {
     Duration::try_from_secs_f64(seconds).ok()
 }
@@ -246,7 +239,6 @@ mod tests {
         Duration::from_secs_f64(seconds)
     }
 
-    /// Each part of a line's text and when it starts.
     fn parts(line: &TimedLine) -> Vec<(&str, Duration)> {
         line.elements()
             .iter()

@@ -21,16 +21,13 @@ pub(super) struct RemovedSong {
 /// Identifies the notification of the last removal, which replaces the one
 /// before: only the last removal can be undone.
 struct SongRemoved;
-/// Identifies the notification of the last addition.
 struct SongsAdded;
 
 impl Playlists {
-    /// Whether a change to `playlist` has yet to reach the server.
     pub(super) fn has_unsaved(&self, playlist: &PlaylistId) -> bool {
         self.sending.as_ref() == Some(playlist) || self.writes.contains(playlist)
     }
 
-    /// Queues `write` and starts on it unless another is going.
     pub(super) fn write(&mut self, write: Write, window: &mut Window, cx: &mut Context<Self>) {
         self.edits += 1;
         self.writes.push(write);
@@ -87,7 +84,6 @@ impl Playlists {
         }
     }
 
-    /// Saves the song list on show after an edit to it.
     fn write_entries(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(loaded) = self.loaded_detail() else {
             return;
@@ -151,7 +147,6 @@ impl Playlists {
         }
     }
 
-    /// Takes the selected song out and offers to put it back.
     pub(super) fn remove_selected_entry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.can_edit_songs() {
             return;
@@ -189,7 +184,7 @@ impl Playlists {
                             window.remove_notification::<SongRemoved>(cx);
                         })
                 })
-                // An action alone keeps it up until it is dismissed.
+                // An action alone keeps it up until it is dismissed
                 .autohide(true),
             cx,
         );

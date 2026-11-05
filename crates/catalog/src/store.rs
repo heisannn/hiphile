@@ -16,10 +16,6 @@ use crate::Error;
 
 /// Bump when the tables or the stored JSON change meaning. A database with
 /// another version is emptied, and the next sync fills it again.
-///
-/// 2: songs keep their file size.
-/// 3: how texts read is kept.
-/// 4: artists are kept, and readings keep their romaji.
 const SCHEMA_VERSION: i32 = 4;
 const DATABASE: &str = "catalog.sqlite";
 const SYNC_LOCK: &str = "sync.lock";
@@ -84,7 +80,6 @@ CREATE TABLE readings (
 ) WITHOUT ROWID;
 ";
 
-/// How one text reads, to keep: see [`Catalog::put_readings`].
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct SavedReading {
@@ -105,7 +100,6 @@ impl SavedReading {
     }
 }
 
-/// The albums recommended last and the day they were picked for.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct Recommended {
@@ -113,7 +107,6 @@ pub struct Recommended {
     pub albums: Vec<Album>,
 }
 
-/// A collection that is synced as a whole.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
     Albums,
@@ -135,8 +128,7 @@ impl Kind {
     }
 }
 
-/// One server's library on disk. Cheap to clone; clones share one
-/// connection.
+/// Cheap to clone; clones share one connection.
 ///
 /// Every method blocks on the disk: call them from a thread that may block,
 /// never from a UI executor.
@@ -156,13 +148,10 @@ pub(crate) struct SyncLock {
 }
 
 impl Catalog {
-    /// The library of the server at `server`, in the system cache directory
-    /// (`~/Library/Caches/hiphile` on macOS). Created if there is none.
     pub fn open_server(server: &Url) -> Result<Self, Error> {
         Self::open(servers_dir()?.join(directory_name(server)))
     }
 
-    /// The library kept in `dir`. Created if there is none.
     pub fn open(dir: impl AsRef<Path>) -> Result<Self, Error> {
         Self::open_with(dir.as_ref(), BUSY_TIMEOUT)
     }
@@ -197,7 +186,7 @@ impl Catalog {
         &self.inner.dir
     }
 
-    /// Every artist, in the server's name order.
+    /// In the server's name order.
     pub fn artists(&self) -> Result<Vec<Artist>, Error> {
         let connection = self.connection();
         let mut statement =
@@ -206,7 +195,7 @@ impl Catalog {
         rows.map(|json| Ok(serde_json::from_str(&json?)?)).collect()
     }
 
-    /// Every album, in the server's name order.
+    /// In the server's name order.
     pub fn albums(&self) -> Result<Vec<Album>, Error> {
         let connection = self.connection();
         let mut statement =
@@ -215,8 +204,8 @@ impl Catalog {
         rows.map(|json| Ok(serde_json::from_str(&json?)?)).collect()
     }
 
-    /// The albums of `artist`, in the server's name order. Reads no others, for
-    /// a screen that asks each time its selection moves.
+    /// In the server's name order. Reads no others, for a screen that asks each time its
+    /// selection moves.
     pub fn albums_by_artist(&self, artist: &ArtistId) -> Result<Vec<Album>, Error> {
         let connection = self.connection();
         let mut statement = connection.prepare_cached(
@@ -227,7 +216,7 @@ impl Catalog {
         rows.map(|json| Ok(serde_json::from_str(&json?)?)).collect()
     }
 
-    /// The songs that name `artist`, in no particular order. Reads no others.
+    /// In no particular order. Reads no others.
     pub fn songs_by_artist(&self, artist: &ArtistId) -> Result<Vec<Song>, Error> {
         let connection = self.connection();
         let mut statement = connection
@@ -236,8 +225,7 @@ impl Catalog {
         rows.map(|json| Ok(serde_json::from_str(&json?)?)).collect()
     }
 
-    /// The album with its songs, or `None` when its songs have not been
-    /// fetched yet.
+    /// `None` when its songs have not been fetched yet.
     pub fn album(&self, id: &AlbumId) -> Result<Option<AlbumWithSongs>, Error> {
         let connection = self.connection();
         let album = connection
@@ -259,7 +247,7 @@ impl Catalog {
         Ok(Some(AlbumWithSongs::new(album, songs)))
     }
 
-    /// Every song, in no particular order.
+    /// In no particular order.
     pub fn songs(&self) -> Result<Vec<Song>, Error> {
         let connection = self.connection();
         let mut statement = connection.prepare_cached("SELECT json FROM songs")?;
@@ -275,7 +263,6 @@ impl Catalog {
         self.count(Kind::Songs)
     }
 
-    /// When the collection was last synced completely.
     pub fn albums_synced_at(&self) -> Result<Option<SystemTime>, Error> {
         self.synced_at(Kind::Albums)
     }
@@ -303,7 +290,7 @@ impl Catalog {
         if updated == 0 {
             return Ok(());
         }
-        // The generation a running song sync writes, so it keeps these.
+        // The generation a running song sync writes, so it keeps these
         let generation = generation(&transaction, Kind::Songs)?;
         transaction.execute("DELETE FROM songs WHERE album_id = ?1", [id.as_str()])?;
         insert_songs(&transaction, generation, album.songs(), Some(id))?;
@@ -326,8 +313,6 @@ impl Catalog {
         }))
     }
 
-    /// Keeps the albums picked for `user` on `day`, in place of those kept
-    /// before.
     pub fn put_recommended(&self, user: &str, day: &str, albums: &[Album]) -> Result<(), Error> {
         let mut connection = self.connection();
         let transaction = connection.transaction()?;
@@ -440,7 +425,7 @@ impl Catalog {
                 return Ok(true);
             }
         }
-        // A clock set back since counts as stale.
+        // A clock set back since counts as stale
         Ok(match now.duration_since(synced_at) {
             Ok(age) => age >= max_age,
             Err(_) => true,
@@ -464,7 +449,6 @@ impl Catalog {
         Ok(next)
     }
 
-    /// Keeps every artist in the server's name order.
     pub(crate) fn store_artists(&self, generation: i64, artists: &[Artist]) -> Result<(), Error> {
         let mut connection = self.connection();
         let transaction = connection.transaction()?;
@@ -529,8 +513,6 @@ impl Catalog {
         Ok(())
     }
 
-    /// Completes a sync of `kind`: removes what it did not see and records
-    /// when it ran.
     pub(crate) fn finish(
         &self,
         kind: Kind,
@@ -610,7 +592,6 @@ impl Catalog {
     }
 }
 
-/// Where each server's cached files live, one directory per server.
 pub(crate) fn servers_dir() -> Result<PathBuf, Error> {
     let cache = dirs::cache_dir().ok_or(Error::NoCacheDir)?;
     Ok(cache.join("hiphile").join("servers"))
@@ -636,7 +617,6 @@ pub(crate) fn directory_name(server: &Url) -> String {
     format!("{host}-{}", &digest[..12])
 }
 
-/// Whether `error` says the file is not a database SQLite can read.
 pub(crate) fn is_damaged(error: &Error) -> bool {
     matches!(
         error,
@@ -645,7 +625,6 @@ pub(crate) fn is_damaged(error: &Error) -> bool {
     )
 }
 
-/// Whether `error` is another connection holding the database too long.
 pub(crate) fn is_busy(error: &Error) -> bool {
     matches!(
         error,
@@ -663,7 +642,7 @@ fn connect(path: &Path, busy_timeout: Duration) -> Result<Connection, Error> {
         .pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0))?;
     if schema_version(&connection)? != SCHEMA_VERSION {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        // Another process may have just done this.
+        // Another process may have just done this
         if schema_version(&transaction)? != SCHEMA_VERSION {
             let tables = transaction
                 .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")?
@@ -725,7 +704,7 @@ fn set_meta(connection: &Connection, key: &str, value: &str) -> Result<(), Error
     Ok(())
 }
 
-/// Keeps `songs`; `album`, when given, is the album they were fetched as.
+/// `album`, when given, is the album they were fetched as.
 fn insert_songs(
     transaction: &Transaction<'_>,
     generation: i64,
@@ -847,7 +826,7 @@ mod tests {
     fn a_database_another_process_holds_is_left_alone() {
         let dir = tempfile::tempdir().unwrap();
         let catalog = Catalog::open(dir.path()).unwrap();
-        // Another version holds a write, so opening must wait to reset it.
+        // Another version holds a write, so opening must wait to reset it
         catalog.execute(
             "INSERT INTO albums (id, ord, name, json, generation)
              VALUES ('a1', 0, 'A', '{\"id\":\"a1\",\"name\":\"A\"}', 1);

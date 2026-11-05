@@ -80,7 +80,7 @@ impl Decoder {
                 rate,
                 channels: u16::try_from(channels).unwrap_or(u16::MAX),
             },
-            // Some streams only reveal their layout in the first packet.
+            // Some streams only reveal their layout in the first packet
             None => {
                 let mut pending = Vec::new();
                 let spec = decoder
@@ -106,7 +106,6 @@ impl Decoder {
         self.duration
     }
 
-    /// Moves to `to`, so the next samples decoded are the ones at that time.
     /// Returns where playback resumes, which is `to` unless the format can
     /// only seek to its packets, or `None` if `to` is past the end.
     ///
@@ -143,7 +142,7 @@ impl Decoder {
         };
         let rate = f64::from(self.spec.rate);
         self.skip_frames = ((required - actual).max(0.0) * rate).round() as u64;
-        // A coarse seek may land just after the target.
+        // A coarse seek may land just after the target
         Ok(Some(Duration::from_secs_f64(required.max(actual))))
     }
 
@@ -182,7 +181,7 @@ impl Decoder {
             let packet = match self.format.next_packet() {
                 Ok(Some(packet)) => packet,
                 Ok(None) => return Ok(None),
-                // A truncated final packet ends the stream rather than failing it.
+                // A truncated final packet ends the stream rather than failing it
                 Err(Symphonia::IoError(error))
                     if error.kind() == std::io::ErrorKind::UnexpectedEof =>
                 {
@@ -205,7 +204,7 @@ impl Decoder {
                     buffer.copy_to_slice_interleaved(&mut out[start..]);
                     return Ok(Some(spec));
                 }
-                // A corrupt packet is skipped; the next one may decode.
+                // A corrupt packet is skipped, as the next one may decode
                 Err(Symphonia::DecodeError(_)) => continue,
                 Err(error) => return Err(error.into()),
             }

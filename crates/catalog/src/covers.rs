@@ -18,9 +18,6 @@ pub const COVER_CAPACITY: u64 = 8 << 30;
 pub const COVER_REFRESH_AFTER: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 const COVERS: &str = "covers";
 
-/// Cover art images kept on disk, beside each server's library, so an
-/// image is downloaded once rather than once per session.
-///
 /// An image is kept under its cover art ID and size, and is fetched again
 /// once it is [`COVER_REFRESH_AFTER`] old: Navidrome gives a changed image
 /// a new ID, but other servers may not. Cheap to clone; clones share the
@@ -36,7 +33,6 @@ struct Inner {
     refresh_after: Duration,
 }
 
-/// An image found on disk.
 #[derive(Debug)]
 pub struct KeptCover {
     bytes: Vec<u8>,
@@ -52,21 +48,16 @@ impl KeptCover {
         self.bytes
     }
 
-    /// Whether it is young enough to show without asking the server.
     pub fn is_fresh(&self) -> bool {
         self.fresh
     }
 }
 
 impl CoverStore {
-    /// Images in the system cache directory, beside the libraries, keeping at
-    /// most about `capacity` bytes.
     pub fn user(capacity: u64) -> Result<Self, Error> {
         Ok(Self::at(servers_dir()?, capacity, COVER_REFRESH_AFTER))
     }
 
-    /// Images under `root`, one directory per server, keeping at most about
-    /// `capacity` bytes, each fresh for `refresh_after`.
     pub fn at(root: impl AsRef<Path>, capacity: u64, refresh_after: Duration) -> Self {
         Self {
             inner: Arc::new(Inner {
@@ -82,7 +73,6 @@ impl CoverStore {
         self.inner.blobs.set_capacity(capacity);
     }
 
-    /// The kept image `request` asks for, if there is one.
     pub fn get(&self, request: &CoverArtRequest) -> Option<KeptCover> {
         let path = self.path(request);
         let bytes = fs::read(&path).ok()?;
@@ -106,7 +96,6 @@ impl CoverStore {
         Some(KeptCover { bytes, fresh })
     }
 
-    /// Keeps `bytes` as the image `request` asks for.
     pub fn put(&self, request: &CoverArtRequest, bytes: &[u8]) -> Result<(), Error> {
         self.inner.blobs.put(&self.path(request), bytes)
     }
@@ -173,7 +162,7 @@ mod tests {
         assert_eq!(kept(&store, &other), None);
         assert!(store.get(&small).unwrap().is_fresh());
 
-        // Another URL for the same image, with a fresh salt, finds it.
+        // Another URL for the same image, with a fresh salt, finds it
         let again = request("https://music.example.com/", "al-1", Some(80));
         assert_eq!(kept(&store, &again).as_deref(), Some(&b"small"[..]));
     }
@@ -224,7 +213,7 @@ mod tests {
             store.put(cover, &[1; 100]).unwrap();
             age(&store, cover, Duration::from_secs(1000 - ix as u64 * 100));
         }
-        // Reading the oldest makes it the most recently used.
+        // Reading the oldest makes it the most recently used
         age(&store, &covers[0], TOUCH_AFTER * 2);
         assert!(store.get(&covers[0]).is_some());
 

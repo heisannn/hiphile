@@ -38,7 +38,6 @@ impl OutputDevice {
     }
 }
 
-/// Output devices of the platform's default audio host.
 pub fn output_devices() -> Result<Vec<OutputDevice>, Error> {
     let host = cpal::default_host();
     let default_id = host

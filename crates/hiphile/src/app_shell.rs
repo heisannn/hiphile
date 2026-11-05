@@ -44,17 +44,15 @@ use crate::{
     SignOut,
 };
 
-/// The queue's width when first shown, in rem.
+/// When first shown, in rem.
 const QUEUE_WIDTH: f32 = 20.;
 /// Where the title bar's contents start on macOS, just past the window
 /// controls. Those are not scaled with the base font, so this is in pixels.
 const MACOS_TITLE_BAR_INSET: Pixels = px(64.);
 
-/// Key context of the whole window; player shortcuts are bound to it.
 pub const WORKSPACE_CONTEXT: &str = "Workspace";
 
-/// Root view of the main window. Decides between signing in and the signed-in
-/// workspace, and routes commands between features; it owns no feature state.
+/// Routes commands between features and owns no feature state.
 pub struct AppShell {
     net: net::Client,
     /// `None` where the system has no credential store; signing in then
@@ -84,7 +82,6 @@ enum Screen {
     Workspace(Box<Workspace>),
 }
 
-/// The screen beside the queue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Destination {
     Home,
@@ -122,7 +119,6 @@ impl Destination {
 struct Workspace {
     profile: config::Profile,
     destination: Destination,
-    /// Where going back and forward leads.
     history: History<Location>,
     home: Entity<Home>,
     /// Kept while another screen shows, along with its selection and the sync
@@ -139,15 +135,12 @@ struct Workspace {
     /// Kept while another screen shows: the other screens' menus go by it and
     /// add to it.
     favorites: Entity<Favorites>,
-    /// The palette over every screen, with the library it has read.
     search: Entity<Search>,
-    /// What the notice of the sync and the reading shows.
     activity: Entity<LibraryActivity>,
     player: Entity<Player>,
     queue: Entity<QueueView>,
     /// Over the screen and the player when open; the rest stay as they were.
     lyrics: Entity<LyricsView>,
-    /// The split between the library and the queue.
     panes: Entity<ResizableState>,
     /// Holds the session's decoded covers, so signing out frees them.
     covers: Entity<CoverCache>,
@@ -165,7 +158,6 @@ struct Workspace {
 }
 
 impl Workspace {
-    /// The screen showing and what is selected on it.
     fn location(&self, cx: &App) -> Location {
         match self.destination {
             Destination::Home => Location::Home,
@@ -237,7 +229,7 @@ impl AppShell {
             },
         );
         let readings_failures = session::readings(cx).map(|readings| {
-            // What failed before there was a window to say so in.
+            // What failed before there was a window to say so in
             if let ReadingsState::Failed(error) = readings.read(cx).state().clone() {
                 cx.defer_in(window, move |_, window, cx| {
                     tell_readings_failed(&error, window, cx);
@@ -496,7 +488,7 @@ impl AppShell {
         cx: &mut Context<Self>,
     ) {
         let FavoritesEvent::LoadFailed(error) = event;
-        // The favorites' own screen says so where the list would be.
+        // The favorites' own screen says so where the list would be
         if !self.is_showing_favorites() {
             let message =
                 format!("Couldn't load favorites. {error} Choose Refresh Library to try again.");
@@ -577,7 +569,7 @@ impl AppShell {
                     search.update(cx, |it, cx| it.library_changed(cx)).ok();
                 }
                 LibraryEvent::SyncFailed(error) => {
-                    // The albums' screen says so itself.
+                    // The albums' screen says so itself
                     if let Screen::Workspace(workspace) = &this.screen
                         && workspace.destination != Destination::Albums
                     {
@@ -633,7 +625,6 @@ impl AppShell {
         }
     }
 
-    /// Makes `destination` the screen showing.
     fn enter_destination(
         &mut self,
         destination: Destination,
@@ -651,7 +642,7 @@ impl AppShell {
             Destination::Home => workspace
                 .home
                 .update(cx, |home, cx| home.renew_recommended(cx)),
-            // Another device may have changed them meanwhile.
+            // Another device may have changed them meanwhile
             Destination::Playlists => workspace
                 .playlists
                 .update(cx, |playlists, cx| playlists.refresh(window, cx)),
@@ -669,19 +660,16 @@ impl AppShell {
         cx.notify();
     }
 
-    /// Shows `artist` on the artists' screen, whichever screen is showing.
     fn show_artist(&mut self, artist: &ArtistId, window: &mut Window, cx: &mut Context<Self>) {
         self.leave_for(&Location::Artists(Some(artist.clone())), cx);
         self.go_to(Location::Artists(Some(artist.clone())), window, cx);
     }
 
-    /// Shows `album` on the albums' screen, whichever screen is showing.
     fn show_album(&mut self, album: &AlbumId, window: &mut Window, cx: &mut Context<Self>) {
         self.leave_for(&Location::Albums(Some(album.clone())), cx);
         self.go_to(Location::Albums(Some(album.clone())), window, cx);
     }
 
-    /// Records leaving for `next` when going back should return here.
     fn leave_for(&mut self, next: &Location, cx: &mut Context<Self>) {
         if let Screen::Workspace(workspace) = &mut self.screen {
             let here = workspace.location(cx);
@@ -825,7 +813,7 @@ impl AppShell {
             cx.background_spawn(async move { keychain.delete_password(&profile) })
                 .detach();
         }
-        // The window keeps its notices, and this one would never hear the end.
+        // The window keeps its notices, and this one would never hear the end
         window.remove_notification::<LibraryActivity>(cx);
         self.focus.focus(window, cx);
         self.screen = Self::sign_in(&self.net, self.keychain.clone(), Start::Fresh, window, cx);
@@ -885,8 +873,7 @@ impl AppShell {
         cx.notify();
     }
 
-    /// Shows or hides the queue beside the screen. With the lyrics over it, it
-    /// is not in view either way, so going back from them shows it.
+    /// With the lyrics over it, the queue is not in view either way, so going back from them shows it.
     fn toggle_queue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_lyrics_open(cx) {
             self.queue_shown = true;
@@ -925,8 +912,6 @@ impl AppShell {
         }
     }
 
-    /// Makes `root` go back and forward, by the commands wherever they lead
-    /// somewhere, and by what mice and trackpads send for it.
     fn handle_navigation(&self, root: Stateful<Div>, cx: &mut Context<Self>) -> Stateful<Div> {
         let (can_go_back, can_go_forward) = self.history_available(cx);
         root.on_mouse_down(
@@ -947,8 +932,6 @@ impl AppShell {
         })
     }
 
-    /// Makes `root` handle the commands about the song playing, wherever they
-    /// do something.
     fn handle_song_commands(&self, root: Stateful<Div>, cx: &mut Context<Self>) -> Stateful<Div> {
         let lyrics_open = self.is_lyrics_open(cx);
         let has_song = self
@@ -982,8 +965,6 @@ impl AppShell {
         })
     }
 
-    /// What goes under the title bar: `content` and the player, and the lyrics
-    /// over them when those are on their way or open.
     fn render_under_title_bar(
         &self,
         content: AnyElement,
@@ -995,7 +976,7 @@ impl AppShell {
             Screen::SignIn { .. } => None,
         };
         let reveal = lyrics.map(|lyrics| lyrics.read(cx).reveal(cx));
-        // What is under the lyrics fades with them, so it needs the frames too.
+        // What is under the lyrics fades with them, so it needs the frames too
         if reveal.is_some_and(|reveal| reveal.is_moving) {
             window.request_animation_frame();
         }
@@ -1022,7 +1003,6 @@ impl AppShell {
             .children(lyrics)
     }
 
-    /// The screen showing and, when shown, the queue to its right.
     fn render_workspace(
         &self,
         workspace: &Workspace,
@@ -1151,7 +1131,6 @@ impl AppShell {
     }
 }
 
-/// Keeps `player` on the ImgBB key and on whether the Discord status shows.
 fn follow_discord_settings(
     discord_settings: &Entity<settings::DiscordSettings>,
     player: &Entity<Player>,
@@ -1178,9 +1157,8 @@ fn follow_discord_settings(
     [key_changes, presence_changes]
 }
 
-/// A row of buttons in the title bar. The title bar moves the window, and on
-/// Windows a press that goes on to the title bar starts that move, which takes
-/// the release and so the click.
+/// The title bar moves the window, and on Windows a press that goes on to the title bar starts
+/// that move, which takes the release and so the click.
 fn title_bar_controls() -> Div {
     h_flex()
         .flex_none()
@@ -1289,7 +1267,7 @@ impl Render for AppShell {
                 .on_action(cx.listener(|this, action: &ShowArtist, window, cx| {
                     this.show_artist(action.artist(), window, cx);
                 }))
-                // On the way in, as the albums' screen runs Refresh itself.
+                // On the way in, as the albums' screen runs Refresh itself
                 .capture_action(cx.listener(|this, _: &Refresh, _, cx| this.retry_favorites(cx)))
                 .on_action(cx.listener(|this, _: &Refresh, window, cx| this.refresh(window, cx)))
                 .on_action(cx.listener(|this, action: &AddToPlaylist, window, cx| {

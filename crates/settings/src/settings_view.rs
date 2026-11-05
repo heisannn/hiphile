@@ -34,9 +34,6 @@ use crate::{CloseWindow, SETTINGS_CONTEXT};
 /// Neither reports a change that reaches here.
 const REFRESH: Duration = Duration::from_secs(2);
 
-/// Root view of the settings window. The choices live in
-/// [`AppearanceSettings`], [`AudioSettings`], the [`CacheLimit`]s,
-/// [`DiscordSettings`] and [`LyricsSettings`].
 pub(crate) struct SettingsView {
     appearance: Entity<AppearanceSettings>,
     audio: Entity<AudioSettings>,
@@ -75,7 +72,7 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        // Holds focus so the window's commands work before anything is clicked.
+        // Holds focus so the window's commands work before anything is clicked
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         audio.update(cx, |audio, cx| audio.list_devices(cx));
@@ -347,7 +344,6 @@ impl SettingsView {
     }
 }
 
-/// Whether updates come by themselves, and the way to look for one now or start it.
 fn updates_page(updater: &Entity<Updater>, cx: &App) -> SettingPage {
     let automatic = SettingField::switch(
         {
@@ -417,7 +413,6 @@ fn updates_page(updater: &Entity<Updater>, cx: &App) -> SettingPage {
         .group(group)
 }
 
-/// Finding kanji by romaji: whether to, and how the dictionary for it is doing.
 fn romaji_search_group(readings: &Entity<Readings>, cx: &App) -> SettingGroup {
     let toggle = SettingField::switch(
         {
@@ -494,7 +489,6 @@ fn readings_error(state: &ReadingsState) -> Option<SharedString> {
     }
 }
 
-/// The item for a cache's limit, found by `keyword`.
 fn limit_item(field: &Entity<CacheLimitField>, keyword: &'static str) -> SettingItem {
     let limit = SettingField::render({
         let field = field.clone();

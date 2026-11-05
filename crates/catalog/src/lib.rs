@@ -2,13 +2,6 @@
 //!
 //! Each server gets one SQLite database in the system cache directory,
 //! holding its albums, artists and songs as the server sent them.
-//! [`sync_albums`], [`sync_artists`] and [`sync_songs`] fetch a whole collection
-//! and then remove what the server no longer has. Albums that were opened keep the songs fetched
-//! for them, through [`Catalog::put_album`], and [`Catalog::put_readings`]
-//! keeps how texts read so that they need working out only once.
-//!
-//! [`CoverStore`] keeps cover art images, and [`SongStore`] audio files,
-//! beside each server's library.
 //!
 //! It is a cache: a database written by another version of the schema, or
 //! one that cannot be read, is emptied and filled again by the next sync.
@@ -58,8 +51,6 @@ pub enum Error {
 }
 
 impl Error {
-    /// The failure of the server, or of the way to it, when that is what
-    /// failed.
     pub fn server_error(&self) -> Option<&client::Error> {
         match self {
             Self::Client(error) => Some(error),

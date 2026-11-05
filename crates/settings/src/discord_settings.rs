@@ -2,19 +2,14 @@ use std::time::Duration;
 
 use gpui_kit::{AppContext as _, Context, EventEmitter, SharedString, Subscription, Task};
 
-/// How long the key must stay unchanged before it applies. The field reports
-/// every keystroke, and each key on the way would be tried on ImgBB.
+/// The field reports every keystroke, and each key on the way would be tried on ImgBB.
 const SETTLE: Duration = Duration::from_millis(500);
 
-/// The key changed; read it from [`DiscordSettings::imgbb_key`].
 pub struct ImgbbKeyChanged;
 
-/// The Discord status was turned on or off; read it from
-/// [`DiscordSettings::is_presence_on`].
 pub struct PresenceChanged;
 
-/// Whether the song playing goes on the Discord status, and the ImgBB API key
-/// that lets covers go with it. Saving happens off the main thread.
+/// The ImgBB API key is what lets covers go on the Discord status.
 pub struct DiscordSettings {
     /// `None` without a home directory: the key then lasts until quitting.
     store: Option<config::Store>,
@@ -24,14 +19,12 @@ pub struct DiscordSettings {
     applied: Option<String>,
     /// Why the key could not be read or saved.
     error: Option<SharedString>,
-    /// Why the last cover could not be published.
     upload_error: Option<SharedString>,
     _settle: Task<()>,
     unsaved: bool,
     saving: bool,
     _save: Task<()>,
     is_presence_on: bool,
-    /// Why `is_presence_on` could not be read or saved.
     presence_error: Option<SharedString>,
     /// Whether the user has changed `is_presence_on` since it was last saved.
     /// Only then is it written: it may have come from the environment, or from
@@ -90,8 +83,7 @@ impl DiscordSettings {
         self.is_presence_on
     }
 
-    /// Says why the last cover could not be published, if it could not. An
-    /// upload that was under way when the status was turned off no longer matters.
+    /// An upload that was under way when the status was turned off no longer matters.
     pub fn set_upload_error(&mut self, error: Option<SharedString>, cx: &mut Context<Self>) {
         self.upload_error = error.filter(|_| self.is_presence_on);
         cx.notify();
@@ -215,7 +207,7 @@ impl DiscordSettings {
     }
 }
 
-/// The key `text` holds. Pasting often brings spaces along.
+/// Pasting often brings spaces along.
 fn chosen_key(text: &str) -> Option<String> {
     let key = text.trim();
     (!key.is_empty()).then(|| key.to_owned())

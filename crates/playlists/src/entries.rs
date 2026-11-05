@@ -81,7 +81,6 @@ impl Entries {
             .collect()
     }
 
-    /// Whether `songs` are these songs in this order.
     pub(crate) fn has_songs(&self, songs: &[Song]) -> bool {
         self.entries.len() == songs.len()
             && self
@@ -112,7 +111,6 @@ impl Entries {
         true
     }
 
-    /// Takes the entry out, and says where it was and what it held.
     pub(crate) fn remove(&mut self, id: EntryId) -> Option<(usize, Song)> {
         let ix = self.position(id)?;
         let entry = Arc::make_mut(&mut self.entries).remove(ix);

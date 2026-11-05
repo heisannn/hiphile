@@ -1,5 +1,3 @@
-//! Command-line client built on the GPUI-independent crates.
-
 use std::io::Write as _;
 use std::time::Duration;
 
@@ -92,7 +90,6 @@ impl ServerArgs {
             .context("pass --server (or set HIPHILE_SERVER), or sign in once in the app")
     }
 
-    /// The server's library saved on this computer.
     fn catalog(&self) -> anyhow::Result<catalog::Catalog> {
         let url = client::server_url(&self.address()?)?;
         Ok(catalog::Catalog::open_server(&url)?)
@@ -249,7 +246,7 @@ fn albums(args: ServerArgs, refresh: bool, offline: bool) -> anyhow::Result<()> 
             catalog::Mode::IfStale
         };
         let client = args.client()?;
-        // Another process updating the copy leaves it as it is for now.
+        // Another process updating the copy leaves it as it is for now
         block_on(catalog::sync_albums(&catalog, &client, mode))?;
     }
     for album in catalog.albums()? {
@@ -300,8 +297,7 @@ fn play(args: ServerArgs, ids: Vec<String>, query: Option<String>) -> anyhow::Re
     Ok(())
 }
 
-/// The output chosen in the app's settings. Settings that cannot be read mean
-/// the system's default device and each song's own rate.
+/// Settings that cannot be read mean the system's default device and each song's own rate.
 fn output_settings() -> audio::OutputSettings {
     let saved = || -> anyhow::Result<audio::OutputSettings> {
         let store = config::Store::user()?;
@@ -316,12 +312,11 @@ fn output_settings() -> audio::OutputSettings {
     })
 }
 
-/// The songs kept on this computer, shared with the app. Settings that cannot
-/// be read keep none.
+/// Shared with the app. Settings that cannot be read keep none.
 fn song_cache() -> Option<playback::SongCache> {
     let capacity = match config::Store::user() {
         Ok(store) => store.song_cache_capacity(),
-        // Without a home directory there are no settings to follow.
+        // Without a home directory there are no settings to follow
         Err(_) => Ok(None),
     };
     let song_cache = capacity
@@ -360,8 +355,7 @@ fn play_song(
     }
 }
 
-/// Plays `track` to its end, showing the position. The inner result is the
-/// track's own failure; the outer one, the engine's.
+/// The inner result is the track's own failure; the outer one, the engine's.
 fn play_track(
     engine: &audio::Engine,
     events: &async_channel::Receiver<audio::Event>,

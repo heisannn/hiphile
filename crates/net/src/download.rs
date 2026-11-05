@@ -30,7 +30,6 @@ const RATE_WINDOW: Duration = Duration::from_millis(100);
 /// for tags, gets a request of its own while the current response waits to
 /// be read on afterwards. Longer gaps replace the current response.
 const DETOUR_MAX: u64 = 64 * 1024;
-/// Further attempts at a part of the body after a failure that may pass.
 const RETRIES: u32 = 3;
 /// The wait before the first retry; each retry waits longer.
 const RETRY_DELAY: Duration = Duration::from_millis(500);
@@ -114,9 +113,7 @@ struct Shared {
     cancel: Notify,
     /// Asks the network task to fetch [`State::wanted`] next.
     retarget: Notify,
-    /// Wakes [`DownloadHandle::completed`] once the outcome is set.
     finished: Notify,
-    /// The `Content-Length` header, when the server sent one.
     content_length: Option<u64>,
     /// The body's length, when the server sent ranges of it on request at
     /// the start and the whole body is allocated.
@@ -179,7 +176,7 @@ impl State {
         let range = at..end as u64;
         let first = self.received.partition_point(|run| run.end < range.start);
         let last = self.received.partition_point(|run| run.start <= range.end);
-        // Runs `first..last` overlap or touch the new bytes.
+        // Runs `first..last` overlap or touch the new bytes
         let merged = if first < last {
             let start = self.received[first].start.min(range.start);
             start..self.received[last - 1].end.max(range.end)
@@ -189,13 +186,11 @@ impl State {
         self.received.splice(first..last, [merged]);
     }
 
-    /// The body, as much of it as has arrived.
     fn bytes(&self) -> &[u8] {
         self.body.as_deref().unwrap_or(&self.bytes)
     }
 
-    /// Copies what has arrived from `pos` into `buf`; `None` if `pos` has
-    /// not arrived.
+    /// `None` if `pos` has not arrived.
     fn copy(&self, pos: u64, buf: &mut [u8]) -> Option<usize> {
         let run = &self.received[self.received.partition_point(|run| run.end <= pos)..]
             .first()
@@ -206,7 +201,6 @@ impl State {
         Some(len)
     }
 
-    /// The first stretch from `from` on, before `len`, not received yet.
     fn first_gap(&self, from: u64, len: u64) -> Option<Range<u64>> {
         let mut pos = from;
         for run in &self.received[self.received.partition_point(|run| run.end <= from)..] {
@@ -234,11 +228,10 @@ impl State {
         if arriving || self.wanted == Some(pos) {
             return false;
         }
-        // The task has not taken an earlier position yet; one wake suffices.
+        // The task has not taken an earlier position yet, so one wake suffices
         self.wanted.replace(pos).is_none()
     }
 
-    /// The gap at the position a reader waits for, if any.
     fn wanted_gap(&self, len: u64) -> Option<Range<u64>> {
         self.first_gap(self.wanted?, len)
     }
@@ -255,8 +248,6 @@ impl Shared {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Records how the download ended, unless it already has, and wakes
-    /// readers.
     fn finish(&self, outcome: Result<(), String>) {
         let mut state = self.lock();
         if state.outcome.is_none() {
@@ -278,12 +269,10 @@ impl Shared {
 }
 
 impl Download {
-    /// The `Content-Type` header, e.g. `audio/flac`.
     pub fn content_type(&self) -> Option<&str> {
         self.content_type.as_deref()
     }
 
-    /// The `Content-Length` header, when the server sent one.
     pub fn content_length(&self) -> Option<u64> {
         self.shared.content_length
     }
@@ -392,7 +381,7 @@ struct Completion {
 
 impl Drop for Completion {
     fn drop(&mut self) {
-        // No effect when the task already recorded its own outcome.
+        // No effect when the task already recorded its own outcome
         self.shared.finish(Err(RUNTIME_STOPPED.to_owned()));
         if let Some(finished) = self.finished.take() {
             finished.send(()).ok();
@@ -461,7 +450,7 @@ pub(crate) async fn run(
     }
 
     let outcome = match len {
-        // In order, with no way to resume: any failure ends it.
+        // In order, with no way to resume: any failure ends it
         None => receive(&shared, &mut response, &mut 0)
             .await
             .map(|_| ())
@@ -480,10 +469,8 @@ pub(crate) async fn run(
     drop(completion);
 }
 
-/// Why a response or request stopped short.
 struct Failure {
     message: String,
-    /// Whether trying the same part again may succeed.
     transient: bool,
 }
 
@@ -523,7 +510,7 @@ async fn receive(
         let chunk = tokio::select! {
             () = shared.cancel.notified() => return Err(Failure::fatal(CANCELED)),
             () = shared.retarget.notified(), if shared.len.is_some() => {
-                // A wake left over from a position already taken up.
+                // A wake left over from a position already taken up
                 let state = shared.lock();
                 if state.random_access && state.wanted.is_some() {
                     return Ok(Received::Retarget);
@@ -534,7 +521,7 @@ async fn receive(
                 .map_err(|error| Failure::transient(error.without_url().to_string()))?,
         };
         let Some(chunk) = chunk else {
-            // A ranged response that ends before its part did is cut short.
+            // A ranged response that ends before its part did is cut short
             return match shared.len {
                 Some(_) => Err(Failure::transient(CUT_SHORT)),
                 None => Ok(Received::Complete),
@@ -577,8 +564,7 @@ impl Version {
         }
     }
 
-    /// Whether `headers` name another version. A header a response leaves
-    /// out says nothing.
+    /// A header a response leaves out says nothing.
     fn differs(&self, headers: &HeaderMap) -> bool {
         let other = Self::of(headers);
         let differs = |ours: &Option<header::HeaderValue>, theirs: Option<header::HeaderValue>| {
@@ -590,13 +576,11 @@ impl Version {
     }
 }
 
-/// What the network task does next for a random-access download.
 enum Step {
     Receive(reqwest::Response),
     Request(Range<u64>),
 }
 
-/// A response put aside for a detour, and the part it was sending.
 struct Parked {
     response: reqwest::Response,
     part: Range<u64>,
@@ -612,8 +596,6 @@ struct File<'a> {
 }
 
 impl File<'_> {
-    /// Receives `first`, then requests the parts readers wait for, then the
-    /// rest, until the whole body has arrived.
     async fn fetch(&self, shared: &Shared, first: reqwest::Response) -> Result<(), String> {
         let mut step = Step::Receive(first);
         let mut parked = None;
@@ -643,7 +625,7 @@ impl File<'_> {
                         }
                         Err(failure) => {
                             back_off(shared, failure, &mut failures).await?;
-                            // The rest of the same part.
+                            // The rest of the same part
                             match shared.lock().fetching.clone() {
                                 Some(part) if !part.is_empty() => Step::Request(part),
                                 _ => match self.next(shared, &mut parked) {
@@ -768,7 +750,6 @@ impl File<'_> {
     }
 }
 
-/// Waits before another attempt after `failure`, or gives up.
 async fn back_off(shared: &Shared, failure: Failure, failures: &mut u32) -> Result<(), String> {
     if !failure.transient || *failures >= RETRIES {
         return Err(failure.message);
@@ -914,14 +895,13 @@ mod tests {
                 )
                 .unwrap();
             let mut rest = [0; 1];
-            // Returns once the client closes or resets the connection.
+            // Returns once the client closes or resets the connection
             let _ = reader.read(&mut rest);
             closed.send(()).ok();
         });
         (url, closed_receiver)
     }
 
-    /// Reads to the end on another thread; the channel yields its result.
     fn read_in_background(mut download: Download) -> mpsc::Receiver<io::Result<Vec<u8>>> {
         let (result, receiver) = mpsc::channel();
         std::thread::spawn(move || {
@@ -1011,7 +991,7 @@ mod tests {
         assert!(!state.wants(200 + READ_AHEAD), "the wake is still pending");
         assert_eq!(state.wanted, Some(200 + READ_AHEAD));
 
-        // At 100 kB/s, 20 kB is worth waiting for and 30 kB is not.
+        // At 100 kB/s, 20 kB is worth waiting for and 30 kB is not
         let mut state = State {
             fetching: Some(0..10_000_000),
             rate: Some(100_000.0),
@@ -1066,7 +1046,6 @@ mod tests {
         resume_after: Option<Duration>,
         /// The file length range responses report.
         total: usize,
-        /// Answer range requests with the whole file.
         ignore_ranges: bool,
         /// The most a range response sends, saying so in `Content-Range`.
         max_part: Option<usize>,
@@ -1183,8 +1162,6 @@ mod tests {
         Arc::new((0..2_000_000).map(|i| (i % 251) as u8).collect())
     }
 
-    /// Reads `len` bytes at `at`, then the whole body from the start, on
-    /// another thread. Fails if that takes longer than [`WAIT`].
     fn read_at_then_all(
         mut download: Download,
         at: u64,
@@ -1355,7 +1332,7 @@ mod tests {
         let (url, _ranges) = ranged_server(body.clone(), Behaviour::new(&body));
         let client = crate::Client::new("test").unwrap();
         let download = start(&client, url);
-        // Waiting from before the body arrives, as the song cache does.
+        // Waiting from before the body arrives, as the song cache does
         let mut completed = Box::pin(download.handle().completed());
         assert!((&mut completed).now_or_never().is_none());
         let (sender, receiver) = mpsc::channel();

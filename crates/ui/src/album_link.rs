@@ -5,8 +5,7 @@ use subsonic::{AlbumId, Song};
 
 use crate::name_link::{name_link, plain_name};
 
-/// An album's name, which shows the album when clicked. A name the server gives
-/// no ID for is plain text: there is nowhere to go.
+/// A name the server gives no ID for is plain text: there is nowhere to go.
 #[derive(IntoElement)]
 pub struct AlbumLink {
     name: SharedString,
@@ -23,7 +22,6 @@ impl AlbumLink {
         }
     }
 
-    /// The link to the album of `song`, when it names one.
     pub fn of_song(song: &Song) -> Option<Self> {
         let name = song.album()?;
         Some(Self::new(name.to_owned(), song.album_id().cloned()))
@@ -70,7 +68,6 @@ mod tests {
 
     use super::*;
 
-    /// A row around a link, which notes clicks that reach it.
     struct Row {
         album: Option<AlbumId>,
         clicked: usize,

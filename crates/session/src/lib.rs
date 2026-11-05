@@ -29,7 +29,7 @@ impl Global for GlobalCovers {}
 pub fn init(net: net::Client, cx: &mut App) {
     let capacity = match config::Store::user() {
         Ok(store) => store.cover_cache_capacity(),
-        // Without a home directory there are no settings to follow.
+        // Without a home directory there are no settings to follow
         Err(_) => Ok(None),
     };
     // A setting that cannot be read keeps no more covers rather than the
@@ -55,7 +55,6 @@ fn cover_capacity(capacity: Option<u64>) -> u64 {
     capacity.unwrap_or(catalog::COVER_CAPACITY)
 }
 
-/// A server the user has signed in to.
 #[derive(Clone)]
 pub struct Session {
     client: client::Client,
@@ -99,8 +98,6 @@ impl Session {
         })
     }
 
-    /// The URL of a cover image `size` pixels across.
-    ///
     /// The same image gets the same URL for the whole session. Each new URL
     /// would be a new download and a new decoded copy to an image cache, as
     /// every URL the client builds carries a fresh salt. Never log it: it
@@ -119,7 +116,6 @@ impl Session {
         &self.client
     }
 
-    /// Who signed in.
     pub fn username(&self) -> &str {
         &self.username
     }
@@ -149,8 +145,6 @@ impl Session {
     }
 }
 
-/// What went wrong updating the cached library, as [`describe`] does for
-/// the server.
 pub fn describe_catalog(error: &catalog::Error) -> String {
     if let Some(error) = error.server_error() {
         describe(error)

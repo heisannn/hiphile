@@ -9,7 +9,6 @@ use ui::{RowText, format_duration, format_song_count, join_details};
 use super::Playlists;
 use crate::{AddToQueue, Delete, Play, PlayNext, Rename};
 
-/// A playlist in the list, whose commands act on the selection.
 #[derive(IntoElement)]
 pub(super) struct PlaylistRow {
     id: PlaylistId,
@@ -101,7 +100,6 @@ impl RenderOnce for PlaylistRow {
     }
 }
 
-/// The second line of a playlist's row.
 fn playlist_details(playlist: &Playlist, username: &str) -> SharedString {
     let owner = playlist
         .owner()

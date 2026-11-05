@@ -1,11 +1,6 @@
-//! Feature: the user's favorites.
-//!
-//! The songs, albums and artists the user marked as favorites on the server,
-//! one kind at a time. Every other feature adds to them and takes from them
-//! through `actions::SetFavorite`, which the app shell routes to [`Favorites`],
-//! and reads them through `actions::is_favorite`, which [`Favorites`] keeps up
-//! to date. Dispatches `actions::PlaySongs`, `actions::EnqueueSongs`,
-//! `actions::ShowAlbum`, `actions::ShowArtist` and the playlist actions.
+//! Every other feature adds to the favorites and takes from them through
+//! `actions::SetFavorite`, which the app shell routes to [`Favorites`], and reads
+//! them through `actions::is_favorite`, which [`Favorites`] keeps up to date.
 
 mod favorites_view;
 mod lists;
@@ -15,7 +10,6 @@ use ui::list_navigation::bind_list_navigation;
 
 pub use favorites_view::{Favorites, FavoritesEvent};
 
-/// Key context of the focused list of favorites.
 pub const FAVORITES_CONTEXT: &str = "Favorites";
 
 actions!(
@@ -24,19 +18,12 @@ actions!(
         /// Songs: play from the selection. Albums and artists: show it on its
         /// own screen.
         Open,
-        /// Plays the selected song or album.
         Play,
-        /// Queues the selected song or album right after the current song.
         PlayNext,
-        /// Queues the selected song or album after every other song.
         AddToQueue,
-        /// Asks which playlist to add the selected song or album to.
         AddToPlaylist,
-        /// Shows the selected song's album on the albums' screen.
         GoToAlbum,
-        /// Shows the kind of favorites before the one on show.
         PreviousSection,
-        /// Shows the kind of favorites after the one on show.
         NextSection
     ]
 );
@@ -48,7 +35,7 @@ struct AddSelectionToPlaylist {
     playlist: Option<subsonic::PlaylistId>,
 }
 
-/// Registers key bindings. Call before building the menu bar.
+/// Call before building the menu bar.
 pub fn init(cx: &mut App) {
     let (play, add_to_playlist, go_to_album) = if cx.platform_info().is_mac() {
         ("cmd-enter", "cmd-p", "cmd-l")

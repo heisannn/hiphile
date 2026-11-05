@@ -4,8 +4,7 @@ use gpui_kit::{AppContext as _, Context, SharedString, Task};
 const MIB: u64 = 1 << 20;
 const GIB: u64 = 1 << 30;
 
-/// How much the songs kept on this computer take, and removing them. Both touch
-/// every file, so they happen off the main thread.
+/// Counting and removing touch every file, so they happen off the main thread.
 pub(crate) struct SongCacheUsage {
     /// `None` where the system has no cache directory.
     songs: Option<SongStore>,
@@ -21,7 +20,7 @@ pub(crate) struct SongCacheUsage {
 impl SongCacheUsage {
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
         let mut this = Self {
-            // Counting and removing keep to no capacity.
+            // Counting and removing keep to no capacity
             songs: SongStore::user(SONG_CAPACITY).ok(),
             kept: None,
             counting: false,
@@ -46,7 +45,6 @@ impl SongCacheUsage {
         self.error.as_ref()
     }
 
-    /// Counts again, unless a count or a removal is still in progress.
     pub(crate) fn count(&mut self, cx: &mut Context<Self>) {
         let Some(songs) = self.songs.clone() else {
             return;
@@ -77,7 +75,7 @@ impl SongCacheUsage {
         if self.clearing {
             return;
         }
-        // A count in progress would report files that are going.
+        // A count in progress would report files that are going
         self.counting = false;
         self._count = Task::ready(());
         self.clearing = true;
@@ -98,7 +96,6 @@ impl SongCacheUsage {
     }
 }
 
-/// `bytes` in GiB from 1 GiB up, and in MiB below that.
 pub(crate) fn format_size(bytes: u64) -> String {
     let mib = (bytes + MIB / 2) / MIB;
     if mib < GIB / MIB {

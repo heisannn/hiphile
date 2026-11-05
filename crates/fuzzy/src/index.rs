@@ -6,8 +6,8 @@ use crate::searchable::Searchable;
 
 const NO_MATCH: Tier = Tier::MAX;
 
-/// The items of a list, ready to be searched: each one is the texts it can be
-/// found by, the likeliest first, as a song's title before its artist.
+/// Each item is the texts it can be found by, the likeliest first, as a song's
+/// title before its artist.
 ///
 /// Texts that many items share are matched once, so a query over a library takes
 /// no longer than a pass over its distinct titles, artists and albums.
@@ -161,7 +161,6 @@ mod tests {
 
     use super::*;
 
-    /// Reads the texts given, and nothing else.
     struct Readings(&'static [(&'static str, &'static str)]);
 
     impl Analyzer for Readings {
@@ -215,7 +214,7 @@ mod tests {
 
     #[test]
     fn the_better_match_comes_first_whatever_the_order() {
-        // A prefix before a word further in.
+        // A prefix before a word further in
         assert_eq!(songs().search("blue"), [3, 4]);
     }
 
@@ -254,9 +253,9 @@ mod tests {
 
     #[test]
     fn mistakes_are_forgiven_only_when_nothing_else_matches() {
-        // Nothing reads quite like this, so what is closest will do.
+        // Nothing reads quite like this, so what is closest will do
         assert_eq!(songs().search("yorunikaxeru"), [2]);
-        // Coltrane matches, so nothing more loosely matched joins it.
+        // Coltrane matches, so nothing more loosely matched joins it
         assert_eq!(songs().search("coltrane"), [3]);
     }
 
@@ -288,7 +287,7 @@ mod tests {
     #[test]
     fn texts_shared_by_items_are_read_once() {
         let index = songs();
-        // Five titles, four artists, and two albums not named like a title.
+        // Five titles, four artists, and two albums not named like a title
         assert_eq!(index.texts.len(), 5 + 4 + 2);
         assert_eq!(index.items.len(), 5);
     }

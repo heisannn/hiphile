@@ -1,5 +1,3 @@
-//! Replaces the installed app with the newest release. Nothing here knows about GPUI.
-
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -11,12 +9,9 @@ use self_update::update::UpdateStrategy;
 const REPO_OWNER: &str = "heisannn";
 const REPO_NAME: &str = "hiphile";
 const BIN_NAME: &str = "hiphile";
-/// The bundle inside a macOS release's zip.
 const BUNDLE_IN_ARCHIVE: &str = "hiphile.app";
-/// The release asset listing the digest of each build.
 const SUMS_ASSET: &str = "SHA256SUMS";
-/// How long the listing or the download may take. A stalled connection would otherwise
-/// keep the app from looking for updates until it quits.
+/// A stalled connection would otherwise keep the app from looking for updates until it quits.
 const TIMEOUT: Duration = Duration::from_secs(600);
 
 /// The part of a release asset's name that `.github/workflows/release.yml` gives this platform.
@@ -42,7 +37,6 @@ pub(crate) trait Releases: Send + Sync + 'static {
     fn install(&self) -> Result<Outcome, String>;
 }
 
-/// Where new versions come from and what they replace.
 #[derive(Clone, Debug)]
 pub(crate) struct Installation {
     /// `None` for GitHub itself.

@@ -1,5 +1,3 @@
-//! Feature: installing new versions of the app from its GitHub releases.
-//!
 //! Only the builds that CI compiles with `HIPHILE_SELF_UPDATE` set update themselves, so
 //! neither `cargo run` nor a build of someone's own is replaced by a release. [`Updater`]
 //! installs a new version while the app runs, and it takes over at the next launch, or at
@@ -32,7 +30,6 @@ pub fn updater(cx: &App) -> Option<Entity<Updater>> {
     cx.try_global::<GlobalUpdater>()?.0.clone()
 }
 
-/// Quits and opens the app again, which is then the version installed.
 pub fn restart(cx: &mut App) {
     cx.restart();
 }

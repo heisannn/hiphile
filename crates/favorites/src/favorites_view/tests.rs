@@ -30,7 +30,6 @@ struct ServerState {
 
 type Shared = Arc<(Mutex<ServerState>, Condvar)>;
 
-/// A server with favorites, which can hold requests back or refuse them.
 struct FakeServer {
     url: String,
     state: Shared,
@@ -116,7 +115,7 @@ fn serve(mut stream: std::net::TcpStream, shared: &Shared) {
     } else if method == "getStarred2" {
         state.reads += 1;
     }
-    // A read has what the server has when it arrives; a write takes effect
+    // A read has what the server has when it arrives, and a write takes effect
     // once let go.
     let songs_when_read = state.songs.clone();
     let mut state = released
@@ -161,7 +160,7 @@ fn view_on<'a>(
     url: &str,
     cx: &'a mut TestAppContext,
 ) -> (Entity<Favorites>, &'a mut VisualTestContext) {
-    // The requests wake the test from the network's own thread.
+    // The requests wake the test from the network's own thread
     cx.executor().allow_parking();
     cx.update(|cx| {
         gpui_kit::init(cx);
@@ -178,7 +177,7 @@ fn view_on<'a>(
         None,
         None,
     );
-    // Notifications live in the window's root.
+    // Notifications live in the window's root
     let (handle, view) = cx
         .update(|cx| {
             gpui_kit::open_window(gpui_kit::WindowOptions::default(), cx, |window, cx| {
@@ -189,7 +188,6 @@ fn view_on<'a>(
     (view, VisualTestContext::from_window(handle, cx).into_mut())
 }
 
-/// Runs the view until `done` says so, for work that waits on the network.
 fn wait_until(
     view: &Entity<Favorites>,
     cx: &mut VisualTestContext,
@@ -252,7 +250,6 @@ fn focus(view: &Entity<Favorites>, cx: &mut VisualTestContext) {
     cx.run_until_parked();
 }
 
-/// `mac` on a Mac and `other` elsewhere.
 fn platform_key(
     mac: &'static str,
     other: &'static str,
@@ -267,7 +264,6 @@ fn platform_key(
     })
 }
 
-/// The first `A` that pressing `keys` leads to, which may take a request.
 fn dispatched_by<A: gpui_kit::Action + Clone>(
     keys: &str,
     view: &Entity<Favorites>,
@@ -466,13 +462,13 @@ fn a_refused_change_leaves_a_later_one_to_decide(cx: &mut TestAppContext) {
     server.release("star");
     wait_until(&view, cx, is_settled);
 
-    // Only the first was refused, and undoing it would hide what the last did.
+    // Only the first was refused, and undoing it would hide what the last did
     assert_eq!(server.writes(), ["star id=n", "unstar id=n", "star id=n"]);
     assert_eq!(song_ids(&view, cx), ["n", "a"]);
     cx.update(|_, cx| assert_eq!(actions::is_favorite(&target("n"), cx), Some(true)));
 }
 
-// These read nothing back after the writes, to leave the undoing on its own.
+// These read nothing back after the writes, to leave the undoing on its own
 #[gpui_kit::test]
 fn an_addition_then_a_removal_both_refused_leave_it_out(cx: &mut TestAppContext) {
     let server = FakeServer::new(&["a"]);
@@ -697,7 +693,7 @@ fn the_key_asks_to_take_the_selected_favorite_out(cx: &mut TestAppContext) {
     let (view, cx) = view_on(&server.url, cx);
     wait_until(&view, cx, is_settled);
     let asked = Rc::new(RefCell::new(Vec::new()));
-    // What the app shell does with what the key leads to.
+    // What the app shell does with what the key leads to
     cx.update(|_, cx| {
         let asked = asked.clone();
         cx.on_action(move |action: &actions::SetFavorite, _| {

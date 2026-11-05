@@ -1,5 +1,3 @@
-//! The lyrics of the current song beside its large cover and controls.
-
 use std::ops::Range;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -28,13 +26,10 @@ use crate::ToggleLyrics;
 use crate::player::{Player, PlayerEvent, cover_hover};
 use crate::transport::{PanelToggles, PositionLine, TransportControls, VolumeControl};
 
-/// Key context of the view while it shows.
 pub const LYRICS_CONTEXT: &str = "Lyrics";
 
-/// How long opening takes from fully closed.
 const OPEN_DURATION: Duration = Duration::from_millis(640);
-/// How long closing takes from fully open. Each part eases the same way as when
-/// opening, so that it leaves fast and settles softly.
+/// Each part eases the same way as when opening, so that it leaves fast and settles softly.
 const CLOSE_DURATION: Duration = Duration::from_millis(400);
 /// When each part moves, as parts of the way from closed to open.
 const OPENING_PARTS: Parts = Parts {
@@ -54,11 +49,8 @@ const CLOSING_PARTS: Parts = Parts {
     lines: 0.5..1.0,
 };
 
-/// How long a part of a line takes to light up.
 const ELEMENT_FADE: Duration = Duration::from_millis(120);
-/// How long a line takes to dim once it ends.
 const LINE_FADE: Duration = Duration::from_millis(180);
-/// How long the lines take to move on to the next.
 const SCROLL_DURATION: Duration = Duration::from_millis(460);
 /// How often to check whether the lines should change, as the player's own
 /// refresh is too slow for parts of a line.
@@ -86,7 +78,7 @@ const COLUMN_MARGIN: f32 = 1.5;
 const DETAILS_GAP: f32 = 1.25;
 /// Height of what is below the cover, in rems.
 const DETAILS_HEIGHT: f32 = 9.75;
-/// The smallest the cover may be, in rems.
+/// In rems.
 const COVER_MIN: f32 = 6.;
 /// Height of the bar and size of its cover, in rems, for the cover to leave
 /// from and return to the bar.
@@ -96,9 +88,9 @@ const BAR_COVER: f32 = 2.5;
 /// Half of the bar's top border, which its content centres below. A border is
 /// a device pixel at any zoom, so this is in pixels.
 const BAR_BORDER_SHIFT: Pixels = px(0.5);
-/// The width from which the lines take the larger type, in rems.
+/// In rems.
 const LARGE_TYPE_FROM: f32 = 62.5;
-/// The most a line may take of the width, in rems.
+/// In rems.
 const LINE_MAX_WIDTH: f32 = 42.5;
 
 struct Parts {
@@ -120,7 +112,6 @@ struct Shown {
     lines: f32,
 }
 
-/// How far along the way from closed to open the view is.
 #[derive(Clone, Copy, Debug)]
 struct Opening {
     is_open: bool,
@@ -156,8 +147,7 @@ impl Opening {
         self.from + (self.target() - self.from) * done
     }
 
-    /// What shows at `now`. Each part eases from where it was when the view last
-    /// turned to where it is going.
+    /// Each part eases from where it was when the view last turned to where it is going.
     fn shown(&self, motion: &MotionTokens, now: Instant) -> Shown {
         let progress = self.progress(now);
         let from = &self.from_shown;
@@ -166,7 +156,7 @@ impl Opening {
         } else {
             CLOSING_PARTS
         };
-        // What goes away speeds up, and what comes back slows down.
+        // What goes away speeds up, and what comes back slows down
         let under = if self.is_open {
             &motion.easing_exit
         } else {
@@ -235,7 +225,6 @@ impl Opening {
     }
 }
 
-/// How far `progress` has come through `part`, from `0.0` to `1.0`.
 fn through(progress: f32, part: Range<f32>) -> f32 {
     ((progress - part.start) / (part.end - part.start)).clamp(0., 1.)
 }
@@ -247,30 +236,22 @@ fn cover_radius(moved: f32, cx: &App) -> Pixels {
     theme.radius + (theme.radius_lg - theme.radius) * moved
 }
 
-/// What the owner of the view needs of its opening, to show what is under it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
 pub struct LyricsReveal {
-    /// Whether the view should be rendered at all.
     pub is_shown: bool,
     /// Whether it hides all that is under it, which then need not be rendered.
     pub is_covering: bool,
     /// Whether it is on its way, so the owner should draw the next frame.
     pub is_moving: bool,
-    /// The opacity of what is under it.
     pub under_opacity: f32,
 }
 
-/// Where things go in the view.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Stage {
-    /// Width of the column with the cover.
     column: Pixels,
-    /// The cover with the view open.
     cover: Bounds<Pixels>,
-    /// The cover where the bar has it.
     bar_cover: Bounds<Pixels>,
-    /// The top of what is below the cover.
     details_top: Pixels,
     room_before_lines: Pixels,
     room_after_lines: Pixels,
@@ -325,11 +306,9 @@ impl Stage {
     }
 }
 
-/// Where lyrics are looked for.
 type FindLyrics =
     Arc<dyn Fn(TrackQuery) -> BoxFuture<'static, Result<Lyrics, lyrics::Error>> + Send + Sync>;
 
-/// The lyrics of a song, or how far looking for them has come.
 enum Lookup {
     Nothing,
     Loading(SongId),
@@ -346,10 +325,8 @@ impl Lookup {
     }
 }
 
-/// Shows the lyrics of the player's current song, in time with it where the
-/// lyrics have times, over the screen and the bar. Its owner renders it within
-/// the room under the title bar, as [`LyricsView::reveal`] says, and looks after
-/// where focus goes as it opens and closes.
+/// Its owner renders it within the room under the title bar, as [`LyricsView::reveal`]
+/// says, and looks after where focus goes as it opens and closes.
 pub struct LyricsView {
     player: Entity<Player>,
     find_lyrics: FindLyrics,
@@ -368,9 +345,7 @@ pub struct LyricsView {
     highlight: LyricsHighlight,
     /// Which line and how much of it the last frame lit.
     lit: Lit,
-    /// Ends the showing once closing has run its course.
     _closing: Task<()>,
-    /// Goes on while lines may need to change by themselves.
     refresh: Option<Task<()>>,
     _subscriptions: [Subscription; 2],
 }
@@ -390,12 +365,11 @@ impl LyricsView {
         cx: &mut Context<Self>,
     ) -> Self {
         let subscriptions = [
-            // Controls and the position show what the player says.
             cx.observe(&player, |_, _, cx| cx.notify()),
             cx.subscribe(&player, |this, _, event, cx| {
                 if matches!(event, PlayerEvent::NowPlaying { .. }) {
                     this.sync_refresh(cx);
-                    // It says so for pausing too, which is no cause to look again.
+                    // It says so for pausing too, which is no cause to look again
                     if this.opening.is_open && !this.is_current_song_looked_up(cx) {
                         this.look_up_current(cx);
                     }
@@ -430,7 +404,6 @@ impl LyricsView {
         self.opening.is_open
     }
 
-    /// Opens or closes, turning back from wherever it has got to.
     pub fn set_open(&mut self, is_open: bool, cx: &mut Context<Self>) {
         let now = cx.background_executor().now();
         let motion = cx.theme().motion_tokens().clone();
@@ -448,7 +421,6 @@ impl LyricsView {
         cx.notify();
     }
 
-    /// Stops showing when closing has run its course.
     fn finish_closing(&mut self, cx: &mut Context<Self>) {
         let left = self.opening.duration;
         if left.is_zero() {
@@ -500,7 +472,6 @@ impl LyricsView {
         }
     }
 
-    /// Redraws when the lines should light differently from the last frame.
     fn refresh_lit(&mut self, cx: &mut Context<Self>) {
         let Lookup::Done(_, lyrics) = &self.lookup else {
             return;
@@ -571,7 +542,6 @@ impl LyricsView {
         }
     }
 
-    /// Keeps lyrics found for going back to their song, unless some already are.
     fn keep_found(&mut self, song: &SongId, lyrics: Lyrics) -> Arc<Lyrics> {
         if let Some((_, kept)) = self.found.iter().find(|(found, _)| found == song) {
             return kept.clone();
@@ -584,7 +554,6 @@ impl LyricsView {
         lyrics
     }
 
-    /// Starts over with the lines at the top, following the current one.
     fn show_new_lines(&mut self) {
         self.is_following = true;
         self.scroll_key = self.scroll_key.wrapping_add(1);
@@ -615,8 +584,7 @@ impl LyricsView {
         cx.notify();
     }
 
-    /// Eases the lines to where the current one rests. The layout comes from
-    /// the last frame, so nothing moves until there has been one.
+    /// The layout comes from the last frame, so nothing moves until there has been one.
     fn follow_current_line(
         &self,
         lyrics: &TimedLyrics,
@@ -632,7 +600,7 @@ impl LyricsView {
             transition(id, top, Transition::new(Duration::ZERO), window, cx);
             return;
         }
-        // The room before the lines is the list's first child.
+        // The room before the lines is the list's first child
         let child_ix = lyrics.line_at(position).unwrap_or(0) + 1;
         let Some(line) = self.scroll.bounds_for_item(child_ix) else {
             window.request_animation_frame();
@@ -691,7 +659,7 @@ impl LyricsView {
                 .into_any_element()
         });
         let lines: Vec<AnyElement> = lines.collect();
-        // A frame for each step of a fade; between fades, the refresh checks.
+        // A frame for each step of a fade, and between fades the refresh checks
         if is_fading && is_playing {
             window.request_animation_frame();
         }
@@ -748,7 +716,7 @@ impl LyricsView {
                             div()
                                 .debug_selector(|| "lyrics-back-to-current".to_owned())
                                 .key_context(CONTROL_CONTEXT)
-                                // A click here is not for the line behind.
+                                // A click here is not for the line behind
                                 .block_mouse_except_scroll()
                                 .child(
                                     Button::new("back-to-current-line").label("Sync").on_click(
@@ -782,7 +750,6 @@ impl LyricsView {
             .into_any_element()
     }
 
-    /// The lyrics, or what stands in for them.
     fn render_lyrics(
         &mut self,
         stage: &Stage,
@@ -822,7 +789,6 @@ impl LyricsView {
         }
     }
 
-    /// The song's name and controls, under the cover.
     fn render_details(&self, song: &Song, cx: &mut Context<Self>) -> Div {
         let player = self.player.read(cx);
         let format = player.format_text();
@@ -995,7 +961,6 @@ impl Lit {
     }
 }
 
-/// Where the song is, for lighting the lines.
 fn lines_position(player: &Player) -> Duration {
     player.shown_position() + SEEK_ROUNDING
 }
@@ -1069,11 +1034,10 @@ fn query_for(song: &Song) -> TrackQuery {
         .artist(song.artist())
         .album_artist(song.album_artist())
         .album(song.album())
-        // A server that does not know a song's length may say zero.
+        // A server that does not know a song's length may say zero
         .duration(song.duration().filter(|duration| !duration.is_zero()))
 }
 
-/// Why no lyrics are on show, as a sentence that says what to try.
 fn describe(error: &lyrics::Error) -> String {
     match error {
         lyrics::Error::Network(_) => {

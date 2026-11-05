@@ -1,10 +1,4 @@
-//! Feature: the home screen.
-//!
-//! The way to something to listen to from the moment the app opens: albums to
-//! try, picked anew each day, then the songs played last, the albums played most
-//! and the albums added last, as the server knows them. Dispatches
-//! `actions::ShowAlbum`, `actions::ShowArtist`, `actions::PlaySongs` and `actions::EnqueueSongs`; the
-//! app shell routes them.
+//! The app shell routes the `actions` this feature dispatches.
 
 mod home_view;
 mod layout;
@@ -16,7 +10,6 @@ use ui::list_navigation::bind_list_navigation;
 
 pub use home_view::Home;
 
-/// Key context of the focused home screen.
 pub const HOME_CONTEXT: &str = "Home";
 
 actions!(
@@ -26,13 +19,9 @@ actions!(
         Open,
         /// Plays the selected album or, from it on, the songs shown.
         Play,
-        /// Queues the selection right after the current song.
         PlayNext,
-        /// Queues the selection after every other song.
         AddToQueue,
-        /// Shows the selected album, or the selected song's, on the albums' screen.
         ShowInLibrary,
-        /// Asks which playlist to add the selection to.
         ChoosePlaylist,
         SelectLeft,
         SelectRight
@@ -46,7 +35,7 @@ struct AddSelectionToPlaylist {
     playlist: Option<subsonic::PlaylistId>,
 }
 
-/// Registers key bindings. Call before building the menu bar.
+/// Call before building the menu bar.
 pub fn init(cx: &mut App) {
     let (play, show_in_library, choose_playlist) = if cx.platform_info().is_mac() {
         ("cmd-enter", "cmd-l", "cmd-p")

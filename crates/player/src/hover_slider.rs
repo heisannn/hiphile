@@ -13,10 +13,8 @@ use gpui_kit::{
 const THUMB_OVERHANG: f32 = 0.375;
 /// How far above the line the thumb starts, in rems, to centre it on the line.
 const THUMB_RISE: f32 = 0.25;
-/// Opacity of the part of the line past the thumb.
 const LINE_OPACITY: f32 = 0.2;
 
-/// Where the pointer is, kept across frames per slider.
 #[derive(Default)]
 struct Interaction {
     hovered: bool,
@@ -30,7 +28,6 @@ impl Interaction {
         self.hovered || self.pressed
     }
 
-    /// Records a press or its end, for mouse down and mouse up listeners alike.
     fn press_listener<E>(
         interaction: &Entity<Self>,
         pressed: bool,
@@ -47,8 +44,7 @@ impl Interaction {
     }
 }
 
-/// A thin slider that shows its thumb only while the pointer is on it or
-/// dragging it. It fills its lane in a row. The owner keeps its [`SliderState`].
+/// A thin slider that shows its thumb only while the pointer is on it or dragging it.
 #[derive(IntoElement)]
 pub(crate) struct HoverSlider {
     state: Entity<SliderState>,

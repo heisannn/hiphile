@@ -40,14 +40,12 @@ use crate::{
     PlayNext, SelectLeft, SelectRight,
 };
 
-/// Pixel size requested for a card's cover or the artist's picture, the same as
-/// the albums' screen's, so that opening an album needs no second image.
+/// The same as the albums' screen's, so that opening an album needs no second image.
 const CARD_COVER_PIXELS: u32 = 256;
-/// Pixel size requested for a song row's cover, the same as the player's.
+/// The same as the player's.
 const ROW_COVER_PIXELS: u32 = 48;
 
-/// Something in the detail that can be selected, by identity, so that the
-/// selection survives a reload.
+/// By identity, so that the selection survives a reload.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Item {
     Song(SongId),
@@ -61,21 +59,14 @@ pub(super) enum Item {
 pub(super) enum Part {
     Header,
     TopSongsHeading,
-    /// A spinner or a failure.
     TopSongsStatus,
-    /// The top song at this position.
     Song(usize),
-    /// See more or Show less.
     TopSongsToggle,
     AlbumsHeading,
-    /// A spinner, a failure, or word of there being no albums.
     AlbumsStatus,
-    /// The albums at these positions.
     AlbumRow(Range<usize>),
     SimilarHeading,
-    /// A spinner or a failure.
     SimilarStatus,
-    /// The similar artists at these positions.
     SimilarRow(Range<usize>),
 }
 
@@ -110,7 +101,6 @@ pub(super) fn same_place(old: &[Part], top: usize, new: &[Part]) -> usize {
 }
 
 impl Artists {
-    /// How many of the top songs show.
     fn top_songs_shown(&self, detail: &ShownArtist) -> usize {
         let len = detail.top_songs.items().len();
         if self.top_songs_expanded {
@@ -120,9 +110,8 @@ impl Artists {
         }
     }
 
-    /// The items of the detail's list. Top songs and similar artists with
-    /// nothing to show go away: a server without an outside service to ask has
-    /// nothing to say about them.
+    /// Top songs and similar artists with nothing to show go away: a server without
+    /// an outside service to ask has nothing to say about them.
     pub(super) fn parts(&self) -> Vec<Part> {
         let Some(detail) = &self.detail else {
             return Vec::new();
@@ -196,7 +185,6 @@ impl Artists {
             .collect()
     }
 
-    /// Where in `parts` the item shows.
     fn part_of(&self, item: &Item, parts: &[Part]) -> Option<usize> {
         let detail = self.detail.as_ref()?;
         parts.iter().position(|part| match (part, item) {
@@ -227,7 +215,6 @@ impl Artists {
         Some(selection.clone())
     }
 
-    /// Whether nothing lies to the left of the selection but the list.
     fn is_selection_at_row_start(&self) -> bool {
         let Some(selection) = self.selection_on_screen() else {
             return true;
@@ -244,7 +231,7 @@ impl Artists {
             return;
         };
         if let Some(ix) = self.part_of(&item, &parts) {
-            // Going up to a section brings its heading into view too.
+            // Going up to a section brings its heading into view too
             let heading_above = ix > 0
                 && matches!(
                     motion,
@@ -260,8 +247,8 @@ impl Artists {
         cx.notify();
     }
 
-    /// Brings the part at `ix` into view. One not yet laid out has no height to
-    /// go by, so it goes to the top of the viewport.
+    /// One not yet laid out has no height to go by, so it goes to the top of the
+    /// viewport.
     fn reveal_part(&self, ix: usize) {
         if self.detail_list.bounds_for_item(ix).is_some() {
             self.detail_list.scroll_to_reveal_item(ix);
@@ -273,10 +260,9 @@ impl Artists {
         }
     }
 
-    /// Tells the list what the detail holds now, keeping what is at the top of
-    /// the viewport there. Heights start over: a part counts as a row of cards,
-    /// as most of a long list is, until it is laid out, which sizes the
-    /// scrollbar right from the start.
+    /// Keeps what is at the top of the viewport there. Heights start over: a part
+    /// counts as a row of cards, as most of a long list is, until it is laid out,
+    /// which sizes the scrollbar right from the start.
     pub(super) fn sync_detail_list(&mut self, window: &Window) {
         let listed = ListedDetail {
             artist: self.detail.as_ref().map(|detail| detail.id.clone()),
@@ -300,8 +286,7 @@ impl Artists {
         self.listed = listed;
     }
 
-    /// Records the detail's width and how many cards fit. Runs while the frame
-    /// is prepainted, so a change takes effect in the next one.
+    /// Runs while the frame is prepainted, so a change takes effect in the next one.
     fn observe_width(
         this: &gpui_kit::WeakEntity<Self>,
         width: Pixels,
@@ -341,7 +326,6 @@ impl Artists {
         albums.iter().find(|album| album.id() == id)
     }
 
-    /// Plays the top songs on show, from the one at `ix`.
     fn play_top_songs_from(&self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(detail) = &self.detail else {
             return;
@@ -380,7 +364,6 @@ impl Artists {
         }
     }
 
-    /// Does `action` to the selected song, album or artist.
     fn act_on_selection(
         &mut self,
         action: AlbumAction,
@@ -455,8 +438,6 @@ impl Artists {
         }
     }
 
-    /// Adds the song, album or artist selected in the detail to the favorites,
-    /// or takes it out.
     fn toggle_selection_favorite(&self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(detail) = &self.detail else {
             return;
@@ -735,10 +716,8 @@ impl Artists {
             .into_any_element()
     }
 
-    /// The artist's commands besides Play.
-    ///
-    /// The list's commands act on the artist on show, so the menu dispatches
-    /// them there, whichever part of the screen has focus.
+    /// The list's commands act on the artist on show, so the menu dispatches them
+    /// there, whichever part of the screen has focus.
     fn render_artist_menu(&self, has_songs: bool) -> impl IntoElement {
         let list_focus = self.list_focus.clone();
         Button::new("artist-menu")
@@ -854,7 +833,7 @@ impl Artists {
         let is_selected = self.selection == Some(Item::Song(id.clone()));
         let is_focused = self.detail_focus.is_focused(window);
         let title = SharedString::from(song.title().to_owned());
-        // The artist on show goes without saying.
+        // The artist on show goes without saying
         let artist = song_artist_link(song).filter(|_| song.artist_id() != Some(&detail.id));
         let details = ArtistLine::of_song_by(artist, song);
         let duration = song.duration().map(format_duration).unwrap_or_default();
@@ -991,7 +970,7 @@ impl Artists {
         let cover = artist
             .cover_art()
             .map(|cover_art| self.session.cover_art_url(cover_art, CARD_COVER_PIXELS));
-        // Zero says nothing of an artist the server knows for their songs.
+        // Zero says nothing of an artist the server knows for their songs
         let albums = artist
             .album_count()
             .filter(|count| *count > 0)
@@ -1040,7 +1019,6 @@ impl Artists {
     }
 }
 
-/// The artist on show, as far as the detail knows them.
 fn shown_as_artist(detail: &ShownArtist) -> Artist {
     let albums = match &detail.albums {
         Shelf::Loaded(albums) => u32::try_from(albums.len()).ok(),

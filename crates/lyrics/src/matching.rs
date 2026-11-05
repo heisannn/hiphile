@@ -21,7 +21,6 @@ const NEAR_LENGTH_DIFFERENCE: Duration = Duration::from_secs(10);
 /// Songs of about the same length are common, so this is little more than rounding.
 const CLOSE_LENGTH_DIFFERENCE: Duration = Duration::from_secs(3);
 
-/// What follows a title's name when it says which version it is.
 const VERSION_MARKS: [char; 8] = ['(', '（', '[', '［', '【', '~', '〜', '～'];
 const VERSION_WORDS: [&str; 5] = [" feat.", " feat ", " ft.", " ft ", " - "];
 
@@ -29,7 +28,6 @@ const VERSION_WORDS: [&str; 5] = [" feat.", " feat ", " ft.", " ft ", " - "];
 /// taggers call the artist of a compilation.
 const NOT_ANYONE: [&str; 2] = ["variousartists", "va"];
 
-/// A song a service offers, as far as it says.
 pub(crate) struct Offered<'a> {
     pub(crate) title: Option<&'a str>,
     pub(crate) artist: Option<&'a str>,
@@ -111,7 +109,6 @@ impl Offered<'_> {
     }
 }
 
-/// Whether `artist` can tell a song by them from another.
 pub(crate) fn says_who(artist: &str) -> bool {
     let simplified = simplified(artist);
     !simplified.is_empty() && !NOT_ANYONE.contains(&simplified.as_str())
@@ -120,7 +117,6 @@ pub(crate) fn says_who(artist: &str) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum TitleMatch {
     Same,
-    /// The same but for what says which version it is.
     OtherVersion,
     /// One holds the other's words, or there is no telling.
     Partly,

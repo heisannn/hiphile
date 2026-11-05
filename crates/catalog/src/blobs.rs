@@ -41,7 +41,6 @@ struct Usage {
     /// Whether a write is counting the files or removing some. Both touch
     /// every file, so they run without the lock and other writes go on.
     walking: bool,
-    /// Bytes written while the files were being walked.
     added_while_walking: u64,
 }
 
@@ -65,8 +64,8 @@ impl Blobs {
         self.capacity.load(Ordering::Relaxed)
     }
 
-    /// Where the file for `id` lives. IDs are opaque and may hold any
-    /// character, so they are hashed into names every file system accepts.
+    /// IDs are opaque and may hold any character, so they are hashed into names every
+    /// file system accepts.
     pub(crate) fn path(&self, server: &Url, variant: &str, id: &str) -> PathBuf {
         let name = hex::encode(Md5::digest(id.as_bytes()));
         self.root
@@ -126,8 +125,6 @@ impl Blobs {
         Ok(())
     }
 
-    /// Counts `added` bytes, and counts every file or removes some when
-    /// that is due.
     fn record(&self, added: u64) {
         {
             let mut usage = self.usage();
@@ -136,13 +133,13 @@ impl Blobs {
                 return;
             }
             if let Some(kept) = &mut usage.kept {
-                // A file written over is counted twice until the next walk.
+                // A file written over is counted twice until the next walk
                 *kept += added;
                 if *kept <= self.capacity() {
                     return;
                 }
             }
-            // The first count includes what was just written.
+            // The first count includes what was just written
             usage.walking = true;
         }
         let kept = self.walk();
@@ -151,9 +148,6 @@ impl Blobs {
         usage.walking = false;
     }
 
-    /// Counts the files and, when they take more than the capacity, removes
-    /// those used longest ago until a quarter of it is free. Returns how
-    /// many bytes are kept.
     fn walk(&self) -> u64 {
         let mut blobs = self.blobs();
         let mut kept: u64 = blobs.iter().map(|blob| blob.len).sum();
@@ -175,7 +169,6 @@ impl Blobs {
         kept
     }
 
-    /// How many bytes a removal leaves at most.
     fn after_removal(&self) -> u64 {
         self.capacity() / 4 * 3
     }
@@ -184,13 +177,12 @@ impl Blobs {
         self.usage.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// How many bytes the files of this kind take, for every server.
     pub(crate) fn kept_bytes(&self) -> u64 {
         self.blobs().iter().map(|blob| blob.len).sum()
     }
 
-    /// Removes every file of this kind for every server. One that cannot be
-    /// removed does not stop the rest; the first such failure is returned.
+    /// One that cannot be removed does not stop the rest; the first such failure is
+    /// returned.
     pub(crate) fn clear(&self) -> Result<(), Error> {
         let mut cleared = Ok(());
         for blob in self.blobs() {
@@ -207,13 +199,12 @@ impl Blobs {
                 }
             }
         }
-        // The next write counts them again.
+        // The next write counts them again
         self.usage().kept = None;
         cleared
     }
 
-    /// Every file of this kind kept for every server. Removes temporary
-    /// files that were abandoned, by a crash for example.
+    /// Also removes temporary files that were abandoned, by a crash for example.
     pub(crate) fn blobs(&self) -> Vec<Blob> {
         let mut blobs = Vec::new();
         for server in entries(&self.root) {
@@ -249,7 +240,6 @@ pub(crate) struct Blob {
     used: SystemTime,
 }
 
-/// The entries of `dir`, or none when it cannot be read.
 fn entries(dir: &Path) -> Vec<PathBuf> {
     fs::read_dir(dir)
         .map(|entries| {
@@ -288,7 +278,7 @@ mod tests {
             blobs.put(path, &[1; 100]).unwrap();
             age(path, Duration::from_secs(1000 - ix as u64 * 100));
         }
-        // A recorded use makes the oldest the most recently used.
+        // A recorded use makes the oldest the most recently used
         age(&paths[0], TOUCH_AFTER * 2);
         blobs.touch(&paths[0], &fs::metadata(&paths[0]).unwrap());
 
@@ -310,7 +300,7 @@ mod tests {
         blobs.put(&large, &[1; 301]).unwrap();
         assert!(!large.exists());
         assert!(kept.exists());
-        // As large as a removal leaves still fits.
+        // As large as a removal leaves still fits
         blobs.put(&large, &[1; 300]).unwrap();
         assert!(large.exists());
     }
@@ -400,7 +390,7 @@ mod tests {
         assert_eq!(songs.kept_bytes(), 0);
         assert!(cover.exists(), "clearing songs removed a cover");
 
-        // What is written afterwards is counted from nothing.
+        // What is written afterwards is counted from nothing
         let path = songs.path(&server(), "original", "so-2");
         songs.put(&path, &[1; 100]).unwrap();
         assert!(path.exists());

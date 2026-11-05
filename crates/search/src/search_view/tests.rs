@@ -7,7 +7,6 @@ use subsonic::{Album, Credentials, ScanStatus};
 
 use super::*;
 
-/// What sits under the palette.
 struct Host;
 
 impl Render for Host {
@@ -61,7 +60,6 @@ fn saved_library(dir: &tempfile::TempDir) -> catalog::Catalog {
     catalog
 }
 
-/// A palette over `catalog`, and what it asks of the app shell.
 fn palette(
     catalog: Option<catalog::Catalog>,
     cx: &mut TestAppContext,
@@ -70,7 +68,7 @@ fn palette(
     Rc<RefCell<Vec<SearchEvent>>>,
     &mut VisualTestContext,
 ) {
-    // Reading a library wakes the test from a background thread.
+    // Reading a library wakes the test from a background thread
     cx.executor().allow_parking();
     cx.update(gpui_kit::init);
     let net = net::Client::new("hiphile-test").unwrap();
@@ -83,7 +81,7 @@ fn palette(
         catalog,
         None,
     );
-    // Dialogs live in the window's root.
+    // Dialogs live in the window's root
     let (handle, _host) = cx
         .update(|cx| {
             gpui_kit::open_window(gpui_kit::WindowOptions::default(), cx, |_, cx| {
@@ -137,7 +135,6 @@ fn sections(search: &Entity<Search>, cx: &mut VisualTestContext) -> Vec<&'static
     })
 }
 
-/// Counts what asks for the palette, inside the window's key context.
 struct Shell {
     focus: FocusHandle,
     asked: usize,
@@ -246,7 +243,6 @@ fn escape_closes_without_asking_for_anything(cx: &mut TestAppContext) {
     assert!(events.borrow().is_empty());
 }
 
-/// Syncs `catalog` to hold nothing but a song called `title`.
 fn resync(catalog: &catalog::Catalog, title: &str) {
     let source = Saved {
         albums: json!([]),

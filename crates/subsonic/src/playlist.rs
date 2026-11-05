@@ -4,7 +4,6 @@ use serde::Deserialize;
 
 use crate::{CoverArtId, PlaylistId, Song};
 
-/// A saved playlist.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Playlist {
@@ -28,7 +27,6 @@ impl Playlist {
         &self.name
     }
 
-    /// This playlist under a new name, as the server has it once renamed.
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
         self
@@ -54,8 +52,7 @@ impl Playlist {
         self.cover_art.as_ref()
     }
 
-    /// Whether `username` is who the server names as its owner. Servers match
-    /// user names without regard to case, so they can be signed in to with
+    /// Servers match user names without regard to case, so they can be signed in to with
     /// one spelled differently.
     pub fn is_owned_by(&self, username: &str) -> bool {
         self.owner
@@ -63,8 +60,8 @@ impl Playlist {
             .is_some_and(|owner| owner.eq_ignore_ascii_case(username))
     }
 
-    /// Whether `username` can change it. Only OpenSubsonic servers say; on
-    /// others only the owner can, and one naming no owner is left to refuse.
+    /// Only OpenSubsonic servers say; on others only the owner can, and one naming no owner
+    /// is left to refuse.
     pub fn is_editable_by(&self, username: &str) -> bool {
         match self.readonly {
             Some(readonly) => !readonly,
@@ -73,7 +70,6 @@ impl Playlist {
     }
 }
 
-/// A playlist with its songs, in playlist order.
 #[derive(Clone, Debug, Deserialize)]
 pub struct PlaylistWithSongs {
     #[serde(flatten)]

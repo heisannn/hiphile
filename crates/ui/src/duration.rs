@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-/// `m:ss`, or `h:mm:ss` from one hour, as music players show track lengths.
+/// `m:ss`, or `h:mm:ss` from one hour.
 pub fn format_duration(duration: Duration) -> String {
     let seconds = duration.as_secs();
     let (hours, minutes, seconds) = (seconds / 3600, seconds / 60 % 60, seconds % 60);

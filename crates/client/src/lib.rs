@@ -1,7 +1,3 @@
-//! OpenSubsonic client that runs [`subsonic`] endpoints over [`net`].
-//!
-//! Runtime-agnostic: its futures can be awaited from GPUI or the CLI.
-
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::de::DeserializeOwned;
@@ -16,7 +12,6 @@ use url::Url;
 
 /// Largest page `getAlbumList2` returns.
 pub const ALBUM_PAGE_SIZE: u32 = 500;
-/// How many songs [`Client::all_songs`] asks for at a time.
 const SONG_PAGE_SIZE: u32 = 500;
 
 /// Longest URL sent as is. Proxies in front of a server commonly refuse more
@@ -50,7 +45,6 @@ impl From<net::Error> for Error {
     }
 }
 
-/// Where the server lives and how to authenticate with it.
 #[derive(Clone, Debug)]
 pub struct Server {
     base_url: Url,
@@ -113,7 +107,6 @@ impl Client {
         &self.server
     }
 
-    /// The transport, for requests that are not to the server.
     pub fn net(&self) -> &net::Client {
         &self.net
     }
@@ -123,7 +116,6 @@ impl Client {
         Ok(envelope.server().clone())
     }
 
-    /// Every album, sorted by name, fetched page by page.
     pub async fn albums_by_name(&self) -> Result<Vec<Album>, Error> {
         let mut albums = Vec::new();
         loop {
@@ -137,8 +129,7 @@ impl Client {
         }
     }
 
-    /// One page of the albums sorted by name; `size` is at most
-    /// [`ALBUM_PAGE_SIZE`].
+    /// `size` is at most [`ALBUM_PAGE_SIZE`].
     pub async fn albums_page(&self, size: u32, offset: u32) -> Result<Vec<Album>, Error> {
         let envelope = self
             .call::<GetAlbumList2>(&Endpoint::albums_by_name(size, offset))
@@ -154,7 +145,6 @@ impl Client {
         Ok(envelope.into_payload().into_albums())
     }
 
-    /// The `size` albums played last by the user, most recent first.
     pub async fn recently_played_albums(&self, size: u32) -> Result<Vec<Album>, Error> {
         let envelope = self
             .call::<GetAlbumList2>(&Endpoint::recently_played_albums(size))
@@ -162,7 +152,6 @@ impl Client {
         Ok(envelope.into_payload().into_albums())
     }
 
-    /// The `size` albums the user played most, most played first.
     pub async fn frequent_albums(&self, size: u32) -> Result<Vec<Album>, Error> {
         let envelope = self
             .call::<GetAlbumList2>(&Endpoint::frequent_albums(size))
@@ -170,7 +159,6 @@ impl Client {
         Ok(envelope.into_payload().into_albums())
     }
 
-    /// `size` albums in no order, different each time.
     pub async fn random_albums(&self, size: u32) -> Result<Vec<Album>, Error> {
         let envelope = self
             .call::<GetAlbumList2>(&Endpoint::random_albums(size))
@@ -178,8 +166,7 @@ impl Client {
         Ok(envelope.into_payload().into_albums())
     }
 
-    /// Up to `count` songs similar to those of `album`; none when the server
-    /// has no outside service to ask.
+    /// Empty when the server has no outside service to ask.
     pub async fn similar_songs(&self, album: &AlbumId, count: u32) -> Result<Vec<Song>, Error> {
         let envelope = self
             .call::<GetSimilarSongs2>(&Endpoint::similar_songs(album, count))
@@ -233,8 +220,7 @@ impl Client {
         Ok(envelope.into_payload().into_artist())
     }
 
-    /// Up to `count` artists in the library similar to `artist`; none when the
-    /// server has no outside service to ask.
+    /// Empty when the server has no outside service to ask.
     pub async fn similar_artists(
         &self,
         artist: &ArtistId,
@@ -246,8 +232,7 @@ impl Client {
         Ok(envelope.into_payload().into_similar_artists())
     }
 
-    /// The `count` most listened to songs of the artist called `artist`; none
-    /// when the server has no outside service to ask.
+    /// `artist` is a name. Empty when the server has no outside service to ask.
     pub async fn top_songs(&self, artist: &str, count: u32) -> Result<Vec<Song>, Error> {
         let envelope = self
             .call::<GetTopSongs>(&Endpoint::top_songs(artist, count))
@@ -255,7 +240,6 @@ impl Client {
         Ok(envelope.into_payload().into_songs())
     }
 
-    /// Every song in the library, fetched page by page.
     pub async fn all_songs(&self) -> Result<Vec<Song>, Error> {
         let mut songs = Vec::new();
         loop {
@@ -269,7 +253,6 @@ impl Client {
         }
     }
 
-    /// Every playlist the user can play.
     pub async fn playlists(&self) -> Result<Vec<Playlist>, Error> {
         let envelope = self.call::<GetPlaylists>(&Endpoint::playlists()).await?;
         Ok(envelope.into_payload().into_playlists())
@@ -293,7 +276,6 @@ impl Client {
         Ok(envelope.into_payload().into_playlist())
     }
 
-    /// Makes `songs`, in this order, the whole of `playlist`.
     pub async fn replace_playlist_songs(
         &self,
         playlist: &PlaylistId,
@@ -318,7 +300,6 @@ impl Client {
         Ok(())
     }
 
-    /// Adds `songs` after those already in `playlist`.
     pub async fn add_to_playlist(
         &self,
         playlist: &PlaylistId,
@@ -341,25 +322,21 @@ impl Client {
         Ok(())
     }
 
-    /// Every song, album and artist the user marked as a favorite.
     pub async fn starred(&self) -> Result<Starred, Error> {
         let envelope = self.call::<GetStarred2>(&Endpoint::starred()).await?;
         Ok(envelope.into_payload().into_starred())
     }
 
-    /// Marks `target` as a favorite of the user.
     pub async fn star(&self, target: &StarTarget) -> Result<(), Error> {
         self.call::<Ping>(&Endpoint::star(target)).await?;
         Ok(())
     }
 
-    /// Takes `target` out of the user's favorites.
     pub async fn unstar(&self, target: &StarTarget) -> Result<(), Error> {
         self.call::<Ping>(&Endpoint::unstar(target)).await?;
         Ok(())
     }
 
-    /// Tells the server `song` was listened to at `played_at`.
     pub async fn scrobble(&self, song: &SongId, played_at: SystemTime) -> Result<(), Error> {
         let played_at = played_at.duration_since(UNIX_EPOCH).map_or(0, |since| {
             u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
@@ -375,8 +352,6 @@ impl Client {
         Ok(())
     }
 
-    /// URL of a cover art image, authenticated like any other request.
-    ///
     /// Each call yields a different URL (a fresh salt), so keep the result
     /// for as long as the image is shown; an image cache keyed by URL would
     /// otherwise fetch it again on every call. The URL carries credentials:
@@ -402,7 +377,7 @@ impl Client {
     pub async fn open_stream(&self, song: &SongId) -> Result<net::Download, Error> {
         let url = self.server.url(&Endpoint::stream_original(song));
         let download = self.net.download(url).await?;
-        // `stream` reports failures as a Subsonic document with HTTP 200.
+        // `stream` reports failures as a Subsonic document with HTTP 200
         let content_type = download.content_type().unwrap_or_default().to_owned();
         if is_document(&content_type) {
             let body = download.into_body().await?;

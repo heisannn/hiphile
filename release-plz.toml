@@ -15,11 +15,11 @@ changelog_update = false
 name = "hiphile"
 git_tag_enable = true
 git_release_enable = true
-# .github/workflows/release.yml publishes the draft once its builds are attached.
+# .github/workflows/release.yml publishes the draft once its builds are attached
 git_release_draft = true
 changelog_update = true
 changelog_path = "CHANGELOG.md"
-# Commits of a crate missing here stay out of the changelog.
+# Commits of a crate missing here stay out of the changelog
 changelog_include = [
     "account",
     "actions",
@@ -48,7 +48,7 @@ changelog_include = [
     "updater",
 ]
 
-# The CLI is not part of the release, so a change to it alone does not start one.
+# The CLI is not part of the release, so a change to it alone does not start one
 [[package]]
 name = "hiphile-cli"
 release = false

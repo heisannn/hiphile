@@ -1,5 +1,3 @@
-//! In-memory WAV files for tests.
-
 /// 16-bit PCM WAV of `frames` frames, every sample `value`.
 pub(crate) fn wav(rate: u32, channels: u16, frames: u32, value: i16) -> Vec<u8> {
     wav_with(rate, channels, frames, |_| value)
@@ -12,7 +10,6 @@ pub(crate) fn wav_counting(rate: u32, channels: u16, frames: u32) -> Vec<u8> {
     wav_with(rate, channels, frames, |frame| frame as i16)
 }
 
-/// The frame number a sample decoded from [`wav_counting`] holds.
 pub(crate) fn counting_frame(sample: f32) -> u32 {
     (sample * 32_768.0).round() as u32
 }

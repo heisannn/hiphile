@@ -20,7 +20,6 @@ pub struct Album {
     /// Seconds.
     duration: Option<u64>,
     year: Option<u32>,
-    /// When the user last played a song of it, in RFC 3339.
     played: Option<String>,
 }
 

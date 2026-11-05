@@ -10,8 +10,8 @@ const RANGE: NumberRange = NumberRange {
     step: 1.,
 };
 
-/// Edits the limit in [`CacheLimit`]. Only this field changes it, so what it shows
-/// never has to follow the settings, and they cannot replace what is being typed.
+/// Only this field changes the limit, so what it shows never has to follow the settings, and
+/// they cannot replace what is being typed.
 pub(crate) struct CacheLimitField {
     settings: Entity<CacheLimit>,
     input: Entity<InputState>,

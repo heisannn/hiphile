@@ -2,10 +2,8 @@ use std::collections::VecDeque;
 
 use subsonic::{PlaylistId, SongId};
 
-/// A change to a playlist on its way to the server.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Write {
-    /// Makes these songs the whole of the playlist.
     ReplaceSongs {
         playlist: PlaylistId,
         songs: Vec<SongId>,

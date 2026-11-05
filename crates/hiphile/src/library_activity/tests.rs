@@ -67,7 +67,7 @@ fn a_notice_taken_down_can_go_up_again() {
     let mut notice = Notice::default();
     notice.follow(true);
     notice.follow(false);
-    // Taking it down closes it too, which is not the user closing it.
+    // Taking it down closes it too, which is not the user closing it
     notice.closed();
     assert_eq!(notice.follow(true), Some(NoticeChange::Show));
 }

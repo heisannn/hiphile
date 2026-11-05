@@ -2,8 +2,7 @@ use std::borrow::Cow;
 
 use gpui_kit::{AssetSource, Result, SharedString};
 
-// Icons used by the features beyond GPUI Kit's default set. An icon missing
-// here renders as nothing, so add every new `gpui_kit::assets::IconName` the
+// An icon missing here renders as nothing, so add every new `gpui_kit::assets::IconName` the
 // features start using.
 gpui_kit::assets::icon_assets!(
     ExtraIcons,
@@ -27,7 +26,6 @@ gpui_kit::assets::icon_assets!(
     ]
 );
 
-/// GPUI Kit's default assets plus the extra icons.
 pub struct Assets;
 
 impl AssetSource for Assets {

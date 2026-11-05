@@ -38,7 +38,6 @@ const MIN_MISTYPED: usize = 5;
 /// How long a word must be before a second mistake is forgiven.
 const MIN_TWICE_MISTYPED: usize = 9;
 
-/// One word of a query.
 #[derive(Debug)]
 pub(crate) struct Atom {
     text: String,
@@ -80,7 +79,6 @@ impl Atom {
     }
 }
 
-/// Reusable working space for matching one atom against many texts.
 pub(crate) struct Scratch {
     pub(crate) matcher: Matcher,
     indices: Vec<u32>,
@@ -99,7 +97,6 @@ impl Scratch {
     }
 }
 
-/// Where a word was found in a text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Place {
     Whole,
@@ -108,7 +105,6 @@ enum Place {
     InsideWord,
 }
 
-/// The best place of `needle` in `text`.
 fn contiguous(needle: &str, text: &str, starts: &[u32]) -> Option<Place> {
     if text == needle {
         return Some(Place::Whole);
@@ -150,7 +146,6 @@ fn as_spelled(place: Place, needle: &str, searchable: &Searchable) -> Option<Tie
     }
 }
 
-/// Whether `needle` is in `text` in order, closely, starting on a word.
 fn is_close_subsequence(needle: &str, text: &str, starts: &[u32], scratch: &mut Scratch) -> bool {
     let wanted = needle.chars().count();
     if wanted < MIN_ANYWHERE {
@@ -238,7 +233,6 @@ fn better(a: Option<Tier>, b: Option<Tier>) -> Option<Tier> {
     }
 }
 
-/// Whether `atom` is in `searchable` but for a mistake or two in typing it.
 pub(crate) fn is_mistyped(atom: &Atom, searchable: &Searchable) -> bool {
     let Some(spelled) = atom.spelled.as_ref().filter(|it| it.len() >= MIN_MISTYPED) else {
         return false;
@@ -254,7 +248,6 @@ pub(crate) fn is_mistyped(atom: &Atom, searchable: &Searchable) -> bool {
         .any(|key| edit_distance_within(spelled.as_bytes(), key.spelled.as_bytes()) <= allowed)
 }
 
-/// The tier of a match that needed a mistake forgiven.
 pub(crate) const fn mistyped_tier() -> Tier {
     MISTYPED
 }
@@ -375,14 +368,14 @@ mod tests {
     #[test]
     fn a_subsequence_must_be_close_and_start_on_a_word() {
         let reading = Some("ヨルニカケル");
-        // One letter left out, as in a typing slip.
+        // One letter left out, as in a typing slip
         assert_eq!(
             tier_of("yornikakeru", "夜に駆ける", reading),
             Some(SCATTERED)
         );
-        // Spread over the whole reading, which any romaji would allow.
+        // Spread over the whole reading, which any romaji would allow
         assert_eq!(tier_of("yoke", "夜に駆ける", reading), None);
-        // Close, but inside a word.
+        // Close, but inside a word
         assert_eq!(tier_of("rnk", "夜に駆ける", reading), None);
     }
 
@@ -426,9 +419,9 @@ mod tests {
         assert_eq!(tier_of("pop", "Bob Dylan", None), None);
         assert_eq!(tier_of("bad", "Hat Trick", None), None);
         assert_eq!(tier_of("god", "Got to Go", None), None);
-        // Cut off inside a syllable.
+        // Cut off inside a syllable
         assert_eq!(tier_of("ship", "事変", Some("ジヘン")), None);
-        // As written in kana, the voicing is known.
+        // As written in kana, the voicing is known
         assert_eq!(tier_of("kenshi", "げんし", None), None);
     }
 

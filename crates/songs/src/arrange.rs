@@ -3,7 +3,6 @@ use std::cmp::Ordering;
 use fuzzy::{Index, Speller};
 use subsonic::Song;
 
-/// A column of the table of songs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Column {
     Title,
@@ -12,7 +11,6 @@ pub(crate) enum Column {
     Time,
 }
 
-/// Which column the songs follow, and which way.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Sort {
     pub(crate) column: Column,
@@ -20,14 +18,11 @@ pub(crate) struct Sort {
 }
 
 impl Sort {
-    /// Sorted by title, from A.
     pub(crate) const DEFAULT: Self = Self {
         column: Column::Title,
         is_descending: false,
     };
 
-    /// What clicking the heading of `column` asks for: the other way round for
-    /// the column in use, otherwise that column from its start.
     pub(crate) fn clicked(self, column: Column) -> Self {
         Self {
             column,
@@ -36,8 +31,8 @@ impl Sort {
     }
 }
 
-/// What a song is compared by, worked out once per song: lowercasing on every
-/// comparison would take most of the time of sorting a large library.
+/// Worked out once per song: lowercasing on every comparison would take most of the time of
+/// sorting a large library.
 struct Key {
     title: String,
     artist: Option<String>,
@@ -49,7 +44,7 @@ struct Key {
 
 impl Key {
     fn new(song: &Song) -> Self {
-        // Tags can start with stray spaces, which should not put them first.
+        // Tags can start with stray spaces, which should not put them first
         let key = |text: &str| text.trim().to_lowercase();
         Self {
             title: key(song.title()),
@@ -62,8 +57,8 @@ impl Key {
     }
 }
 
-/// Compares what a column holds. A song that does not say comes last, whichever
-/// way the column runs: blanks are of no interest at either end.
+/// A song that does not say comes last, whichever way the column runs: blanks are of no interest
+/// at either end.
 fn compare_column<T: Ord>(a: Option<&T>, b: Option<&T>, is_descending: bool) -> Ordering {
     match (a, b) {
         (Some(a), Some(b)) if is_descending => b.cmp(a),
@@ -74,7 +69,6 @@ fn compare_column<T: Ord>(a: Option<&T>, b: Option<&T>, is_descending: bool) -> 
     }
 }
 
-/// Keeps an album's songs in their order.
 fn compare_within_album(a: &Key, b: &Key) -> Ordering {
     compare_column(a.disc.as_ref(), b.disc.as_ref(), false)
         .then_with(|| compare_column(a.track.as_ref(), b.track.as_ref(), false))
@@ -102,7 +96,6 @@ fn compare(a: &Key, b: &Key, sort: Sort) -> Ordering {
     }
 }
 
-/// `songs`, to find by their title, artist or album.
 pub(crate) fn song_index(songs: &[Song], speller: Option<&dyn Speller>) -> Index {
     Index::new(
         songs.iter().map(|song| {
@@ -148,7 +141,6 @@ mod tests {
         serde_json::from_value(fields).unwrap()
     }
 
-    /// Four songs across two albums, one of them saying little.
     fn songs() -> Vec<Song> {
         vec![
             song(json!({
@@ -267,14 +259,14 @@ mod tests {
         let index = song_index(&songs, None);
         let sort = Sort::DEFAULT;
         assert_eq!(arrange(&songs, &index, "blue", sort, true), [1, 0]);
-        // Sorted by title, where B comes before K.
+        // Sorted by title, where B comes before K
         assert_eq!(arrange(&songs, &index, "blue", sort, false), [1, 0]);
         let by_time = Sort {
             column: Column::Title,
             is_descending: true,
         };
         assert_eq!(arrange(&songs, &index, "blue", by_time, false), [0, 1]);
-        // Nothing to rank by, so the sort it is.
+        // Nothing to rank by, so the sort it is
         assert_eq!(arrange(&songs, &index, " ", by_time, true), [0, 1]);
     }
 

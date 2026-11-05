@@ -4,7 +4,7 @@ use chrono::{DateTime, Local, TimeDelta, Utc};
 use futures::future::{join_all, try_join4};
 use subsonic::{Album, AlbumId, Song};
 
-/// How many albums to pick, for the widest window.
+/// How many to pick, for the widest window.
 const RECOMMENDED: usize = 12;
 /// How long an album stays out of the picks after being played.
 const HEARD_DAYS: i64 = 14;
@@ -28,7 +28,6 @@ pub(crate) fn today() -> String {
     Local::now().date_naive().to_string()
 }
 
-/// What a pick found.
 pub(crate) struct Recommendations {
     pub(crate) albums: Vec<Album>,
     /// Whether everything asked of the server came through. Otherwise this is
@@ -67,7 +66,7 @@ pub(crate) async fn fetch_recommended(
         },
         RECOMMENDED,
     );
-    // A song names its album, but not who the album as a whole is by.
+    // A song names its album, but not who the album as a whole is by
     let loaded = join_all(picks.iter().map(|album| client.album(album))).await;
     let mut albums = Vec::new();
     let mut failure = None;
@@ -122,22 +121,17 @@ where
     SimilarSongs { lists, complete }
 }
 
-/// What to pick from.
 struct Sources<'a> {
     /// Similar songs, per album they are similar to.
     similar: &'a [Vec<Song>],
     frequent: &'a [Album],
     random: &'a [Album],
-    /// The albums played last.
     played: &'a [Album],
-    /// The albums on the shelf of new ones.
     newest: &'a [Album],
-    /// The albums on the shelf of the most played.
     most_played: &'a [Album],
     now: DateTime<Utc>,
 }
 
-/// An album that could be picked.
 #[derive(Clone, Copy)]
 struct Candidate<'a> {
     album: &'a AlbumId,
@@ -215,14 +209,13 @@ fn album_artist(album: &Album) -> Option<&str> {
         .or(album.artist())
 }
 
-/// The first album of each artist. Albums by no known artist all stay.
+/// Albums by no known artist all stay.
 fn one_per_artist<'a>(albums: impl Iterator<Item = &'a Album>) -> impl Iterator<Item = &'a Album> {
     let mut artists = HashSet::new();
     albums.filter(move |album| album_artist(album).is_none_or(|artist| artists.insert(artist)))
 }
 
-/// Whether `album` was played after `since`. A time that cannot be read says
-/// nothing, so it does not keep the album out.
+/// A time that cannot be read says nothing, so it does not keep the album out.
 fn played_since(album: &Album, since: DateTime<Utc>) -> bool {
     album
         .played()

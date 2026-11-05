@@ -6,8 +6,6 @@ use gpui_kit::http_client::http::{HeaderMap, Method, StatusCode, Uri, header};
 use gpui_kit::http_client::{self, AsyncBody, HttpClient, Request, Response};
 use subsonic::CoverArtRequest;
 
-/// GPUI's [`HttpClient`] backed by the shared [`net::Client`].
-///
 /// Bodies are buffered in both directions; this serves API calls and images,
 /// not audio streams, which `playback` reads through `net` directly. Cover
 /// art comes from `covers` once it has been downloaded.
@@ -24,7 +22,7 @@ impl NetHttpClient {
 
 impl HttpClient for NetHttpClient {
     fn user_agent(&self) -> Option<&http_client::http::HeaderValue> {
-        // `net` sets the user agent on every request itself.
+        // `net` sets the user agent on every request itself
         None
     }
 
@@ -57,7 +55,6 @@ impl HttpClient for NetHttpClient {
     }
 }
 
-/// The cover art a request asks for, when it is a `getCoverArt` call.
 fn cover_request(method: &Method, uri: &Uri) -> Option<CoverArtRequest> {
     if method != Method::GET {
         return None;
@@ -84,7 +81,7 @@ where
     };
     match fetch().await {
         Ok(response) if response.status().is_success() && is_image(response.headers()) => {
-            // A failure to keep it costs a download later.
+            // A failure to keep it costs a download later
             covers.put(cover, response.body()).ok();
             Ok(response)
         }
@@ -146,7 +143,6 @@ mod tests {
             .unwrap()
     }
 
-    /// Answers `cover`, counting the fetches in `fetches`.
     fn answer(
         covers: &CoverStore,
         cover: &CoverArtRequest,

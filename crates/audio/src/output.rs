@@ -1,5 +1,3 @@
-//! Choosing the device configuration for a source.
-
 use cpal::traits::DeviceTrait;
 
 use crate::Error;
@@ -9,7 +7,6 @@ const STANDARD_RATES: [u32; 10] = [
     44_100, 48_000, 88_200, 96_000, 176_400, 192_000, 352_800, 384_000, 705_600, 768_000,
 ];
 
-/// Where and at what rate the engine plays.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OutputSettings {
     device: Option<String>,
@@ -33,14 +30,12 @@ impl OutputSettings {
     }
 }
 
-/// Sample rate and channel count of a stream.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Spec {
     pub(crate) rate: u32,
     pub(crate) channels: u16,
 }
 
-/// One supported 32-bit float configuration range of a device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ConfigRange {
     pub(crate) channels: u16,
@@ -76,8 +71,6 @@ pub(crate) fn standard_rates(ranges: &[ConfigRange]) -> Vec<u32> {
         .collect()
 }
 
-/// Picks the output configuration for `source`.
-///
 /// `fixed_rate`, or otherwise the source rate, wins whenever the device
 /// supports it, so without a fixed rate the device is switched to the file's
 /// rate and nothing is resampled. Otherwise the device's current rate is kept

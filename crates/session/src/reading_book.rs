@@ -7,7 +7,6 @@ use catalog::SavedReading;
 use fuzzy::bundle::BUNDLE;
 use fuzzy::{Analyzer, Key, Reader, Speller, keys_of, needs_reading};
 
-/// How many texts are worked out between one word of progress and the next.
 const PROGRESS_EVERY: usize = 64;
 
 /// How the library's texts read, shared by every list: what one list worked out
@@ -70,7 +69,7 @@ impl ReadingBook {
         let _turn = self.gate.lock().unwrap_or_else(PoisonError::into_inner);
         let source = format!("{}/{}", BUNDLE.name, Reader::VERSION);
         let catalog = self.catalog.as_ref();
-        // What can't be read is the same as nothing saved: it gets worked out.
+        // What can't be read is the same as nothing saved: it gets worked out
         let saved = catalog
             .and_then(|catalog| catalog.romaji(&source).ok())
             .unwrap_or_default();
@@ -83,7 +82,7 @@ impl ReadingBook {
         let result = read(&saving);
         let worked_out = saving.worked_out.into_inner();
         if let Some(catalog) = catalog.filter(|_| !worked_out.is_empty()) {
-            // Failing only means working them out again next time.
+            // Failing only means working them out again next time
             catalog.put_readings(&source, &worked_out).ok();
         }
         result
@@ -105,7 +104,7 @@ impl<A: Analyzer, O: Fn() -> Option<A>> Speller for Saving<A, O> {
         if let Some(Ok(keys)) = saved {
             return keys;
         }
-        // Nothing is saved without an analyzer: this says nothing of how it reads.
+        // Nothing is saved without an analyzer: this says nothing of how it reads
         let Some(analyzer) = self.analyzer.get_or_init(&self.open) else {
             return keys_of(text, &[]);
         };
@@ -152,7 +151,6 @@ mod tests {
         catalog.romaji(&source).unwrap().len()
     }
 
-    /// Whether `book` finds 白日 by its romaji, counting the analyzer's openings.
     fn finds(book: &ReadingBook, opened: &AtomicUsize) -> bool {
         let open = || {
             opened.fetch_add(1, Ordering::Relaxed);
@@ -251,7 +249,6 @@ mod tests {
         assert_eq!(opened.load(Ordering::Relaxed), 0);
     }
 
-    /// What reading `texts` ahead told, in order.
     fn told(book: &ReadingBook, texts: &[String]) -> Vec<(usize, usize)> {
         let told = RefCell::new(Vec::new());
         book.read_texts_with(

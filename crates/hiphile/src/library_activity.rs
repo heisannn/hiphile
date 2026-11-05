@@ -19,14 +19,12 @@ mod tests;
 /// mentioning: a few new texts take no time at all.
 const SLOW_READING: Duration = Duration::from_secs(1);
 
-/// What the library is busy with, as the notice shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Status {
     label: &'static str,
     done: usize,
     /// How many in all, when that can be told. A guess, which `done` may pass.
     total: Option<usize>,
-    /// Whether `done` is a percentage rather than a number of things.
     is_percentage: bool,
 }
 
@@ -54,12 +52,6 @@ impl Status {
         }
     }
 
-    /// How far the download in `state` has got, if one is under way.
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "a percentage for a progress bar, rounded and never negative"
-    )]
     fn of_download(state: &ReadingsState) -> Option<Self> {
         let ReadingsState::Downloading(fraction) = state else {
             return None;
@@ -77,10 +69,6 @@ impl Status {
         self.total.filter(|total| *total > 0 && self.done <= *total)
     }
 
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "a percentage for a progress bar"
-    )]
     fn percent(&self) -> Option<f32> {
         self.known_total()
             .map(|total| self.done as f32 / total as f32 * 100.)
@@ -97,7 +85,6 @@ impl Status {
     }
 }
 
-/// Whether the notice is up, and whether it may go up.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Notice {
     is_shown: bool,
@@ -105,7 +92,6 @@ struct Notice {
     is_dismissed: bool,
 }
 
-/// What to do to the notice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NoticeChange {
     Show,
@@ -113,7 +99,6 @@ pub(crate) enum NoticeChange {
 }
 
 impl Notice {
-    /// What `is_busy` asks of the notice.
     fn follow(&mut self, is_busy: bool) -> Option<NoticeChange> {
         if !is_busy {
             self.is_dismissed = false;
@@ -141,13 +126,9 @@ impl Notice {
     }
 }
 
-/// Emitted when what the library is busy with changes.
 pub(crate) struct ActivityChanged;
 
-/// How far the sync has got, how far the dictionaries have downloaded, and how
-/// far working out how the library reads has, which is done after each sync so
-/// nothing has to wait for it later. Renders the inside of the notice that shows
-/// it.
+/// Works out how the library reads after each sync, so nothing has to wait for it later.
 pub(crate) struct LibraryActivity {
     session: Session,
     sync: Option<Status>,
@@ -206,7 +187,6 @@ impl LibraryActivity {
         self.changed(cx);
     }
 
-    /// Takes the sync off the notice, then works out how whatever it left reads.
     pub(crate) fn sync_finished(&mut self, cx: &mut Context<Self>) {
         self.sync = None;
         self.changed(cx);
@@ -236,7 +216,7 @@ impl LibraryActivity {
             });
         });
         self._read_task = cx.spawn(async move |this, cx| {
-            // Ends when the reading does, which drops the sender.
+            // Ends when the reading does, which drops the sender
             while let Some((done, total)) = progress.next().await {
                 this.update(cx, |this, cx| this.reading_progress(done, total, cx))
                     .ok();
@@ -289,7 +269,6 @@ impl LibraryActivity {
         cx.notify();
     }
 
-    /// What the notice should do now.
     pub(crate) fn notice_change(&mut self) -> Option<NoticeChange> {
         let is_busy = self.status().is_some();
         self.notice.follow(is_busy)

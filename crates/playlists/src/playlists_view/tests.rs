@@ -50,7 +50,7 @@ fn view_on<'a>(
     url: &str,
     cx: &'a mut TestAppContext,
 ) -> (Entity<Playlists>, &'a mut VisualTestContext) {
-    // The requests wake the test from the network's own thread.
+    // The requests wake the test from the network's own thread
     cx.executor().allow_parking();
     cx.update(gpui_kit::init);
     cx.update(ui::list_navigation::bind_control_keys);
@@ -65,7 +65,7 @@ fn view_on<'a>(
         None,
         None,
     );
-    // Notifications and dialogs live in the window's root.
+    // Notifications and dialogs live in the window's root
     let (handle, view) = cx
         .update(|cx| {
             gpui_kit::open_window(gpui_kit::WindowOptions::default(), cx, |window, cx| {
@@ -161,7 +161,6 @@ fn songs_are_focused(view: &Entity<Playlists>, cx: &mut VisualTestContext) -> bo
     cx.update(|window, cx| view.read(cx).songs_focus.is_focused(window))
 }
 
-/// Opens the New Playlist dialog and commits `name` from the keyboard.
 fn create_from_dialog(
     view: &Entity<Playlists>,
     name: &str,
@@ -182,7 +181,6 @@ fn create_from_dialog(
     form
 }
 
-/// Counts how many times the app is asked to play songs.
 fn count_plays(cx: &mut VisualTestContext) -> Rc<Cell<usize>> {
     let plays = Rc::new(Cell::new(0));
     let counted = plays.clone();
@@ -798,7 +796,7 @@ fn choosing_new_playlist_from_the_chooser_leaves_keys_with_the_dialog(cx: &mut T
         })
     });
 
-    // The menu's New Playlist… asks for the dialog, then dismisses itself.
+    // The menu's New Playlist… asks for the dialog, then dismisses itself
     cx.update(|window, cx| {
         view.update(cx, |this, cx| this.open_new_playlist(songs, window, cx));
         menu.update(cx, |_, cx| cx.emit(DismissEvent));
@@ -861,7 +859,7 @@ fn enter_on_the_play_button_plays(cx: &mut TestAppContext) {
 
     cx.simulate_keystrokes("tab");
     cx.run_until_parked();
-    // A button goes off when the key comes back up.
+    // A button goes off when the key comes back up
     let enter = Keystroke::parse("enter").unwrap();
     cx.simulate_event(KeyDownEvent {
         keystroke: enter.clone(),

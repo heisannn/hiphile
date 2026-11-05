@@ -38,7 +38,7 @@ fn queue<'a>(
         None,
     );
     let songs: Vec<Song> = ids.iter().copied().map(song).collect();
-    // The list takes its height from the window's root, as in the app.
+    // The list takes its height from the window's root, as in the app
     let (handle, view) = cx
         .update(|cx| {
             gpui_kit::open_window(gpui_kit::WindowOptions::default(), cx, |window, cx| {
@@ -87,7 +87,6 @@ fn focus(view: &Entity<QueueView>, cx: &mut VisualTestContext) {
     cx.run_until_parked();
 }
 
-/// The middle of the row at `ix`, as last drawn.
 fn row(view: &Entity<QueueView>, ix: usize, cx: &mut VisualTestContext) -> Point<Pixels> {
     cx.update(|_, cx| {
         let this = view.read(cx);
@@ -258,7 +257,7 @@ fn going_back_in_order_brings_the_current_entry_into_view(cx: &mut TestAppContex
         let player = view.read(cx).player.clone();
         player.update(cx, |player, cx| {
             player.toggle_shuffle(cx);
-            // Shuffled, the song chosen comes first, wherever it was.
+            // Shuffled, the song chosen comes first, wherever it was
             player.fill_queue(&songs, 80);
         });
     });

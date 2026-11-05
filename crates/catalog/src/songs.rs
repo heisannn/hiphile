@@ -18,9 +18,6 @@ const SONGS: &str = "songs";
 /// would be kept beside them under its own name.
 const ORIGINAL: &str = "original";
 
-/// Audio files kept on disk, beside each server's library, so a song that
-/// played through once plays again without the network.
-///
 /// A song is kept under its ID only once it has arrived whole. Cheap to
 /// clone; clones share the record of how much is kept. Every method blocks
 /// on the disk: call them where blocking is allowed.
@@ -29,7 +26,6 @@ pub struct SongStore {
     blobs: Arc<Blobs>,
 }
 
-/// A song's file found on disk, open for reading from its start.
 #[derive(Debug)]
 pub struct KeptSong {
     file: File,
@@ -42,34 +38,29 @@ impl KeptSong {
         self.byte_len
     }
 
-    /// The open file. It stays readable even if the song is removed from
-    /// the store meanwhile.
+    /// It stays readable even if the song is removed from the store meanwhile.
     pub fn into_file(self) -> File {
         self.file
     }
 }
 
 impl SongStore {
-    /// Songs in the system cache directory, beside the libraries, keeping
-    /// at most about `capacity` bytes.
     pub fn user(capacity: u64) -> Result<Self, Error> {
         Ok(Self::at(servers_dir()?, capacity))
     }
 
-    /// Songs under `root`, one directory per server.
     pub fn at(root: impl AsRef<Path>, capacity: u64) -> Self {
         Self {
             blobs: Arc::new(Blobs::new(root.as_ref(), SONGS, capacity)),
         }
     }
 
-    /// The kept file of song `id` on `server`, if there is one and it is
-    /// `expected_len` bytes long. A file of another length is of an older
-    /// version of the song, and is removed.
+    /// A file not `expected_len` bytes long is of an older version of the song, and is
+    /// removed.
     pub fn open(&self, server: &Url, id: &SongId, expected_len: Option<u64>) -> Option<KeptSong> {
         let path = self.path(server, id);
         let file = File::open(&path).ok()?;
-        // The open file's own length, which a rename over it cannot change.
+        // The open file's own length, which a rename over it cannot change
         let metadata = file.metadata().ok()?;
         let byte_len = metadata.len();
         if byte_len == 0 || expected_len.is_some_and(|expected| expected != byte_len) {
@@ -81,13 +72,11 @@ impl SongStore {
         Some(KeptSong { file, byte_len })
     }
 
-    /// Keeps `bytes` as the whole file of song `id` on `server`, unless
-    /// they take most of the capacity on their own.
+    /// Bytes that take most of the capacity on their own are not kept.
     pub fn put(&self, server: &Url, id: &SongId, bytes: &[u8]) -> Result<(), Error> {
         self.blobs.put(&self.path(server, id), bytes)
     }
 
-    /// Removes the kept file of song `id` on `server`, if there is one.
     pub fn remove(&self, server: &Url, id: &SongId) -> Result<(), Error> {
         let path = self.path(server, id);
         match fs::remove_file(&path) {
@@ -97,13 +86,11 @@ impl SongStore {
         }
     }
 
-    /// How many bytes the kept songs take, for every server.
     pub fn kept_bytes(&self) -> u64 {
         self.blobs.kept_bytes()
     }
 
-    /// Removes every kept song for every server. One that is being played
-    /// goes on from its open file.
+    /// One that is being played goes on from its open file.
     pub fn clear(&self) -> Result<(), Error> {
         self.blobs.clear()
     }

@@ -16,8 +16,6 @@ struct CachedCover {
     is_in_use: bool,
 }
 
-/// Decoded cover art, keeping the images used most recently.
-///
 /// Covers on the screen stay however many there are: a large window can show
 /// more than the capacity, and letting them push each other out would load them
 /// over and over without ever showing them. So the excess goes between frames,
@@ -50,8 +48,6 @@ impl CoverCache {
         cache
     }
 
-    /// Frees the covers past the capacity that no frame asked for since the last
-    /// trim, oldest first.
     fn trim(&mut self, window: &mut Window, cx: &mut App) {
         self.is_trim_scheduled = false;
         let mut excess = self.items.len().saturating_sub(CAPACITY);
@@ -135,7 +131,6 @@ mod tests {
         }
     }
 
-    /// Draws a frame that shows the covers in `shown`, up to the start of the next.
     fn frame(covers: &Entity<Covers>, shown: Range<usize>, cx: &mut VisualTestContext) {
         cx.update(|window, cx| {
             covers.update(cx, |covers, _| covers.shown = shown);
@@ -182,7 +177,7 @@ mod tests {
         let shown = CAPACITY * 2;
         frame(&covers, 0..shown, cx);
 
-        // The next covers on show are still more than the capacity holds.
+        // The next covers on show are still more than the capacity holds
         let next = shown..shown * 2;
         frame(&covers, next.clone(), cx);
         frame(&covers, next.clone(), cx);
@@ -191,7 +186,7 @@ mod tests {
         assert!(!holds(&covers, 0, cx));
         assert!(holds(&covers, next.start, cx));
 
-        // Back to a few: what is left over goes, least recently used first.
+        // Back to a few: what is left over goes, least recently used first
         frame(&covers, 0..1, cx);
         frame(&covers, 0..1, cx);
 

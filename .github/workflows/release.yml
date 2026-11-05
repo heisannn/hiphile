@@ -9,15 +9,15 @@ on: # zizmor: ignore[concurrency-limits]
 permissions: {}
 
 jobs:
-  # Tags a merged release PR and drafts its GitHub Release. Tags pushed with GITHUB_TOKEN start
-  # no workflows, so the builds below are jobs of this run rather than a workflow on tags.
+  # Tags pushed with GITHUB_TOKEN start no workflows, so the builds below are jobs of this run
+  # rather than a workflow on tags.
   release:
     name: Tag and draft
     if: github.repository_owner == 'heisannn'
     runs-on: ubuntu-latest
     permissions:
-      contents: write # to push the tag and create the release
-      pull-requests: read # to tell whether the commit comes from a release PR
+      contents: write # To push the tag and create the release
+      pull-requests: read # To tell whether the commit comes from a release PR
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
@@ -39,14 +39,14 @@ jobs:
           tag="$(jq -r '.[] | select(.package_name == "hiphile") | .tag' <<<"${RELEASES:-[]}")"
           echo "tag=$tag" >>"$GITHUB_OUTPUT"
 
-  # Runs after `release` so that it sees the new tag instead of proposing the same version again.
+  # Runs after `release` so that it sees the new tag instead of proposing the same version again
   release-pr:
     name: Update release PR
     needs: release
     runs-on: ubuntu-latest
     permissions:
-      contents: write # to push the release PR's branch
-      pull-requests: write # to open and update the release PR
+      contents: write # To push the release PR's branch
+      pull-requests: write # To open and update the release PR
     concurrency:
       group: release-pr-${{ github.ref }}
       cancel-in-progress: false
@@ -80,7 +80,7 @@ jobs:
       TAG: ${{ needs.release.outputs.tag }}
       TARGET: ${{ matrix.target }}
       PLATFORM: ${{ matrix.platform }}
-      HIPHILE_SELF_UPDATE: "1" # read at compile time: only these builds update themselves
+      HIPHILE_SELF_UPDATE: "1" # Read at compile time: only these builds update themselves
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -110,7 +110,7 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  # Device tests are ignored by default, so a runner without audio output can run the rest.
+  # Device tests are ignored by default, so a runner without audio output can run the rest
   test:
     name: Test
     needs: release
@@ -134,7 +134,7 @@ jobs:
     needs: [release, build, test]
     runs-on: ubuntu-latest
     permissions:
-      contents: write # to attach the builds and publish the draft
+      contents: write # To attach the builds and publish the draft
     env:
       GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

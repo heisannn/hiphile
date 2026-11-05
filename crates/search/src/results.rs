@@ -7,14 +7,12 @@ const MAX_ARTISTS: usize = 5;
 const MAX_ALBUMS: usize = 8;
 const MAX_SONGS: usize = 30;
 
-/// An artist named by the saved albums or songs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct NamedArtist {
     pub(crate) id: ArtistId,
     pub(crate) name: String,
 }
 
-/// One thing a search found.
 #[derive(Clone, Debug)]
 pub(crate) enum Hit {
     Artist(NamedArtist),
@@ -35,8 +33,7 @@ impl Results {
     }
 }
 
-/// The saved library, ready to search. Takes a while to read with a dictionary:
-/// build it off the UI thread.
+/// Takes a while to read with a dictionary: build it off the UI thread.
 pub(crate) struct SearchLibrary {
     artists: Vec<NamedArtist>,
     albums: Vec<Album>,

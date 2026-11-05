@@ -10,7 +10,6 @@ use crate::decode::Decoder;
 use crate::output::Spec;
 use crate::{Error, Track};
 
-/// What decoding has come to, in order.
 pub(crate) enum Item {
     /// Interleaved, at the track's [`Feed::spec`].
     Samples(Vec<f32>),
@@ -27,14 +26,10 @@ struct Opened {
 }
 
 struct State {
-    /// Taken by [`Opening::poll`].
     opened: Option<Result<Opened, Error>>,
-    /// Whether opening has ended, whichever way.
     open_ended: bool,
     items: VecDeque<Item>,
-    /// The samples among `items`.
     samples: usize,
-    /// How much audio to decode ahead.
     ahead: Duration,
     /// A seek the thread has yet to start. Anything it finishes meanwhile is
     /// out of date.
@@ -50,7 +45,6 @@ struct Channel {
     changed: Condvar,
 }
 
-/// What the thread does next.
 enum Work {
     Seek(Duration),
     Decode,
@@ -178,7 +172,6 @@ fn run(track: Track, channel: &Channel) {
     }
 }
 
-/// A track on its way to becoming a [`Feed`].
 pub(crate) struct Opening(Link);
 
 pub(crate) enum Polled {
@@ -254,7 +247,6 @@ impl Feed {
         self.duration
     }
 
-    /// The next thing decoding has come to, if it has come to anything.
     pub(crate) fn take(&self) -> Option<Item> {
         let mut state = self.link.0.lock();
         let item = state.items.pop_front()?;

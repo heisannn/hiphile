@@ -12,30 +12,20 @@ use gpui_kit::{
 use session::Session;
 use subsonic::Credentials;
 
-/// Emitted once the server accepted the credentials.
 pub enum SignInEvent {
     SignedIn {
         session: Session,
-        /// Where the user signed in.
         profile: config::Profile,
     },
 }
 
-/// How the form starts.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Start {
     /// Signs in with the last profile's saved password, if there is one.
     Resume,
-    /// Waits for the user, as after signing out.
     Fresh,
 }
 
-/// The sign-in form. Owns its fields and the in-flight connection attempt;
-/// the app shell decides what happens after [`SignInEvent::SignedIn`].
-///
-/// A successful sign-in saves the profile to the settings directory and,
-/// unless the settings file holds the profile's password, the password to the
-/// keychain.
 pub struct SignIn {
     net: net::Client,
     store: Option<config::Store>,
@@ -53,9 +43,7 @@ pub struct SignIn {
 enum Status {
     Idle,
     SigningIn,
-    /// A field that must change before signing in can succeed.
     Invalid(InputField, SharedString),
-    /// The server or network refused; the fields may be fine.
     Failed(SharedString),
 }
 
@@ -115,7 +103,6 @@ impl SignIn {
             cx.subscribe_in(&password, window, submit_on_enter),
         ];
 
-        // Start where typing is needed: the first empty field.
         let first_empty = [&server, &username, &password]
             .into_iter()
             .find(|input| input.read(cx).value().is_empty())
@@ -143,9 +130,7 @@ impl SignIn {
         this
     }
 
-    /// Reads the profile's saved password, from the settings file or else the
-    /// keychain, and signs in with it. Without one, or if the keychain fails,
-    /// the form waits for the user as usual.
+    /// Without a saved password, or if the keychain fails, the form waits for the user.
     fn resume(&mut self, profile: config::Profile, window: &mut Window, cx: &mut Context<Self>) {
         let store = self.store.clone();
         let keychain = self.keychain.clone();
@@ -158,7 +143,7 @@ impl SignIn {
                 return;
             };
             this.update_in(cx, |this, window, cx| {
-                // The user may have started typing meanwhile.
+                // The user may have started typing meanwhile
                 if this.password.read(cx).value().is_empty() {
                     this.password
                         .update(cx, |input, cx| input.set_value(password, window, cx));
@@ -247,9 +232,7 @@ impl SignIn {
         });
     }
 
-    /// Saves the profile, and the password to the keychain unless the settings
-    /// file holds it. A failure only means the user types more next time, so it
-    /// is not shown.
+    /// A failure only means the user types more next time, so it is not shown.
     fn remember(&self, profile: &config::Profile, password: String, cx: &mut Context<Self>) {
         if let Some(store) = &self.store {
             store.save_profile(profile).ok();
@@ -286,7 +269,6 @@ fn password_in_file(store: Option<&config::Store>, profile: &config::Profile) ->
     store?.password(profile).ok().flatten()
 }
 
-/// What went wrong, and what to try next.
 fn describe(error: &client::Error) -> String {
     match error {
         client::Error::Protocol(subsonic::Error::Server { code, .. })

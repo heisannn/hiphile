@@ -13,7 +13,6 @@ pub const STALE_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
 /// Items per request. `getAlbumList2` sends at most 500.
 const PAGE_SIZE: u32 = 500;
 
-/// Where a sync gets the library: the server, or a fake in tests.
 pub trait Source: Sync {
     /// One page of albums in the server's name order.
     fn albums_page(
@@ -80,29 +79,28 @@ pub enum Mode {
 pub enum Outcome {
     /// The copy was recent and the server reported no change since.
     UpToDate,
-    /// The copy holds the `count` items the server has, and no others.
-    Synced { count: usize },
+    Synced {
+        count: usize,
+    },
     /// The library changed while the pages arrived, so they may have
     /// skipped items: the server scanned, or sent an item twice. What
     /// arrived was kept, nothing was removed, and the copy stays stale for
     /// the next sync.
-    Unsettled { count: usize },
+    Unsettled {
+        count: usize,
+    },
     /// Another sync of this library is running, in this process or another.
     Busy,
 }
 
-/// How far a sync that is fetching has got.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct SyncProgress {
-    /// Items saved so far.
     pub saved: usize,
     /// How many there are likely to be in all. A guess: more may arrive.
     pub total: Option<usize>,
 }
 
-/// Brings the albums up to date with the server.
-///
 /// Each page is kept as it arrives, so a sync that fails partway leaves the
 /// copy with what it had plus what arrived; only a complete sync removes
 /// albums. Blocks on the disk between requests: run it where blocking is
@@ -115,8 +113,7 @@ pub async fn sync_albums(
     run(catalog, source, Kind::Albums, mode, &|_| {}).await
 }
 
-/// [`sync_albums`], telling `on_progress` what it has got to. Says nothing when
-/// the albums are up to date.
+/// Says nothing when the albums are up to date.
 pub async fn sync_albums_watched(
     catalog: &Catalog,
     source: &impl Source,
@@ -126,7 +123,6 @@ pub async fn sync_albums_watched(
     run(catalog, source, Kind::Albums, mode, &on_progress).await
 }
 
-/// Brings the artists up to date with the server, as [`sync_albums`] does albums.
 pub async fn sync_artists(
     catalog: &Catalog,
     source: &impl Source,
@@ -135,8 +131,6 @@ pub async fn sync_artists(
     run(catalog, source, Kind::Artists, mode, &|_| {}).await
 }
 
-/// [`sync_artists`], telling `on_progress` what it has got to, as
-/// [`sync_albums_watched`] does.
 pub async fn sync_artists_watched(
     catalog: &Catalog,
     source: &impl Source,
@@ -146,8 +140,7 @@ pub async fn sync_artists_watched(
     run(catalog, source, Kind::Artists, mode, &on_progress).await
 }
 
-/// Brings every song up to date with the server, as [`sync_albums`] does
-/// albums. Sync albums first: songs are listed under the albums known.
+/// Sync albums first: songs are listed under the albums known.
 pub async fn sync_songs(
     catalog: &Catalog,
     source: &impl Source,
@@ -156,8 +149,6 @@ pub async fn sync_songs(
     run(catalog, source, Kind::Songs, mode, &|_| {}).await
 }
 
-/// [`sync_songs`], telling `on_progress` what it has got to, as
-/// [`sync_albums_watched`] does.
 pub async fn sync_songs_watched(
     catalog: &Catalog,
     source: &impl Source,
@@ -197,7 +188,7 @@ async fn run(
         return Ok(Outcome::Busy);
     };
     let started = SystemTime::now();
-    // Not every server reports it; the age of the copy decides then.
+    // Not every server reports it, and the age of the copy decides then
     let modified = source.library_modified().await.ok().flatten();
     if mode == Mode::IfStale && !catalog.is_stale(kind, modified, started, STALE_AFTER)? {
         return Ok(Outcome::UpToDate);
@@ -223,7 +214,7 @@ async fn run(
                 }
                 page.len()
             }
-            // They all come at once, which leaves no next page to ask for.
+            // They all come at once, which leaves no next page to ask for
             Kind::Artists => {
                 let artists = source.artists().await?;
                 catalog.store_artists(generation, &artists)?;
@@ -295,7 +286,6 @@ mod tests {
         songs: Vec<Song>,
         modified: Option<u64>,
         scanning: bool,
-        /// Fails the album page at this offset.
         fail_at: Option<u32>,
         /// Reports a new last scan after the first status, as if a scan
         /// ran during the sync.
@@ -388,7 +378,7 @@ mod tests {
     #[test]
     fn keeps_every_page_in_the_server_order() {
         let (_dir, catalog) = catalog();
-        // Names out of order: the server's order wins over sorting by name.
+        // Names out of order: the server's order wins over sorting by name
         let mut source = Fake {
             albums: albums(1203),
             ..Fake::default()
@@ -446,7 +436,6 @@ mod tests {
         assert_eq!(outcome, Outcome::Synced { count: 1 });
     }
 
-    /// What a sync of albums told, as it went.
     fn watched(catalog: &Catalog, source: &Fake, mode: Mode) -> Vec<SyncProgress> {
         let told = Mutex::new(Vec::new());
         block_on(sync_albums_watched(catalog, source, mode, |progress| {
@@ -563,7 +552,7 @@ mod tests {
         assert_eq!(outcome, Outcome::Unsettled { count: 2 });
         assert_eq!(catalog.album_count().unwrap(), 3);
 
-        // Nothing reports a change, yet the copy is known to be incomplete.
+        // Nothing reports a change, yet the copy is known to be incomplete
         source.scanning = false;
         let outcome = block_on(sync_albums(&catalog, &source, Mode::IfStale)).unwrap();
         assert_eq!(outcome, Outcome::Synced { count: 2 });
@@ -680,7 +669,7 @@ mod tests {
         assert_eq!(cached.album().name(), "One (Remaster)");
         assert_eq!(song_ids(&cached), ["s9"]);
 
-        // An album the catalog does not list waits for the album sync.
+        // An album the catalog does not list waits for the album sync
         let unknown = subsonic::AlbumWithSongs::new(album("a7", "Seven"), Vec::new());
         catalog.put_album(&unknown).unwrap();
         assert!(catalog.album(&AlbumId::new("a7")).unwrap().is_none());

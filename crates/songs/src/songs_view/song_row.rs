@@ -13,7 +13,6 @@ use ui::{AlbumLink, PlayState, PlayStateIcon, format_duration, song_artist_link}
 use super::{Songs, columns};
 use crate::{AddToQueue, GoToAlbum, Open, PlayNext};
 
-/// A song in the table, whose commands act on the selection.
 #[derive(IntoElement)]
 pub(super) struct SongRow {
     pub(super) song: Song,

@@ -24,28 +24,14 @@ use ui::{
 
 use crate::{Player, PlayerEvent, SaveQueue};
 
-/// Key context of the focused queue list.
 pub const QUEUE_CONTEXT: &str = "Queue";
 
 actions!(
     queue,
-    [
-        /// Plays the selected entry.
-        Play,
-        /// Moves the selected entry to right after the current one.
-        PlayNext,
-        /// Removes the selected entry, unless it is the current one.
-        Remove,
-        MoveUp,
-        MoveDown,
-        /// Asks which playlist to add the selected entry to.
-        AddToPlaylist
-    ]
+    [Play, PlayNext, Remove, MoveUp, MoveDown, AddToPlaylist]
 );
 
-/// The play queue as a list beside the library: what has played, what is
-/// playing, and what plays next. The [`Player`] owns the queue; this view
-/// owns the selection, focus, and scrolling.
+/// The [`Player`] owns the queue, and this view the selection, focus, and scrolling.
 pub struct QueueView {
     player: Entity<Player>,
     /// Kept by entry, so it follows the entry as entries move.
@@ -63,14 +49,14 @@ impl QueueView {
         let subscriptions = vec![
             cx.subscribe(&player, |this, _, event, cx| {
                 this.on_queue_changed(cx);
-                // Back in order, the current entry may be far from where it was.
+                // Back in order, the current entry may be far from where it was
                 if matches!(event, PlayerEvent::ShuffleChanged)
                     && let Some(ix) = this.player.read(cx).queue().current_ix()
                 {
                     this.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
                 }
             }),
-            // Focus changes the selection treatment of the rows.
+            // Focus changes the selection treatment of the rows
             cx.on_focus(&focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&focus, window, |_, _, cx| cx.notify()),
         ];
@@ -86,8 +72,6 @@ impl QueueView {
         this
     }
 
-    /// Drops a selection whose entry is gone, and brings a new current
-    /// entry into view.
     fn on_queue_changed(&mut self, cx: &mut Context<Self>) {
         let queue = self.player.read(cx).queue();
         if self
@@ -118,7 +102,6 @@ impl QueueView {
         }
     }
 
-    /// Which commands apply to the entry, as the queue is now.
     fn entry_commands(&self, id: EntryId, cx: &App) -> EntryCommands {
         let queue = self.player.read(cx).queue();
         let (Some(ix), current_ix) = (queue.position(id), queue.current_ix()) else {
@@ -271,7 +254,7 @@ impl QueueView {
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let queue = self.player.read(cx).queue();
         let len = queue.len();
-        // Clear keeps the current entry, so only more than that clears.
+        // Clear keeps the current entry, so only more than that clears
         let clearable = len > usize::from(queue.current_ix().is_some());
         h_flex()
             .h_10()
@@ -376,7 +359,7 @@ impl QueueView {
                     song: entry.item().clone(),
                     ix,
                     state: is_current.then(|| PlayState::new(playing)),
-                    // With nothing current, playback ran off the end.
+                    // With nothing current, playback ran off the end
                     is_played: current_ix.is_none_or(|current| ix < current),
                     is_selected: selected == Some(entry.id()),
                     is_focused,
@@ -390,7 +373,6 @@ impl QueueView {
     }
 }
 
-/// The commands an entry's context menu enables.
 #[derive(Clone, Copy, Default)]
 struct EntryCommands {
     play_next: bool,
@@ -408,7 +390,6 @@ fn entry_label(title: &SharedString, state: Option<PlayState>, is_played: bool) 
     }
 }
 
-/// An entry of the queue, whose commands act on the selection.
 #[derive(IntoElement)]
 struct EntryRow {
     id: EntryId,
@@ -456,7 +437,7 @@ impl RenderOnce for EntryRow {
                     .w_full()
                     .min_w_0()
                     .gap_3()
-                    // The marker's lane stays when it is empty, so titles line up.
+                    // The marker's lane stays when it is empty, so titles line up
                     .child(
                         h_flex()
                             .w_4()
@@ -503,7 +484,7 @@ impl RenderOnce for EntryRow {
                     .update(cx, |this, cx| this.drop_entry(dragged, id, window, cx))
                     .ok();
             })
-            // Built when it opens, so it reads the queue as it is then.
+            // Built when it opens, so it reads the queue as it is then
             .context_menu(move |menu, window, cx| {
                 let commands = owner
                     .upgrade()

@@ -32,7 +32,6 @@ struct Header {
 }
 
 impl Message {
-    /// The body, when the status says there is one to read.
     fn into_body(self) -> Result<Value, Error> {
         if self.header.status_code == 200 {
             Ok(self.body)
@@ -45,7 +44,6 @@ impl Message {
     }
 }
 
-/// The token in the answer to asking for one.
 pub(crate) fn token(body: &[u8]) -> Result<String, Error> {
     let envelope: Envelope = serde_json::from_slice(body).map_err(|_| Error::InvalidResponse)?;
     let body = envelope.message.into_body()?;
@@ -56,7 +54,6 @@ pub(crate) fn token(body: &[u8]) -> Result<String, Error> {
         .ok_or(Error::InvalidResponse)
 }
 
-/// One of the kinds of lyrics, or why it isn't there.
 #[derive(Debug, PartialEq)]
 enum Part<T> {
     Found(T),
@@ -66,7 +63,6 @@ enum Part<T> {
     Failed,
 }
 
-/// The best lyrics in the answer to a request for the song `query` describes.
 pub(crate) fn lyrics(body: &[u8], query: &TrackQuery) -> Result<Lyrics, Error> {
     let envelope: Envelope = serde_json::from_slice(body).map_err(|_| Error::InvalidResponse)?;
     let status = envelope.message.header.status_code;
@@ -132,7 +128,6 @@ pub(crate) fn lyrics(body: &[u8], query: &TrackQuery) -> Result<Lyrics, Error> {
     }
 }
 
-/// The song the service matched the request to, as far as it says.
 fn offered(track: &Value) -> Offered<'_> {
     let name = |key| {
         track
@@ -173,7 +168,6 @@ fn copyright(value: &Value) -> Option<Arc<str>> {
         .map(Arc::from)
 }
 
-/// The body of a part of the answer, or why there is no body to read.
 fn part_body<T>(message: Message) -> Result<Value, Part<T>> {
     match message.header.status_code {
         200 => Ok(message.body),
@@ -203,7 +197,6 @@ fn read_plain(message: Message) -> Part<PlainLyrics> {
     }
 }
 
-/// A line of `subtitle_body`, as `{ text, time: { total } }`.
 #[derive(Deserialize)]
 struct Subtitle {
     text: Option<String>,
@@ -258,7 +251,6 @@ fn read_subtitles(message: Message) -> Part<TimedLyrics> {
     }
 }
 
-/// A line of `richsync_body`.
 #[derive(Deserialize)]
 struct RichLine {
     ts: Option<f64>,
@@ -382,7 +374,6 @@ mod tests {
         lyrics(&answer(calls), &query).unwrap()
     }
 
-    /// An answer for the track named, of `track_length` seconds, with lyrics.
     fn answer_naming(name: &str, artist: &str, track_length: u64) -> Vec<u8> {
         let track = json!({
             "track": { "track_name": name, "artist_name": artist, "track_length": track_length },

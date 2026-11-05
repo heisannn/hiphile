@@ -11,12 +11,9 @@ pub enum RepeatMode {
     One,
 }
 
-/// Where [`Queue::insert`] puts new entries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Placement {
-    /// Right after the current entry.
     Next,
-    /// After every other entry.
     Last,
 }
 
@@ -26,13 +23,11 @@ pub enum Placement {
 pub struct EntryId(u64);
 
 impl EntryId {
-    /// A number unique among the queue's entries, for keys such as element IDs.
     pub fn get(self) -> u64 {
         self.0
     }
 }
 
-/// One place in a [`Queue`].
 #[derive(Clone, Debug)]
 pub struct Entry<T> {
     id: EntryId,
@@ -49,8 +44,6 @@ impl<T> Entry<T> {
     }
 }
 
-/// Ordered entries and the current position in them.
-///
 /// The same song may appear more than once, so the current entry is a
 /// position, not a song ID. `T` is whatever the owner needs per entry: an ID
 /// for the CLI, a full `Song` for a view that shows titles.
@@ -118,7 +111,6 @@ impl<T> Queue<T> {
         self.current_ix.map(|ix| self.entries[ix].id)
     }
 
-    /// Where the entry is now.
     pub fn position(&self, id: EntryId) -> Option<usize> {
         self.entries.iter().position(|entry| entry.id == id)
     }
@@ -145,12 +137,10 @@ impl<T> Queue<T> {
         }
     }
 
-    /// The item of the entry at [`Self::following_ix`].
     pub fn following(&self) -> Option<&T> {
         self.following_ix().map(|ix| &self.entries[ix].item)
     }
 
-    /// The ID of the entry at [`Self::following_ix`].
     pub fn following_id(&self) -> Option<EntryId> {
         self.following_ix().map(|ix| self.entries[ix].id)
     }
@@ -166,7 +156,6 @@ impl<T> Queue<T> {
         self.current()
     }
 
-    /// Makes the entry the current one.
     pub fn jump_to(&mut self, id: EntryId) -> Option<&T> {
         self.current_ix = Some(self.position(id)?);
         self.current()
@@ -203,8 +192,6 @@ impl<T: Clone> Queue<T> {
         Arc::make_mut(&mut self.entries)[from..].shuffle(&mut rand::rng());
     }
 
-    /// Moves to the entry at [`Self::following_ix`], for when the current one
-    /// has ended on its own.
     pub fn follow(&mut self) -> Option<&T> {
         self.go_to(self.following_ix())
     }
@@ -220,8 +207,8 @@ impl<T: Clone> Queue<T> {
         })
     }
 
-    /// Moves to the entry at `ix`. A shuffled queue starting over does so in a
-    /// new order, from the entry already known to come next.
+    /// A shuffled queue starting over does so in a new order, from the entry already
+    /// known to come next.
     fn go_to(&mut self, ix: Option<usize>) -> Option<&T> {
         let len = self.entries.len();
         let starts_over = len > 1 && ix == Some(0) && self.current_ix == Some(len - 1);
@@ -343,7 +330,7 @@ impl<T: Clone> Queue<T> {
         }
     }
 
-    /// Removes every entry but the current one; with none current, all of them.
+    /// Removes every entry but the current one, or all of them with none current.
     pub fn clear(&mut self) {
         let kept: Vec<_> = self
             .current_ix
@@ -474,7 +461,7 @@ mod tests {
 
     #[test]
     fn songs_already_waiting_come_before_songs_added_last() {
-        // How the player starts again after the current song failed.
+        // How the player starts again after the current song failed
         let mut queue = queue(&["a", "b", "c"], 0);
         queue.insert(vec!["x"], Placement::Last);
         assert_eq!(queue.advance().copied(), Some("b"));
@@ -524,25 +511,21 @@ mod tests {
 
     #[test]
     fn move_entry_keeps_the_current_entry() {
-        // Moving the current entry itself.
         let mut queue = queue(&["a", "b", "c", "d"], 1);
         assert!(queue.move_entry(id_of(&queue, 1), 3));
         assert_eq!(items(&queue), ["a", "c", "d", "b"]);
         assert_eq!(queue.current().copied(), Some("b"));
 
-        // An entry from before it to after it.
         let mut queue = self::queue(&["a", "b", "c", "d"], 1);
         assert!(queue.move_entry(id_of(&queue, 0), 2));
         assert_eq!(items(&queue), ["b", "c", "a", "d"]);
         assert_eq!(queue.current().copied(), Some("b"));
 
-        // An entry from after it to before it.
         let mut queue = self::queue(&["a", "b", "c", "d"], 1);
         assert!(queue.move_entry(id_of(&queue, 3), 0));
         assert_eq!(items(&queue), ["d", "a", "b", "c"]);
         assert_eq!(queue.current().copied(), Some("b"));
 
-        // Past the end, and nowhere.
         let mut queue = self::queue(&["a", "b"], 0);
         assert!(queue.move_entry(id_of(&queue, 0), 9));
         assert_eq!(items(&queue), ["b", "a"]);
@@ -764,13 +747,11 @@ mod tests {
 
     #[test]
     fn a_queue_stays_in_its_order_unless_it_starts_over_shuffled() {
-        // Not shuffled.
         let mut unshuffled = queue(&MANY, 39);
         unshuffled.set_repeat(RepeatMode::All);
         unshuffled.follow();
         assert_eq!(items(&unshuffled), MANY);
 
-        // A song on repeat, and a step through the middle.
         let mut queue = queue(&MANY, 39);
         queue.set_repeat(RepeatMode::One);
         queue.set_shuffled(true);

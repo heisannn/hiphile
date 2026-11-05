@@ -1,5 +1,3 @@
-//! The whole update against a stand-in for GitHub: a real zip, signature and bundle swap.
-
 use std::fs;
 use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
@@ -15,7 +13,6 @@ use super::*;
 
 const PLATFORM: &str = "macos-arm64";
 
-/// Writes a signed `hiphile.app` under `dir` whose marker file holds `version`.
 fn make_bundle(dir: &Path, version: &str) -> PathBuf {
     let app = dir.join("hiphile.app");
     let contents = app.join("Contents");
@@ -30,7 +27,7 @@ fn make_bundle(dir: &Path, version: &str) -> PathBuf {
     .unwrap();
     fs::write(contents.join("Resources/marker"), version).unwrap();
     let executable = contents.join("MacOS/hiphile");
-    // A real executable, as a script's signature would live in extended attributes.
+    // A real executable, as a script's signature would live in extended attributes
     fs::copy("/usr/bin/true", &executable).unwrap();
     sign(&app);
     app
@@ -61,8 +58,7 @@ fn zip_of(app: &Path) -> Vec<u8> {
     fs::read(zip).unwrap()
 }
 
-/// Serves one release with these assets until the test process ends, after a release whose
-/// tag is no version, as the repository has
+/// Serves one release after a release whose tag is no version, as the repository has.
 fn serve(version: &str, assets: Vec<(String, Vec<u8>)>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -113,8 +109,7 @@ fn sums_of(name: &str, zip: &[u8]) -> Vec<u8> {
     format!("{}  {name}\n", hex::encode(Sha256::digest(zip))).into_bytes()
 }
 
-/// A release of `zip`, listed after a disk image as the real ones are, and the installed
-/// bundle it may replace.
+/// A release of `zip` listed after a disk image, as the real ones are.
 struct Fixture {
     _dir: TempDir,
     installed: PathBuf,
@@ -164,7 +159,6 @@ fn marker(app: &Path) -> String {
     fs::read_to_string(app.join("Contents/Resources/marker")).unwrap()
 }
 
-/// Whether the swap left nothing of its own beside the app.
 fn is_alone(app: &Path) -> bool {
     fs::read_dir(app.parent().unwrap()).unwrap().count() == 1
 }

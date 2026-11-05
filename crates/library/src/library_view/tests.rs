@@ -20,7 +20,6 @@ fn library(cx: &mut TestAppContext) -> (Entity<Library>, &mut VisualTestContext)
     library_on("http://127.0.0.1:9", cx)
 }
 
-/// [`library`] with its server at `url`.
 fn library_on<'a>(
     url: &str,
     cx: &'a mut TestAppContext,
@@ -33,7 +32,7 @@ fn library_saving_in<'a>(
     url: &str,
     cx: &'a mut TestAppContext,
 ) -> (Entity<Library>, &'a mut VisualTestContext) {
-    // The failing requests wake the test from the network's own thread.
+    // The failing requests wake the test from the network's own thread
     cx.executor().allow_parking();
     cx.update(gpui_kit::init);
     let net = net::Client::new("hiphile-test").unwrap();
@@ -78,7 +77,6 @@ fn show_album_a(library: &Entity<Library>, cx: &mut VisualTestContext) {
     cx.run_until_parked();
 }
 
-/// The `A`s that dispatching `command` from the focused element results in.
 fn dispatched<A: gpui_kit::Action + Clone>(
     command: impl gpui_kit::Action,
     cx: &mut VisualTestContext,
@@ -157,7 +155,7 @@ fn key_presses_retry(key: &str, cx: &mut TestAppContext) -> bool {
     });
     press_after(|library| library.albums_focus.clone(), key, &library, cx);
 
-    // Pressed, it loads again, and whatever that comes to is not this.
+    // Pressed, it loads again, and whatever that comes to is not this
     cx.update(
         |_, cx| !matches!(&library.read(cx).albums, Albums::Failed(error) if error == "before"),
     )
@@ -417,12 +415,10 @@ fn the_favorite_key_goes_to_the_album_or_the_song_with_focus(cx: &mut TestAppCon
     }
 }
 
-/// A server that answers every request with album `a`, returning its URL.
 fn server_of_album_a() -> String {
     server_answering(json!({ "album": album_a_json() }))
 }
 
-/// A server that answers every request with `fields`, returning its URL.
 fn server_answering(fields: serde_json::Value) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -580,7 +576,7 @@ fn an_action_on_an_album_still_loading_waits_for_its_songs(cx: &mut TestAppConte
     });
 
     cx.dispatch_action(Play);
-    // The answer arrives from the network's own thread.
+    // The answer arrives from the network's own thread
     for _ in 0..500 {
         cx.run_until_parked();
         if !plays.borrow().is_empty() {
@@ -636,7 +632,6 @@ fn the_page_keys_move_by_the_albums_in_view(cx: &mut TestAppContext) {
     cx.update(|_, cx| assert_eq!(library.read(cx).selected_position(), Some(0)));
 }
 
-/// The albums [`LibraryEvent::LeftAlbum`] says were left, as they are left.
 fn left_albums(library: &Entity<Library>, cx: &mut VisualTestContext) -> Rc<RefCell<Vec<AlbumId>>> {
     let left = Rc::new(RefCell::new(Vec::new()));
     cx.update(|_, cx| {

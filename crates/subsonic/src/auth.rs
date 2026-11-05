@@ -1,6 +1,5 @@
 use md5::{Digest, Md5};
 
-/// How the client proves its identity to the server.
 #[derive(Clone)]
 pub enum Credentials {
     /// Token authentication: `t = md5(password + salt)` with a fresh salt per request.
@@ -21,7 +20,6 @@ impl Credentials {
         Self::ApiKey(key.into())
     }
 
-    /// Query parameters that authenticate one request.
     pub(crate) fn query_pairs(&self) -> Vec<(&'static str, String)> {
         self.query_pairs_with_salt(&hex::encode(rand::random::<[u8; 8]>()))
     }
@@ -63,7 +61,7 @@ mod tests {
 
     #[test]
     fn token_matches_subsonic_reference_vector() {
-        // From the Subsonic API documentation.
+        // From the Subsonic API documentation
         assert_eq!(
             token("sesame", "c19b2d"),
             "26719a1196d2a940705a59634eb18eab"

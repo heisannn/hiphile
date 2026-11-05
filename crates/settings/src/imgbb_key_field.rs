@@ -5,8 +5,8 @@ use gpui_kit::{
 
 use crate::discord_settings::DiscordSettings;
 
-/// Edits the key in [`DiscordSettings`]. Only this field changes it, so what it shows never has
-/// to follow the settings, and they cannot replace what is being typed.
+/// Only this field changes the key, so what it shows never has to follow the settings, and they
+/// cannot replace what is being typed.
 pub(crate) struct ImgbbKeyField {
     settings: Entity<DiscordSettings>,
     input: Entity<InputState>,

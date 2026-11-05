@@ -1,6 +1,5 @@
 use gpui_kit::SharedString;
 
-/// The parts there are of a line of details about something, in order.
 pub fn join_details<S: AsRef<str>>(parts: impl IntoIterator<Item = Option<S>>) -> SharedString {
     let parts: Vec<S> = parts.into_iter().flatten().collect();
     let parts: Vec<&str> = parts.iter().map(AsRef::as_ref).collect();

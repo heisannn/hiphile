@@ -1,6 +1,5 @@
 use subsonic::{AlbumId, SongId};
 
-/// A shelf of album cards.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AlbumShelf {
     Recommended,
@@ -8,9 +7,8 @@ pub(crate) enum AlbumShelf {
     New,
 }
 
-/// Something on the screen that can be selected, by identity, so that the
-/// selection survives a reload. An album can be on more than one shelf, and
-/// each of its cards is an item of its own.
+/// By identity, so that the selection survives a reload. An album can be on more
+/// than one shelf, and each of its cards is an item of its own.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Item {
     Song(SongId),

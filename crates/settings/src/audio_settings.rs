@@ -2,17 +2,12 @@ use audio::{OutputDevice, OutputSettings};
 use gpui_kit::{AppContext as _, Context, EventEmitter, SharedString, Task};
 use ui::format_sample_rate;
 
-/// The option meaning the system's default device. Device ids hold a colon,
-/// so none is equal to this.
+/// Device ids hold a colon, so none is equal to this.
 pub(crate) const SYSTEM_DEFAULT: &str = "system-default";
-/// The option meaning each song's own rate.
 pub(crate) const MATCH_SONG: &str = "match-song";
 
-/// The output was changed; read it from [`AudioSettings::output`].
 pub struct OutputChanged;
 
-/// The chosen output and the devices there are to choose from. Saving and
-/// listing devices happen off the main thread.
 pub struct AudioSettings {
     /// `None` without a home directory: choices then last until quitting.
     store: Option<config::Store>,
@@ -147,7 +142,6 @@ impl AudioSettings {
         }
     }
 
-    /// The rates of the device playback goes to, if it is listed.
     fn selected_device_rates(&self) -> Option<&[u32]> {
         let mut devices = self.devices.iter().flatten();
         let device = match self.output.device() {

@@ -1,10 +1,4 @@
-//! Feature: browsing and editing playlists.
-//!
-//! The server keeps playlists; this feature shows them and changes them there,
-//! showing each change at once and saving it behind. Dispatches
-//! `actions::PlaySongs`, `actions::EnqueueSongs`, `actions::ShowAlbum` and
-//! `actions::ShowArtist`, and
-//! keeps the choices that `actions::add_to_playlist_submenu` offers the other
+//! Keeps the choices that `actions::add_to_playlist_submenu` offers the other
 //! features. The app shell routes what they dispatch back to [`Playlists`].
 
 mod entries;
@@ -20,9 +14,7 @@ use ui::list_navigation::bind_list_navigation;
 
 pub use playlists_view::{Playlists, PlaylistsEvent};
 
-/// Key context of the focused list of playlists.
 pub const PLAYLISTS_CONTEXT: &str = "Playlists";
-/// Key context of the focused list of a playlist's songs.
 pub const SONGS_CONTEXT: &str = "PlaylistSongs";
 const ROOT_CONTEXT: &str = "PlaylistsRoot";
 
@@ -33,33 +25,21 @@ actions!(
         Open,
         /// Plays the playlist from its first song.
         Play,
-        /// Playlists: queue it right after the current song. Songs: the
-        /// selected song.
         PlayNext,
-        /// Playlists: queue it after every other song. Songs: the selected
-        /// song.
         AddToQueue,
-        /// Songs: return to the list of playlists.
         Back,
         FocusFilter,
-        /// Asks for a new name for the playlist.
         Rename,
-        /// Asks whether to delete the playlist.
         Delete,
-        /// Moves the selected song up the playlist.
         MoveUp,
-        /// Moves the selected song down the playlist.
         MoveDown,
-        /// Takes the selected song out of the playlist.
         Remove,
-        /// Shows the selected song's album on the albums' screen.
         ShowAlbum,
-        /// Asks which playlist to add the selected song to.
         AddToPlaylist
     ]
 );
 
-/// Registers key bindings. Call before building the menu bar.
+/// Call before building the menu bar.
 pub fn init(cx: &mut App) {
     let (find, play, delete, show_album, add_to_playlist) = if cx.platform_info().is_mac() {
         ("cmd-f", "cmd-enter", "cmd-backspace", "cmd-l", "cmd-p")

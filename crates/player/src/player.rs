@@ -25,31 +25,24 @@ use crate::format;
 use crate::transport::{PanelToggles, PositionLine, TransportControls, VolumeControl};
 use crate::{GlobalSongCache, ToggleLyrics};
 
-/// How often the position redraws while playing.
 const POSITION_REFRESH: Duration = Duration::from_millis(250);
 /// Within this much of a song's start, Previous goes to the previous song;
 /// later, it restarts the current one.
 const RESTART_THRESHOLD: Duration = Duration::from_secs(3);
-/// How far Seek Forward and Seek Backward jump.
 const SEEK_STEP: Duration = Duration::from_secs(10);
-/// How much Volume Up and Volume Down change the volume.
 const VOLUME_STEP: f32 = 0.1;
 /// Pixel size requested for the bar's cover. The renderer aliases an image drawn
 /// at less than half its size, so this stays close to the on-screen size.
 const COVER_PIXELS: u32 = 48;
-/// Pixel size requested for the lyrics view's cover, likewise.
 const LARGE_COVER_PIXELS: u32 = 512;
 /// Pixel size of the cover published for the Discord status and given to the
 /// system's media controls, the same as the lyrics view's, so that it is often
 /// on disk already.
 const PUBLISHED_COVER_PIXELS: u32 = 512;
-/// How much of the foreground a cover takes on under the pointer.
 const COVER_HOVER_OPACITY: f32 = 0.08;
-/// How much of the foreground a cover takes on while pressed.
 const COVER_PRESS_OPACITY: f32 = 0.14;
 
 pub enum PlayerEvent {
-    /// What the player is on, for views that mark it.
     NowPlaying {
         song: Option<SongId>,
         /// Whether it is playing or about to, rather than paused or stopped.
@@ -73,22 +66,20 @@ pub enum PlayerEvent {
     },
 }
 
-/// How the panels that go with the player stand. What lays them out knows this,
-/// and the player shows it on the buttons that toggle them.
+/// What lays them out knows this, and the player shows it on the buttons that toggle
+/// them.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Panels {
     pub is_lyrics_open: bool,
     /// Whether the queue is to be shown, when it fits.
     pub is_queue_shown: bool,
-    /// Whether the window has room for the queue.
     pub queue_fits: bool,
 }
 
 type PanelsSource = Box<dyn Fn(&Window, &App) -> Panels>;
 
-/// The play queue, the audio engine, and the now-playing bar that controls
-/// them. Dropping it, or quitting the app, stops playback and returns the
-/// output device to its sample rate from before.
+/// Dropping it, or quitting the app, stops playback and returns the output device to
+/// its sample rate from before.
 pub struct Player {
     session: session::Session,
     store: Option<config::Store>,
@@ -104,7 +95,6 @@ pub struct Player {
     loaded_ahead: bool,
     /// The current song's download, which the next one waits for.
     arrival: Option<Arrival>,
-    /// The song that follows the current one, being made ready to go on to.
     following: Option<Following>,
     queue: Queue<Song>,
     state: State,
@@ -113,7 +103,6 @@ pub struct Player {
     format: Option<PlaybackFormat>,
     /// Where the stopped song picks back up, after its output failed.
     resume: Option<Resume>,
-    /// How much of this play of the current song has been listened to.
     tally: PlayTally,
     presence: Presence,
     cover_host: Arc<CoverHost>,
@@ -178,7 +167,6 @@ struct Resume {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State {
     Stopped,
-    /// The current song's download is starting or its decoder is opening.
     Opening,
     Playing,
     Paused,
@@ -230,7 +218,7 @@ impl Player {
             }
         });
 
-        // Plays from before that the server has yet to hear of.
+        // Plays from before that the server has yet to hear of
         if let Some(scrobbles) = session.scrobbles().cloned() {
             let client = session.client().clone();
             let sent = cx.background_spawn(async move { scrobbles.submit(&client).await });
@@ -301,7 +289,7 @@ impl Player {
             format: None,
             resume: None,
             tally: PlayTally::default(),
-            // Tests play made-up songs, which must not reach the user's status.
+            // Tests play made-up songs, which must not reach the user's status
             presence: if cfg!(test) {
                 Presence::disconnected()
             } else {
@@ -359,7 +347,6 @@ impl Player {
         self.sought_cover = None;
     }
 
-    /// Whether there is a song to play, pause, or skip.
     pub fn has_song(&self) -> bool {
         self.queue.current().is_some()
     }
@@ -369,7 +356,6 @@ impl Player {
         !self.queue.is_empty()
     }
 
-    /// Every song in the queue, in order.
     pub fn queued_songs(&self) -> Arc<[Song]> {
         self.queue
             .entries()
@@ -378,14 +364,12 @@ impl Player {
             .collect()
     }
 
-    /// Replaces the queue with `songs` and plays from `start_ix`.
     pub fn play(&mut self, songs: &[Song], start_ix: usize, cx: &mut Context<Self>) {
         self.queue.replace(songs.to_vec(), start_ix);
         self.queue_changed(cx);
         self.play_current(cx);
     }
 
-    /// Replaces the queue with `songs`, with none chosen to start at.
     pub fn play_whole(&mut self, songs: &[Song], cx: &mut Context<Self>) {
         self.queue.replace_from_start(songs.to_vec());
         self.queue_changed(cx);
@@ -406,7 +390,7 @@ impl Player {
         if self.state != State::Stopped {
             return;
         }
-        // Without a current song, the first one added has become it.
+        // Without a current song, the first one added has become it
         if !had_current || self.queue.advance().is_some() {
             self.play_current(cx);
         }
@@ -456,7 +440,6 @@ impl Player {
         }
     }
 
-    /// Whether the song is silent for now, as its data has yet to arrive.
     pub(crate) fn is_buffering(&self) -> bool {
         self.buffering && self.is_playing()
     }
@@ -480,12 +463,10 @@ impl Player {
         self.queue.current()
     }
 
-    /// The current song's cover, as the bar shows it and at a large size.
     pub(crate) fn cover_urls(&self) -> (Option<&SharedString>, Option<&SharedString>) {
         (self.cover_url.as_ref(), self.large_cover_url.as_ref())
     }
 
-    /// How the current file reaches the device, once it is known.
     pub(crate) fn format_text(&self) -> Option<String> {
         self.format
             .as_ref()
@@ -512,14 +493,12 @@ impl Player {
         }
     }
 
-    /// Plays the entry from its start.
     pub(crate) fn play_entry(&mut self, id: EntryId, cx: &mut Context<Self>) {
         if self.queue.jump_to(id).is_some() {
             self.play_current(cx);
         }
     }
 
-    /// Removes the entry, unless it is the current one.
     pub(crate) fn remove_entry(&mut self, id: EntryId, cx: &mut Context<Self>) {
         if self.queue.remove(id) {
             self.queue_changed(cx);
@@ -532,14 +511,12 @@ impl Player {
         }
     }
 
-    /// Moves the entry to right after the current one.
     pub(crate) fn move_entry_to_next(&mut self, id: EntryId, cx: &mut Context<Self>) {
         if self.queue.move_to_next(id) {
             self.queue_changed(cx);
         }
     }
 
-    /// Removes every entry but the current one.
     pub(crate) fn clear_queue(&mut self, cx: &mut Context<Self>) {
         self.queue.clear();
         self.queue_changed(cx);
@@ -563,7 +540,7 @@ impl Player {
                 self.announce_current(cx);
             }
             State::Stopped if self.resume.is_some() => {
-                // Asked to play, whatever it was when it stopped.
+                // Asked to play, whatever it was when it stopped
                 if let Some(resume) = &mut self.resume {
                     resume.paused = false;
                 }
@@ -574,7 +551,7 @@ impl Player {
                 let resume = self.resume.get_or_insert_default();
                 resume.paused = !resume.paused;
                 let paused = resume.paused;
-                // Otherwise it is yet to load, which goes by `resume`.
+                // Otherwise it is yet to load, which goes by `resume`
                 if self.load.is_some() {
                     if paused {
                         self.engine.pause();
@@ -700,8 +677,8 @@ impl Player {
         }
     }
 
-    /// Keeps the Discord status on what is playing. A song opening keeps the
-    /// status of the one before, so that skipping does not make it flicker.
+    /// A song opening keeps the status of the one before, so that skipping does not make
+    /// it flicker.
     fn show_presence(&mut self, cx: &mut Context<Self>) {
         match self.state {
             State::Playing => {
@@ -771,7 +748,6 @@ impl Player {
         .detach();
     }
 
-    /// Keeps the system's media controls on the current song.
     fn show_in_media_controls(&mut self, cx: &mut Context<Self>) {
         let status = self.media_status();
         let (position, duration) = (self.position_now(), self.duration());
@@ -901,7 +877,6 @@ impl Player {
         });
     }
 
-    /// Moves the position slider, unless it is there already.
     fn show_position(&self, position: Duration, window: &mut Window, cx: &mut Context<Self>) {
         let fraction = self.duration().map_or(0.0, |duration| {
             (position.as_secs_f32() / duration.as_secs_f32()).min(1.0)
@@ -917,7 +892,7 @@ impl Player {
     }
 
     fn apply_volume(&mut self, level: f32, cx: &mut Context<Self>) {
-        // Moving the volume up is a way to unmute.
+        // Moving the volume up is a way to unmute
         if level > 0.0 {
             self.muted = false;
         }
@@ -1003,9 +978,9 @@ impl Player {
 
         let client = self.session.client().clone();
         let song_cache = song_cache(cx);
-        // Replacing the task drops an earlier open, and with it its download.
+        // Replacing the task drops an earlier open, and with it its download
         self._open = cx.spawn(async move |this, cx| {
-            // Removing and opening a kept song read and write the disk.
+            // Removing and opening a kept song read and write the disk
             let opened = cx
                 .background_spawn({
                     let song = song.clone();
@@ -1036,7 +1011,6 @@ impl Player {
         });
     }
 
-    /// Shows `song`, now current, as about to play.
     fn show_opening(&mut self, song: &Song, cx: &mut Context<Self>) {
         self.sought_media_cover = None;
         self.format = None;
@@ -1174,7 +1148,7 @@ impl Player {
             EventKind::Failed(error) if self.loaded_kept && error.is_track_error() => {
                 self.open_current(true, cx);
             }
-            // It opened a while ago, and what stopped it then may have passed.
+            // It opened a while ago, and what stopped it then may have passed
             EventKind::Failed(error) if self.loaded_ahead && error.is_track_error() => {
                 self.open_current(false, cx);
             }
@@ -1222,8 +1196,6 @@ impl Player {
         cx.notify();
     }
 
-    /// What goes under the song's name: why it stopped playing, if it did, or
-    /// else its artist and album.
     pub(crate) fn render_song_status(&self, song: &Song, cx: &App) -> AnyElement {
         match &self.error {
             Some(error) => div()
@@ -1276,8 +1248,6 @@ impl Player {
     }
 }
 
-/// What covers a cover that can be clicked, to answer the pointer, with the
-/// corners of that cover.
 pub(crate) fn cover_hover(
     id: &'static str,
     radius: gpui_kit::Pixels,
@@ -1294,8 +1264,6 @@ pub(crate) fn cover_hover(
         .active(move |this| this.bg(pressed))
 }
 
-/// The line under the song playing: its artist and its album, whose names can
-/// be clicked.
 fn song_details(song: &Song, cx: &App) -> impl IntoElement + use<> {
     let artist: Option<ArtistLink> = song_artist_link(song);
     let album = AlbumLink::of_song(song);
@@ -1321,7 +1289,6 @@ fn reveal(id: &'static str, shown: bool, window: &mut Window, cx: &mut Context<P
     transition(id, if shown { 1. } else { 0. }, policy, window, cx)
 }
 
-/// The image at `url`, if it can be had.
 async fn fetch_image(http: Arc<dyn HttpClient>, url: SharedString) -> Option<Vec<u8>> {
     let mut response = http
         .get(url.as_ref(), AsyncBody::empty(), true)
@@ -1335,7 +1302,6 @@ async fn fetch_image(http: Arc<dyn HttpClient>, url: SharedString) -> Option<Vec
     Some(image)
 }
 
-/// The songs kept on this computer, if there are any to be had.
 fn song_cache(cx: &Context<Player>) -> Option<playback::SongCache> {
     cx.try_global::<GlobalSongCache>()
         .and_then(|song_cache| song_cache.0.clone())
@@ -1347,7 +1313,6 @@ fn gain(level: f32, muted: bool) -> f32 {
     if muted { 0.0 } else { level * level }
 }
 
-/// Why the engine could not play, as a sentence that says what to try.
 fn describe(error: &audio::Error) -> String {
     match error {
         audio::Error::NoOutputDevice => {
@@ -1414,12 +1379,10 @@ impl Render for Player {
 
 #[cfg(test)]
 impl Player {
-    /// Queues `songs` with the one at `current_ix` current, without playing.
     pub(crate) fn fill_queue(&mut self, songs: &[Song], current_ix: usize) {
         self.queue.replace(songs.to_vec(), current_ix);
     }
 
-    /// Stands at `position` in the current song, without playing it.
     pub(crate) fn place_at(&mut self, position: Duration) {
         self.resume = Some(Resume {
             position,
@@ -1427,7 +1390,6 @@ impl Player {
         });
     }
 
-    /// Says it is playing or paused, without doing so.
     pub(crate) fn pretend_playing(&mut self, playing: bool, cx: &mut Context<Self>) {
         let state = if playing {
             State::Playing
@@ -1464,7 +1426,6 @@ mod tests {
     const RATE: u32 = 44_100;
     const WAIT: Duration = Duration::from_secs(15);
 
-    /// The line under a song playing, on its own.
     struct Details(Song);
 
     impl gpui_kit::Render for Details {
@@ -1626,7 +1587,7 @@ mod tests {
             player.pretend_playing(false, cx);
             assert_eq!(player.media_status(), MediaStatus::Paused);
 
-            // Opening is playing, unless a pause has come in the meantime.
+            // Opening is playing, unless a pause has come in the meantime
             player.state = State::Opening;
             assert_eq!(player.media_status(), MediaStatus::Playing);
             player.resume = Some(Resume {
@@ -1666,7 +1627,7 @@ mod tests {
         cx.executor().advance_clock(duration / 4);
         let partway = position_height(cx);
         assert!(gpui_kit::px(0.) < partway && partway < rem);
-        // Layout rounds to whole pixels, so halfway through it can be half off.
+        // Layout rounds to whole pixels, so halfway through it can be half off
         assert!((controls_lift(cx) - partway / 2.).abs() <= gpui_kit::px(0.5));
 
         cx.executor().advance_clock(duration);
@@ -1797,7 +1758,7 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(5));
             }
             socket.write_all(&body[head..]).ok();
-            // Until the client has gone, so that it decides when a body ends.
+            // Until the client has gone, so that it decides when a body ends
             let _ = reader.read(&mut [0; 1]);
         }
 
@@ -1818,7 +1779,7 @@ mod tests {
         server: &Server,
         cx: &'a mut TestAppContext,
     ) -> (Entity<Player>, &'a mut VisualTestContext) {
-        // The engine and the network wake the test from their own threads.
+        // The engine and the network wake the test from their own threads
         cx.executor().allow_parking();
         cx.update(gpui_kit::init);
         let name = std::env::var("HIPHILE_TEST_DEVICE")
@@ -1876,8 +1837,6 @@ mod tests {
                 .is_some_and(|following| following.load.is_some())
     }
 
-    /// Each song is fetched once and only after the one before it has
-    /// arrived, and playback goes through the queue on its own.
     #[gpui_kit::test]
     #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
     fn the_next_song_is_fetched_once_the_current_one_has_arrived(cx: &mut TestAppContext) {
@@ -1924,7 +1883,6 @@ mod tests {
         });
     }
 
-    /// A change of what comes next replaces what was made ready for it.
     #[gpui_kit::test]
     #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
     fn moving_another_song_next_makes_it_follow(cx: &mut TestAppContext) {
@@ -1966,7 +1924,7 @@ mod tests {
         wait_until(&player, cx, "b to be set", |player| {
             is_following_set(player, "b")
         });
-        // Within what the engine writes ahead of the end of the song.
+        // Within what the engine writes ahead of the end of the song
         wait_until(&player, cx, "the end of a to be near", |player| {
             player.engine.position() > Duration::from_millis(700)
         });
@@ -1980,8 +1938,6 @@ mod tests {
         player.read_with(cx, |player, _| assert!(player.error.is_none()));
     }
 
-    /// Repeating one song plays it again and again, as a new play each time,
-    /// until repeat is off and it ends for good.
     #[gpui_kit::test]
     #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
     fn repeating_one_song_plays_it_until_repeat_is_off(cx: &mut TestAppContext) {
@@ -2008,8 +1964,6 @@ mod tests {
         });
     }
 
-    /// Repeating all songs goes from the last back to the first, and turning
-    /// it on during the last song is enough.
     #[gpui_kit::test]
     #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
     fn repeating_all_songs_goes_back_to_the_first(cx: &mut TestAppContext) {
@@ -2030,8 +1984,6 @@ mod tests {
         });
     }
 
-    /// Shuffling while a song plays changes what follows it, and the end of
-    /// the song goes where the shuffle says.
     #[gpui_kit::test]
     #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
     fn shuffling_while_a_song_plays_changes_what_follows_it(cx: &mut TestAppContext) {
@@ -2051,7 +2003,7 @@ mod tests {
                 .following()
                 .map(|song| song.id().as_str().to_owned())
         };
-        // One time in 29, the shuffle leaves s1 next.
+        // One time in 29, the shuffle leaves s1 next
         let next = loop {
             player.update(cx, |player, cx| player.toggle_shuffle(cx));
             let next = player.read_with(cx, |player, _| following(player)).unwrap();
@@ -2068,8 +2020,6 @@ mod tests {
         });
     }
 
-    /// A next song the server has no file for fails when its turn comes, not
-    /// before: the current song plays out undisturbed.
     #[gpui_kit::test]
     #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
     fn a_next_song_that_cannot_be_fetched_fails_at_its_turn(cx: &mut TestAppContext) {
@@ -2096,8 +2046,6 @@ mod tests {
         assert_eq!(server.streamed(), ["a", "gone", "gone"]);
     }
 
-    /// A next song that opened ahead of time gets one more try at its turn,
-    /// as what stopped it may have passed.
     #[gpui_kit::test]
     #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
     fn a_next_song_that_cannot_open_is_tried_once_more(cx: &mut TestAppContext) {
@@ -2117,8 +2065,6 @@ mod tests {
         assert_eq!(server.streamed(), ["a", "broken", "broken"]);
     }
 
-    /// So does one that opened and then broke, once its audio has joined the
-    /// current song's but before the device has got to it.
     #[gpui_kit::test]
     #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
     fn a_next_song_that_breaks_as_it_joins_is_tried_once_more(cx: &mut TestAppContext) {
@@ -2136,8 +2082,6 @@ mod tests {
         assert_eq!(tries.iter().filter(|id| *id == "b").count(), 2, "{tries:?}");
     }
 
-    /// Pausing while the song opens holds for when it has: it starts paused,
-    /// and the controls say so all along. Again, and it plays.
     #[gpui_kit::test]
     #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
     fn a_pause_while_a_song_opens_holds(cx: &mut TestAppContext) {
@@ -2163,7 +2107,6 @@ mod tests {
         player.update(cx, |player, cx| player.stop(cx));
     }
 
-    /// Pausing a song that opens and then fails does not stay: Play plays it.
     #[gpui_kit::test]
     #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
     fn a_pause_does_not_outlast_a_song_that_failed_to_open(cx: &mut TestAppContext) {
@@ -2186,13 +2129,11 @@ mod tests {
         player.update(cx, |player, cx| player.stop(cx));
     }
 
-    /// A song whose data has stopped arriving shows that it waits, and still
-    /// pauses and plays at once. It sounds again once the data has come.
     #[gpui_kit::test]
     #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
     fn a_song_waiting_for_its_data_answers_the_controls(cx: &mut TestAppContext) {
         let server = Server::default();
-        // Half of it arrives, which sounds before it runs out.
+        // Half of it arrives, which sounds before it runs out
         let songs = [server.add("a", wav(6_000))];
         *server.held.lock().unwrap() = Some("a".to_owned());
         let (player, cx) = player(&server, cx);
@@ -2240,7 +2181,7 @@ mod tests {
             is_following_set(player, "b")
         });
 
-        // Without running the player, so that the events wait for it.
+        // Without running the player, so that the events wait for it
         let position = || player.read_with(cx, |player, _| player.engine.position());
         let started = Instant::now();
         let mut last = position();

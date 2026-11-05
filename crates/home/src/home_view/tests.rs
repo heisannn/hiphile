@@ -40,7 +40,7 @@ fn catalog_in(dir: &tempfile::TempDir) -> catalog::Catalog {
 /// A session for `alice` that keeps her picks in `catalog`, with a server that
 /// cannot be reached.
 fn session_with(catalog: Option<catalog::Catalog>, cx: &mut TestAppContext) -> session::Session {
-    // The failing requests wake the test from the network's own thread.
+    // The failing requests wake the test from the network's own thread
     cx.executor().allow_parking();
     cx.update(|cx| {
         gpui_kit::init(cx);
@@ -59,7 +59,6 @@ fn session_with(catalog: Option<catalog::Catalog>, cx: &mut TestAppContext) -> s
     )
 }
 
-/// A home screen for `alice` that keeps its picks in `catalog`.
 fn home_with(
     catalog: Option<catalog::Catalog>,
     cx: &mut TestAppContext,
@@ -493,7 +492,7 @@ fn an_empty_pick_is_not_kept_and_leaves_what_is_on_show(cx: &mut TestAppContext)
         home.recommended = Shelf::Loaded(recommended(1).into());
         home.finish_recommended(found(&[], true), today(), cx);
         assert_eq!(shown(home), ["r0"]);
-        // Plays need not ask again.
+        // Plays need not ask again
         home.renew_recommended(cx);
         assert!(!home.recommending);
     });
@@ -680,7 +679,7 @@ fn yesterdays_kept_pick_shows_while_a_new_one_is_made(cx: &mut TestAppContext) {
     cx.update(|_, cx| {
         let home = home.read(cx);
         assert_eq!(shown(home), ["r0"]);
-        // On its way, or already failed for want of a server.
+        // On its way, or already failed for want of a server
         assert!(home.recommending || home.recommended_retry.is_some());
     });
 }
@@ -786,7 +785,7 @@ fn the_arrow_keys_move_through_the_songs_into_the_albums(cx: &mut TestAppContext
     update(&home, cx, |home, _| {
         fill(home, &["s1", "s2"], 4);
     });
-    // Room for two cards across.
+    // Room for two cards across
     cx.simulate_resize(size(px(24. * 16.), px(800.)));
     cx.update(|window, cx| {
         let focus = home.read(cx).focus.clone();
@@ -856,14 +855,14 @@ fn key_presses_retry(key: &str, cx: &mut TestAppContext) -> bool {
     cx.update(|window, cx| window.focus_next(cx));
     cx.run_until_parked();
 
-    // A button acts on the release.
+    // A button acts on the release
     cx.simulate_keystrokes(key);
     let os = cx.update(|_, cx| cx.platform_info().os);
     cx.simulate_event(KeyUpEvent {
         keystroke: Keystroke::parse_with_os(key, os).unwrap(),
     });
 
-    // Pressed, it loads again, and whatever that comes to is not this.
+    // Pressed, it loads again, and whatever that comes to is not this
     cx.update(|_, cx| !matches!(&home.read(cx).recent, Shelf::Failed(error) if error == "before"))
 }
 

@@ -1,7 +1,6 @@
 use fuzzy::{Index, Speller};
 use subsonic::Album;
 
-/// `albums`, to find by their name or artist.
 pub(crate) fn album_index(albums: &[Album], speller: Option<&dyn Speller>) -> Index {
     Index::new(
         albums.iter().map(|album| {

@@ -34,8 +34,6 @@ use crate::{
     AddToPlaylist, AddToQueue, FocusFilter, GoToAlbum, Open, PlayNext, ROOT_CONTEXT, SONGS_CONTEXT,
 };
 
-/// The songs' screen: every song in a table that filters and sorts. Owns the
-/// songs, their order, the selection, and the focus.
 pub struct Songs {
     session: session::Session,
     /// Whether the screen has shown, which is when it starts loading. Reading
@@ -43,9 +41,7 @@ pub struct Songs {
     is_activated: bool,
     songs: SongList,
     is_reloading: bool,
-    /// Why reading the songs on show again failed.
     refresh_error: Option<SharedString>,
-    /// The loaded songs, ready to search.
     index: Arc<Index>,
     /// Positions in the songs that match the filter, in the order they show.
     visible: Arc<Vec<usize>>,
@@ -130,7 +126,7 @@ impl Songs {
                 InputEvent::PressEnter { .. } => this.focus.focus(window, cx),
                 _ => {}
             }),
-            // Focus changes the selection treatment of the rows.
+            // Focus changes the selection treatment of the rows
             cx.on_focus(&focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&focus, window, |_, _, cx| cx.notify()),
         ];
@@ -165,7 +161,6 @@ impl Songs {
         }
     }
 
-    /// Starts loading the first time the screen shows.
     pub fn activate(&mut self, cx: &mut Context<Self>) {
         if !self.is_activated {
             self.is_activated = true;
@@ -173,8 +168,7 @@ impl Songs {
         }
     }
 
-    /// Reads the songs again, after a sync changed them. Does nothing to a
-    /// screen that has yet to show.
+    /// Does nothing to a screen that has yet to show.
     pub fn songs_synced(&mut self, cx: &mut Context<Self>) {
         if self.is_activated {
             self.load(cx);
@@ -198,7 +192,7 @@ impl Songs {
         self._load_task = cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    // A copy that can't be read is the same as none.
+                    // A copy that can't be read is the same as none
                     let saved = catalog.and_then(|catalog| catalog.songs().ok());
                     let songs = match saved {
                         Some(songs) if !songs.is_empty() => songs,
@@ -239,7 +233,7 @@ impl Songs {
                 if arranged.had_book != self.session.reading_book(cx).is_some() {
                     self.read_again(cx);
                 }
-                // The filter or the sort may have changed during the reading.
+                // The filter or the sort may have changed during the reading
                 if arranged.query != self.filter.read(cx).value()
                     || arranged.sort != self.sort
                     || arranged.by_relevance != self.by_relevance
@@ -247,7 +241,7 @@ impl Songs {
                     self.rearrange(cx);
                 }
             }
-            // The songs on show stay there, with word of what went wrong.
+            // The songs on show stay there, with word of what went wrong
             Err(error) if matches!(self.songs, SongList::Loaded(_)) => {
                 self.refresh_error = Some(error);
             }
@@ -279,8 +273,8 @@ impl Songs {
         self.visible_song(self.selected_position()?)
     }
 
-    /// Works out the songs on show again, off the UI thread: a large library
-    /// takes a moment to sort. A newer change replaces one still under way.
+    /// Off the UI thread: a large library takes a moment to sort. A newer change replaces one still
+    /// under way.
     fn rearrange(&mut self, cx: &mut Context<Self>) {
         let Some(songs) = self.loaded_songs().cloned() else {
             return;
@@ -314,8 +308,7 @@ impl Songs {
         self.rearrange(cx);
     }
 
-    /// Makes the songs searchable again, with dictionaries that have come or
-    /// gone. The songs on show stay as they are until that is done.
+    /// The songs on show stay as they are until that is done.
     fn read_again(&mut self, cx: &mut Context<Self>) {
         let Some(songs) = self.loaded_songs().cloned() else {
             return;
@@ -349,7 +342,6 @@ impl Songs {
         cx.notify();
     }
 
-    /// Whether the rows follow relevance rather than a heading.
     fn is_ranked(&self, cx: &App) -> bool {
         self.by_relevance && !self.filter.read(cx).value().trim().is_empty()
     }
@@ -385,7 +377,6 @@ impl Songs {
         }
     }
 
-    /// Plays the songs on show, in the order they show, from the selected one.
     fn play_selected(&self, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(start_ix), Some(songs)) = (self.selected_position(), self.loaded_songs()) else {
             return;
@@ -426,7 +417,6 @@ impl Songs {
         }
     }
 
-    /// Marks `song` in the table, or clears the mark.
     pub fn set_now_playing(&mut self, song: Option<SongId>, playing: bool, cx: &mut Context<Self>) {
         let now_playing = NowPlaying::new(song, playing);
         if self.now_playing != now_playing {
@@ -444,7 +434,6 @@ impl Songs {
             .into_any_element()
     }
 
-    /// One heading of the table, which sorts by its column when clicked.
     fn render_heading(
         &self,
         id: &'static str,
@@ -500,8 +489,8 @@ impl Songs {
             .into_any_element()
     }
 
-    /// The table's focus target, rendered in every state so focus and the
-    /// commands bound above it never land on an element that is gone.
+    /// Rendered in every state so focus and the commands bound above it never land on an element
+    /// that is gone.
     fn render_table(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         div()
             .id("songs")
@@ -589,7 +578,6 @@ impl Songs {
     }
 }
 
-/// The table's columns, from the same geometry in its headings and its rows.
 fn columns(
     marker: Option<impl IntoElement>,
     title: impl IntoElement,
@@ -603,7 +591,7 @@ fn columns(
         .w_full()
         .min_w_0()
         .gap_3()
-        // A lane of its own, so the titles stay in line.
+        // A lane of its own, so the titles stay in line
         .child(h_flex().w_4().flex_none().justify_center().children(marker))
         .child(
             h_flex()

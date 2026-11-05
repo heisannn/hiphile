@@ -14,7 +14,6 @@ use gpui_kit::{
 };
 use subsonic::{Album, AlbumId, Artist, ArtistId, PlaylistId, Song, StarTarget};
 
-/// Add `songs` after those already in `playlist`.
 #[derive(Clone, Debug, PartialEq, Action)]
 #[action(namespace = hiphile, no_json)]
 pub struct AddToPlaylist {
@@ -49,7 +48,6 @@ impl NewPlaylist {
         Self { songs }
     }
 
-    /// A playlist starting without songs.
     pub fn empty() -> Self {
         Self::new(Arc::from([]))
     }
@@ -84,13 +82,11 @@ struct PlaylistChoices(Arc<[(PlaylistId, SharedString)]>);
 
 impl Global for PlaylistChoices {}
 
-/// Replaces the playlists offered by [`add_to_playlist_submenu`].
 pub fn set_playlist_choices(choices: Vec<(PlaylistId, SharedString)>, cx: &mut App) {
     cx.set_global(PlaylistChoices(choices.into()));
 }
 
-/// The command for one choice of where to add `songs`: the playlist, or
-/// `None` for a new one.
+/// The returned command takes the playlist to add to, or `None` for a new one.
 pub fn add_songs_command(songs: Arc<[Song]>) -> impl Fn(Option<&PlaylistId>) -> Box<dyn Action> {
     move |playlist| match playlist {
         Some(playlist) => Box::new(AddToPlaylist::new(playlist.clone(), songs.clone())),
@@ -98,7 +94,6 @@ pub fn add_songs_command(songs: Arc<[Song]>) -> impl Fn(Option<&PlaylistId>) -> 
     }
 }
 
-/// Adds every choice of where to add songs to `menu`.
 pub fn playlist_choices(
     menu: PopupMenu,
     command: impl Fn(Option<&PlaylistId>) -> Box<dyn Action>,
@@ -119,8 +114,6 @@ pub fn playlist_choices(
     })
 }
 
-/// Adds an Add to Playlist submenu to a context or dropdown menu; `command`
-/// is what each of its items runs, usually [`add_songs_command`].
 pub fn add_to_playlist_submenu(
     menu: PopupMenu,
     command: impl Fn(Option<&PlaylistId>) -> Box<dyn Action> + 'static,
@@ -132,18 +125,17 @@ pub fn add_to_playlist_submenu(
     })
 }
 
-/// What to do with an album's songs once they have been fetched.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AlbumAction {
     Play,
     Enqueue(Placement),
-    /// Add them to this playlist, or to a new one for `None`.
+    /// `None` for a new playlist.
     AddToPlaylist(Option<PlaylistId>),
     ChoosePlaylist,
 }
 
 impl AlbumAction {
-    /// The command that does this to `songs`, unless there are none.
+    /// `None` when `songs` is empty.
     pub fn command(self, songs: Arc<[Song]>) -> Option<Box<dyn Action>> {
         if songs.is_empty() {
             return None;
@@ -156,8 +148,6 @@ impl AlbumAction {
         })
     }
 
-    /// Does this once the album's songs have been fetched, or says why they
-    /// couldn't be.
     pub fn finish<E: Display>(
         self,
         songs: Result<Arc<[Song]>, E>,
@@ -178,7 +168,6 @@ impl AlbumAction {
     }
 }
 
-/// Show `album` in the library.
 #[derive(Clone, Debug, PartialEq, Action)]
 #[action(namespace = hiphile, no_json)]
 pub struct ShowAlbum {
@@ -195,7 +184,6 @@ impl ShowAlbum {
     }
 }
 
-/// Show `artist` on the artists' screen.
 #[derive(Clone, Debug, PartialEq, Action)]
 #[action(namespace = hiphile, no_json)]
 pub struct ShowArtist {
@@ -221,7 +209,6 @@ actions!(
     ]
 );
 
-/// Binds the key for [`GoToArtist`] in the view whose key context is `context`.
 pub fn bind_go_to_artist(context: &'static str, cx: &mut App) {
     let key = if cx.platform_info().is_mac() {
         "cmd-shift-a"
@@ -231,7 +218,6 @@ pub fn bind_go_to_artist(context: &'static str, cx: &mut App) {
     cx.bind_keys([KeyBinding::new(key, GoToArtist, Some(context))]);
 }
 
-/// A song, an album or an artist, whole, as the favorites' screen lists it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Favorite {
     Song(Song),
@@ -249,7 +235,6 @@ impl Favorite {
     }
 }
 
-/// Make `favorite` one of the user's favorites, or stop it being one.
 #[derive(Clone, Debug, PartialEq, Action)]
 #[action(namespace = hiphile, no_json)]
 pub struct SetFavorite {
@@ -283,8 +268,6 @@ actions!(
     ]
 );
 
-/// Binds the key for [`ToggleFavorite`] in the view whose key context is
-/// `context`.
 pub fn bind_toggle_favorite(context: &'static str, cx: &mut App) {
     let key = if cx.platform_info().is_mac() {
         "cmd-d"
@@ -301,24 +284,20 @@ struct KnownFavorites(Option<HashSet<StarTarget>>);
 
 impl Global for KnownFavorites {}
 
-/// Replaces what [`is_favorite`] goes by; `None` when it is not known.
 pub fn set_known_favorites(favorites: Option<HashSet<StarTarget>>, cx: &mut App) {
     cx.set_global(KnownFavorites(favorites));
 }
 
-/// Whether `target` is a favorite, once that is known.
+/// `None` until the favorites are known.
 pub fn is_favorite(target: &StarTarget, cx: &App) -> Option<bool> {
     let favorites = cx.try_global::<KnownFavorites>()?.0.as_ref()?;
     Some(favorites.contains(target))
 }
 
-/// Calls for `view` to render again whenever the favorites change, for as long
-/// as the subscription lives.
 pub fn observe_favorites<V: 'static>(cx: &mut Context<V>) -> Subscription {
     cx.observe_global::<KnownFavorites>(|_, cx| cx.notify())
 }
 
-/// What [`ToggleFavorite`] does to `target` now, as a command's label says it.
 pub fn favorite_command_label(target: &StarTarget, cx: &App) -> &'static str {
     if is_favorite(target, cx) == Some(true) {
         "Remove from Favorites"
@@ -327,9 +306,7 @@ pub fn favorite_command_label(target: &StarTarget, cx: &App) -> &'static str {
     }
 }
 
-/// Adds the item for [`ToggleFavorite`] on `target` to a context or dropdown
-/// menu, whose action context handles it. It stays disabled until the
-/// favorites are known, as it could not say which way it goes.
+/// Disabled until the favorites are known, as it could not say which way it goes.
 pub fn favorite_menu_item(menu: PopupMenu, target: &StarTarget, cx: &App) -> PopupMenu {
     menu.menu_with_disabled(
         favorite_command_label(target, cx),
@@ -338,8 +315,7 @@ pub fn favorite_menu_item(menu: PopupMenu, target: &StarTarget, cx: &App) -> Pop
     )
 }
 
-/// Dispatches what [`ToggleFavorite`] means for `favorite`. Does nothing until
-/// the favorites are known.
+/// Does nothing until the favorites are known.
 pub fn toggle_favorite(favorite: Favorite, window: &mut Window, cx: &mut App) {
     if let Some(is_favorite) = is_favorite(&favorite.target(), cx) {
         window.dispatch_action(Box::new(SetFavorite::new(favorite, !is_favorite)), cx);
@@ -363,7 +339,6 @@ impl PlaySongs {
         }
     }
 
-    /// Plays all of an album or a playlist, with no song chosen to start at.
     pub fn whole(songs: Arc<[Song]>) -> Self {
         Self {
             songs,
@@ -375,18 +350,14 @@ impl PlaySongs {
         &self.songs
     }
 
-    /// The song chosen to start at, if one was.
     pub fn start_ix(&self) -> Option<usize> {
         self.start_ix
     }
 }
 
-/// Where [`EnqueueSongs`] adds its songs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Placement {
-    /// Right after the current song.
     Next,
-    /// After every other song.
     Last,
 }
 

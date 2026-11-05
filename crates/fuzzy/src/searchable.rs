@@ -26,12 +26,10 @@ pub struct Key {
 }
 
 impl Key {
-    /// `keys` in the form to keep them in.
     pub fn encode(keys: &[Self]) -> Result<String, serde_json::Error> {
         serde_json::to_string(keys)
     }
 
-    /// What [`Self::encode`] made.
     pub fn decode(encoded: &str) -> Result<Vec<Self>, serde_json::Error> {
         serde_json::from_str(encoded)
     }
@@ -55,7 +53,6 @@ impl Key {
         })
     }
 
-    /// The key of what a dictionary says `reading` is.
     fn read(reading: &str) -> Option<Self> {
         let mut key = Self::new(reading)?;
         key.unvoiced = Some(unvoiced(&key.spelled).into());
@@ -63,7 +60,6 @@ impl Key {
     }
 }
 
-/// A text ready to be matched: as written, and as it reads.
 #[derive(Debug)]
 pub(crate) struct Searchable {
     pub(crate) text: Box<str>,
@@ -150,7 +146,7 @@ fn spoken_particles(reading: &str) -> Option<String> {
         })
 }
 
-/// Whether an [`Analyzer`] gets asked how `text` reads. The rest reads as written.
+/// Whether an [`crate::Analyzer`] gets asked how `text` reads. The rest reads as written.
 pub fn needs_reading(text: &str) -> bool {
     has_japanese(&normalized(text))
 }
@@ -210,7 +206,7 @@ mod tests {
     fn latin_letters_and_kana_read_without_a_dictionary() {
         let found = Searchable::new("ほほえみDiary", None);
         assert_eq!(spellings(&found), ["hohoemiziary"]);
-        // Kanji says nothing without one, and splits the words around it.
+        // Kanji says nothing without one, and splits the words around it
         let found = Searchable::new("夜に駆ける", None);
         assert_eq!(spellings(&found), ["nikeru"]);
         assert_eq!(&*found.keys[0].starts, [0, 2]);

@@ -1,5 +1,3 @@
-//! HTTP transport shared by the GUI and the CLI.
-//!
 //! reqwest needs a tokio reactor, but GPUI's executor is not tokio. [`Client`]
 //! therefore owns its own runtime and hands back futures that complete through
 //! a channel, so any executor can await them.
@@ -52,10 +50,8 @@ impl From<reqwest::Error> for Error {
     }
 }
 
-/// How long a connection attempt may take.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long a response may go without sending any bytes. Bounds how long a
-/// stalled server can keep a reader waiting.
+/// How long a response may go without sending any bytes.
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl Client {

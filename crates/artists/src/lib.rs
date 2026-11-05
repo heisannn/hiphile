@@ -1,10 +1,5 @@
-//! Feature: browsing artists.
-//!
-//! A filterable list of artists beside the selected one's top songs, albums and
-//! similar artists. The list shows what the saved albums say at once, and the
-//! server's answer replaces it. Dispatches `actions::PlaySongs`,
-//! `actions::EnqueueSongs`, `actions::ShowAlbum` and the playlist actions; the
-//! app shell routes them, and routes `actions::ShowArtist` back to [`Artists`].
+//! The app shell routes the `actions` this feature dispatches, and routes
+//! `actions::ShowArtist` back to [`Artists`].
 
 mod artists_view;
 mod list;
@@ -14,9 +9,7 @@ use ui::list_navigation::bind_list_navigation;
 
 pub use artists_view::{Artists, ArtistsEvent};
 
-/// Key context of the focused list of artists.
 pub const ARTISTS_CONTEXT: &str = "Artists";
-/// Key context of the focused detail of an artist.
 pub const DETAIL_CONTEXT: &str = "ArtistDetail";
 const ROOT_CONTEXT: &str = "ArtistsRoot";
 
@@ -26,19 +19,12 @@ actions!(
         /// Artists: move to the detail. Detail: play the song, or show the
         /// album or the artist selected.
         Open,
-        /// Plays the selection.
         Play,
-        /// Queues the selection right after the current song.
         PlayNext,
-        /// Queues the selection after every other song.
         AddToQueue,
-        /// Detail: return to the list of artists.
         Back,
         FocusFilter,
-        /// Asks which playlist to add the selection to.
         AddToPlaylist,
-        /// Shows the selected album, or the selected song's, on the albums'
-        /// screen.
         GoToAlbum,
         SelectLeft,
         SelectRight
@@ -52,7 +38,7 @@ struct AddSelectionToPlaylist {
     playlist: Option<subsonic::PlaylistId>,
 }
 
-/// Registers key bindings. Call before building the menu bar.
+/// Call before building the menu bar.
 pub fn init(cx: &mut App) {
     let (find, play, add_to_playlist, go_to_album) = if cx.platform_info().is_mac() {
         ("cmd-f", "cmd-enter", "cmd-p", "cmd-l")

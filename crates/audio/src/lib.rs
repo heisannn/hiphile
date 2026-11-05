@@ -1,5 +1,3 @@
-//! Playback engine.
-//!
 //! Each track decodes with symphonia on a thread of its own, as reading it may
 //! wait on the network. One engine thread takes what that decodes, maps
 //! channels, resamples only when the device runs at another rate than the

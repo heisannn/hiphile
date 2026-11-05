@@ -10,7 +10,6 @@ publish = false
 license = "MIT"
 
 [workspace.dependencies]
-# Internal crates
 account = { path = "crates/account" }
 actions = { path = "crates/actions" }
 artists = { path = "crates/artists" }
@@ -37,7 +36,6 @@ subsonic = { path = "crates/subsonic" }
 ui = { path = "crates/ui" }
 updater = { path = "crates/updater" }
 
-# External crates
 anyhow = "1.0"
 apple-native-keyring-store = { version = "1.0", features = ["keychain"] }
 async-channel = "2.5"
@@ -79,7 +77,7 @@ self_update = { version = "1.3", default-features = false, features = [
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 sha2 = "0.11"
-# zbus rather than the default dbus, which needs a system library on Linux.
+# zbus rather than the default dbus, which needs a system library on Linux
 souvlaki = { version = "0.9", default-features = false, features = ["use_zbus"] }
 symphonia = { version = "0.6", features = ["all"] }
 tar = "0.4"

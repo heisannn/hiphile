@@ -49,7 +49,6 @@ mod tests {
         Duration::from_secs(seconds)
     }
 
-    /// Plays from `from` for `length` and says whether the play came to count.
     fn play(
         tally: &mut PlayTally,
         from: Duration,

@@ -4,7 +4,6 @@ use gpui_kit::{
     Window, div, prelude::FluentBuilder as _,
 };
 
-/// A row's title, with what tells it apart on a second line.
 #[derive(IntoElement)]
 pub struct RowText {
     title: SharedString,
@@ -28,13 +27,11 @@ impl RowText {
         self
     }
 
-    /// A second line of more than text, such as an [`crate::ArtistLine`].
     pub fn detail_line(mut self, line: impl IntoElement) -> Self {
         self.detail_line = Some(line.into_any_element());
         self
     }
 
-    /// Mutes the title, for a row that is behind the user.
     pub fn dimmed(mut self, dimmed: bool) -> Self {
         self.dimmed = dimmed;
         self

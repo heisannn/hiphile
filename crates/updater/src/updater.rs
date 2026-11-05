@@ -20,8 +20,7 @@ pub enum UpdateState {
     Failed(SharedString),
 }
 
-/// Looks for a new version when the app starts and every so often after, if updates are
-/// automatic. The running app keeps its code until it restarts, so nothing playing stops.
+/// The running app keeps its code until it restarts, so nothing playing stops.
 pub struct Updater {
     releases: Arc<dyn Releases>,
     state: UpdateState,
@@ -124,7 +123,6 @@ impl Updater {
         });
     }
 
-    /// Does nothing unless a version is [`UpdateState::Available`].
     pub fn install(&mut self, cx: &mut Context<Self>) {
         let UpdateState::Available(version) = &self.state else {
             return;

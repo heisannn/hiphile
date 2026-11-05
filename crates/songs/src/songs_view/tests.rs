@@ -29,7 +29,6 @@ fn songs() -> Vec<Song> {
     .collect()
 }
 
-/// A server with a page of the songs above, returning its URL.
 fn server() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -70,7 +69,6 @@ fn view_on<'a>(
     view_with(url, None, cx)
 }
 
-/// Keeps `songs` in the catalog in `dir`, as a sync does.
 fn catalog_of(dir: &tempfile::TempDir, songs: Vec<Song>) -> catalog::Catalog {
     struct Saved(Vec<Song>);
 
@@ -112,7 +110,7 @@ fn view_with<'a>(
     catalog: Option<catalog::Catalog>,
     cx: &'a mut TestAppContext,
 ) -> (Entity<Songs>, &'a mut VisualTestContext) {
-    // The requests wake the test from the network's own thread.
+    // The requests wake the test from the network's own thread
     cx.executor().allow_parking();
     cx.update(|cx| {
         gpui_kit::init(cx);
@@ -132,7 +130,6 @@ fn view_with<'a>(
     cx.add_window_view(|window, cx| Songs::new(session, window, cx))
 }
 
-/// A table of the songs above, with focus, whose server cannot be reached.
 fn table(cx: &mut TestAppContext) -> (Entity<Songs>, &mut VisualTestContext) {
     let (view, cx) = view_on("http://127.0.0.1:9", cx);
     cx.simulate_resize(size(px(1000.), px(600.)));
@@ -157,16 +154,14 @@ fn shown(view: &Entity<Songs>, cx: &mut VisualTestContext) -> Vec<String> {
     })
 }
 
-/// Clicks the heading in the row of headings, `x` from the window's edge.
 fn click_heading(x: f32, cx: &mut VisualTestContext) {
-    // Below the header, in the middle of the row of headings.
+    // Below the header, in the middle of the row of headings
     let rem = cx.update(|window, _| f32::from(window.rem_size()));
     let position = point(px(x), px(rem * 2.5 + rem));
     cx.simulate_click(position, Modifiers::default());
     cx.run_until_parked();
 }
 
-/// Where the heading of a column starts, given how the columns share the width.
 fn heading_x(column: Column, cx: &mut VisualTestContext) -> f32 {
     let (rem, width) = cx.update(|window, _| {
         (
@@ -187,7 +182,7 @@ fn heading_x(column: Column, cx: &mut VisualTestContext) -> f32 {
         Column::Title => title + edge,
         Column::Artist => artist + edge,
         Column::Album => album + edge,
-        // The time's heading sits at the end of its column.
+        // The time's heading sits at the end of its column
         Column::Time => width - inset - edge,
     }
 }
@@ -261,7 +256,6 @@ fn a_failed_first_load_says_so_and_a_later_one_keeps_the_songs(cx: &mut TestAppC
     });
 }
 
-/// Waits for the songs to arrive and for what they set off to end.
 fn wait_for_songs(view: &Entity<Songs>, cx: &mut VisualTestContext) {
     for _ in 0..500 {
         cx.run_until_parked();
@@ -309,7 +303,7 @@ fn an_order_worked_out_for_songs_since_replaced_is_dropped(cx: &mut TestAppConte
     let one_song = songs().into_iter().take(1).collect();
     cx.update(|_, cx| {
         view.update(cx, |view, cx| {
-            // Still working out the order of three songs when one arrives.
+            // Still working out the order of three songs when one arrives
             view.sort_by(Column::Time, cx);
             let arranged = Arranged::new(one_song, None, "".into(), view.sort, true);
             view.finish_loading(Ok(arranged), cx);
@@ -318,7 +312,7 @@ fn an_order_worked_out_for_songs_since_replaced_is_dropped(cx: &mut TestAppConte
     cx.run_until_parked();
 
     assert_eq!(shown(&view, cx), ["c"]);
-    // Positions past the end of the songs would panic here.
+    // Positions past the end of the songs would panic here
     let played: Vec<PlaySongs> = dispatched_by("enter", cx);
     assert_eq!(played.len(), 1);
 }
@@ -422,7 +416,7 @@ fn clicking_an_album_in_a_row_shows_it_and_leaves_the_selection(cx: &mut TestApp
         });
     });
 
-    // Past the search header and the headings, in the middle of the first row.
+    // Past the search header and the headings, in the middle of the first row
     let rem = cx.update(|window, _| f32::from(window.rem_size()));
     let x = heading_x(Column::Album, cx);
     cx.simulate_click(point(px(x), px(rem * 5.5)), Modifiers::default());
@@ -480,13 +474,13 @@ fn a_heading_clicked_during_a_filter_holds_until_the_filter_is_emptied(cx: &mut 
     cx.run_until_parked();
     assert_eq!(shown(&view, cx), ["c", "b", "a"]);
 
-    // Typing on keeps to the heading.
+    // Typing on keeps to the heading
     set_filter(&view, "ee", cx);
     set_filter(&view, "e", cx);
     assert_eq!(shown(&view, cx), ["c", "b", "a"]);
     cx.update(|_, cx| assert!(!view.read(cx).by_relevance));
 
-    // A new filter ranks again, with the sort kept for when it is emptied.
+    // A new filter ranks again, with the sort kept for when it is emptied
     set_filter(&view, "", cx);
     assert_eq!(shown(&view, cx), ["c", "b", "a"]);
     set_filter(&view, "e", cx);
@@ -507,7 +501,7 @@ fn a_filter_shows_no_heading_as_sorted_until_one_is_clicked(cx: &mut TestAppCont
     cx.update(|_, cx| {
         let view = view.read(cx);
         assert!(!view.is_ranked(cx));
-        // The heading was not showing as sorted, so its first click starts it.
+        // The heading was not showing as sorted, so its first click starts it
         assert!(!view.sort.is_descending);
     });
 }
@@ -588,7 +582,7 @@ fn the_favorite_key_goes_by_whether_the_selected_song_is_one(cx: &mut TestAppCon
     };
     let target = subsonic::StarTarget::Song(SongId::new("a"));
 
-    // Nothing to go by until the favorites are known.
+    // Nothing to go by until the favorites are known
     let asked: Vec<actions::SetFavorite> = dispatched_by(key, cx);
     assert!(asked.is_empty());
 

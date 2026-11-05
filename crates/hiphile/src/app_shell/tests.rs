@@ -11,7 +11,6 @@ use super::*;
 const IN_CONTROLS: Point<Pixels> = point(px(4.), px(4.));
 const ON_ITS_OWN: Point<Pixels> = point(px(4.), px(44.));
 
-/// A button in a row of title bar controls, and one that is not, above it.
 struct Bar {
     clicks: Rc<Cell<u32>>,
 }

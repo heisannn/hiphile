@@ -2,12 +2,9 @@ use url::Url;
 
 use crate::{CoverArtId, Credentials};
 
-/// Protocol version sent as `v`.
 pub const PROTOCOL_VERSION: &str = "1.16.1";
-/// Client name sent as `c`.
 pub const CLIENT_NAME: &str = "hiphile";
 
-/// One OpenSubsonic method call, before authentication is attached.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Endpoint {
     method: &'static str,
@@ -48,8 +45,7 @@ impl Endpoint {
         Self::new("ping")
     }
 
-    /// One page of albums sorted by name. `size` is capped at 500 by the
-    /// protocol.
+    /// `size` is capped at 500 by the protocol.
     pub fn albums_by_name(size: u32, offset: u32) -> Self {
         Self::new("getAlbumList2")
             .param("type", "alphabeticalByName")
@@ -57,28 +53,24 @@ impl Endpoint {
             .param("offset", offset.to_string())
     }
 
-    /// The albums added to the library last, newest first.
     pub fn newest_albums(size: u32) -> Self {
         Self::new("getAlbumList2")
             .param("type", "newest")
             .param("size", size.to_string())
     }
 
-    /// The albums played last by the user, most recent first.
     pub fn recently_played_albums(size: u32) -> Self {
         Self::new("getAlbumList2")
             .param("type", "recent")
             .param("size", size.to_string())
     }
 
-    /// The albums the user played most, most played first.
     pub fn frequent_albums(size: u32) -> Self {
         Self::new("getAlbumList2")
             .param("type", "frequent")
             .param("size", size.to_string())
     }
 
-    /// Albums in no order, different each time.
     pub fn random_albums(size: u32) -> Self {
         Self::new("getAlbumList2")
             .param("type", "random")
@@ -148,7 +140,6 @@ impl Endpoint {
         Self::new("getSong").param("id", song.as_str())
     }
 
-    /// Songs matching `query`; artists and albums are not requested.
     pub fn search_songs(query: &str, count: u32) -> Self {
         Self::new("search3")
             .param("query", query)
@@ -193,7 +184,6 @@ impl Endpoint {
         Self::new("getPlaylist").param("id", playlist.as_str())
     }
 
-    /// Creates a playlist holding `songs`.
     pub fn create_playlist(name: &str, songs: &[crate::SongId]) -> Self {
         Self::new("createPlaylist")
             .param("name", name)
@@ -208,14 +198,12 @@ impl Endpoint {
             .songs("songId", songs)
     }
 
-    /// Adds `songs` after those already in `playlist`.
     pub fn add_to_playlist(playlist: &crate::PlaylistId, songs: &[crate::SongId]) -> Self {
         Self::new("updatePlaylist")
             .param("playlistId", playlist.as_str())
             .songs("songIdToAdd", songs)
     }
 
-    /// Takes the songs at these positions out of `playlist`.
     pub fn remove_from_playlist(
         playlist: &crate::PlaylistId,
         positions: impl IntoIterator<Item = usize>,
@@ -239,17 +227,14 @@ impl Endpoint {
         Self::new("deletePlaylist").param("id", playlist.as_str())
     }
 
-    /// Every song, album and artist the user marked as a favorite.
     pub fn starred() -> Self {
         Self::new("getStarred2")
     }
 
-    /// Marks `target` as a favorite of the user.
     pub fn star(target: &crate::StarTarget) -> Self {
         Self::new("star").target(target)
     }
 
-    /// Takes `target` out of the user's favorites.
     pub fn unstar(target: &crate::StarTarget) -> Self {
         Self::new("unstar").target(target)
     }
@@ -329,7 +314,6 @@ impl CoverArtRequest {
         })
     }
 
-    /// The server's base URL, as given to [`Endpoint::url`].
     pub fn server(&self) -> &Url {
         &self.server
     }

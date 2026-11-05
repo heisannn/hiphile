@@ -185,7 +185,6 @@ fn set_open(stand: &Entity<Stand>, is_open: bool, cx: &mut VisualTestContext) {
     draw(cx);
 }
 
-/// Opens all the way, with `found` as the song's lyrics.
 fn open_with(stand: &Entity<Stand>, found: Lyrics, cx: &mut VisualTestContext) {
     cx.read(|cx| stand.read(cx).finds.clone())
         .answer_with(Ok(found));
@@ -229,7 +228,7 @@ fn the_cover_leaves_from_the_bar_and_returns_to_it(cx: &mut TestAppContext) {
     assert_eq!(cover(cx).size, large.size);
     assert_eq!(cover(cx).left(), large.left());
     assert_eq!(cover(cx).top(), large.top() + TITLE_BAR_HEIGHT);
-    // Nothing out of sight is left to take Tab or a frame.
+    // Nothing out of sight is left to take Tab or a frame
     assert!(cx.debug_bounds("player-cover").is_none());
 
     set_open(&stand, false, cx);
@@ -270,12 +269,12 @@ fn only_one_cover_shows_while_it_moves(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("lyrics-cover").is_some());
     assert!(is_hidden(cx));
 
-    // It comes back as the other goes, with no frame without either.
+    // It comes back as the other goes, with no frame without either
     advance(Duration::from_millis(1), cx);
     assert!(cx.debug_bounds("lyrics-cover").is_none());
     assert!(!is_hidden(cx));
 
-    // Turning back keeps the view from ending when closing would have.
+    // Turning back keeps the view from ending when closing would have
     set_open(&stand, true, cx);
     advance(OPEN_DURATION, cx);
     set_open(&stand, false, cx);
@@ -295,7 +294,7 @@ fn turning_back_midway_continues_from_where_it_was(cx: &mut TestAppContext) {
     set_open(&stand, false, cx);
     assert_near(cover(cx), at_turn);
 
-    // Only as long as what is left of the way, not all of closing.
+    // Only as long as what is left of the way, not all of closing
     advance(CLOSE_DURATION / 2, cx);
     assert!(cx.debug_bounds("lyrics-cover").is_none());
 }
@@ -325,7 +324,7 @@ fn what_is_under_the_cover_fits_in_the_smallest_window(cx: &mut TestAppContext) 
     assert!(details.top() >= cover(cx).bottom());
     assert!(details.bottom() <= px(560.), "{details:?}");
 
-    // The room set aside for them is what they take.
+    // The room set aside for them is what they take
     let reserved = details.top() + REM * DETAILS_HEIGHT;
     assert!(details.bottom() <= reserved, "{details:?}");
     assert!(reserved - details.bottom() < REM, "{details:?}");
@@ -385,7 +384,7 @@ fn the_current_line_comes_to_rest_at_its_place(cx: &mut TestAppContext) {
 
     let scroll = cx.read(|cx| view.read(cx).scroll.clone());
     let list = scroll.bounds();
-    // The room before the lines is the first child, so line 18 is child 19.
+    // The room before the lines is the first child, so line 18 is child 19
     let line = scroll.bounds_for_item(19).unwrap();
     let rests_at = line.center().y + scroll.offset().y - list.top();
     let wanted = list.size.height * CURRENT_LINE_AT;
@@ -394,7 +393,7 @@ fn the_current_line_comes_to_rest_at_its_place(cx: &mut TestAppContext) {
         "{rests_at:?} {wanted:?}"
     );
 
-    // On the way to a far line, it moves but has not arrived.
+    // On the way to a far line, it moves but has not arrived
     player.update(cx, |player, _| player.place_at(secs(150.)));
     draw(cx);
     let before = scroll.offset().y;
@@ -423,7 +422,7 @@ fn scrolling_stops_following_until_asked_to_or_a_line_is_chosen(cx: &mut TestApp
     assert!(!cx.read(|cx| view.read(cx).is_following));
     let scrolled_to = scroll.offset().y;
     assert!(scrolled_to < px(0.));
-    // The lines stay where the user took them as the song goes on.
+    // The lines stay where the user took them as the song goes on
     let player = cx.read(|cx| stand.read(cx).player.clone());
     player.update(cx, |player, _| player.place_at(secs(100.)));
     advance(SCROLL_DURATION, cx);
@@ -437,7 +436,7 @@ fn scrolling_stops_following_until_asked_to_or_a_line_is_chosen(cx: &mut TestApp
     draw(cx);
     assert!(cx.debug_bounds("lyrics-back-to-current").is_none());
 
-    // Choosing a line follows again too.
+    // Choosing a line follows again too
     cx.simulate_event(ScrollEvent {
         position: over_lines,
         delta: ScrollDelta::Pixels(point(px(0.), px(40.))),
@@ -557,7 +556,7 @@ fn a_new_song_starts_over_and_found_lyrics_are_kept(cx: &mut TestAppContext) {
     });
     assert_eq!(finds.asked().len(), 2);
 
-    // An answer about the song before is out of date.
+    // An answer about the song before is out of date
     view.update(cx, |view, cx| {
         view.finish_lookup(SongId::new("a"), Ok(Lyrics::NotFound), cx);
     });
@@ -566,7 +565,7 @@ fn a_new_song_starts_over_and_found_lyrics_are_kept(cx: &mut TestAppContext) {
         assert_eq!(view.read(cx).found.len(), 1);
     });
 
-    // Back to the first song, whose lyrics are at hand.
+    // Back to the first song, whose lyrics are at hand
     player.update(cx, |player, _| {
         player.fill_queue(&[song("a"), song("b")], 0)
     });
@@ -1011,13 +1010,13 @@ fn by_line_the_whole_line_lights_as_one() {
     let (runs, is_fading) = runs_at(9.);
     assert!(runs.is_empty() && !is_fading);
 
-    // The whole line, while the second part has yet to start.
+    // The whole line, while the second part has yet to start
     let (runs, is_fading) = runs_at(11.);
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].0, 0..line.text().len());
     assert!(!is_fading);
 
-    // A part starting is nothing to fade for.
+    // A part starting is nothing to fade for
     let (runs, is_fading) = runs_at(12.05);
     assert_eq!(runs.len(), 1);
     assert!(!is_fading);

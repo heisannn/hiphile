@@ -4,11 +4,9 @@ use gpui_kit::{AppContext as _, Context, EventEmitter, SharedString, Subscriptio
 
 /// The most the field accepts, far beyond any disk.
 pub(crate) const MAX_GIB: f64 = (1u32 << 20) as f64;
-/// How long the limit must stay unchanged before it applies. The field reports
-/// every keystroke, and on the way to `16` a limit of `1` could remove files.
+/// The field reports every keystroke, and on the way to `16` a limit of `1` could remove files.
 const SETTLE: Duration = Duration::from_millis(500);
 
-/// What a limit is on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CacheKind {
     Songs,
@@ -16,7 +14,6 @@ pub(crate) enum CacheKind {
 }
 
 impl CacheKind {
-    /// What the settings keep when they leave the limit unset.
     pub(crate) fn default_gib(self) -> f64 {
         let bytes = match self {
             Self::Songs => catalog::SONG_CAPACITY,
@@ -25,7 +22,6 @@ impl CacheKind {
         (bytes >> 30) as f64
     }
 
-    /// What is kept, as a sentence calls it.
     fn noun(self) -> &'static str {
         match self {
             Self::Songs => "song",
@@ -33,7 +29,6 @@ impl CacheKind {
         }
     }
 
-    /// What the field is called, for screen readers.
     pub(crate) fn field_name(self) -> &'static str {
         match self {
             Self::Songs => "Song cache limit",
@@ -41,7 +36,6 @@ impl CacheKind {
         }
     }
 
-    /// The saved limit, or why it could not be read.
     fn read(self, store: &config::Store) -> Result<Option<f64>, String> {
         match self {
             Self::Songs => store.song_cache_gib(),
@@ -50,7 +44,6 @@ impl CacheKind {
         .map_err(|error| error.to_string())
     }
 
-    /// Saves the limit, or says why it could not be.
     fn save(self, store: &config::Store, gib: Option<f64>) -> Result<(), String> {
         match self {
             Self::Songs => store.save_song_cache_gib(gib),
@@ -60,11 +53,9 @@ impl CacheKind {
     }
 }
 
-/// The limit changed; read it from [`CacheLimit::capacity`].
 pub struct CacheLimitChanged;
 
-/// How many GiB of something may be kept on this computer, where `0` means no
-/// limit. Saving happens off the main thread.
+/// How many GiB may be kept, where `0` means no limit.
 pub struct CacheLimit {
     kind: CacheKind,
     /// `None` without a home directory: the limit then lasts until quitting.
@@ -201,8 +192,7 @@ impl CacheLimit {
     }
 }
 
-/// The limit for `gib` typed into the field. The default leaves the setting
-/// unset, as resetting the field does.
+/// The default leaves the setting unset, as resetting the field does.
 fn chosen_limit(kind: CacheKind, gib: f64) -> Option<f64> {
     (gib != kind.default_gib()).then_some(gib)
 }
@@ -214,7 +204,6 @@ struct SavedLimit {
     error: Option<SharedString>,
 }
 
-/// The saved limit, and why it could not be read or will not be saved.
 fn read_saved_limit(kind: CacheKind) -> SavedLimit {
     let noun = kind.noun();
     let store = match config::Store::user() {

@@ -21,7 +21,6 @@ CREATE TABLE IF NOT EXISTS links (
 ) WITHOUT ROWID;
 ";
 
-/// Where an image can be seen, until when.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CoverLink {
     pub url: String,
@@ -48,13 +47,11 @@ pub struct CoverLinks {
 }
 
 impl CoverLinks {
-    /// The links in the system cache directory.
     pub fn user() -> Result<Self, Error> {
         let cache = dirs::cache_dir().ok_or(Error::NoCacheDir)?;
         Self::open(cache.join("hiphile"))
     }
 
-    /// The links kept in `dir`. Created if there are none.
     pub fn open(dir: impl AsRef<Path>) -> Result<Self, Error> {
         let dir = dir.as_ref();
         fs::create_dir_all(dir).map_err(|source| Error::Io {
@@ -75,7 +72,6 @@ impl CoverLinks {
         })
     }
 
-    /// Where `image` can be seen at `now`, if it can.
     pub fn get(&self, image: &[u8], now: SystemTime) -> Result<Option<CoverLink>, Error> {
         let link = self
             .lock()
@@ -93,7 +89,7 @@ impl CoverLinks {
         Ok(link.filter(|link| link.is_live(now)))
     }
 
-    /// Records where `image` can be seen, and forgets links past their time.
+    /// Also forgets links past their time.
     pub fn put(&self, image: &[u8], link: &CoverLink) -> Result<(), Error> {
         let connection = self.lock();
         connection.execute(

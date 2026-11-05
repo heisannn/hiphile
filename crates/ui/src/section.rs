@@ -1,5 +1,3 @@
-//! The parts of a screen that scrolls through several kinds of things.
-
 use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, StyledExt as _, button::Button, h_flex, spinner::Spinner,
     v_flex,
@@ -17,7 +15,6 @@ pub fn section_heading(title: &'static str) -> impl IntoElement {
     heading_title(title).flex_none().px_6().pt_6().pb_2()
 }
 
-/// A [`section_heading`] with a control for the whole section at its end.
 pub fn section_heading_with_action(title: &'static str, action: Button) -> impl IntoElement {
     h_flex()
         .flex_none()
@@ -39,7 +36,7 @@ fn heading_title(title: &'static str) -> Stateful<Div> {
         .child(title)
 }
 
-/// A section's content on its way; `label` names the wait for a screen reader.
+/// `label` names the wait for a screen reader.
 pub fn section_loading(label: &'static str, cx: &App) -> AnyElement {
     h_flex()
         .id(label)
@@ -52,7 +49,6 @@ pub fn section_loading(label: &'static str, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
-/// A failed load of a section's content: why, and a way to try again.
 pub fn section_failure(reason: SharedString, retry: Button, cx: &App) -> AnyElement {
     v_flex()
         .flex_none()
@@ -68,8 +64,6 @@ pub fn section_failure(reason: SharedString, retry: Button, cx: &App) -> AnyElem
         .into_any_element()
 }
 
-/// What a song's row holds where songs are not all of one album: its cover,
-/// its title over `details`, and its duration.
 pub fn song_with_cover(
     cover: Option<SharedString>,
     title: SharedString,
@@ -91,7 +85,7 @@ pub fn song_with_cover(
                 .child(details),
         )
         .child(
-            // A lane of its own, so the durations stay in line.
+            // A lane of its own, so the durations stay in line
             h_flex()
                 .w_4()
                 .flex_none()

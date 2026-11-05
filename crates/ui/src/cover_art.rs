@@ -5,10 +5,8 @@ use gpui_kit::{
     StyledImage as _, Window, div, img, prelude::FluentBuilder as _,
 };
 
-/// Album artwork, or a neutral placeholder while there is none.
-///
-/// The URL must stay the same while the same image is shown: Subsonic URLs
-/// carry a per-request salt, so build it once per album, not per frame.
+/// The URL must stay the same while the same image is shown: Subsonic URLs carry a per-request
+/// salt, so build it once per album, not per frame.
 #[derive(IntoElement)]
 pub struct CoverArt {
     url: Option<SharedString>,
@@ -31,7 +29,6 @@ impl CoverArt {
         }
     }
 
-    /// An artist's picture, whose placeholder is a person rather than a disc.
     pub fn artist(url: Option<SharedString>) -> Self {
         Self {
             placeholder: IconName::User,
@@ -45,7 +42,6 @@ impl CoverArt {
         self
     }
 
-    /// Rounds the corners of the picture or placeholder by `radius`.
     pub fn rounded_by(mut self, radius: Pixels) -> Self {
         self.radius = Some(radius);
         self

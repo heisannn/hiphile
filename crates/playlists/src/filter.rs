@@ -1,7 +1,6 @@
 use fuzzy::{Index, Speller};
 use subsonic::Playlist;
 
-/// `playlists`, to find by their name or owner.
 pub(crate) fn playlist_index(playlists: &[Playlist], speller: Option<&dyn Speller>) -> Index {
     Index::new(
         playlists.iter().map(|playlist| {

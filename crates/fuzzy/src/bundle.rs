@@ -9,8 +9,7 @@ use std::path::{Path, PathBuf};
 use ruzstd::decoding::StreamingDecoder;
 use sha2::{Digest as _, Sha256};
 
-/// Which bundle this build of the app reads, where it is, and what it should
-/// hash to. A new one gets a new name, so one never replaces another in place.
+/// A new bundle gets a new name, so one never replaces another in place.
 pub const BUNDLE: Bundle = Bundle {
     name: "readings-1",
     url: "https://github.com/heisannn/hiphile/releases/download/readings-1/readings-1.tar.zst",
@@ -19,7 +18,6 @@ pub const BUNDLE: Bundle = Bundle {
     disk_bytes: 654_942_208,
 };
 
-/// A published set of dictionaries.
 #[derive(Clone, Copy, Debug)]
 #[non_exhaustive]
 pub struct Bundle {
@@ -49,21 +47,17 @@ pub enum Error {
     WrongFile,
 }
 
-/// Where bundles are kept: the system cache directory, since the system may
-/// clear it and the app fetches them again.
 pub fn root() -> Result<PathBuf, Error> {
     let cache = dirs::cache_dir().ok_or(Error::NoCacheDir)?;
     Ok(cache.join("hiphile").join("readings"))
 }
 
-/// Where `bundle` is under `root`, if it is there. Only a complete bundle ever
-/// has this name, as [`install`] moves it there whole.
+/// Only a complete bundle ever has this name, as [`install`] moves it there whole.
 pub fn installed(root: &Path, bundle: &Bundle) -> Option<PathBuf> {
     let dir = root.join(bundle.name);
     dir.is_dir().then_some(dir)
 }
 
-/// Removes every bundle under `root`.
 pub fn remove(root: &Path) -> Result<(), Error> {
     match fs::remove_dir_all(root) {
         Ok(()) => Ok(()),
@@ -75,7 +69,6 @@ pub fn remove(root: &Path) -> Result<(), Error> {
     }
 }
 
-/// Counts and hashes what is read through it.
 struct Checked<R> {
     inner: R,
     hasher: Sha256,
@@ -154,7 +147,7 @@ fn unpack(
         return Err(Error::Read(failure));
     }
     unpacked?;
-    // A decoder may stop at the end of the frame, short of the end of the file.
+    // A decoder may stop at the end of the frame, short of the end of the file
     io::copy(&mut checked, &mut io::sink()).map_err(Error::Read)?;
     if hex::encode(checked.hasher.finalize()) == bundle.sha256 {
         Ok(())
@@ -227,7 +220,6 @@ mod tests {
         )
     }
 
-    /// Gives out with `kind` halfway through `bytes`.
     struct FailsHalfway<'a> {
         bytes: &'a [u8],
         kind: io::ErrorKind,

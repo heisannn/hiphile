@@ -2,15 +2,13 @@ use config::Appearance;
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::{AppContext as _, Context, SharedString, Task, Window, WindowAppearance};
 
-/// The choices in the order they show. `None` follows the system.
+/// `None` follows the system.
 pub(crate) const CHOICES: [(Option<Appearance>, &str); 3] = [
     (None, "System"),
     (Some(Appearance::Light), "Light"),
     (Some(Appearance::Dark), "Dark"),
 ];
 
-/// Whether the app is light or dark, which it keeps the theme on. Saving
-/// happens off the main thread.
 pub(crate) struct AppearanceSettings {
     /// `None` without a home directory: the choice then lasts until quitting.
     store: Option<config::Store>,
@@ -62,7 +60,6 @@ impl AppearanceSettings {
         cx.notify();
     }
 
-    /// Moves the theme to the system's new appearance, if it is being followed.
     pub(crate) fn on_system_appearance_changed(&self, window: &Window, cx: &mut Context<Self>) {
         if self.appearance.is_none() {
             Theme::change(theme_mode(None, window.appearance()), None, cx);

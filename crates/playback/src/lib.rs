@@ -1,5 +1,3 @@
-//! Play queue and playback helpers shared by the GUI and the CLI.
-
 mod play_tally;
 mod queue;
 mod song_cache;
@@ -10,14 +8,12 @@ pub use song_cache::SongCache;
 
 use subsonic::Song;
 
-/// A track from [`open_track`], and where its bytes come from.
 pub struct OpenedTrack {
     track: audio::Track,
     kept: bool,
     arrival: Option<Arrival>,
 }
 
-/// The rest of a song's download.
 #[derive(Clone)]
 pub struct Arrival(net::DownloadHandle);
 
@@ -30,10 +26,8 @@ impl Arrival {
 }
 
 impl OpenedTrack {
-    /// Whether it plays the file kept on this computer rather than a
-    /// download. A kept file that fails with an
-    /// [`is_track_error`](audio::Error::is_track_error) may be damaged:
-    /// [`SongCache::forget`] it and open the song again.
+    /// A kept file that fails with an [`is_track_error`](audio::Error::is_track_error)
+    /// may be damaged: [`SongCache::forget`] it and open the song again.
     pub fn is_kept(&self) -> bool {
         self.kept
     }
@@ -99,15 +93,12 @@ pub async fn open_track(
     })
 }
 
-/// Whether a response of `content_length` bytes for `song` is worth
-/// keeping. One of another length than the song's would never be opened
-/// from the cache: the song's size is out of date, or the file is not the
-/// original.
+/// A response of another length than the song's would never be opened from the
+/// cache: the song's size is out of date, or the file is not the original.
 fn is_keepable(song: &Song, content_length: Option<u64>) -> bool {
     song.size().is_none_or(|size| content_length == Some(size))
 }
 
-/// Helps the format probe with the MIME type and the song's extension.
 fn with_hints(mut track: audio::Track, content_type: Option<&str>, song: &Song) -> audio::Track {
     if let Some(content_type) = content_type {
         track = track.mime_type(content_type);
@@ -147,7 +138,6 @@ mod tests {
         client::Client::new(net::Client::new("test").unwrap(), server)
     }
 
-    /// Accepts connections on another thread and hands each to `answer`.
     fn listen(answer: impl Fn(TcpStream) + Send + 'static) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = format!("http://{}/", listener.local_addr().unwrap());
@@ -169,8 +159,6 @@ mod tests {
         reader
     }
 
-    /// Answers every request with `body`, saying it sends ranges of it when
-    /// `ranges` is set, the way Navidrome serves an original file.
     fn serve(body: &'static [u8], ranges: bool) -> String {
         listen(move |mut socket| {
             read_request(&socket);
@@ -204,7 +192,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = SongStore::at(dir.path(), catalog::SONG_CAPACITY);
         let connections = Arc::new(AtomicUsize::new(0));
-        // Closes every connection at once, so any request fails.
+        // Closes every connection at once, so any request fails
         let client = client(&listen({
             let connections = connections.clone();
             move |_| {
@@ -235,7 +223,7 @@ mod tests {
             let server = client.server().base_url().clone();
             let song = song("so-1", BODY.len());
             let cache = SongCache::new(store.clone());
-            // The body arrives while the track is held, as the engine holds it.
+            // The body arrives while the track is held, as the engine holds it
             let opened = block_on(open_track(&client, Some(&cache), &song)).unwrap();
             assert!(!opened.is_kept());
             assert!(
@@ -258,11 +246,11 @@ mod tests {
             block_on(arrival.wait());
             arrived.send(()).ok();
         });
-        // The track is held, as the engine holds it, until the body is here.
+        // The track is held, as the engine holds it, until the body is here
         receiver.recv_timeout(WAIT).expect("still waiting");
         drop(opened);
 
-        // A download given up on ends too.
+        // A download given up on ends too
         let client = self::client(&listen(|mut socket| {
             read_request(&socket);
             socket
@@ -279,7 +267,7 @@ mod tests {
     #[test]
     fn dropping_the_track_ends_its_download() {
         let (closed, closed_receiver) = mpsc::channel();
-        // Sends part of the body, then waits for the client to go.
+        // Sends part of the body, then waits for the client to go
         let client = client(&listen(move |mut socket| {
             let mut reader = read_request(&socket);
             socket

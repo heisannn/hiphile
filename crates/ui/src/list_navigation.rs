@@ -1,6 +1,3 @@
-//! Keyboard movement within a single-selection list, shared by the lists of
-//! every feature.
-
 use gpui_kit::{
     App, Context, InteractiveElement, KeyBinding, NoAction, Pixels, UniformListScrollHandle,
     Window, actions, px,
@@ -31,8 +28,6 @@ pub fn bind_control_keys(cx: &mut App) {
     ]);
 }
 
-/// Binds the arrow, Home, End, and page keys to the selection moves in the
-/// list whose key context is `context`.
 pub fn bind_list_navigation(context: &'static str, cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("down", SelectNext, Some(context)),
@@ -44,9 +39,7 @@ pub fn bind_list_navigation(context: &'static str, cx: &mut App) {
     ]);
 }
 
-/// Handles the selection moves that [`bind_list_navigation`] binds.
 pub trait ListNavigationExt: InteractiveElement + Sized {
-    /// Calls `on_motion` with the move each of them asks for.
     fn on_list_navigation<V: 'static>(
         self,
         on_motion: impl Fn(&mut V, Motion, &mut Window, &mut Context<V>) + Copy + 'static,
@@ -75,7 +68,6 @@ pub trait ListNavigationExt: InteractiveElement + Sized {
 
 impl<E: InteractiveElement + Sized> ListNavigationExt for E {}
 
-/// A keyboard move within a list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Motion {
     By(isize),
@@ -139,7 +131,6 @@ mod tests {
 
     const LIST: &str = "TestList";
 
-    /// A list with a control inside it, which notes what reaches the list.
     struct TestList {
         focus: FocusHandle,
         control_focus: FocusHandle,
@@ -193,10 +184,10 @@ mod tests {
 
     #[test]
     fn a_page_is_the_whole_rows_in_view() {
-        // Rows of 48 in a viewport of 480, and of 500 with one partly in view.
+        // Rows of 48 in a viewport of 480, and of 500 with one partly in view
         assert_eq!(rows_in_view(px(480.), px(4800.), 100), 10);
         assert_eq!(rows_in_view(px(500.), px(4800.), 100), 10);
-        // A list shorter than its viewport still pages by what would fit.
+        // A list shorter than its viewport still pages by what would fit
         assert_eq!(rows_in_view(px(480.), px(144.), 3), 10);
     }
 

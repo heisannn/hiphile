@@ -24,7 +24,7 @@ impl<T> Shelf<T> {
         }
     }
 
-    /// Takes in what a load found. A failure leaves items on show in place.
+    /// A failure leaves items on show in place.
     pub fn finish(&mut self, result: Result<Vec<T>, SharedString>) {
         match result {
             Ok(items) => *self = Self::Loaded(items.into()),
@@ -33,7 +33,6 @@ impl<T> Shelf<T> {
         }
     }
 
-    /// Shows the load starting, unless there are items to keep on show.
     pub fn begin(&mut self) {
         if !matches!(self, Self::Loaded(_)) {
             *self = Self::Loading;
@@ -41,8 +40,6 @@ impl<T> Shelf<T> {
     }
 }
 
-/// `child` in the middle of the room there is, for what stands in for a list
-/// or a detail with nothing to show.
 pub fn centered(child: impl IntoElement) -> Div {
     div()
         .flex_1()
@@ -54,7 +51,6 @@ pub fn centered(child: impl IntoElement) -> Div {
         .child(child)
 }
 
-/// Word of why there is nothing to show.
 pub fn muted_text(text: &'static str, cx: &App) -> impl IntoElement {
     div()
         .text_sm()
@@ -62,8 +58,7 @@ pub fn muted_text(text: &'static str, cx: &App) -> impl IntoElement {
         .child(text)
 }
 
-/// What a filtered list shows when nothing matches. `note` is what
-/// `session::missing_readings_note` gives.
+/// `note` is what `session::missing_readings_note` gives.
 pub fn no_matches(
     message: &'static str,
     note: Option<&'static str>,
@@ -78,8 +73,6 @@ pub fn no_matches(
     )
 }
 
-/// A failed load in place of what it was to show: what failed, why, and a way
-/// to try again.
 #[derive(IntoElement)]
 pub struct LoadFailure {
     title: &'static str,

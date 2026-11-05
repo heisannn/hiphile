@@ -1,16 +1,13 @@
 use config::LyricsHighlight;
 use gpui_kit::{AppContext as _, Context, EventEmitter, SharedString, Task};
 
-/// The choices in the order they show.
 pub(crate) const CHOICES: [(LyricsHighlight, &str); 2] = [
     (LyricsHighlight::ByWord, "By word"),
     (LyricsHighlight::ByLine, "By line"),
 ];
 
-/// Emitted when the chosen highlight changes.
 pub struct LyricsHighlightChanged;
 
-/// How lyrics light up as they are sung, saved off the main thread.
 pub struct LyricsSettings {
     /// `None` without a home directory: the choice then lasts until quitting.
     store: Option<config::Store>,

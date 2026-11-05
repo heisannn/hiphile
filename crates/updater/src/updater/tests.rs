@@ -5,7 +5,6 @@ use gpui_kit::{Entity, TestAppContext};
 
 use super::*;
 
-/// Answers each call with the next of its answers, and counts the calls.
 #[derive(Default)]
 struct Scripted {
     found: Mutex<Vec<Result<Option<String>, String>>>,

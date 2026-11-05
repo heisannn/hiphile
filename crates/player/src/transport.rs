@@ -1,5 +1,3 @@
-//! The controls of a player, which both the bar and the lyrics view show.
-
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Icon, Selectable as _, Sizable as _, Size,
@@ -29,7 +27,6 @@ const PAUSE_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0
 <rect x="5" y="3" width="5" height="18" rx="1"/>
 </svg>"#;
 
-/// Shuffle, the way through the queue, and repeat.
 #[derive(IntoElement)]
 pub(crate) struct TransportControls {
     player: Entity<Player>,
@@ -140,7 +137,6 @@ impl RenderOnce for TransportControls {
     }
 }
 
-/// Where the song is, on a line between the time gone and its length.
 #[derive(IntoElement)]
 pub(crate) struct PositionLine {
     player: Entity<Player>,
@@ -160,7 +156,6 @@ impl PositionLine {
         }
     }
 
-    /// A line whose times reach the edges of the parent.
     pub(crate) fn full_width(player: Entity<Player>) -> Self {
         Self {
             player,
@@ -193,7 +188,7 @@ impl RenderOnce for PositionLine {
                         .flex_none()
                         .when(self.in_bar, |this| this.min_w_9().justify_end())
                         .relative()
-                        // Keeps its room, so that the line does not move.
+                        // Keeps its room, so that the line does not move
                         .child(
                             div()
                                 .when(buffering, |this| this.opacity(0.))
@@ -223,7 +218,6 @@ impl RenderOnce for PositionLine {
     }
 }
 
-/// The lyrics and the queue, whoever lays those out.
 #[derive(IntoElement)]
 pub(crate) struct PanelToggles {
     player: Entity<Player>,
@@ -279,7 +273,6 @@ impl RenderOnce for PanelToggles {
     }
 }
 
-/// Mute and the volume.
 #[derive(IntoElement)]
 pub(crate) struct VolumeControl {
     player: Entity<Player>,

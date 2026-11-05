@@ -7,7 +7,6 @@ use net::http;
 use serde::Deserialize;
 use url::Url;
 
-/// Where files are uploaded to: <https://api.imgbb.com/>.
 const API: &str = "https://api.imgbb.com/1/upload";
 /// When ImgBB is asked to delete an upload, in seconds: 180 days, the longest
 /// it allows.
@@ -35,8 +34,6 @@ pub enum Error {
 
 type OpenLinks = Box<dyn Fn() -> Result<CoverLinks, catalog::Error> + Send + Sync>;
 
-/// Publishes cover art on ImgBB for a limited time, for Discord to show.
-///
 /// Discord needs a public URL for an image, and the one on the user's server
 /// carries their credentials, so the image itself is uploaded instead. Anyone
 /// with the link can see an upload until it expires. An image is uploaded again
@@ -85,7 +82,7 @@ impl CoverHost {
             url: self.upload(image, kind, key).await?,
             expires: now + USE_FOR,
         };
-        // A failure to record it costs an upload later.
+        // A failure to record it costs an upload later
         links.put(image, &link).ok();
         Ok(link)
     }
@@ -153,7 +150,6 @@ fn upload_body(image: &[u8], kind: ImageKind, boundary: &str) -> Bytes {
     body.into()
 }
 
-/// A multipart boundary that does not occur in `image`.
 fn boundary_for(image: &[u8]) -> String {
     (0u32..)
         .map(|attempt| format!("hiphile-cover-{attempt}"))
@@ -165,7 +161,6 @@ fn boundary_for(image: &[u8]) -> String {
         .expect("an image cannot hold every number")
 }
 
-/// `link` if it is on ImgBB, over HTTPS, and short enough for Discord.
 fn usable_link(link: &str) -> Option<String> {
     let url = Url::parse(link).ok()?;
     let host = url.host_str()?;
@@ -244,7 +239,6 @@ mod tests {
     const LINK: &str = "https://i.ibb.co/abc123/cover.png";
     const UPLOADED: &str = r#"{"data":{"id":"abc123","url":"https://i.ibb.co/abc123/cover.png","expiration":"15552000"},"success":true,"status":200}"#;
 
-    /// Answers every request with `status` and `answer`, keeping the requests.
     fn fake_imgbb(status: u16, answer: &'static str) -> (Url, Arc<StdMutex<Vec<Vec<u8>>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let api = format!("http://{}/1/upload", listener.local_addr().unwrap());

@@ -92,7 +92,6 @@ fn read_u32(payload: &[u8], at: usize) -> Option<u32> {
     Some(u32::from_le_bytes(bytes.try_into().ok()?))
 }
 
-/// A payload of the form this reads, for tests here and of what reads the answers.
 #[cfg(test)]
 pub(super) fn payload(rearrange: u8, protection_id: u16, hundredths: &[u16]) -> Vec<u8> {
     const WIDTH: u16 = 4;

@@ -38,20 +38,14 @@ use crate::{
     PlayNext, ROOT_CONTEXT,
 };
 
-/// How many top songs to fetch, which is also how many See more shows.
 const TOP_SONGS: u32 = 10;
-/// How many top songs show until See more is pressed.
 const TOP_SONGS_COLLAPSED: usize = 5;
-/// How many similar artists to fetch and show.
 const SIMILAR_ARTISTS: u32 = 6;
-/// How long an artist stays selected before asking the server about them, which
-/// for top songs and similar artists takes its outside service a while: moving
-/// through the list with the arrow keys should not ask about every artist.
+/// Top songs and similar artists take the server's outside service a while:
+/// moving through the list with the arrow keys should not ask about every artist.
 const SERVER_DELAY: Duration = Duration::from_millis(250);
-/// How many of an artist's albums to fetch at a time, to play them all.
 const ALBUMS_AT_ONCE: usize = 8;
-/// How far past the edges of the detail to lay out, in pixels: about a row of
-/// cards, so that scrolling does not show them arriving.
+/// In pixels: about a row of cards, so that scrolling does not show them arriving.
 const DETAIL_OVERDRAW: f32 = 300.;
 
 pub enum ArtistsEvent {
@@ -59,17 +53,12 @@ pub enum ArtistsEvent {
     LeftArtist(ArtistId),
 }
 
-/// The artists' screen: a filterable list beside the selected artist's detail.
-/// Owns the list, the selection in it and in the detail, and both's focus.
 pub struct Artists {
     session: session::Session,
-    /// Whether the screen has shown, which is when it starts loading.
     is_activated: bool,
     artists: ArtistList,
-    /// Why updating the artists on show failed.
     refresh_error: Option<SharedString>,
     is_refreshing: bool,
-    /// The loaded artists, ready to search.
     index: Arc<fuzzy::Index>,
     /// Positions in the loaded artists that match the filter, the best first.
     visible: Arc<Vec<usize>>,
@@ -78,9 +67,7 @@ pub struct Artists {
     /// who may not be on the list yet or may move when it arrives.
     revealing: bool,
     detail: Option<ShownArtist>,
-    /// What is selected in the detail.
     selection: Option<Item>,
-    /// Whether See more has been pressed for the artist on show.
     top_songs_expanded: bool,
     now_playing: Option<NowPlaying>,
     /// How many cards fit across the detail, from the last layout.
@@ -90,13 +77,10 @@ pub struct Artists {
     detail_focus: FocusHandle,
     list_scroll: UniformListScrollHandle,
     detail_list: ListState,
-    /// What `detail_list` was last told it holds.
     listed: ListedDetail,
-    /// How wide the detail is, from the last layout.
     detail_width: Pixels,
     /// The artist whose songs a command is still waiting for.
     artist_being_fetched: Option<ArtistId>,
-    /// The split between the list and the detail.
     panes: Entity<ResizableState>,
     _list_task: Task<()>,
     _albums_task: Task<()>,
@@ -113,7 +97,6 @@ enum ArtistList {
     Failed(SharedString),
 }
 
-/// The artist whose detail is on show, as far as it has arrived.
 struct ShownArtist {
     id: ArtistId,
     /// Known once the list, the saved albums or the server has said.
@@ -135,14 +118,14 @@ impl Artists {
         let list_focus = cx.focus_handle().tab_stop(true);
         let detail_focus = cx.focus_handle().tab_stop(true);
         let mut subscriptions = vec![
-            // The artist on show has a star that says.
+            // The artist on show has a star that says
             actions::observe_favorites(cx),
             cx.subscribe_in(&filter, window, |this, _, event, window, cx| match event {
                 InputEvent::Change => this.apply_filter(cx),
                 InputEvent::PressEnter { .. } => this.list_focus.focus(window, cx),
                 _ => {}
             }),
-            // Focus changes the selection treatment.
+            // Focus changes the selection treatment
             cx.on_focus(&list_focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&list_focus, window, |_, _, cx| cx.notify()),
             cx.on_focus(&detail_focus, window, |_, _, cx| cx.notify()),
@@ -189,7 +172,6 @@ impl Artists {
         }
     }
 
-    /// Starts loading the first time the screen shows.
     pub fn activate(&mut self, cx: &mut Context<Self>) {
         if !self.is_activated {
             self.is_activated = true;
@@ -197,8 +179,7 @@ impl Artists {
         }
     }
 
-    /// Loads the list and the artist on show again, after the library changed or
-    /// when the user says. Does nothing to a screen that has yet to show.
+    /// Does nothing to a screen that has yet to show.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         if !self.is_activated {
             return;
@@ -209,8 +190,7 @@ impl Artists {
         }
     }
 
-    /// Reads the saved artists again. Does nothing to a screen that has yet to
-    /// show.
+    /// Does nothing to a screen that has yet to show.
     pub fn artists_synced(&mut self, cx: &mut Context<Self>) {
         if self.is_activated {
             self.load_artists(cx);
@@ -253,7 +233,7 @@ impl Artists {
                         Ok::<_, catalog::Error>((artists_of_albums(&albums), false))
                     })
                     .await;
-                // A copy that can't be read only means waiting for the server.
+                // A copy that can't be read only means waiting for the server
                 match saved {
                     Ok((artists, true)) => {
                         this.update(cx, |this, cx| {
@@ -294,9 +274,8 @@ impl Artists {
         cx.notify();
     }
 
-    /// Replaces the list. The selection stays, also on an artist the list does
-    /// not have, as one who only appears on songs, unless the artist was on the
-    /// list and has gone.
+    /// The selection stays, also on an artist the list does not have, as one who
+    /// only appears on songs, unless the artist was on the list and has gone.
     fn set_artists(&mut self, artists: Vec<Artist>, cx: &mut Context<Self>) {
         let is_listed = |list: &[Artist], id: &ArtistId| list.iter().any(|a| a.id() == id);
         let has_gone = self.selected_artist.as_ref().is_some_and(|selected| {
@@ -416,8 +395,7 @@ impl Artists {
         cx.notify();
     }
 
-    /// Selects `artist` and brings them into view in the list, clearing a
-    /// filter that hides them. An artist the list does not have, as one who
+    /// Clears a filter that hides `artist`. One the list does not have, as one who
     /// only appears on songs, shows in the detail all the same.
     pub fn reveal_artist(&mut self, artist: ArtistId, window: &mut Window, cx: &mut Context<Self>) {
         self.activate(cx);
@@ -432,7 +410,7 @@ impl Artists {
         }
         self.select_artist(artist, cx);
         self.revealing = self.is_refreshing;
-        // Selecting the artist already selected does not scroll.
+        // Selecting the artist already selected does not scroll
         self.scroll_to_selected_artist();
         self.list_focus.focus(window, cx);
     }
@@ -444,14 +422,13 @@ impl Artists {
         }
     }
 
-    /// Asks for all there is to show of `artist`, keeping what is on show.
     fn load_detail(&mut self, artist: ArtistId, cx: &mut Context<Self>) {
         self.load_albums(artist.clone(), cx);
         self.load_similar(artist.clone(), cx);
         self.load_top_songs(artist, cx);
     }
 
-    /// Shows the saved albums of `artist` at once; the server's answer replaces
+    /// Shows the saved albums of `artist` at once. The server's answer replaces
     /// them, and names an artist nothing else had a name for.
     fn load_albums(&mut self, artist: ArtistId, cx: &mut Context<Self>) {
         if let Some(detail) = &mut self.detail {
@@ -480,7 +457,7 @@ impl Artists {
             }
             .map(|found| found.into_parts())
             .map_err(|error| SharedString::from(session::describe(&error)));
-            // Read now so that "no albums" never shows on the way to the songs.
+            // Read now so that "no albums" never shows on the way to the songs
             let has_no_albums = matches!(&result, Ok((_, albums)) if albums.is_empty());
             let songs = match catalog {
                 Some(catalog) if has_no_albums => {
@@ -540,19 +517,18 @@ impl Artists {
             Err(error) => detail.albums.finish(Err(error)),
         }
         if detail.is_only_on_songs {
-            // A failed refresh brings no songs: those on show stay.
+            // A failed refresh brings no songs: those on show stay
             if !songs_naming_artist.is_empty() {
                 detail.top_songs = Shelf::Loaded(songs_naming_artist.into());
             }
             self._top_songs_task = Task::ready(());
         } else if was_only_on_songs || (!had_name && detail.name.is_some()) {
-            // Top songs are asked for by name, which may only now have arrived.
+            // Top songs are asked for by name, which may only now have arrived
             self.load_top_songs(id.clone(), cx);
         }
         cx.notify();
     }
 
-    /// Asks for the top songs of `artist`, once their name is known.
     fn load_top_songs(&mut self, artist: ArtistId, cx: &mut Context<Self>) {
         let Some(detail) = self.detail.as_mut().filter(|detail| detail.id == artist) else {
             return;
@@ -635,13 +611,10 @@ impl Artists {
         }
     }
 
-    /// The narrowest the screen can be while showing its list at its current
-    /// width beside the detail.
     pub fn min_width(&self, window: &Window, cx: &gpui_kit::App) -> gpui_kit::Pixels {
         MasterDetail::min_width(&self.panes, window, cx)
     }
 
-    /// Marks `song` among the top songs, or clears the mark.
     pub fn set_now_playing(&mut self, song: Option<SongId>, playing: bool, cx: &mut Context<Self>) {
         let now_playing = NowPlaying::new(song, playing);
         if self.now_playing != now_playing {
@@ -878,8 +851,6 @@ fn add_selection_command(playlist: Option<&PlaylistId>) -> Box<dyn gpui_kit::Act
     })
 }
 
-/// Every song of `artist`, album by album: those of `albums` when the artist's
-/// albums are known already.
 async fn artist_songs(
     session: &session::Session,
     artist: &ArtistId,
@@ -912,8 +883,7 @@ async fn artist_songs(
     Ok(songs)
 }
 
-/// The saved songs that name `artist`. A copy that can't be read has nothing to
-/// add to what the server said.
+/// A copy that can't be read has nothing to add to what the server said.
 fn saved_songs_naming(catalog: &catalog::Catalog, artist: &ArtistId) -> Vec<Song> {
     album_by_album(catalog.songs_by_artist(artist).unwrap_or_default())
 }

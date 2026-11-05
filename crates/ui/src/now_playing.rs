@@ -3,7 +3,6 @@ use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _};
 use gpui_kit::{App, IntoElement, RenderOnce, SharedString, Styled as _, Window};
 use subsonic::SongId;
 
-/// How the song the player is on is coming along.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlayState {
     Playing,
@@ -26,7 +25,6 @@ impl PlayState {
     }
 }
 
-/// The song the player is on, marked in the lists it appears in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NowPlaying {
     song: SongId,
@@ -34,7 +32,6 @@ pub struct NowPlaying {
 }
 
 impl NowPlaying {
-    /// `None` without a song.
     pub fn new(song: Option<SongId>, playing: bool) -> Option<Self> {
         song.map(|song| Self {
             song,
@@ -42,13 +39,11 @@ impl NowPlaying {
         })
     }
 
-    /// The state to show on a row of `song`, if it is the one the player is on.
     pub fn state_of(&self, song: &SongId) -> Option<PlayState> {
         (&self.song == song).then_some(self.state)
     }
 }
 
-/// The sound icon on the row of the song the player is on, dimmed while paused.
 #[derive(IntoElement)]
 pub struct PlayStateIcon(PlayState);
 

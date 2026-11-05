@@ -4,7 +4,6 @@ use std::sync::Arc;
 use actions::Favorite;
 use subsonic::{Album, Artist, Song, StarTarget, Starred};
 
-/// One kind of favorite, as the screen shows them one kind at a time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Section {
     Songs,
@@ -117,7 +116,6 @@ impl FavoriteLists {
         }
     }
 
-    /// Takes `target` out, handing it back with where it was.
     pub(crate) fn remove(&mut self, target: &StarTarget) -> Option<(Favorite, usize)> {
         let ix = self.position(target)?;
         let favorite = self.favorite_at(Section::of(target), ix)?;

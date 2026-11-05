@@ -8,7 +8,6 @@ use symphonia::core::io::MediaSource;
 /// Unblocks reads of a track's source from another thread.
 pub(crate) type Cancel = Arc<dyn Fn() + Send + Sync>;
 
-/// Encoded audio for the engine to decode.
 pub struct Track {
     pub(crate) source: Box<dyn MediaSource>,
     pub(crate) hint: Hint,
@@ -50,13 +49,11 @@ impl Track {
         }
     }
 
-    /// Starts playing from `position` instead of the beginning.
     pub fn start_at(mut self, position: Duration) -> Self {
         self.start_at = position;
         self
     }
 
-    /// Starts paused, ready to [`crate::Engine::resume`].
     pub fn start_paused(mut self, paused: bool) -> Self {
         self.start_paused = paused;
         self

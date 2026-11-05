@@ -1,7 +1,4 @@
-//! App shell: initializes GPUI Kit, installs shared services, and composes
-//! feature crates into the window. Feature logic lives in the feature crates.
-
-// Keeps a release build on Windows from opening a console window next to the app.
+// Keeps a release build on Windows from opening a console window next to the app
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app_shell;
@@ -60,7 +57,7 @@ fn main() {
             settings::init(cx);
             install_app_commands(cx);
 
-            // Window geometry is a platform boundary, so it is given in pixels.
+            // Window geometry is a platform boundary, so it is given in pixels
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::centered(size(px(1200.), px(760.)), cx)),
                 window_min_size: Some(size(px(900.), px(560.))),
@@ -77,7 +74,7 @@ fn main() {
 
 fn install_app_commands(cx: &mut App) {
     cx.on_action(|_: &Quit, cx| cx.quit());
-    // Bind keys before `set_menus`: menus read the keymap when they are built.
+    // Bind keys before `set_menus`: menus read the keymap when they are built
     let [
         quit,
         toggle_queue,
@@ -139,7 +136,7 @@ fn install_app_commands(cx: &mut App) {
             actions::NewPlaylist::empty(),
             Some(WORKSPACE_CONTEXT),
         ),
-        // Space toggles playback from the lists, never from a text field.
+        // Space toggles playback from the lists, never from a text field
         KeyBinding::new("space", TogglePlayback, Some(home::HOME_CONTEXT)),
         KeyBinding::new("space", TogglePlayback, Some(library::ALBUMS_CONTEXT)),
         KeyBinding::new("space", TogglePlayback, Some(library::SONGS_CONTEXT)),
@@ -152,11 +149,9 @@ fn install_app_commands(cx: &mut App) {
     ]);
 }
 
-/// Builds the menu bar; `queue_shown` checks View > Queue, `lyrics_open` View >
-/// Lyrics, `destination` the screen showing, if any, and `shuffled` and `repeat`
-/// their items in Controls.
-/// The app shell calls it, once the keys above are bound (menus read the keymap
-/// when they are built), and again when that changes.
+/// `queue_shown` checks View > Queue, `lyrics_open` View > Lyrics, `destination` the screen
+/// showing, if any, and `shuffled` and `repeat` their items in Controls. Call once the keys above
+/// are bound, and again when any of these change.
 pub(crate) fn set_menus(
     queue_shown: bool,
     lyrics_open: bool,

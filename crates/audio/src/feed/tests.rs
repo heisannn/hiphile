@@ -94,10 +94,10 @@ fn decodes_only_as_far_ahead_as_asked() {
         .then_some(true)));
     thread::sleep(Duration::from_millis(50));
     let ready = feed.link.0.lock().samples;
-    // A packet may cross the line, but it does not go on from there.
+    // A packet may cross the line, but it does not go on from there
     assert!(ready < 8_000, "{ready}");
 
-    // Asking for more decodes further.
+    // Asking for more decodes further
     assert!(!feed.has_ahead(Duration::from_secs(2)));
     wait_for(|| feed.has_ahead(Duration::from_secs(2)).then_some(()));
 }
@@ -112,7 +112,7 @@ fn a_track_shorter_than_asked_counts_as_ready() {
 fn nothing_waits_for_a_read_that_is_blocked() {
     let bytes = second();
     let (go_on, gate) = mpsc::channel();
-    // The header and a little audio, but less than is asked for.
+    // The header and a little audio, but less than is asked for
     let source = Gated {
         bytes: Cursor::new(bytes),
         open_until: 4_096,
@@ -181,7 +181,6 @@ fn a_seek_made_while_opening_comes_first() {
     assert_eq!(counting_frame(counted(&feed)[0]), 2_000);
 }
 
-/// Holds the whole file, and panics on reading past it.
 struct PanicsAtTheEnd(Cursor<Vec<u8>>);
 
 impl Read for PanicsAtTheEnd {
@@ -201,7 +200,7 @@ impl Seek for PanicsAtTheEnd {
 
 #[test]
 fn a_decoder_that_panics_once_open_fails_the_track() {
-    // Shorter than its header says, or the decoder would stop at its end.
+    // Shorter than its header says, or the decoder would stop at its end
     let mut bytes = second();
     bytes.truncate(bytes.len() / 2);
     let feed = opened(

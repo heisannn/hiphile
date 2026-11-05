@@ -9,7 +9,6 @@ use ui::{RowText, format_album_count};
 use super::{Artists, add_selection_command};
 use crate::{AddToQueue, Play, PlayNext};
 
-/// An artist in the list, whose commands act on the selection.
 #[derive(IntoElement)]
 pub(super) struct ArtistRow {
     id: ArtistId,

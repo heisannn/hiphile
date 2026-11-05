@@ -33,7 +33,6 @@ EOF
 echo 'fn main() {}' >"$work/scratch/src/main.rs"
 CARGO_TARGET_DIR="$work/target" cargo build --release --manifest-path "$work/scratch/Cargo.toml"
 
-# The directory of one dictionary's build output, as the crate that built it named it.
 build_output() {
   find "$work/target/release/build" -type d -path "*/out/$1" -print -quit
 }
@@ -58,12 +57,12 @@ kanji = re.compile(r"[㐀-鿿]")
 names = {}
 for path in glob.glob(f"{source}/mecab-user-dict-seed.*.csv"):
     for line in open(path, encoding="utf8", errors="ignore"):
-        # A surface holding a comma comes quoted; those are not names.
+        # A surface holding a comma comes quoted, so it is no name
         fields = line.rstrip("\n").split(",")
         if len(fields) >= 13 and fields[4:6] == ["名詞", "固有名詞"] and fields[6] == "人名":
             if kanji.search(fields[0]):
                 names.setdefault(fields[0], fields[11])
-# In the order of their bytes, which `Names` in crates/fuzzy/src/reader.rs searches by.
+# In the order of their bytes, which `Names` in crates/fuzzy/src/reader.rs searches by
 lines = sorted(f"{name}\t{reading}\n".encode() for name, reading in names.items())
 with open(target, "wb") as out:
     out.writelines(lines)

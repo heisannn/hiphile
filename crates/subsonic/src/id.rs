@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+// IDs are server-assigned and opaque, so never parse them
 macro_rules! define_id {
     ($(#[$meta:meta])* $name:ident) => {
         $(#[$meta])*
@@ -26,27 +27,14 @@ macro_rules! define_id {
 }
 
 define_id!(
-    /// Server-assigned song (child) ID. Opaque; never parse it.
+    /// A "child" in the Subsonic API.
     SongId
 );
-define_id!(
-    /// Server-assigned album ID. Opaque; never parse it.
-    AlbumId
-);
-define_id!(
-    /// Server-assigned artist ID. Opaque; never parse it.
-    ArtistId
-);
-define_id!(
-    /// Server-assigned playlist ID. Opaque; never parse it.
-    PlaylistId
-);
-define_id!(
-    /// Server-assigned cover art ID. Opaque; never parse it.
-    CoverArtId
-);
+define_id!(AlbumId);
+define_id!(ArtistId);
+define_id!(PlaylistId);
+define_id!(CoverArtId);
 
-/// A song, an album or an artist, as something the user can mark as a favorite.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum StarTarget {
     Song(SongId),

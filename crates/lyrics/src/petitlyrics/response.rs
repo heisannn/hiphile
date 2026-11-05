@@ -12,7 +12,6 @@ use crate::Error;
 
 const SUCCESS: &str = "00000000";
 
-/// A song the service offers lyrics for.
 #[derive(Debug, PartialEq)]
 pub(super) struct Candidate {
     pub(super) id: Option<String>,
@@ -138,11 +137,10 @@ fn lines(xml: &[u8]) -> Option<Vec<Line>> {
             .and_then(|time| time.trim().parse::<i64>().ok());
         let time = match time {
             Some(time) => time,
-            // A blank line is only of use for its time.
+            // A blank line is only of use for its time
             None if text.is_empty() => continue,
             None => 0,
         };
-        // A negative time leaves the line out.
         if let Ok(millis) = u64::try_from(time) {
             lines.push(Line {
                 end: children(line, "word")
@@ -230,13 +228,11 @@ fn child_text<'a>(node: Node<'a, '_>, name: &'static str) -> Option<&'a str> {
     children(node, name).next().and_then(|child| child.text())
 }
 
-/// Made-up answers, for tests here and of what asks for them.
 #[cfg(test)]
 pub(super) mod fixture {
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD;
 
-    /// A `song` by the artist tests ask for, of no known length.
     pub(in super::super) fn song(id: &str, title: &str, kind: &str, data: &[u8]) -> String {
         song_of(id, title, "An Artist", 0, kind, data)
     }
@@ -264,7 +260,6 @@ pub(super) mod fixture {
         )
     }
 
-    /// Lyrics as XML, from each line's text and first word's time.
     pub(in super::super) fn xml_lyrics(lines: &[(&str, &str)]) -> Vec<u8> {
         let lines: String = lines
             .iter()
@@ -279,7 +274,6 @@ pub(super) mod fixture {
         format!("<wsy>{lines}</wsy>").into_bytes()
     }
 
-    /// Lyrics as XML of one line of `text`, from each word's text and times.
     pub(in super::super) fn xml_words(text: &str, words: &[(&str, &str, &str)]) -> Vec<u8> {
         let words: String = words
             .iter()
@@ -303,7 +297,6 @@ mod tests {
         Duration::from_millis(time)
     }
 
-    /// When each line of `candidate` starts and what it says.
     fn starts_and_texts(candidate: &Candidate) -> Vec<(Duration, &str)> {
         let Payload::Lines(lines) = &candidate.lyrics else {
             panic!("expected lines: {candidate:?}");
@@ -314,7 +307,6 @@ mod tests {
             .collect()
     }
 
-    /// The words of the one line in lyrics made from `xml`.
     fn words_in(xml: &[u8]) -> Vec<Word> {
         let found = one(&answer(&[song("1", "t", "3", xml)]));
         let Payload::Lines(mut lines) = found.lyrics else {

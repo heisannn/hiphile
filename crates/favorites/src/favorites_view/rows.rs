@@ -14,7 +14,6 @@ use ui::{
 use super::{Favorites, add_selection_command};
 use crate::{AddToQueue, GoToAlbum, Open, Play, PlayNext};
 
-/// What every row of the list needs. A row's commands act on the selection.
 pub(super) struct RowContext {
     pub(super) target: StarTarget,
     pub(super) is_selected: bool,
@@ -24,8 +23,6 @@ pub(super) struct RowContext {
 }
 
 impl RowContext {
-    /// A row with the behavior they share: a click selects it and a second
-    /// opens it. Gives back what its menu needs.
     fn row(self, id: String) -> (ListItem, StarTarget, FocusHandle) {
         let Self {
             target,
@@ -179,7 +176,7 @@ impl RenderOnce for ArtistRow {
             context,
         } = self;
         let name = SharedString::from(artist.name().to_owned());
-        // Zero says nothing of an artist the server knows for their songs.
+        // Zero says nothing of an artist the server knows for their songs
         let details = artist
             .album_count()
             .filter(|count| *count > 0)

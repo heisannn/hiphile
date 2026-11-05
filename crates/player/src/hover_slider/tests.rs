@@ -5,7 +5,6 @@ use gpui_kit::{
 
 use super::*;
 
-/// Where the line starts and ends in the harness's window.
 const LINE_START: f32 = 20.;
 const LINE_END: f32 = 180.;
 const ROW: f32 = 12.;
@@ -35,7 +34,7 @@ fn harness(
 ) -> (Entity<SliderState>, &mut VisualTestContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
-        // The thumb comes and goes at once, with no spring to wait for.
+        // The thumb comes and goes at once, with no spring to wait for
         cx.set_reduce_motion(true);
     });
     let state = cx.new(|_| SliderState::new().min(0.).max(1.).step(0.001));
@@ -71,7 +70,7 @@ fn keeps_the_thumb_through_a_drag_off_the_slider(cx: &mut TestAppContext) {
     let away = point(px(140.), px(100.));
     cx.simulate_mouse_move(at(100.), None, Modifiers::default());
     cx.simulate_mouse_down(at(100.), MouseButton::Left, Modifiers::default());
-    // The first move starts the drag and the second is the first it hears of.
+    // The first move starts the drag and the second is the first it hears of
     cx.simulate_mouse_move(away, MouseButton::Left, Modifiers::default());
     cx.simulate_mouse_move(away, MouseButton::Left, Modifiers::default());
     assert!(thumb(cx).is_some());
@@ -88,7 +87,7 @@ fn keeps_the_thumb_centred_on_the_ends_of_the_line(cx: &mut TestAppContext) {
     let (state, cx) = harness(false, cx);
     cx.simulate_mouse_move(at(100.), None, Modifiers::default());
 
-    // Past the end of the line, where a thumb at the end sticks out.
+    // Past the end of the line, where a thumb at the end sticks out
     cx.simulate_click(at(LINE_END + 4.), Modifiers::default());
     cx.update(|_, cx| assert_eq!(state.read(cx).value().end(), 1.));
     let bounds = thumb(cx).expect("the pointer is on the slider");

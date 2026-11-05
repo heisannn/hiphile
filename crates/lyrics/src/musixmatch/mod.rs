@@ -1,8 +1,7 @@
 //! Finds a song's lyrics on Musixmatch, through the API its mobile apps use.
 //!
 //! The API is not a published one, so everything it answers is checked and
-//! anything missing is treated as an ordinary case. [`Client::find_lyrics`]
-//! asks for one song by its details and keeps the best kind of lyrics found.
+//! anything missing is treated as an ordinary case.
 
 mod response;
 mod token;
@@ -22,10 +21,8 @@ const BASE_URL: &str = "https://apic-appmobile.musixmatch.com/ws/1.1/";
 const APP_ID: &str = "mac-ios-v2.0";
 const USER_AGENT: &str = "Musixmatch/2025120901 CFNetwork/3860.300.31 Darwin/25.2.0";
 const APP_VERSION: &str = "10.1.1";
-/// Names a token to use instead of asking the service for one.
 const TOKEN_VARIABLE: &str = "MUSIXMATCH_USER_TOKEN";
 
-/// Cheap to clone; all clones share one token.
 #[derive(Clone)]
 pub struct Client {
     net: net::Client,
@@ -45,7 +42,6 @@ impl Client {
         Self::new(net, tokens)
     }
 
-    /// A client that always uses `token`, for the service at `base`.
     pub fn with_token(net: net::Client, base: Url, token: impl Into<String>) -> Self {
         Self {
             base,
@@ -53,7 +49,6 @@ impl Client {
         }
     }
 
-    /// A client of the service at `base` that keeps its token at `path`.
     pub fn with_token_file(net: net::Client, base: Url, path: PathBuf) -> Self {
         Self {
             base,
@@ -69,8 +64,6 @@ impl Client {
         }
     }
 
-    /// The best lyrics of the song `query` describes.
-    ///
     /// A token the service turned down is replaced once at most, here and for
     /// a while after, so that a service refusing every token is not asked for
     /// more of them.
@@ -118,13 +111,11 @@ impl Client {
         response::lyrics(&body, query)
     }
 
-    /// Asks the service for a new token, which is not yet checked to work.
     async fn request_token(&self) -> Result<String, Error> {
         let body = self.get(self.url("token.get")).await?;
         response::token(&body)
     }
 
-    /// The address of `endpoint`, with what every request sends.
     fn url(&self, endpoint: &str) -> Url {
         let mut url = self
             .base
@@ -160,8 +151,6 @@ impl Provider for Client {
     }
 }
 
-/// Lyrics made from a `richsync_body`, for showing made-up lyrics in tests of
-/// what shows them.
 #[cfg(feature = "test-support")]
 pub fn lyrics_from_richsync_body(body: &str) -> Lyrics {
     let answer = serde_json::json!({ "message": {
@@ -186,8 +175,6 @@ mod tests {
 
     use super::*;
 
-    /// A service that answers each request with the next of `answers`, and
-    /// records the request lines it was sent.
     fn service(answers: Vec<String>) -> (Url, Arc<Mutex<Vec<String>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
@@ -320,7 +307,7 @@ mod tests {
         ]);
 
         let client = Client::with_token_file(net(), base, path.clone());
-        // The first token was asked for moments ago, so wait out the pause.
+        // The first token was asked for moments ago, so wait out the pause
         client.tokens.forget_last_request();
         block_on(client.tokens.current(&client)).unwrap();
         client.tokens.forget_last_request();
@@ -387,7 +374,6 @@ mod tests {
 
     #[test]
     fn a_request_for_a_token_given_up_on_holds_nothing_up() {
-        // It takes the request and never answers.
         let silent = TcpListener::bind("127.0.0.1:0").unwrap();
         let silent_base = Url::parse(&format!("http://{}/", silent.local_addr().unwrap())).unwrap();
         let (base, _) = service(vec![token_answer("t")]);
@@ -422,7 +408,7 @@ mod tests {
 
     #[test]
     fn errors_do_not_show_the_token() {
-        // Nothing listens here, so the request fails after it is built.
+        // Nothing listens here, so the request fails after it is built
         let base = Url::parse("http://127.0.0.1:9/").unwrap();
         let client = Client::with_token(net(), base, "secret-token");
         let error = block_on(client.find_lyrics(&query())).unwrap_err();

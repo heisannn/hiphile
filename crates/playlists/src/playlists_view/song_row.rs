@@ -17,7 +17,6 @@ use super::Playlists;
 use crate::entries::EntryId;
 use crate::{AddToQueue, MoveDown, MoveUp, Open, PlayNext, Remove, ShowAlbum};
 
-/// A song of the playlist on show, whose commands act on the selection.
 #[derive(IntoElement)]
 pub(super) struct SongRow {
     pub(super) id: EntryId,
@@ -70,8 +69,6 @@ impl RenderOnce for SongRow {
                     .min_w_0()
                     .gap_3()
                     .child(
-                        // The playing song shows a sound icon in place of its
-                        // number.
                         h_flex()
                             .w_6()
                             .flex_none()

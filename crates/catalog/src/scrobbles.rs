@@ -26,7 +26,6 @@ CREATE TABLE IF NOT EXISTS pending (
 CREATE INDEX IF NOT EXISTS pending_by_account ON pending (account, id);
 ";
 
-/// Where [`Scrobbles::submit`] sends plays: the server, or a fake in tests.
 pub trait ScrobbleTarget: Sync {
     fn scrobble(
         &self,
@@ -65,7 +64,6 @@ struct Inner {
     submitting: AtomicBool,
 }
 
-/// Clears [`Inner::submitting`] however a submission ends.
 struct Submitting<'a>(&'a AtomicBool);
 
 impl Drop for Submitting<'_> {
@@ -75,15 +73,11 @@ impl Drop for Submitting<'_> {
 }
 
 impl Scrobbles {
-    /// The plays by `username` on `server`, in the system data directory
-    /// (`~/Library/Application Support/hiphile` on macOS).
     pub fn user(server: &Url, username: &str) -> Result<Self, Error> {
         let data = dirs::data_dir().ok_or(Error::NoDataDir)?;
         Self::open(data.join("hiphile"), server, username)
     }
 
-    /// The plays by `username` on `server`, kept in `dir`. Created if there
-    /// are none.
     pub fn open(dir: impl AsRef<Path>, server: &Url, username: &str) -> Result<Self, Error> {
         let dir = dir.as_ref();
         fs::create_dir_all(dir).map_err(|source| Error::Io {
@@ -93,7 +87,7 @@ impl Scrobbles {
         let path = dir.join(DATABASE);
         let connection = match connect(&path) {
             Ok(connection) => connection,
-            // A file SQLite cannot read has no plays left to save.
+            // A file SQLite cannot read has no plays left to save
             Err(error) if is_damaged(&error) => {
                 remove_database(&path)?;
                 connect(&path)?
@@ -110,7 +104,6 @@ impl Scrobbles {
         })
     }
 
-    /// Keeps a play of `song` until it is submitted.
     pub fn record(&self, song: &SongId, played_at: SystemTime) -> Result<(), Error> {
         let played_at = played_at
             .duration_since(UNIX_EPOCH)
@@ -214,7 +207,6 @@ mod tests {
 
     use super::*;
 
-    /// Takes every play unless told how to answer the next ones.
     #[derive(Default)]
     struct Fake {
         answers: Mutex<VecDeque<Result<(), client::Error>>>,

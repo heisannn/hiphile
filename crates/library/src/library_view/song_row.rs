@@ -14,7 +14,6 @@ use ui::{PlayState, PlayStateIcon, format_duration, song_artist_link};
 use super::Library;
 use crate::{AddToQueue, Open, PlayNext};
 
-/// A song of the album on show, whose commands act on the selection.
 #[derive(IntoElement)]
 pub(super) struct SongRow {
     pub(super) song: Song,
@@ -66,8 +65,6 @@ impl RenderOnce for SongRow {
                     .gap_4()
                     .text_sm()
                     .child(
-                        // The playing song shows a sound icon in place of its
-                        // number.
                         h_flex()
                             .w_6()
                             .flex_none()

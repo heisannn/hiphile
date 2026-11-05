@@ -37,7 +37,6 @@ fn songs(count: usize) -> Vec<Song> {
         .collect()
 }
 
-/// What the fake server answers `method` with, and whether it knows of it.
 fn answer(method: &str) -> Option<Value> {
     Some(match method {
         "getArtists" => json!({ "artists": { "index": [
@@ -67,7 +66,6 @@ fn server() -> String {
     server_answering(answer)
 }
 
-/// A server that answers as [`answer`] does but knows of no albums of anybody.
 fn server_of_no_albums() -> String {
     server_answering(|method| match method {
         "getArtist" => Some(json!({ "artist": { "id": "x", "name": "Guest" } })),
@@ -75,7 +73,6 @@ fn server_of_no_albums() -> String {
     })
 }
 
-/// A server that answers with `answer`, returning its URL.
 fn server_answering(answer: fn(&str) -> Option<Value>) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -119,7 +116,6 @@ fn view_on<'a>(
     view_with(url, None, cx)
 }
 
-/// What a sync keeps in a catalog.
 struct Saved {
     albums: Vec<Album>,
     artists: Vec<Artist>,
@@ -162,7 +158,6 @@ fn song_by(id: &str, artist: &str, album: &str, track: u32) -> Song {
     .unwrap()
 }
 
-/// Waits for a keystroke's songs to be fetched and queued.
 fn wait_for_queued(
     seen: &Rc<RefCell<Vec<Vec<String>>>>,
     cx: &mut VisualTestContext,
@@ -182,7 +177,7 @@ fn view_with<'a>(
     catalog: Option<catalog::Catalog>,
     cx: &'a mut TestAppContext,
 ) -> (Entity<Artists>, &'a mut VisualTestContext) {
-    // The requests wake the test from the network's own thread.
+    // The requests wake the test from the network's own thread
     cx.executor().allow_parking();
     cx.update(|cx| {
         gpui_kit::init(cx);
@@ -253,7 +248,6 @@ fn show(view: &mut Artists, top_songs: usize, similar: Vec<Artist>, cx: &mut Con
     cx.notify();
 }
 
-/// The `A`s that pressing `keys` in `focus` results in.
 fn dispatched_by<A: gpui_kit::Action + Clone>(
     keys: &str,
     focus: impl Fn(&Artists) -> FocusHandle,
@@ -305,7 +299,7 @@ fn showing_the_screen_fills_the_list_and_the_first_artists_detail(cx: &mut TestA
         assert_eq!(view.visible.len(), 2);
         assert_eq!(view.selected_artist, Some(ArtistId::new("b")));
         let detail = view.detail.as_ref().unwrap();
-        // The server here answers with the same artist for any ID.
+        // The server here answers with the same artist for any ID
         let albums: Vec<_> = detail.albums.items().iter().map(Album::year).collect();
         assert_eq!(albums, [Some(1970), Some(1959)]);
         assert_eq!(detail.top_songs.items().len(), 10);
@@ -406,7 +400,7 @@ fn the_see_more_button_works_from_the_keyboard(cx: &mut TestAppContext) {
     let (view, cx) = view(cx);
     update(&view, cx, |view, cx| show(view, 10, Vec::new(), cx));
 
-    // Past Play and the menu.
+    // Past Play and the menu
     press_button_in_detail(3, "enter", &view, cx);
     cx.update(|_, cx| assert!(view.read(cx).top_songs_expanded));
 
@@ -486,7 +480,7 @@ fn the_arrows_move_through_songs_then_cards(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
 
-    // Into the detail, where the song comes first.
+    // Into the detail, where the song comes first
     cx.simulate_keystrokes("enter");
     cx.run_until_parked();
     cx.update(|window, cx| {
@@ -624,7 +618,6 @@ fn revealing_an_artist_the_filter_hides_clears_the_filter(cx: &mut TestAppContex
     });
 }
 
-/// The screen waiting for its first list, with `id` just revealed.
 fn revealed_before_the_list(id: &str, view: &Entity<Artists>, cx: &mut VisualTestContext) {
     update(view, cx, |view, _| {
         view.is_activated = true;
@@ -643,7 +636,6 @@ fn many_artists() -> Vec<Artist> {
         .collect()
 }
 
-/// The first row on show in the list, once the screen has drawn.
 fn top_row(view: &Entity<Artists>, cx: &mut VisualTestContext) -> usize {
     cx.update(|window, _| window.refresh());
     cx.run_until_parked();
@@ -683,7 +675,7 @@ fn the_list_follows_a_revealed_artist_the_servers_answer_moves(cx: &mut TestAppC
     update(&view, cx, |view, cx| {
         view.finish_loading_artists(Ok(moved), cx);
     });
-    // Now the 100th row, which `Nearest` brings to the bottom of the list.
+    // Now the 100th row, which `Nearest` brings to the bottom of the list
     let answered = top_row(&view, cx);
     assert!(
         (1..100).contains(&answered),
@@ -775,7 +767,7 @@ fn an_artist_only_on_songs_shows_those_songs_in_place_of_albums(cx: &mut TestApp
         assert!(!parts.contains(&Part::AlbumsStatus));
     });
 
-    // Their songs are all there is: asking for top songs leaves them.
+    // Their songs are all there is: asking for top songs leaves them
     update(&view, cx, |view, cx| {
         view.load_top_songs(ArtistId::new("m"), cx);
         assert_eq!(view.detail.as_ref().unwrap().top_songs.items().len(), 7);
@@ -828,7 +820,7 @@ fn the_saved_songs_of_an_artist_with_no_albums_show_and_play(cx: &mut TestAppCon
         assert!(!view.parts().contains(&Part::AlbumsHeading));
     });
 
-    // Their albums being none, what plays comes from the saved songs too.
+    // Their albums being none, what plays comes from the saved songs too
     let seen = Rc::new(RefCell::new(Vec::new()));
     cx.update(|window, cx| {
         let seen = seen.clone();
@@ -977,14 +969,14 @@ fn left_goes_back_to_the_list_from_the_start_of_a_row(cx: &mut TestAppContext) {
         cx.update(|window, cx| view.read(cx).list_focus.is_focused(window))
     };
 
-    // From a song, which has nothing to its left.
+    // From a song, which has nothing to its left
     select(&view, Item::Song(SongId::new("s0")), cx);
     focus_detail(&view, cx);
     cx.simulate_keystrokes("left");
     cx.run_until_parked();
     assert!(list_is_focused(&view, cx));
 
-    // From the second card of a row, along the row first.
+    // From the second card of a row, along the row first
     select(&view, Item::Album(AlbumId::new("a1")), cx);
     focus_detail(&view, cx);
     cx.simulate_keystrokes("left");
@@ -1113,7 +1105,7 @@ fn play_next_queues_every_song_of_the_artist_album_by_album(cx: &mut TestAppCont
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    // Two albums of two songs each.
+    // Two albums of two songs each
     assert_eq!(*seen.borrow(), [4]);
 }
 
@@ -1209,7 +1201,7 @@ fn the_scrollbar_knows_the_length_of_a_long_artist_from_the_start(cx: &mut TestA
             .iter()
             .filter(|part| matches!(part, Part::AlbumRow(_)))
             .count();
-        // A row holds a cover at its narrowest, ten rem, and more.
+        // A row holds a cover at its narrowest, ten rem, and more
         let shortest = window.rem_size() * 10.;
         let length = view.detail_list.max_offset_for_scrollbar().y;
         assert!(
@@ -1339,11 +1331,11 @@ fn the_part_at_the_top_stays_there_when_the_rest_changes() {
         parts.extend(rows(width));
         parts
     };
-    // The row holding the album that started the old one.
+    // The row holding the album that started the old one
     assert_eq!(same_place(&parts(3), 3, &parts(2)), 3);
     assert_eq!(same_place(&parts(2), 3, &parts(3)), 2);
 
-    // A song that Show less took away gives way to the toggle after it.
+    // A song that Show less took away gives way to the toggle after it
     let long = [Part::Song(4), Part::Song(5), Part::TopSongsToggle];
     let short = [Part::Header, Part::Song(4), Part::TopSongsToggle];
     assert_eq!(same_place(&long, 1, &short), 2);
@@ -1420,7 +1412,7 @@ fn choosing_another_artist_says_which_was_left(cx: &mut TestAppContext) {
         .detach();
     });
 
-    // Nothing selected yet: nothing to leave.
+    // Nothing selected yet: nothing to leave
     update(&view, cx, |this, cx| {
         this.choose_artist(ArtistId::new("a"), cx);
     });

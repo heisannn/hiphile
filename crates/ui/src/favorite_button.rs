@@ -6,8 +6,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
 };
 
-/// A star that shows whether `favorite` is one, for a detail's header, and adds
-/// it to the favorites or takes it out. Disabled until they are known.
+/// Disabled until the favorites are known.
 pub fn favorite_button(id: &'static str, favorite: Favorite, cx: &App) -> Button {
     let target = favorite.target();
     let is_favorite = actions::is_favorite(&target, cx);
@@ -53,7 +52,6 @@ mod tests {
         Artist::new(ArtistId::new("x"), "X".to_owned(), None, None)
     }
 
-    /// What clicking the star asks for, with the favorites as `known`.
     fn clicked(
         known: Option<HashSet<subsonic::StarTarget>>,
         cx: &mut TestAppContext,

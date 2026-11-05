@@ -1,5 +1,3 @@
-//! The token requests are made with: given, kept on disk, or asked for.
-
 use std::fmt;
 use std::fs;
 use std::io::Write as _;
@@ -22,7 +20,6 @@ const LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
 const REQUEST_PAUSE: Duration = Duration::from_secs(5 * 60);
 const FORMAT_VERSION: u32 = 1;
 
-/// A token and whether it can be replaced by asking for another.
 #[derive(Clone, PartialEq)]
 pub(crate) struct Token {
     value: Arc<str>,
@@ -48,8 +45,8 @@ impl Token {
     }
 }
 
-/// Where tokens come from. Requests for a token wait for one another, so that
-/// songs looked up together share one token.
+/// Requests for a token wait for one another, so that songs looked up together
+/// share one token.
 pub(crate) struct Tokens {
     source: Mutex<Source>,
 }
@@ -77,7 +74,6 @@ impl KeptToken {
     }
 }
 
-/// A token on disk.
 #[derive(Deserialize, Serialize)]
 struct TokenFile {
     version: u32,
@@ -108,7 +104,6 @@ impl Tokens {
         }
     }
 
-    /// The token to use, asking for one if there is none still in date.
     pub(crate) async fn current(&self, client: &Client) -> Result<Token, Error> {
         let mut source = self.source.lock().await;
         let (path, current, last_request) = match &mut *source {
@@ -131,8 +126,7 @@ impl Tokens {
         Ok(token)
     }
 
-    /// A token to use instead of `refused`. Failing leaves the one there is in
-    /// place, in memory and on disk.
+    /// Failing leaves the one there is in place, in memory and on disk.
     pub(crate) async fn replace(&self, client: &Client, refused: &Token) -> Result<Token, Error> {
         let mut source = self.source.lock().await;
         let (path, current, last_request) = match &mut *source {
@@ -143,7 +137,7 @@ impl Tokens {
                 last_request,
             } => (path, current, last_request),
         };
-        // Another request may have replaced it while this one was refused.
+        // Another request may have replaced it while this one was refused
         if let Some(kept) = current.as_ref().filter(|kept| kept.token != *refused) {
             return Ok(kept.token.clone());
         }
@@ -179,7 +173,7 @@ async fn request(
     }
     let value = answer?;
     let created_at = SystemTime::now();
-    // Failing to keep it only means asking again on the next launch.
+    // Failing to keep it only means asking again on the next launch
     if let Some(path) = path {
         write_token(path, &value, created_at).ok();
     }

@@ -1,5 +1,3 @@
-//! Domain-aware components shared by feature crates.
-
 mod album_link;
 mod artist_link;
 pub mod card_grid;

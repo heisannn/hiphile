@@ -1,6 +1,3 @@
-//! Feature: the play queue, transport controls, the now-playing bar, and the
-//! lyrics of what is playing.
-
 mod format;
 mod hover_slider;
 mod lyrics_view;
@@ -28,20 +25,15 @@ actions!(
         VolumeDown,
         ToggleMute,
         ToggleShuffle,
-        /// Goes on from no repeat to all songs, to one song, and back.
         CycleRepeat,
-        /// Creates a playlist of the songs in the queue.
         SaveQueue,
-        /// Shows the lyrics of the current song, or goes back from them.
         ToggleLyrics,
-        /// Goes back from the lyrics.
         CloseLyrics,
         /// Shows or hides the queue, or goes back to it from the lyrics.
         ToggleQueue
     ]
 );
 
-/// Repeats as this says from now on.
 #[derive(Clone, Debug, PartialEq, Action)]
 #[action(namespace = player, no_json)]
 pub struct SetRepeat {
@@ -58,21 +50,19 @@ impl SetRepeat {
     }
 }
 
-/// The songs kept on this computer, shared by every player in the app.
 /// `None` when there is nowhere to keep them or the settings cannot be read.
 struct GlobalSongCache(Option<playback::SongCache>);
 
 impl Global for GlobalSongCache {}
 
-/// Registers key bindings and opens the songs kept on this computer. Call
-/// before building the menu bar.
+/// Call before building the menu bar.
 ///
 /// `context` is the app shell's key context: the commands work anywhere in
 /// its window, while a focused text field keeps its own use of these keys.
 pub fn init(context: &'static str, cx: &mut App) {
     let capacity = match config::Store::user() {
         Ok(store) => store.song_cache_capacity(),
-        // Without a home directory there are no settings to follow.
+        // Without a home directory there are no settings to follow
         Err(_) => Ok(None),
     };
     // A setting that cannot be read keeps no songs rather than the default
@@ -135,7 +125,7 @@ pub fn init(context: &'static str, cx: &mut App) {
         KeyBinding::new(repeat, CycleRepeat, Some(context)),
         KeyBinding::new(lyrics, ToggleLyrics, Some(context)),
         KeyBinding::new("escape", CloseLyrics, Some(LYRICS_CONTEXT)),
-        // Space toggles playback from the lyrics, never from a focused control.
+        // Space toggles playback from the lyrics, never from a focused control
         KeyBinding::new("space", TogglePlayback, Some(LYRICS_CONTEXT)),
     ]);
 
@@ -152,7 +142,7 @@ pub fn init(context: &'static str, cx: &mut App) {
             queue_view::AddToPlaylist,
             Some(QUEUE_CONTEXT),
         ),
-        // Space toggles playback from the list, never from a text field.
+        // Space toggles playback from the list, never from a text field
         KeyBinding::new("space", TogglePlayback, Some(QUEUE_CONTEXT)),
     ]);
     actions::bind_go_to_artist(QUEUE_CONTEXT, cx);

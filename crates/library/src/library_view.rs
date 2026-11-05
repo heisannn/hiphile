@@ -43,11 +43,10 @@ use crate::{
     LIBRARY_CONTEXT, Open, Play, PlayNext, Refresh, SONGS_CONTEXT,
 };
 
-/// Pixel size requested for the detail cover. The renderer aliases an image
-/// drawn at less than half its size, so this stays close to the on-screen size.
+/// The renderer aliases an image drawn at less than half its size, so this stays
+/// close to the on-screen size.
 const COVER_PIXELS: u32 = 256;
 
-/// What a sync is fetching.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SyncStage {
     Albums,
@@ -56,11 +55,8 @@ pub enum SyncStage {
 }
 
 pub enum LibraryEvent {
-    /// A sync brought the album list up to date with the server.
     AlbumsSynced,
-    /// A sync brought the saved artists up to date with the server.
     ArtistsSynced,
-    /// A sync brought the saved songs up to date with the server.
     SongsSynced,
     /// A sync that is fetching has saved this many items of `stage`, out of about
     /// `total` when that can be told.
@@ -77,8 +73,6 @@ pub enum LibraryEvent {
     LeftAlbum(AlbumId),
 }
 
-/// The album browser: a filterable album list beside the selected album's
-/// songs. Owns the album data, the selection, and both lists' focus.
 pub struct Library {
     session: session::Session,
     albums: Albums,
@@ -86,7 +80,6 @@ pub struct Library {
     /// Whether the sync under way or last run is one the user asked for, whose
     /// failure they should hear of wherever they are.
     is_sync_requested: bool,
-    /// The loaded albums, ready to search.
     index: Arc<fuzzy::Index>,
     /// Positions in the loaded albums that match the filter, the best first.
     visible: Arc<Vec<usize>>,
@@ -102,7 +95,6 @@ pub struct Library {
     songs_focus: FocusHandle,
     albums_scroll: UniformListScrollHandle,
     songs_scroll: UniformListScrollHandle,
-    /// The split between the album list and the detail.
     panes: Entity<ResizableState>,
     _albums_task: Task<()>,
     _album_task: Task<()>,
@@ -117,7 +109,6 @@ enum Albums {
     Failed(SharedString),
 }
 
-/// Bringing the library up to date with the server.
 enum SyncState {
     Idle,
     /// `again`: a refresh was asked for meanwhile, to run once this ends
@@ -151,14 +142,14 @@ impl Library {
         let albums_focus = cx.focus_handle().tab_stop(true);
         let songs_focus = cx.focus_handle().tab_stop(true);
         let subscriptions = vec![
-            // The album on show has a star that says.
+            // The album on show has a star that says
             actions::observe_favorites(cx),
             cx.subscribe_in(&filter, window, |this, _, event, window, cx| match event {
                 InputEvent::Change => this.apply_filter(cx),
                 InputEvent::PressEnter { .. } => this.albums_focus.focus(window, cx),
                 _ => {}
             }),
-            // Focus changes the selection treatment of the rows.
+            // Focus changes the selection treatment of the rows
             cx.on_focus(&albums_focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&albums_focus, window, |_, _, cx| cx.notify()),
             cx.on_focus(&songs_focus, window, |_, _, cx| cx.notify()),
@@ -369,7 +360,7 @@ impl Library {
         let client = self.session.client().clone();
         let catalog = self.session.catalog().cloned();
         self._album_task = cx.spawn(async move |this, cx| {
-            // The saved songs show at once; the server's answer replaces them.
+            // The saved songs show at once, and the server's answer replaces them
             if let Some(catalog) = catalog.clone() {
                 let id = album.clone();
                 let cached = cx.background_spawn(async move { catalog.album(&id) }).await;
@@ -390,7 +381,7 @@ impl Library {
             }
             this.update(cx, |this, cx| match result {
                 Ok(fetched) => this.show_album(&album, fetched, cx),
-                // Saved songs on show stay there.
+                // Saved songs on show stay there
                 Err(error)
                     if this.selected_album.as_ref() == Some(&album)
                         && !matches!(this.detail, Detail::Loaded(_)) =>
@@ -405,9 +396,8 @@ impl Library {
         cx.notify();
     }
 
-    /// Selects `album` and brings it into view in the album list, clearing a
-    /// filter that hides it. An album the list does not have yet, as during
-    /// the first sync, comes into view once a sync brings it.
+    /// Clears a filter that hides `album`. An album the list does not have yet, as
+    /// during the first sync, comes into view once a sync brings it.
     pub fn reveal_album(&mut self, album: AlbumId, window: &mut Window, cx: &mut Context<Self>) {
         let position = self
             .loaded_albums()
@@ -419,7 +409,7 @@ impl Library {
         }
         self.select_album(album.clone(), cx);
         self.revealing = position.is_none().then_some(album);
-        // Selecting the album already selected does not scroll.
+        // Selecting the album already selected does not scroll
         self.scroll_to_selected_album();
         self.albums_focus.focus(window, cx);
     }
@@ -446,13 +436,10 @@ impl Library {
         }
     }
 
-    /// The narrowest the library can be while showing its album list at its
-    /// current width beside the detail.
     pub fn min_width(&self, window: &Window, cx: &gpui_kit::App) -> gpui_kit::Pixels {
         MasterDetail::min_width(&self.panes, window, cx)
     }
 
-    /// Marks `song` in the song list, or clears the mark.
     pub fn set_now_playing(&mut self, song: Option<SongId>, playing: bool, cx: &mut Context<Self>) {
         let now_playing = NowPlaying::new(song, playing);
         if self.now_playing != now_playing {
@@ -631,7 +618,7 @@ impl Library {
 
     fn render_albums(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let count = self.loaded_albums().map(|albums| albums.len());
-        // While nothing shows, the list itself shows a spinner.
+        // While nothing shows, the list itself shows a spinner
         let updating = count.is_some() && matches!(self.sync, SyncState::Running { .. });
         let error = match &self.sync {
             SyncState::Failed(error) => Some(error.clone()),
@@ -849,10 +836,8 @@ impl Library {
             .into_any_element()
     }
 
-    /// The album's commands besides Play.
-    ///
-    /// The album list's commands act on the album on show, so the menu
-    /// dispatches them there, whichever list has focus.
+    /// The album list's commands act on the album on show, so the menu dispatches
+    /// them there, whichever list has focus.
     fn render_album_menu(&self, loaded: &LoadedAlbum) -> impl IntoElement {
         let albums_focus = self.albums_focus.clone();
         let songs = loaded.songs.clone();
@@ -971,7 +956,7 @@ async fn run_sync(
         this.update(cx, |this, cx| {
             this.set_albums(albums, cx);
             cx.emit(LibraryEvent::AlbumsSynced);
-            // Without a copy, the songs are the server's, which may have changed.
+            // Without a copy, the songs are the server's, which may have changed
             cx.emit(LibraryEvent::SongsSynced);
         })
         .ok();
@@ -986,7 +971,7 @@ async fn run_sync(
         .read_with(cx, |this, _| this.loaded_albums().is_some())
         .unwrap_or_default();
     if !shown {
-        // A copy that can't be read is replaced by the sync below.
+        // A copy that can't be read is replaced by the sync below
         if let Ok(albums) = saved(cx).await
             && !albums.is_empty()
         {
@@ -1010,7 +995,7 @@ async fn run_sync(
             Some(saved(cx).await.map_err(describe_catalog)?)
         }
         Outcome::UpToDate if !shown => Some(saved(cx).await.map_err(describe_catalog)?),
-        // The CLI may be filling an empty copy; ask the server directly.
+        // The CLI may be filling an empty copy, so ask the server directly
         Outcome::Busy if !shown => {
             let client = client.clone();
             Some(
@@ -1088,7 +1073,7 @@ async fn watched_sync(
             SyncStage::Songs => catalog::sync_songs_watched(&catalog, &client, mode, report).await,
         }
     });
-    // Ends when the sync does, which drops the sender.
+    // Ends when the sync does, which drops the sender
     while let Some(catalog::SyncProgress { saved, total, .. }) = progress.next().await {
         this.update(cx, |_, cx| {
             cx.emit(LibraryEvent::SyncProgress {

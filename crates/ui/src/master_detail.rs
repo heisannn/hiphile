@@ -17,16 +17,15 @@ use gpui_kit::{
 use crate::list_navigation::CONTROL_CONTEXT;
 use crate::{ArtistLink, CoverArt};
 
-/// The list's width when first shown, in rem.
+/// When first shown, in rem.
 const LIST_WIDTH: f32 = 20.;
 const LIST_MIN_WIDTH: f32 = 14.;
 const LIST_MAX_WIDTH: f32 = 32.;
-/// The narrowest the detail goes, in rem.
+/// In rem.
 const DETAIL_MIN_WIDTH: f32 = 26.;
 const DETAIL_MAX_WIDTH: f32 = 200.;
 
-/// A list beside the detail of its selection, with the split between them
-/// kept in `panes`, which the feature owns.
+/// The split between the two is kept in `panes`, which the feature owns.
 #[derive(IntoElement)]
 pub struct MasterDetail {
     id: ElementId,
@@ -84,7 +83,6 @@ impl RenderOnce for MasterDetail {
     }
 }
 
-/// What a list pane is titled, with how many it holds once that is known.
 #[derive(IntoElement)]
 pub struct ListPaneHeader {
     title: &'static str,
@@ -104,14 +102,11 @@ impl ListPaneHeader {
         }
     }
 
-    /// Shows a spinner after the count, for an update under way that `label`
-    /// names.
     pub fn updating(mut self, label: &'static str) -> Self {
         self.updating = Some(label);
         self
     }
 
-    /// Set against the trailing edge.
     pub fn action(mut self, action: impl IntoElement) -> Self {
         self.action = Some(action.into_any_element());
         self
@@ -161,7 +156,6 @@ impl RenderOnce for ListPaneHeader {
     }
 }
 
-/// The field that narrows down a list pane.
 #[derive(IntoElement)]
 pub struct ListFilter(Entity<InputState>);
 
@@ -177,8 +171,6 @@ impl RenderOnce for ListFilter {
     }
 }
 
-/// The input that narrows down a list, for a place of its own or in
-/// [`ListFilter`].
 pub fn filter_input(input: &Entity<InputState>) -> Input {
     Input::new(input)
         .small()
@@ -186,7 +178,6 @@ pub fn filter_input(input: &Entity<InputState>) -> Input {
         .cleanable(true)
 }
 
-/// A failed update of a list still on show below it.
 #[derive(IntoElement)]
 pub struct RefreshFailure {
     title: &'static str,
@@ -222,8 +213,6 @@ impl RenderOnce for RefreshFailure {
     }
 }
 
-/// The top of a detail: the cover beside what is on show and what can be done
-/// with it.
 #[derive(IntoElement)]
 pub struct DetailHeader {
     cover_url: Option<SharedString>,
@@ -257,7 +246,6 @@ impl DetailHeader {
         self
     }
 
-    /// An artist as the subtitle, whose name can be clicked.
     pub fn artist(mut self, artist: Option<ArtistLink>) -> Self {
         self.subtitle = artist.map(|artist| {
             h_flex()
@@ -273,7 +261,6 @@ impl DetailHeader {
         self
     }
 
-    /// The picture is of an artist, not a cover.
     pub fn artist_picture(mut self) -> Self {
         self.is_artist_picture = true;
         self

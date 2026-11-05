@@ -4,12 +4,8 @@ use keyring_core::{CredentialStore, Entry};
 
 use crate::{Error, Profile};
 
-/// Keychain entries are filed under this service name.
 const SERVICE: &str = "hiphile";
 
-/// Passwords kept in the system's credential store: Keychain on macOS,
-/// Credential Manager on Windows, and the Secret Service elsewhere.
-///
 /// Every call blocks, and the system may ask the user to allow access, so
 /// call it off the UI thread.
 #[derive(Clone)]
@@ -18,8 +14,7 @@ pub struct Keychain {
 }
 
 impl Keychain {
-    /// The platform's credential store. Fails where there is none, such as
-    /// a Linux system without a Secret Service.
+    /// Fails where there is none, such as a Linux system without a Secret Service.
     pub fn system() -> Result<Self, Error> {
         #[cfg(target_os = "macos")]
         let store = apple_native_keyring_store::keychain::Store::new();
@@ -32,15 +27,12 @@ impl Keychain {
         })
     }
 
-    /// A store that keeps passwords in memory for the life of the value, for
-    /// tests.
     pub fn in_memory() -> Self {
         Self {
             store: keyring_core::mock::Store::new().expect("the mock store always builds"),
         }
     }
 
-    /// The password saved for `profile`, if any.
     pub fn password(&self, profile: &Profile) -> Result<Option<String>, Error> {
         match self.entry(profile)?.get_password() {
             Ok(password) => Ok(Some(password)),
@@ -55,7 +47,7 @@ impl Keychain {
             .map_err(Error::Keychain)
     }
 
-    /// Forgets the password for `profile`. Succeeds if there was none.
+    /// Succeeds if there was none.
     pub fn delete_password(&self, profile: &Profile) -> Result<(), Error> {
         match self.entry(profile)?.delete_credential() {
             Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
@@ -93,7 +85,6 @@ mod tests {
 
         keychain.delete_password(&alice).unwrap();
         assert_eq!(keychain.password(&alice).unwrap(), None);
-        // Forgetting a password that is not there is not an error.
         keychain.delete_password(&alice).unwrap();
     }
 }

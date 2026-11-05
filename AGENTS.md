@@ -18,6 +18,22 @@ Keep text only when the user cannot learn it from the screen, such as:
 - errors and how to recover from them
 - names for screen readers
 
+## Comments
+
+The default is no comment, including on public items. Add one only when a maintainer could not
+recover the information from the code, names, types or tests, such as:
+
+- why surprising code exists, or why a simpler version would be wrong
+- external constraints, invariants, and ordering, lifecycle or concurrency requirements
+- contracts the type cannot express: units, special values, side effects
+
+Never invent a reason to justify a comment, and do not mention what changed or what was discussed.
+Write the durable state. Prefer clearer code over a comment. Update or remove comments made stale by
+a change.
+
+A single-line comment is a short clause that starts uppercase and has no closing punctuation.
+Leave tooling directives and machine-read comments as they are.
+
 ## Keep views small
 
 - When a second view needs the same piece of UI, move it to `crates/ui` rather than copy it.

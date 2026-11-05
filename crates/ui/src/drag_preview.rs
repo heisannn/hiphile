@@ -4,7 +4,6 @@ use gpui_kit::{
     Window, div,
 };
 
-/// What follows the pointer while a list row is dragged to a new place.
 pub struct DragPreview {
     title: SharedString,
     /// The pointer's offset in the row the drag started on.

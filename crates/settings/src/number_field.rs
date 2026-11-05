@@ -1,8 +1,6 @@
-//! A field for a number, stepped by its buttons or the up and down keys.
-//!
-//! This stands in for `NumberInput` of GPUI Kit 0.9, whose frame and editor both track the focus
-//! of one `InputState`. While assistive technology is connected, both report the focus in the
-//! same frame, and GPUI panics on that in debug builds.
+//! Stands in for `NumberInput` of GPUI Kit 0.9, whose frame and editor both track the focus of
+//! one `InputState`. While assistive technology is connected, both report the focus in the same
+//! frame, and GPUI panics on that in debug builds.
 
 use gpui_kit::base::{Button, Decrement, Increment, StepAction, step_value};
 use gpui_kit::component::input::{Input, InputState, MaskPattern};
@@ -13,7 +11,6 @@ use gpui_kit::{
     TextAlign, Window, div,
 };
 
-/// Key context of the field.
 const CONTEXT: &str = "SettingsNumberField";
 
 pub(crate) fn init(cx: &mut App) {
@@ -23,7 +20,6 @@ pub(crate) fn init(cx: &mut App) {
     ]);
 }
 
-/// The numbers a field takes.
 #[derive(Clone, Copy)]
 pub(crate) struct NumberRange {
     pub(crate) min: f64,
@@ -32,7 +28,7 @@ pub(crate) struct NumberRange {
 }
 
 impl NumberRange {
-    /// The state of a field for these numbers. It holds them to the range when it loses focus.
+    /// The state holds numbers to the range when it loses focus.
     pub(crate) fn state(self, window: &mut Window, cx: &mut Context<InputState>) -> InputState {
         InputState::new(window, cx)
             .mask_pattern(MaskPattern::Number {
@@ -47,7 +43,7 @@ impl NumberRange {
     /// `-` on the way to a number.
     pub(crate) fn parse(self, text: &str) -> Option<f64> {
         let number = text.parse::<f64>().ok()?;
-        // Adding zero turns `-0` into `0`, which is how it should read later.
+        // Adding zero turns `-0` into `0`, which is how it should read later
         Some(number.clamp(self.min, self.max) + 0.0)
     }
 

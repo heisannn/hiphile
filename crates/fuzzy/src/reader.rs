@@ -10,11 +10,9 @@ use lindera::segmenter::Segmenter;
 use crate::Analyzer;
 use crate::searchable::is_kanji;
 
-/// The field of both dictionaries that says how a word reads.
 const READING: &str = "reading";
-/// The dictionaries a bundle holds, in the order they are asked.
+/// In the order they are asked.
 const DICTIONARIES: [&str; 2] = ["ipadic", "sudachi"];
-/// The table of people's names in a bundle.
 const NAMES: &str = "names.tsv";
 
 #[derive(Debug, thiserror::Error)]
@@ -33,9 +31,6 @@ pub enum Error {
     },
 }
 
-/// Works out how Japanese text reads, from a bundle installed by
-/// [`crate::bundle::install`].
-///
 /// Morphological analysis alone reads titles well but misreads names, and a
 /// dictionary of names misreads titles, so a text keeps every reading they
 /// give. Opening one is quick and maps the dictionaries rather than reading
@@ -51,8 +46,7 @@ impl Reader {
     /// bundle: both are saved, and this says which ones still hold.
     pub const VERSION: u32 = 2;
 
-    /// The bundle in `dir`. Fails for one written by another version of the
-    /// dictionary format.
+    /// Fails for a bundle written by another version of the dictionary format.
     pub fn open(dir: &Path) -> Result<Self, Error> {
         let segmenters = DICTIONARIES
             .iter()

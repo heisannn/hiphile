@@ -9,8 +9,7 @@ use subsonic::{Album, ArtistId, Song};
 use crate::album_link::AlbumLink;
 use crate::name_link::{name_link, plain_name};
 
-/// An artist's name, which shows the artist when clicked. From the keyboard,
-/// the view with the selection handles [`actions::GoToArtist`] instead.
+/// From the keyboard, the view with the selection handles [`actions::GoToArtist`] instead.
 ///
 /// A name the server gives no ID for is plain text: there is nowhere to go.
 #[derive(IntoElement)]
@@ -75,8 +74,6 @@ impl RenderOnce for ArtistLink {
     }
 }
 
-/// The line of a row's details that starts with the artist, whose name can be
-/// clicked, followed by what else tells the row apart.
 #[derive(IntoElement)]
 pub struct ArtistLine {
     artist: Option<ArtistLink>,
@@ -89,7 +86,6 @@ impl ArtistLine {
         Self { artist, rest }
     }
 
-    /// A song's artist and album, whose name can be clicked too.
     pub fn of_song(song: &Song) -> Self {
         Self::of_song_by(song_artist_link(song), song)
     }
@@ -102,7 +98,6 @@ impl ArtistLine {
         }
     }
 
-    /// An album's artist and year.
     pub fn of_album(album: &Album) -> Self {
         Self::new(
             album_artist_link(album),
@@ -127,13 +122,11 @@ impl RenderOnce for ArtistLine {
     }
 }
 
-/// The link to the artist of `song`, when it names one.
 pub fn song_artist_link(song: &Song) -> Option<ArtistLink> {
     let name = song.artist()?;
     Some(ArtistLink::new(name.to_owned(), song.artist_id().cloned()))
 }
 
-/// The link to the artist of `album`, when it names one.
 pub fn album_artist_link(album: &Album) -> Option<ArtistLink> {
     let name = album.artist()?;
     Some(ArtistLink::new(name.to_owned(), album.artist_id().cloned()))
@@ -151,7 +144,6 @@ mod tests {
 
     use super::*;
 
-    /// A row around a link, which notes clicks that reach it.
     struct Row {
         artist: Option<ArtistId>,
         clicked: usize,

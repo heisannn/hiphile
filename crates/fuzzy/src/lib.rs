@@ -24,14 +24,12 @@ pub use index::Index;
 pub use reader::{Error, Reader};
 pub use searchable::{Key, keys_of, needs_reading};
 
-/// Works out how a text reads, which can take more than one guess.
 pub trait Analyzer {
     /// Each way `text` may read, as kana with spaces between its words. The
     /// words are where a match can start.
     fn readings(&self, text: &str) -> Vec<String>;
 }
 
-/// Says how a text is spelled in romaji for an [`Index`] to match it by.
 pub trait Speller {
     fn keys(&self, text: &str) -> Vec<Key>;
 }

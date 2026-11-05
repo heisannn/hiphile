@@ -12,12 +12,11 @@ use gpui_kit::{
     Styled as _, Subscription, Window, div, prelude::FluentBuilder as _,
 };
 
-/// The body of a dialog that asks for a playlist's name. Commits with its button,
-/// or with Enter by way of the dialog; what that does is up to `on_submit`, which
-/// closes the dialog when it is done or reports back through [`Self::set_failed`].
+/// Commits with its button, or with Enter by way of the dialog. What that does is
+/// up to `on_submit`, which closes the dialog when it is done or reports back
+/// through [`Self::set_failed`].
 pub(crate) struct NameForm {
     input: Entity<InputState>,
-    /// What the commit button says.
     commit: SharedString,
     /// What else the commit affects, when the dialog can't show it otherwise.
     scope: Option<SharedString>,
@@ -87,7 +86,6 @@ impl NameForm {
         self.submitting
     }
 
-    /// Shows why a submission failed and allows another, keeping the name.
     pub(crate) fn set_failed(&mut self, error: SharedString, cx: &mut Context<Self>) {
         self.submitting = false;
         self.error = Some(error);

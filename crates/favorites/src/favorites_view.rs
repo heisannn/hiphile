@@ -33,18 +33,14 @@ use crate::{
     Open, Play, PlayNext, PreviousSection,
 };
 
-/// Pixel size requested for a row's cover, the same as the player's.
+/// The same as the player's.
 const ROW_COVER_PIXELS: u32 = 48;
 
-/// The favorites' screen: one kind of favorite at a time. Owns the favorites,
-/// the selection of each kind, and the writes on their way to the server, and
-/// tells every other feature what the favorites are.
 pub struct Favorites {
     session: session::Session,
     state: LoadState,
     lists: FavoriteLists,
     is_reloading: bool,
-    /// Why reading the favorites on show again failed.
     refresh_error: Option<SharedString>,
     section: Section,
     /// What is selected of each kind, by [`Section::ix`].
@@ -67,7 +63,6 @@ pub struct Favorites {
     _subscriptions: Vec<Subscription>,
 }
 
-/// What a [`Favorites`] tells the app shell.
 #[derive(Clone, Debug)]
 pub enum FavoritesEvent {
     /// The favorites could not be read and nothing else has them, with why.
@@ -111,11 +106,11 @@ impl Favorites {
     pub fn new(session: session::Session, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle().tab_stop(true);
         let subscriptions = vec![
-            // Focus changes the selection treatment of the rows.
+            // Focus changes the selection treatment of the rows
             cx.on_focus(&focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&focus, window, |_, _, cx| cx.notify()),
         ];
-        // Those of whoever was signed in before.
+        // Those of whoever was signed in before
         actions::set_known_favorites(None, cx);
         let mut this = Self {
             session,
@@ -197,7 +192,7 @@ impl Favorites {
                 }
                 self.tell_favorites(cx);
             }
-            // The favorites on show stay there, with word of what went wrong.
+            // The favorites on show stay there, with word of what went wrong
             Err(error) if matches!(self.state, LoadState::Loaded) => {
                 self.refresh_error = Some(error);
             }
@@ -423,7 +418,6 @@ impl Favorites {
         }
     }
 
-    /// Does `action` to the selected song or album, whose songs it fetches.
     fn act_on_selected(
         &mut self,
         action: AlbumAction,
@@ -490,7 +484,6 @@ impl Favorites {
         }
     }
 
-    /// Marks `song` in the list, or clears the mark.
     pub fn set_now_playing(&mut self, song: Option<SongId>, playing: bool, cx: &mut Context<Self>) {
         let now_playing = NowPlaying::new(song, playing);
         if self.now_playing != now_playing {

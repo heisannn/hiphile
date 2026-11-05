@@ -89,7 +89,6 @@ fn toggles(cx: &mut VisualTestContext) -> Bounds<Pixels> {
     cx.debug_bounds("panel-toggles").expect("the toggles")
 }
 
-/// Clicks the first or the second button in `bounds`.
 fn click_toggle(second: bool, bounds: Bounds<Pixels>, cx: &mut VisualTestContext) {
     let quarter = bounds.size.width / 4.;
     let x = if second {
@@ -140,7 +139,7 @@ fn the_queue_toggle_follows_whether_the_queue_fits(cx: &mut TestAppContext) {
     click_toggle(true, toggles(cx), cx);
     assert_eq!(cx.read(|cx| stand.read(cx).queue_toggled.get()), 0);
 
-    // Told only to what lays the panels out, as when the window has been widened.
+    // Told only to what lays the panels out, as when the window has been widened
     stand.update(cx, |stand, cx| {
         stand.panels.queue_fits = true;
         cx.notify();

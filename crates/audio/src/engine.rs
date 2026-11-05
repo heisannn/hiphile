@@ -24,7 +24,6 @@ const LONGEST_HOLD: Duration = Duration::from_secs(30);
 /// How long a track must wait for its data for that to be reported. Most
 /// waits are over before anyone could tell.
 const BUFFERING_NOTICE: Duration = Duration::from_millis(300);
-/// How often the engine thread tops up the buffer while playing.
 const FILL_INTERVAL: Duration = Duration::from_millis(5);
 /// How long the device keeps the rate of the last track once nothing plays.
 /// Longer than opening the next track usually takes, so an album does not
@@ -43,7 +42,6 @@ const RATE_SWITCH_TIMEOUT: Duration = Duration::from_secs(5);
 /// engine restoring a rate cannot interleave with another opening a stream.
 static DEVICE_SETUP: Mutex<()> = Mutex::new(());
 
-/// Names one [`Engine::load`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct LoadId(Generation);
 
@@ -61,7 +59,6 @@ pub struct Event {
 
 #[derive(Clone, Debug)]
 pub enum EventKind {
-    /// The track started playing.
     Started(PlaybackFormat),
     /// The track moved to other output settings, or to the rate someone else
     /// set on the device, and goes on from where it was, paused if it was.
@@ -70,15 +67,15 @@ pub enum EventKind {
     /// that goes on from here and reports [`EventKind::Started`] or
     /// [`EventKind::Failed`] next, perhaps after [`EventKind::Buffering`]; with
     /// `None`, nothing else plays.
-    Ended { next: Option<LoadId> },
+    Ended {
+        next: Option<LoadId>,
+    },
     /// The track has been silent for a while waiting for its data, while
     /// opening or playing, or has stopped doing so. Not reported while paused.
     Buffering(bool),
-    /// The track stopped because of an error.
     Failed(Error),
 }
 
-/// How a track reaches the device.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlaybackFormat {
     device: String,
@@ -110,8 +107,6 @@ impl PlaybackFormat {
         self.output_channels
     }
 
-    /// Whether samples are resampled, which happens only when the device
-    /// runs at another rate than the source.
     pub fn is_resampled(&self) -> bool {
         self.source_rate != self.output_rate
     }
@@ -150,15 +145,12 @@ struct Shared {
     output_rate: AtomicU32,
     /// `f32` bits; read by the audio callback.
     volume: AtomicU32,
-    /// The last generation handed out.
     issued: AtomicU64,
-    /// The generation of the current track.
     generation: AtomicU64,
     /// Never touched by the audio callback.
     cancels: Mutex<Cancels>,
 }
 
-/// What unblocks reads of the tracks the engine holds.
 #[derive(Default)]
 struct Cancels {
     current: Option<Cancel>,
@@ -199,8 +191,7 @@ impl Shared {
     }
 
     /// Starts a new generation and cancels the previous track and the one
-    /// set to follow it, so an engine thread blocked reading the former
-    /// returns to its command loop.
+    /// set to follow it, so their decoding threads do not stay blocked on a read.
     fn supersede(&self, cancel: Option<Cancel>) -> Generation {
         let (generation, previous) = {
             let mut cancels = self.lock_cancels();
@@ -403,14 +394,14 @@ impl Engine {
 
     fn stop_thread(&mut self) -> Option<thread::JoinHandle<()>> {
         let thread = self.thread.take()?;
-        // Unblock a read first, or the thread could not see `Shutdown`.
+        // Feeds end once a blocked read returns, so unblock those first
         self.shared.supersede(None);
         self.send(Command::Shutdown);
         Some(thread)
     }
 
     fn send(&self, command: Command) {
-        // The thread exits only on shutdown; later commands have no effect.
+        // The thread exits only on shutdown, after which commands have no effect
         self.commands.send(command).ok();
     }
 }
@@ -431,7 +422,7 @@ fn run(
 ) {
     let mut restore = None;
     serve(commands, command_sender, events, shared, &mut restore);
-    // `serve` has closed the last stream, so the device is free to switch.
+    // `serve` has closed the last stream, so the device is free to switch
     if let Some(restore) = restore {
         restore.apply();
     }
@@ -454,7 +445,7 @@ fn serve(
     };
     let mut output = OutputSettings::default();
     let mut current: Option<Playback> = None;
-    // The track to play once it has opened, before which there is no current.
+    // The track to play once it has opened, before which there is no current
     let mut pending: Option<Pending> = None;
     let mut next: Option<Next> = None;
     let mut buffering = BufferingReport::default();
@@ -493,18 +484,18 @@ fn serve(
             },
         };
         if command.is_none() && current.is_none() && pending.is_none() {
-            // Nothing has played for `RESTORE_DELAY`; no next track is coming.
+            // Nothing has played for `RESTORE_DELAY`, so no next track is coming
             if let Some(restore) = restore.take() {
                 restore.apply();
             }
             continue;
         }
 
-        // An error names the generation it ends.
+        // An error names the generation it ends
         let result: Result<(), (Generation, Error)> = match command {
             None => Ok(()),
             Some(Command::Load(generation, track)) => {
-                // Release the device before opening it again.
+                // Release the device before opening it again
                 current = None;
                 pending = None;
                 next = None;
@@ -576,7 +567,7 @@ fn serve(
                 })
             }
             Some(Command::StreamInvalidated(generation)) => {
-                // A late notice about an earlier stream changes nothing here.
+                // A late notice about an earlier stream changes nothing here
                 if current
                     .as_ref()
                     .is_some_and(|playback| playback.opened_for == generation)
@@ -616,7 +607,7 @@ fn serve(
             if let Some(playback) = current.take() {
                 shared.release(playback.generation);
             }
-            // A superseded track was canceled on purpose; stay silent.
+            // A superseded track was canceled on purpose, so stay silent
             if shared.is_current(generation) {
                 emit(generation, EventKind::Failed(error));
             }
@@ -657,7 +648,7 @@ fn serve(
                 continue;
             }
             current = None;
-            // A superseded track was canceled on purpose; stay silent.
+            // A superseded track was canceled on purpose, so stay silent
             if !shared.is_current(generation) {
                 continue;
             }
@@ -694,12 +685,10 @@ fn serve(
 #[derive(Default)]
 struct BufferingReport {
     waiting_since: Option<Instant>,
-    /// The track told about it.
     reported: Option<Generation>,
 }
 
 impl BufferingReport {
-    /// `waiting` names the track now waiting for its data, if any.
     fn update(&mut self, waiting: Option<Generation>, emit: &impl Fn(Generation, EventKind)) {
         let Some(generation) = waiting else {
             self.waiting_since = None;
@@ -708,7 +697,7 @@ impl BufferingReport {
             }
             return;
         };
-        // Another track took over; the wait told about is no longer anyone's.
+        // Another track took over, so the wait told about is no longer anyone's
         if self.reported.is_some_and(|reported| reported != generation) {
             *self = Self::default();
         }
@@ -757,12 +746,12 @@ fn report_crossing(
         return;
     };
     let ended = std::mem::replace(&mut playback.generation, joined.generation);
-    // How long the last track had to wait is no reason for this one to.
+    // How long the last track had to wait is no reason for this one to
     playback.hold = FIRST_HOLD;
     if shared.promote(ended, joined.generation) {
         let next = Some(LoadId(joined.generation));
         emit(ended, EventKind::Ended { next });
-        // One that has already failed goes on to report that instead.
+        // One that has already failed goes on to report that instead
         if playback.failure.is_none() {
             emit(
                 joined.generation,
@@ -823,7 +812,6 @@ enum Fill {
     Drained,
 }
 
-/// The track set to follow the current one.
 struct Next {
     generation: Generation,
     state: NextState,
@@ -846,7 +834,6 @@ impl Next {
         Self { generation, state }
     }
 
-    /// Takes the feed in once it has opened.
     fn polled(self) -> Self {
         let state = match self.state {
             NextState::Opening(opening) => match opening.poll() {
@@ -886,7 +873,6 @@ impl Pending {
                 paused,
             },
         };
-        // From the beginning, no seek is needed.
         if !position.is_zero() {
             pending.seek(position);
         }
@@ -902,7 +888,6 @@ impl Pending {
         }
     }
 
-    /// What became of the track once it has opened or failed to.
     fn poll(self) -> Result<(Generation, Result<Feed, Error>, Start), Self> {
         let Self { track, start } = self;
         let track = track.polled();
@@ -976,8 +961,6 @@ impl<D: PartialEq> RateRecord<D> {
         }
     }
 
-    /// Whether a device now running at `current_rate` should be switched
-    /// back.
     fn needs_restore(&self, current_rate: u32) -> bool {
         current_rate == self.switched_to && current_rate != self.original.sample_rate()
     }
@@ -1012,12 +995,11 @@ impl RateRestore {
     }
 }
 
-/// The device `output` names, or the system's default.
 fn find_device(output: &OutputSettings) -> Result<cpal::Device, Error> {
     let host = cpal::default_host();
     match output.device() {
         None => host.default_output_device().ok_or(Error::NoOutputDevice),
-        // An id that cannot be read may come from another platform's settings.
+        // An id that cannot be read may come from another platform's settings
         Some(id) => id
             .parse()
             .ok()
@@ -1045,7 +1027,6 @@ fn keep_device_rate(
     OutputSettings::new(output.device().map(str::to_owned), Some(device_rate))
 }
 
-/// Where a stream picks up in its track.
 #[derive(Clone, Copy)]
 struct Start {
     position: Duration,
@@ -1129,7 +1110,7 @@ impl Playback {
             stream,
             ..
         } = self;
-        // Release the device before opening it again.
+        // Release the device before opening it again
         drop(stream);
         feed.seek(start.position);
         Self::begin(feed, start, generation, settings, shared, commands, restore)
@@ -1175,7 +1156,7 @@ impl Playback {
             commands,
             restore,
         )?;
-        // Whatever is ready by now, so the first callbacks need not be silent.
+        // Whatever is ready by now, so the first callbacks need not be silent
         playback.fill(shared)?;
         if start.paused {
             playback.pause()?;
@@ -1206,7 +1187,7 @@ impl Playback {
             left.apply();
         }
         let ranges = output::config_ranges(&device)?;
-        // Held until the stream exists, which is when cpal switches the rate.
+        // Held until the stream exists, which is when cpal switches the rate
         let setup = DEVICE_SETUP.lock().unwrap_or_else(PoisonError::into_inner);
         let device_config = device.default_output_config()?;
         let device_rate = device_config.sample_rate();
@@ -1312,7 +1293,7 @@ impl Playback {
     }
 
     fn seek(&mut self, to: Duration, shared: &Shared) -> Result<(), Error> {
-        // Silence what is buffered at once; the seek may wait for data.
+        // Silence what is buffered at once, as the seek may wait for data
         self.flush_until.store(self.written, Ordering::Release);
         shared
             .frames_played
@@ -1448,7 +1429,6 @@ impl Playback {
         })
     }
 
-    /// Tops the ring buffer up; returns whether the track has fully played.
     fn fill(&mut self, shared: &Shared) -> Result<Fill, Error> {
         // A next track's failure is not the sounding track's, whose last
         // samples may still be on their way here.
@@ -1528,7 +1508,7 @@ impl Playback {
                 return Ok(Fill::Playing);
             }
             if self.finished {
-                // Whatever joined counts as playing until the device reaches it.
+                // Whatever joined counts as playing until the device reaches it
                 if self.producer.slots() < self.capacity || self.joined.is_some() {
                     return Ok(Fill::Playing);
                 }
@@ -1559,7 +1539,7 @@ impl Playback {
                         .frames_played
                         .store(self.frames_in(resumed), Ordering::Relaxed);
                 }
-                // Past the end, the track ends once the device has played out.
+                // Past the end, the track ends once the device has played out
                 Some(Item::Seeked(None)) => self.finished = true,
                 Some(Item::End) => {
                     // Leaves a next track its chance to join before the
@@ -1589,9 +1569,9 @@ fn output_callback(
     flush_until: Arc<AtomicU64>,
     next_at: Arc<AtomicU64>,
 ) -> impl FnMut(&mut [f32], &cpal::OutputCallbackInfo) + Send + 'static {
-    // When the device will have played the last sample written so far.
+    // When the device will have played the last sample written so far
     let mut played_by: Option<cpal::StreamInstant> = None;
-    // Samples taken out of the ring buffer, played or dropped.
+    // Samples taken out of the ring buffer, played or dropped
     let mut read: u64 = 0;
     move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
         let stale = flush_until.load(Ordering::Acquire).saturating_sub(read);
@@ -1606,7 +1586,7 @@ fn output_callback(
         }
         let timestamp = info.timestamp();
         let available = consumer.slots().min(data.len());
-        // Whole frames only, so an underrun never shifts the channel order.
+        // Whole frames only, so an underrun never shifts the channel order
         let len = available - available % channels;
         let mut written = 0;
         if let Ok(chunk) = consumer.read_chunk(len) {
@@ -1679,8 +1659,6 @@ mod tests {
         }
     }
 
-    /// Plays silence on the default device: Started, then Ended once the
-    /// device has consumed every frame.
     #[test]
     #[ignore = "needs an audio output device"]
     fn plays_a_track_to_its_end_on_the_default_device() {
@@ -1872,7 +1850,7 @@ mod tests {
             panic!("expected OutputChanged, got {:?}", event.kind);
         };
         assert_eq!(format.output_rate(), original);
-        // A late notice of the engine's own switch must not stop the track.
+        // A late notice of the engine's own switch must not stop the track
         assert_no_event(&events);
         engine.shutdown();
     }
@@ -1958,7 +1936,6 @@ mod tests {
         (device, id)
     }
 
-    /// Records the left channel of `device` until the stream is dropped.
     fn record(device: &cpal::Device, rate: u32) -> (cpal::Stream, Arc<Mutex<Vec<f32>>>) {
         let heard = Arc::new(Mutex::new(Vec::new()));
         let config = cpal::StreamConfig {
@@ -2002,7 +1979,6 @@ mod tests {
         bytes
     }
 
-    /// From where the sound starts to where it ends.
     fn sounding_part(heard: &[f32]) -> &[f32] {
         let start = heard.iter().position(|sample| sample.abs() > 0.1).unwrap();
         let end = heard.iter().rposition(|sample| sample.abs() > 0.1).unwrap();
@@ -2027,7 +2003,6 @@ mod tests {
             .fold(0.0, f64::max)
     }
 
-    /// The most samples in a row without any sound.
     fn longest_silence(heard: &[f32]) -> usize {
         heard
             .split(|sample| sample.abs() > 0.01)
@@ -2093,8 +2068,6 @@ mod tests {
             .collect()
     }
 
-    /// Data that arrives slower than it plays comes out in long stretches of
-    /// whole wave, not in scraps, and the wait is reported.
     #[test]
     #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
     fn a_track_slower_than_it_plays_sounds_in_long_stretches() {
@@ -2125,7 +2098,7 @@ mod tests {
             }
         }
         assert!(started);
-        // At the start, and each time it runs out.
+        // At the start, and each time it runs out
         assert!(waits >= 2 && waits == waited_out, "{waits}, {waited_out}");
         thread::sleep(Duration::from_millis(200));
         drop(stream);
@@ -2135,7 +2108,7 @@ mod tests {
         let sound = sounding_part(&heard);
         let gaps = gaps(sound, rate);
         assert!(gaps.len() <= 5, "{gaps:?}");
-        // Four seconds of it take ten to arrive, twice the wait at the start.
+        // Four seconds of it take ten to arrive, twice the wait at the start
         let first = gaps.iter().find(|len| **len > rate as usize / 2);
         let first = *first.expect("no long wait") as f64 / f64::from(rate);
         assert!(first > 8.0, "the first wait took {first} seconds: {gaps:?}");
@@ -2144,8 +2117,6 @@ mod tests {
         assert!(played * 100 > whole * 95, "{played} of {whole}");
     }
 
-    /// A next track with little of it arrived does not sound that between the
-    /// current one and the wait for the rest: the two meet at the wait.
     #[test]
     #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
     fn a_slow_next_track_waits_at_the_joint() {
@@ -2197,7 +2168,6 @@ mod tests {
         );
     }
 
-    /// A pause and a seek made while the track opens hold once it has.
     #[test]
     #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
     fn what_is_asked_while_a_track_opens_holds_once_it_has() {
@@ -2229,7 +2199,7 @@ mod tests {
         engine.pause();
         engine.seek(Duration::from_secs(5));
         assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
-        // Nor does a paused track count as waiting for its data.
+        // Nor does a paused track count as waiting for its data
         assert_no_event(&events);
         let position = engine.position();
         assert!(position >= Duration::from_secs(5), "{position:?}");
@@ -2241,8 +2211,6 @@ mod tests {
         engine.shutdown();
     }
 
-    /// While a read waits on the network, the engine does what it is asked
-    /// straight away.
     #[test]
     #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
     fn a_track_waiting_for_its_data_is_still_controlled() {
@@ -2252,7 +2220,7 @@ mod tests {
         let (engine, events) = Engine::spawn();
         engine.set_output(OutputSettings::new(Some(id.clone()), None));
 
-        // The header and some audio arrive quickly, the rest hardly at all.
+        // The header and some audio arrive quickly, the rest hardly at all
         let mut bytes = wav(rate, 2, rate * 60, 0);
         bytes.truncate(rate as usize);
         let load = engine.load(slow_start_track(bytes));
@@ -2261,7 +2229,7 @@ mod tests {
         assert_eq!(waiting.load, load);
         assert!(matches!(waiting.kind, EventKind::Buffering(true)));
 
-        // The next two take no time, and the wait is not reported as paused.
+        // The next two take no time, and the wait is not reported as paused
         engine.pause();
         let done = next_event(&events);
         assert!(matches!(done.kind, EventKind::Buffering(false)), "{done:?}");
@@ -2269,7 +2237,7 @@ mod tests {
         let waiting = next_event(&events);
         assert!(matches!(waiting.kind, EventKind::Buffering(true)));
 
-        // Moving to other settings means asking for data that will not come.
+        // Moving to other settings means asking for data that will not come
         engine.seek(Duration::from_secs(50));
         thread::sleep(Duration::from_millis(50));
         assert_eq!(engine.position(), Duration::from_secs(50));
@@ -2287,8 +2255,6 @@ mod tests {
         shutdown_within_deadline(engine);
     }
 
-    /// One wave split across three files comes out of the device as one wave,
-    /// with not a sample missing at the joints.
     #[test]
     #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
     fn tracks_of_one_rate_join_without_a_gap() {
@@ -2367,7 +2333,7 @@ mod tests {
         let wave = sounding_part(&heard);
         let missing = (rate as usize * 2).abs_diff(wave.len());
         assert!(missing < 128, "{} frames against {}", wave.len(), rate * 2);
-        // Away from the far ends, where the resampler ramps in and out.
+        // Away from the far ends, where the resampler ramps in and out
         let margin = rate as usize / 10;
         let wave = &wave[margin..wave.len() - margin];
         let departure = departure_from_one_wave(wave, rate);
@@ -2389,7 +2355,7 @@ mod tests {
         let a = engine.load(track(2));
         let b = engine.set_next(track(1));
         assert_eq!(next_event(&events).load, a);
-        // Within what the ring buffer holds ahead of the end.
+        // Within what the ring buffer holds ahead of the end
         thread::sleep(Duration::from_millis(1_800));
         assert!(events.is_empty());
         let sought = Instant::now();
@@ -2512,7 +2478,6 @@ mod tests {
         );
     }
 
-    /// The device's top rate holds up, resampled and with the buffers it takes.
     #[test]
     #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
     fn a_fixed_rate_at_the_top_of_the_device_range_plays() {
@@ -2536,8 +2501,6 @@ mod tests {
         assert_eq!(current_rate(&id), original);
     }
 
-    /// A next track at a rate that takes the device switching still follows,
-    /// through a new stream.
     #[test]
     #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
     fn a_next_track_at_another_rate_reopens_the_stream() {
@@ -2569,8 +2532,6 @@ mod tests {
         assert_eq!(current_rate(&id), rate);
     }
 
-    /// The current track ends while the next one is still waiting for its
-    /// data. That wait holds up the engine thread, and stopping ends it.
     #[test]
     #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
     fn stop_ends_the_wait_for_a_next_track_stuck_opening() {
@@ -2593,8 +2554,6 @@ mod tests {
         shutdown_within_deadline(engine);
     }
 
-    /// A next track that cannot open is not the current track's failure: it
-    /// fails when its turn comes.
     #[test]
     #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
     fn a_next_track_that_cannot_open_fails_at_its_turn() {
@@ -2707,7 +2666,7 @@ mod tests {
         RateRecord::note(&mut slot, "speakers", config(44_100), 96_000);
         assert!(RateRecord::take_if_other(&mut slot, Some(&"speakers")).is_none());
         assert!(RateRecord::take_if_other(&mut slot, None).is_none());
-        // The next device plays at its own rate; the old one still goes back.
+        // The next device plays at its own rate, and the old one still goes back
         let left = RateRecord::take_if_other(&mut slot, Some(&"headphones")).unwrap();
         assert_eq!(left.device, "speakers");
         assert!(slot.is_none());
@@ -2737,7 +2696,7 @@ mod tests {
         let (mut producer, consumer) = rtrb::RingBuffer::new(64);
         let shared = Arc::new(Shared::new());
         let sounding = Arc::new(AtomicBool::new(false));
-        // 1 kHz stereo: one frame per millisecond.
+        // 1 kHz stereo: one frame per millisecond
         let mut callback = output_callback(
             consumer,
             2,
@@ -2752,7 +2711,7 @@ mod tests {
         }
         let mut data = [1.0; 16];
 
-        // Four frames go out at 0 ms and play from 10 ms, so until 14 ms.
+        // Four frames go out at 0 ms and play from 10 ms, so until 14 ms
         callback(&mut data, &callback_info(0, 10));
         assert_eq!(data[..8], [0.5; 8]);
         assert_eq!(data[8..], [0.0; 8]);
@@ -2767,7 +2726,6 @@ mod tests {
         assert_eq!(data, [0.0; 16]);
     }
 
-    /// After a seek, what was buffered before it is dropped, not played.
     #[test]
     fn samples_before_a_seek_are_dropped() {
         let (mut producer, consumer) = rtrb::RingBuffer::new(64);
@@ -2789,7 +2747,7 @@ mod tests {
         callback(&mut data, &callback_info(0, 10));
         assert_eq!(data, [0.1, 0.1]);
 
-        // Seek: six samples were written so far; the next two are new.
+        // Six samples were written before the seek, and the next two are new
         flush_until.store(6, Ordering::Release);
         for sample in [0.9; 2] {
             producer.push(sample).unwrap();
@@ -2974,8 +2932,6 @@ mod tests {
         assert!(events.try_recv().is_err(), "unexpected event");
     }
 
-    /// Shuts the engine down on another thread and fails if the engine
-    /// thread does not finish.
     fn shutdown_within_deadline(mut engine: Engine) {
         let (done, finished) = mpsc::channel();
         thread::spawn(move || {
@@ -3003,7 +2959,7 @@ mod tests {
         engine.load(stalled_track());
         thread::sleep(Duration::from_millis(100));
         let replacement = engine.load(Track::new(Cursor::new(b"not audio".to_vec())));
-        // Exactly one failure: the replacement's, not the canceled track's.
+        // Exactly one failure: the replacement's, not the canceled track's
         let event = next_event(&events);
         assert_eq!(event.load, replacement);
         assert!(matches!(event.kind, EventKind::Failed(_)));

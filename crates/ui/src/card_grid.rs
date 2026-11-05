@@ -1,5 +1,3 @@
-//! Album and artist cards, and moving among rows of them.
-
 use gpui_kit::component::{ActiveTheme as _, v_flex};
 use gpui_kit::{
     App, Div, ElementId, InteractiveElement as _, IntoElement, ParentElement as _, Role,
@@ -9,18 +7,17 @@ use gpui_kit::{
 
 use crate::CoverArt;
 
-/// The narrowest a card goes, in rem.
+/// In rem.
 const CARD_MIN_WIDTH: f32 = 10.;
-/// The space between cards, in rem.
+/// In rem.
 const CARD_GAP: f32 = 1.;
-/// The space on either side of the cards, in rem.
+/// In rem.
 const INSET: f32 = 1.5;
 /// What a row of cards adds to its covers, in rem: their text and the space below.
 const CARD_TEXT_HEIGHT: f32 = 4.125;
-/// How many rows Page Up and Page Down move. Rows of songs and of cards differ
-/// too much in height for a page to be a number of them; this stays in view.
+/// Rows of songs and of cards differ too much in height for a page to be a number of them. This
+/// many stays in view.
 const PAGE_ROWS: usize = 4;
-/// The group of a card, for the hover outline over its cover.
 const CARD_GROUP: &str = "media-card";
 
 /// How many cards fit across a screen `width` rem wide.
@@ -37,7 +34,6 @@ pub fn card_row_height(width: f32, columns: usize) -> f32 {
     cover.max(0.) + CARD_TEXT_HEIGHT
 }
 
-/// A keyboard move among rows of items.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GridMotion {
     Up,
@@ -89,7 +85,6 @@ pub fn step<T: Clone + PartialEq>(
     }
 }
 
-/// A row of cards, which take equal shares of its width.
 pub fn card_row(columns: usize, cards: Vec<gpui_kit::AnyElement>) -> Div {
     let columns = u16::try_from(columns.max(1)).unwrap_or(u16::MAX);
     div()
@@ -102,7 +97,6 @@ pub fn card_row(columns: usize, cards: Vec<gpui_kit::AnyElement>) -> Div {
         .children(cards)
 }
 
-/// A cover with what it is of below it. The caller says what its clicks do.
 pub fn media_card(
     id: impl Into<ElementId>,
     cover: CoverArt,
@@ -112,7 +106,7 @@ pub fn media_card(
     is_focused: bool,
     cx: &App,
 ) -> Stateful<Div> {
-    // Selected, with or without focus, reads apart from hovered.
+    // Selected, with or without focus, reads apart from hovered
     let outline = if is_selected && is_focused {
         cx.theme().primary
     } else if is_selected {
@@ -158,7 +152,6 @@ pub fn media_card(
 mod tests {
     use super::*;
 
-    /// Two songs above two rows of cards, the second one short.
     fn rows() -> Vec<Vec<&'static str>> {
         vec![vec!["s1"], vec!["s2"], vec!["a1", "a2", "a3"], vec!["a4"]]
     }
@@ -234,7 +227,7 @@ mod tests {
     fn columns_follow_the_width_and_never_reach_zero() {
         assert_eq!(columns_for(0.), 1);
         assert_eq!(columns_for(10.), 1);
-        // 4 cards and 3 gaps need 43 rem, plus 3 of inset.
+        // 4 cards and 3 gaps need 43 rem, plus 3 of inset
         assert_eq!(columns_for(45.9), 3);
         assert_eq!(columns_for(46.), 4);
         assert_eq!(columns_for(55.), 4);

@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# Fails when a crate that must stay GPUI-independent gains a GPUI dependency.
 set -euo pipefail
 
 crates=(subsonic net client audio playback presence catalog config fuzzy hiphile-cli)
 root="$(cd "$(dirname "$0")/.." && pwd)"
 status=0
 for crate in "${crates[@]}"; do
-  # A path spec, since crates.io also has packages named like ours (`config`).
+  # A path spec, since crates.io also has packages named like ours (`config`)
   spec="path+file://$root/crates/$crate"
   if cargo tree -p "$spec" -e normal --prefix none | grep -qi '^gpui'; then
     echo "error: $crate depends on GPUI" >&2

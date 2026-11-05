@@ -23,10 +23,8 @@ const CLIENT_APP_ID: &str = "p1232089";
 const MOST_CANDIDATES: &str = "10";
 /// Asks for lyrics with times, which come in whatever form each song has.
 const KIND_TIMED: &str = "3";
-/// Asks for lyrics as text.
 const KIND_TEXT: &str = "1";
 
-/// Cheap to clone.
 #[derive(Clone)]
 pub struct Client {
     net: net::Client,
@@ -41,8 +39,6 @@ impl Client {
         }
     }
 
-    /// The best lyrics the service offers for the song `query` describes.
-    ///
     /// The service goes by the title as written, and may have only words under
     /// "A Song (feat. Someone)" and times under "A Song". So without times, it is
     /// asked again by the title without its version.
@@ -60,7 +56,6 @@ impl Client {
         }
     }
 
-    /// The best lyrics listed under `title` for the song `query` describes.
     async fn find_titled(&self, title: &str, query: &TrackQuery) -> Result<Lyrics, Error> {
         let mut candidates: Vec<(Rank, Candidate)> = self
             .search(title, query, KIND_TIMED)
@@ -80,8 +75,8 @@ impl Client {
         Ok(Lyrics::NotFound)
     }
 
-    /// What `candidate` comes to. Its words may need another request, which one
-    /// answer serves for all candidates: `texts` holds it once there is one.
+    /// Its words may need another request, which one answer serves for all candidates:
+    /// `texts` holds it once there is one.
     async fn lyrics_of(
         &self,
         candidate: Candidate,
@@ -238,8 +233,6 @@ mod tests {
     use super::response::fixture::{answer, song, song_of, xml_lyrics, xml_words};
     use super::*;
 
-    /// A service that answers each request with the next of `answers`, and
-    /// records the forms it was sent.
     fn service(answers: Vec<(u16, String)>) -> (Url, Arc<Mutex<Vec<String>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
@@ -294,7 +287,6 @@ mod tests {
         query().duration(Some(Duration::from_secs(200)))
     }
 
-    /// What is found when the service answers with `answers`, in order.
     fn find(query: &TrackQuery, answers: Vec<String>) -> Result<Lyrics, Error> {
         let (url, _) = service(answers.into_iter().map(|answer| (200, answer)).collect());
         block_on(client(url).find_lyrics(query))
@@ -382,7 +374,6 @@ mod tests {
         assert_eq!(plain_text(&found), "first\n\nsecond");
     }
 
-    /// Each part of a line and when it starts.
     fn parts(line: &crate::TimedLine) -> Vec<(&str, Duration)> {
         line.elements()
             .iter()
@@ -485,7 +476,7 @@ mod tests {
         let Lyrics::Timed(timed) = &found else {
             unreachable!()
         };
-        // The blank last line is when the last line sung ends.
+        // The blank last line is when the last line sung ends
         assert_eq!(timed.lines()[1].end(), Some(Duration::from_secs(3)));
         let requests = requests.lock().unwrap();
         assert_eq!(requests.len(), 2);
@@ -504,7 +495,7 @@ mod tests {
                     song("2", "A Song", "2", &times),
                 ]),
             ),
-            // There are no words for the first.
+            // There are no words for the first
             (200, answer(&[song("2", "A Song", "1", b"one\ntwo")])),
         ]);
 
@@ -572,7 +563,7 @@ mod tests {
             .artist(Some("An Artist"))
             .duration(Some(Duration::from_secs(240)));
         let times = xml_lyrics(&[("timed", "1000")]);
-        // Close enough in length to pass for the song on its own.
+        // Close enough in length to pass for the song on its own
         let other_title = lost("Lost Children", 241_000, "3", &times);
 
         let words = lost("Lost", 0, "1", b"words");
@@ -661,7 +652,7 @@ mod tests {
             answer(&[song])
         };
 
-        // Each is asked for twice, with its version and without.
+        // Each is asked for twice, with its version and without
         let twice = |millis| vec![of_length(millis), of_length(millis)];
         let found = find(&query, twice(203_000)).unwrap();
         assert_eq!(plain_text(&found), "words");

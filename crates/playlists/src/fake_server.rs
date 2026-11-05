@@ -1,6 +1,3 @@
-//! A server for tests to read and save playlists on, which can hold requests
-//! back or refuse them to set up what a real one does only sometimes.
-
 use std::collections::HashSet;
 use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
@@ -11,7 +8,6 @@ use serde_json::{Value, json};
 
 const WRITES: [&str; 3] = ["createPlaylist", "updatePlaylist", "deletePlaylist"];
 
-/// A request as the server took it, from its URL or its form.
 #[derive(Clone, Debug)]
 pub(crate) struct Request {
     pub(crate) verb: String,
@@ -102,7 +98,6 @@ impl FakeServer {
         self.state.0.lock().unwrap().refused.remove(method);
     }
 
-    /// The requests for `method` so far.
     pub(crate) fn requests(&self, method: &str) -> Vec<Request> {
         let state = self.state.0.lock().unwrap();
         state
@@ -113,7 +108,6 @@ impl FakeServer {
             .collect()
     }
 
-    /// The songs the server has for the playlist.
     pub(crate) fn songs(&self, playlist: &str) -> Vec<String> {
         let state = self.state.0.lock().unwrap();
         state
@@ -167,7 +161,7 @@ fn serve(mut stream: TcpStream, shared: &Shared) {
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
-    // A request given up on has nobody to answer.
+    // A request given up on has nobody to answer
     stream.write_all(response.as_bytes()).ok();
 }
 

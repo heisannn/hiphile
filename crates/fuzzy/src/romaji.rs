@@ -1,17 +1,11 @@
-//! One spelling for every way of writing a reading in Latin letters, so that
-//! what is typed and what a title reads as meet whichever system each follows.
-
-/// Whether `c` can be part of a reading: a Latin letter, a digit or kana.
 pub(crate) fn is_readable(c: char) -> bool {
     c.is_ascii_alphanumeric() || is_kana(c)
 }
 
-/// Whether `c` is hiragana, katakana or the mark that lengthens a vowel.
 pub(crate) fn is_kana(c: char) -> bool {
     matches!(c, 'ぁ'..='ゖ' | 'ァ'..='ヺ' | 'ー')
 }
 
-/// Katakana in place of hiragana, with everything else as it is.
 pub(crate) fn to_katakana(c: char) -> char {
     if matches!(c, 'ぁ'..='ゖ') {
         char::from_u32(c as u32 + 0x60).unwrap_or(c)
@@ -20,7 +14,6 @@ pub(crate) fn to_katakana(c: char) -> char {
     }
 }
 
-/// The Hepburn romaji of a syllable written as one kana.
 fn syllable(kana: char) -> Option<&'static str> {
     Some(match kana {
         'ア' | 'ァ' => "a",
@@ -97,7 +90,6 @@ fn syllable(kana: char) -> Option<&'static str> {
     })
 }
 
-/// The Hepburn romaji of a syllable written as a kana and a small one.
 fn digraph(kana: char, small: char) -> Option<&'static str> {
     Some(match (kana, small) {
         ('キ', 'ャ') => "kya",
@@ -161,8 +153,7 @@ fn digraph(kana: char, small: char) -> Option<&'static str> {
     })
 }
 
-/// Kana as Hepburn romaji, leaving Latin letters and digits as they are. The
-/// small ッ and the mark ー add nothing: [`canonical`] folds what they spell.
+/// The small ッ and the mark ー add nothing: [`canonical`] folds what they spell.
 fn hepburn(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars().map(to_katakana).peekable();
@@ -192,7 +183,6 @@ fn lengthens(last: u8, vowel: u8) -> bool {
     )
 }
 
-/// Adds to a spelling, folding doubled consonants and long vowels.
 fn push_folded(out: &mut Vec<u8>, c: u8) {
     if let Some(&last) = out.last() {
         let doubled = c == last && !is_vowel(c) && !c.is_ascii_digit();
@@ -213,7 +203,6 @@ pub(crate) fn canonical(romaji: &str) -> String {
     while ix < bytes.len() {
         let next = bytes.get(ix + 1).copied();
         let after = bytes.get(ix + 2).copied();
-        // What this part of the spelling becomes, and how much of it that takes.
         let (spelled, taken): (&[u8], usize) = match (bytes[ix], next, after) {
             (b's', Some(b'h'), Some(b'i')) => (b"si", 3),
             (b's', Some(b'h'), Some(b'a')) => (b"sya", 3),
@@ -226,7 +215,7 @@ pub(crate) fn canonical(romaji: &str) -> String {
             (b'c', Some(b'h'), Some(b'e')) => (b"tye", 3),
             (b'c', Some(b'h'), Some(b'o')) => (b"tyo", 3),
             (b'c', Some(b'y'), _) => (b"ty", 2),
-            // The first of cch, as in maccha for matcha.
+            // The first of cch, as in maccha for matcha
             (b'c', Some(b'c'), _) => (b"", 1),
             (b't', Some(b's'), Some(b'u')) => (b"tu", 3),
             (b'f', Some(b'u'), _) => (b"hu", 2),
@@ -286,7 +275,7 @@ pub(crate) fn finished_ways(spelled: &str) -> Vec<String> {
         ("c", &["ti", "ty"]),
         ("j", &["zi", "zy"]),
         ("f", &["hu"]),
-        // しんぶん, typed as shimbun.
+        // しんぶん, typed as shimbun
         ("m", &["nb", "np", "nm"]),
     ];
     UNFINISHED
@@ -386,7 +375,7 @@ mod tests {
     fn latin_letters_and_digits_stay_and_the_rest_goes() {
         assert_eq!(spelling("Mステ2"), "msute2");
         assert_eq!(spelling("夜"), "");
-        // Digits may double, unlike consonants.
+        // Digits may double, unlike consonants
         assert_eq!(spelling("1100"), "1100");
     }
 

@@ -38,28 +38,21 @@ use crate::{
     SelectLeft, SelectRight, ShowInLibrary,
 };
 
-/// How many of the songs played last show.
 const RECENT_SONGS: usize = 8;
-/// How many of the albums played most to fetch, for the widest window.
+/// How many to fetch, for the widest window.
 const MOST_PLAYED: u32 = 12;
-/// How many rows of the albums added last show.
 const NEW_ALBUM_ROWS: usize = 2;
-/// How many of the albums added last to fetch, for the widest window.
+/// How many to fetch, for the widest window.
 const NEW_ALBUMS: u32 = 24;
-/// Pixel size requested for an album card's cover, the same as the library's
-/// album cover, so that opening the album needs no second image.
+/// The same as the library's album cover, so that opening the album needs no
+/// second image.
 const CARD_COVER_PIXELS: u32 = 256;
-/// Pixel size requested for a song row's cover, the same as the player's.
+/// The same as the player's.
 const ROW_COVER_PIXELS: u32 = 48;
-/// How long to wait before picking again after a pick that went wrong. A pick
-/// takes the server's outside service several seconds per album, and windows
-/// can come to the front often.
+/// A pick takes the server's outside service several seconds per album, and
+/// windows can come to the front often.
 const RECOMMENDED_RETRY_AFTER: Duration = Duration::from_secs(10 * 60);
 
-/// The home screen: albums to try, the songs played last, the albums played
-/// most and the albums added last. Owns those lists, the selection among them,
-/// and the focus.
-///
 /// The lists come from the server, which alone knows every play. An item stays
 /// on show while a reload that replaces it is on its way or fails.
 ///
@@ -97,20 +90,14 @@ pub struct Home {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Part {
     RecommendedHeading,
-    /// A spinner or a failure.
     RecommendedStatus,
     RecentHeading,
-    /// A spinner or a failure.
     RecentStatus,
-    /// The song at this position.
     Song(usize),
     MostPlayedHeading,
-    /// A spinner or a failure.
     MostPlayedStatus,
     NewAlbumsHeading,
-    /// A spinner, a failure, or word of there being no albums.
     NewAlbumsStatus,
-    /// The albums at these positions on this shelf.
     AlbumRow(AlbumShelf, Range<usize>),
 }
 
@@ -118,7 +105,7 @@ impl Home {
     pub fn new(session: session::Session, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle().tab_stop(true);
         let subscriptions = vec![
-            // Focus changes the selection treatment.
+            // Focus changes the selection treatment
             cx.on_focus(&focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&focus, window, |_, _, cx| cx.notify()),
             cx.observe_window_activation(window, |this, window, cx| {
@@ -166,7 +153,7 @@ impl Home {
                 Some(catalog) => {
                     cx.background_spawn(async move { catalog.recommended(&user) })
                         .await
-                        // The albums can be picked again.
+                        // The albums can be picked again
                         .ok()
                         .flatten()
                 }
@@ -288,7 +275,7 @@ impl Home {
         };
         let user = self.session.username().to_owned();
         let (day, albums) = (day.to_owned(), albums.to_vec());
-        // Failing to keep them only means another pick next time.
+        // Failing to keep them only means another pick next time
         cx.background_spawn(async move { catalog.put_recommended(&user, &day, &albums).ok() })
             .detach();
     }
@@ -329,7 +316,6 @@ impl Home {
         self.renew_recommended(cx);
     }
 
-    /// Asks the server again what was played most.
     fn reload_most_played(&mut self, cx: &mut Context<Self>) {
         self.most_played.begin();
         let client = self.session.client().clone();
@@ -348,7 +334,6 @@ impl Home {
         cx.notify();
     }
 
-    /// Asks the server again what was played last, as after a play.
     fn reload_recently_played(&mut self, cx: &mut Context<Self>) {
         self.recent.begin();
         let client = self.session.client().clone();
@@ -367,8 +352,8 @@ impl Home {
         cx.notify();
     }
 
-    /// Takes in a load of what was played last. Songs on show stay there when
-    /// the load missed some of the albums, as it may have missed the latest.
+    /// Songs on show stay there when the load missed some of the albums, as it may
+    /// have missed the latest.
     fn finish_recently_played(&mut self, result: Result<RecentlyPlayed, SharedString>) {
         match result {
             Ok(found) if !found.complete && matches!(self.recent, Shelf::Loaded(_)) => {}
@@ -376,7 +361,6 @@ impl Home {
         }
     }
 
-    /// Asks the server again what was added last.
     fn reload_new_albums(&mut self, cx: &mut Context<Self>) {
         self.new_albums.begin();
         let client = self.session.client().clone();
@@ -395,7 +379,6 @@ impl Home {
         cx.notify();
     }
 
-    /// Marks `song` in the list, or clears the mark.
     pub fn set_now_playing(&mut self, song: Option<SongId>, playing: bool, cx: &mut Context<Self>) {
         let now_playing = NowPlaying::new(song, playing);
         if self.now_playing != now_playing {
@@ -404,9 +387,8 @@ impl Home {
         }
     }
 
-    /// The children of the scrolling list. A shelf other than the new albums
-    /// with nothing to show goes away, as a server with no plays or albums yet
-    /// has nothing to say about it.
+    /// A shelf other than the new albums with nothing to show goes away, as a server
+    /// with no plays or albums yet has nothing to say about it.
     fn parts(&self) -> Vec<Part> {
         let mut parts = Vec::new();
         match &self.recommended {
@@ -495,7 +477,7 @@ impl Home {
             return;
         };
         if let Some(ix) = self.part_of(&item, &parts) {
-            // Going up a shelf brings its heading into view too.
+            // Going up a shelf brings its heading into view too
             let heading_above = ix > 0
                 && matches!(motion, Motion::Up | Motion::PageUp | Motion::First)
                 && matches!(
@@ -512,7 +494,6 @@ impl Home {
         cx.notify();
     }
 
-    /// Where in `parts` the item shows.
     fn part_of(&self, item: &Item, parts: &[Part]) -> Option<usize> {
         parts.iter().position(|part| match (part, item) {
             (Part::Song(ix), Item::Song(id)) => self
@@ -548,7 +529,6 @@ impl Home {
         self.recent.items().iter().position(|song| song.id() == id)
     }
 
-    /// Plays the songs on show, from the one at `ix`.
     fn play_from(&self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         if let Shelf::Loaded(songs) = &self.recent
             && ix < songs.len()
@@ -599,7 +579,6 @@ impl Home {
         }
     }
 
-    /// The selected song on its own, when a song is what's selected.
     fn selected_song(&self) -> Option<Arc<[Song]>> {
         let Some(Item::Song(id)) = self.selection_on_screen() else {
             return None;
@@ -660,7 +639,6 @@ impl Home {
         }
     }
 
-    /// Adds the selected song or album to the favorites, or takes it out.
     fn toggle_favorite(&self, window: &mut Window, cx: &mut Context<Self>) {
         let favorite = match self.selection_on_screen() {
             Some(Item::Album(shelf, id)) => self
@@ -700,8 +678,7 @@ impl Home {
         });
     }
 
-    /// Records how many cards fit when the width changed. Runs while the
-    /// frame is prepainted, so a change takes effect in the next one.
+    /// Runs while the frame is prepainted, so a change takes effect in the next one.
     fn observe_width(
         this: &gpui_kit::WeakEntity<Self>,
         width: gpui_kit::Pixels,
@@ -1046,7 +1023,7 @@ impl Render for Home {
             }))
             .child(
                 v_flex()
-                    // An element with a scroll handle lists no bounds here;
+                    // An element with a scroll handle lists no bounds here:
                     // the handle has them.
                     .on_children_prepainted(move |_, window, cx| {
                         Home::observe_width(&owner, scroll.bounds().size.width, window, cx);
@@ -1072,7 +1049,6 @@ fn add_selection_command(playlist: Option<&PlaylistId>) -> Box<dyn gpui_kit::Act
     })
 }
 
-/// What a load of the songs played last found.
 struct RecentlyPlayed {
     songs: Vec<Song>,
     /// Whether every album asked about came through.

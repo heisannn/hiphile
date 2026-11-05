@@ -1,15 +1,11 @@
-//! Channel mapping and sample rate conversion between decoder and device.
-
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{Fft, FixedSync, Indexing, Resampler as _};
 
 use crate::Error;
 use crate::output::Spec;
 
-/// Frames per resampler chunk.
 const RESAMPLE_CHUNK: usize = 1024;
 
-/// Converts decoded samples from the source spec to the output spec.
 pub(crate) struct Converter {
     source: Spec,
     output: Spec,
@@ -33,13 +29,11 @@ impl Converter {
             .transpose()
     }
 
-    /// Forgets buffered input, for a jump to another point in the track.
     pub(crate) fn reset(&mut self) -> Result<(), Error> {
         self.resampler = Self::resampler(self.source, self.output)?;
         Ok(())
     }
 
-    /// Appends the converted form of `input` to `out`.
     pub(crate) fn process(&mut self, input: &[f32], out: &mut Vec<f32>) -> Result<(), Error> {
         let from = usize::from(self.source.channels);
         let to = usize::from(self.output.channels);
@@ -72,8 +66,6 @@ impl Converter {
     }
 }
 
-/// Maps interleaved frames from `from` channels to `to` channels.
-///
 /// Mono is copied to every output channel and anything is averaged down to
 /// mono. Otherwise channels are kept in order: extra output channels are
 /// silent and extra source channels are dropped, which suits stereo music on
@@ -151,7 +143,6 @@ impl RateConverter {
         Ok(())
     }
 
-    /// How many output frames the input so far comes to.
     fn expected_frames(&self) -> u64 {
         (self.frames_in as f64 * self.ratio).round() as u64
     }
@@ -266,7 +257,7 @@ mod tests {
         let mut converter = Converter::new(source, output).unwrap();
         let input = sine(44_100, 44_100);
         let mut out = Vec::new();
-        // Uneven pushes, as packets of different sizes would arrive.
+        // Uneven pushes, as packets of different sizes would arrive
         for chunk in input.chunks(1_000) {
             converter.process(chunk, &mut out).unwrap();
         }
@@ -317,7 +308,7 @@ mod tests {
         let mut out = Vec::new();
         converter.process(&sine(96_000, 96_000), &mut out).unwrap();
         converter.finish(&mut out).unwrap();
-        // Skip the edges, where the filter ramps in and out.
+        // Skip the edges, where the filter ramps in and out
         let middle = &out[4_800..43_200];
         let peak = middle
             .iter()

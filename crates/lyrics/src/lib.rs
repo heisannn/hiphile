@@ -1,9 +1,3 @@
-//! Finds a song's lyrics, asking one provider after another.
-//!
-//! A [`Provider`] answers for one service. A [`Finder`] asks its providers in
-//! order of preference and settles for the first with times, or else the best of
-//! what they found.
-
 mod matching;
 mod model;
 pub mod musixmatch;
@@ -19,15 +13,14 @@ pub use model::{Lyrics, PlainLyrics, TimedLine, TimedLyrics, TimedTextElement};
 #[cfg(feature = "test-support")]
 pub use musixmatch::lyrics_from_richsync_body;
 
-/// What separates the artists of a song that has several.
 const ARTIST_SEPARATORS: [char; 5] = [',', '&', '，', '＆', '、'];
 
-/// The most names to ask one provider about, so that a song with a long list of
-/// artists does not take a long list of requests.
+/// Per provider, so that a song with a long list of artists does not take a long
+/// list of requests.
 const MOST_ARTISTS_ASKED_ABOUT: usize = 6;
 
-/// Why looking for lyrics failed. Nothing here carries a token: a request's URL
-/// may hold one, and [`net::Error`] leaves that out.
+/// Nothing here carries a token: a request's URL may hold one, and [`net::Error`]
+/// leaves that out.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
@@ -48,7 +41,6 @@ pub enum Error {
 }
 
 impl Error {
-    /// Whether the service did not accept a token.
     fn is_unauthorized(&self) -> bool {
         match self {
             Self::HttpStatus(401) => true,
@@ -58,8 +50,6 @@ impl Error {
     }
 }
 
-/// What to look for, as far as the song's details go. Each detail left out is
-/// left out of the request.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TrackQuery {
     title: String,
@@ -128,13 +118,12 @@ impl TrackQuery {
     }
 }
 
-/// A service that finds lyrics. An error says the service could not tell, while
-/// [`Lyrics::NotFound`] says it has none.
+/// An error says the service could not tell, while [`Lyrics::NotFound`] says it has
+/// none.
 pub trait Provider: Send + Sync {
     fn find_lyrics<'a>(&'a self, query: &'a TrackQuery) -> BoxFuture<'a, Result<Lyrics, Error>>;
 }
 
-/// Asks providers in order of preference. Cheap to clone.
 #[derive(Clone)]
 pub struct Finder {
     providers: Arc<[Box<dyn Provider>]>,
@@ -182,8 +171,8 @@ impl Finder {
     }
 }
 
-/// What `provider` has for the first of `queries` it knows. A failure ends the
-/// asking, as the next query would most likely fail in the same way.
+/// A failure ends the asking, as the next query would most likely fail in the
+/// same way.
 async fn first_found(provider: &dyn Provider, queries: &[TrackQuery]) -> Result<Lyrics, Error> {
     for query in queries {
         match provider.find_lyrics(query).await? {
@@ -214,7 +203,6 @@ mod tests {
     use super::*;
     use crate::model::{RawLine, timed_lines};
 
-    /// Answers with `answer` and counts how often it was asked.
     struct Fixed {
         answer: Mutex<Option<Result<Lyrics, Error>>>,
         asked: Arc<Mutex<usize>>,
@@ -257,7 +245,6 @@ mod tests {
 
     type Asked = Arc<Mutex<Vec<Option<String>>>>;
 
-    /// Knows songs by one artist only, and records who it was asked about.
     struct KnowsArtist {
         artist: &'static str,
         lyrics: Lyrics,

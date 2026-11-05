@@ -12,19 +12,15 @@ use gpui_kit::{
 };
 use url::Url;
 
-/// How often the progress of a download shows.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 
-/// Where the dictionaries that read kanji have got to.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ReadingsState {
-    /// The user turned the search by romaji off.
     Off,
     Checking,
     /// As a fraction from 0 to 1.
     Downloading(f32),
     Ready(PathBuf),
-    /// What went wrong, for Settings to show with a way to try again.
     Failed(SharedString),
 }
 
@@ -32,7 +28,6 @@ pub enum ReadingsState {
 /// read with them, or for lack of them, is out of date.
 pub struct ReadingsChanged;
 
-/// Emitted when getting the dictionaries failed, with what went wrong.
 pub struct ReadingsFailed(pub SharedString);
 
 /// The dictionaries that read kanji: fetched in the background the first time
@@ -67,7 +62,6 @@ pub fn readings(cx: &App) -> Option<Entity<Readings>> {
         .map(|readings| readings.0.clone())
 }
 
-/// Where the dictionaries that read kanji are, when they are there.
 pub(crate) fn readings_dir(cx: &App) -> Option<PathBuf> {
     match readings(cx)?.read(cx).state() {
         ReadingsState::Ready(dir) => Some(dir.clone()),
@@ -110,7 +104,7 @@ impl Readings {
         if is_on {
             this.fetch(cx);
         } else {
-            // Off may have been chosen in the file, or as a download finished.
+            // Off may have been chosen in the file, or as a download finished
             this.remove(cx);
         }
         this
@@ -143,7 +137,6 @@ impl Readings {
         }
     }
 
-    /// Tries again after a failure.
     pub fn retry(&mut self, cx: &mut Context<Self>) {
         if matches!(self.state, ReadingsState::Failed(_)) {
             self.fetch(cx);
@@ -163,7 +156,6 @@ impl Readings {
         cx.notify();
     }
 
-    /// Uses the dictionaries on disk, or downloads them if there are none.
     fn fetch(&mut self, cx: &mut Context<Self>) {
         let Some(root) = self.root.clone() else {
             let error = format!(
@@ -277,8 +269,6 @@ impl Drop for CancelOnDrop {
     }
 }
 
-/// Downloads the dictionaries and installs them as they arrive, showing how far
-/// along that is.
 async fn download(
     this: &WeakEntity<Readings>,
     net: net::Client,
@@ -313,7 +303,6 @@ async fn download(
     }
 }
 
-#[allow(clippy::cast_precision_loss, reason = "a fraction for a progress bar")]
 fn fraction_of(read: u64, total: u64) -> f32 {
     if total == 0 {
         return 0.;

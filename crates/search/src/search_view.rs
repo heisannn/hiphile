@@ -17,13 +17,13 @@ use crate::results::{Hit, Results, SearchLibrary};
 #[cfg(test)]
 mod tests;
 
-/// How wide the palette is, in rem.
+/// In rem.
 const WIDTH: f32 = 40.;
-/// How tall its list may get, in rem.
+/// In rem.
 const MAX_HEIGHT: f32 = 26.;
 
-/// What the user chose in the palette, for the app shell to carry out: the
-/// palette floats above the workspace, so actions from it would not reach there.
+/// For the app shell to carry out: the palette floats above the workspace, so actions from it
+/// would not reach there.
 #[derive(Clone, Debug)]
 pub enum SearchEvent {
     ShowArtist(ArtistId),
@@ -39,21 +39,17 @@ enum SavedLibrary {
     Failed(SharedString),
 }
 
-/// The palette that finds artists, albums and songs anywhere in the saved
-/// library. Owns what is found; the query and the highlight are in `state`.
 pub struct Search {
     session: session::Session,
     state: Entity<CommandState>,
-    /// What is searched, which stays in use while a newer reading is under way.
+    /// Stays in use while a newer reading is under way.
     library: SavedLibrary,
     is_reading: bool,
-    /// Whether the library changed during the reading under way.
     is_reading_out_of_date: bool,
     /// The window it opened in, to show a first reading in. `None` until then.
     window: Option<AnyWindowHandle>,
     results: Arc<Results>,
-    /// Whether anything has been asked, so an empty palette does not say that
-    /// nothing matched.
+    /// So an empty palette does not say that nothing matched.
     has_query: bool,
     _load_task: Task<()>,
     _search_task: Task<()>,
@@ -83,7 +79,6 @@ impl Search {
         }
     }
 
-    /// Opens the palette over the window, empty.
     pub fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.window = Some(window.window_handle());
         if matches!(self.library, SavedLibrary::Unread | SavedLibrary::Failed(_)) {
@@ -105,10 +100,9 @@ impl Search {
         cx.notify();
     }
 
-    /// Reads the library again after a sync changed it or dictionaries came or
-    /// went, unless it was never read. What is found in the meantime comes from
-    /// what was read before, and the palette may be open on it, so that stays
-    /// until the new reading is done.
+    /// Reads the library again, unless it was never read. What is found in the meantime comes from
+    /// what was read before, and the palette may be open on it, so that stays until the new reading
+    /// is done.
     pub fn library_changed(&mut self, cx: &mut Context<Self>) {
         if !matches!(self.library, SavedLibrary::Unread) {
             self.read_library(cx);
@@ -128,7 +122,6 @@ impl Search {
         let book = self.session.reading_book(cx);
         let state = self.state.clone();
         let window = self.window;
-        // With a library to search, there is nothing to wait for.
         let shows_spinner = !matches!(self.library, SavedLibrary::Read(_));
         self._load_task = cx.spawn(async move |this, cx| {
             if shows_spinner {
@@ -184,7 +177,6 @@ impl Search {
         };
         let library = library.clone();
         let query = query.to_owned();
-        // A newer query replaces one still under way.
         self._search_task = cx.spawn(async move |this, cx| {
             let results = cx
                 .background_spawn(async move { library.search(&query) })
@@ -233,7 +225,6 @@ impl Search {
     }
 }
 
-/// Shows or stops the spinner of the palette, in `window` if it ever opened.
 fn show_spinner(
     state: &Entity<CommandState>,
     window: Option<AnyWindowHandle>,
@@ -249,8 +240,6 @@ fn show_spinner(
     }
 }
 
-/// A row of the palette: what it is, and what tells it apart from another of the
-/// same name.
 fn item(name: impl Into<SharedString>, detail: Option<String>) -> CommandItem {
     let name = name.into();
     let detail: Option<SharedString> = detail.map(Into::into);

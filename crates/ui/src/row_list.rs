@@ -4,8 +4,7 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled as _, UniformListScrollHandle, div, uniform_list,
 };
 
-/// A long list with its scrollbar, which draws the rows in view. The caller
-/// says how much room it takes.
+/// The caller says how much room it takes.
 ///
 /// `label` names the list for a screen reader. `render_row` is given a row's
 /// position, and may run whenever the list measures or redraws.

@@ -1,8 +1,4 @@
-//! Feature: browsing albums and their songs.
-//!
-//! Shows the server's library saved on this computer at once and brings it
-//! up to date in the background. Dispatches `actions::PlaySongs`,
-//! `actions::EnqueueSongs` and `actions::ShowArtist`; the app shell routes them.
+//! The app shell routes the `actions` this feature dispatches.
 
 mod filter;
 mod library_view;
@@ -12,9 +8,7 @@ use ui::list_navigation::bind_list_navigation;
 
 pub use library_view::{Library, LibraryEvent, SyncStage};
 
-/// Key context of the focused album list.
 pub const ALBUMS_CONTEXT: &str = "LibraryAlbums";
-/// Key context of the focused song list.
 pub const SONGS_CONTEXT: &str = "LibrarySongs";
 const LIBRARY_CONTEXT: &str = "Library";
 
@@ -23,21 +17,12 @@ actions!(
     [
         /// Albums: move to the album's songs. Songs: play from the selection.
         Open,
-        /// Albums: plays the selected album.
         Play,
-        /// Albums: queue the album right after the current song. Songs: the
-        /// selected song.
         PlayNext,
-        /// Albums: queue the album after every other song. Songs: the
-        /// selected song.
         AddToQueue,
-        /// Songs: return to the album list.
         Back,
         FocusFilter,
-        /// Fetches the whole library from the server again.
         Refresh,
-        /// Albums: asks which playlist to add the album to. Songs: the
-        /// selected song.
         AddToPlaylist
     ]
 );
@@ -49,7 +34,7 @@ struct AddAlbumToPlaylist {
     playlist: Option<subsonic::PlaylistId>,
 }
 
-/// Registers key bindings. Call before building the menu bar.
+/// Call before building the menu bar.
 pub fn init(cx: &mut App) {
     let (find, refresh, add_to_playlist, play) = if cx.platform_info().is_mac() {
         ("cmd-f", "cmd-r", "cmd-p", "cmd-enter")

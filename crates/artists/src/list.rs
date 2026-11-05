@@ -3,19 +3,17 @@ use std::collections::HashMap;
 use fuzzy::{Index, Speller};
 use subsonic::{Album, Artist, ArtistId, CoverArtId, Song};
 
-/// `artists`, to find by their name.
 pub(crate) fn artist_index(artists: &[Artist], speller: Option<&dyn Speller>) -> Index {
     Index::new(artists.iter().map(|artist| [artist.name()]), speller)
 }
 
-/// The artists that `albums` name, by name, to show until the server says.
 pub(crate) fn artists_of_albums(albums: &[Album]) -> Vec<Artist> {
     let mut found: HashMap<&ArtistId, (&str, Option<&CoverArtId>, u32)> = HashMap::new();
     for album in albums {
         let (Some(id), Some(name)) = (album.artist_id(), album.artist()) else {
             continue;
         };
-        // Tags can name an artist with nothing but spaces: the server knows better.
+        // Tags can name an artist with nothing but spaces: the server knows better
         if name.trim().is_empty() {
             continue;
         }
@@ -32,8 +30,6 @@ pub(crate) fn artists_of_albums(albums: &[Album]) -> Vec<Artist> {
     artists
 }
 
-/// `songs` album by album in track order, as the songs of an artist who has no
-/// albums of their own show.
 pub(crate) fn album_by_album(mut songs: Vec<Song>) -> Vec<Song> {
     songs.sort_by_cached_key(|song| {
         let album = song.album().unwrap_or_default().to_lowercase();
@@ -42,7 +38,7 @@ pub(crate) fn album_by_album(mut songs: Vec<Song>) -> Vec<Song> {
     songs
 }
 
-/// `albums` by the artist, newest first; those without a year come last.
+/// Those without a year come last.
 pub(crate) fn newest_first(mut albums: Vec<Album>) -> Vec<Album> {
     albums.sort_by_key(|album| std::cmp::Reverse(album.year()));
     albums

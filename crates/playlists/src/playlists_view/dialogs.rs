@@ -1,6 +1,3 @@
-//! The dialogs that create, rename and delete a playlist, and the menu that
-//! chooses one from the keyboard.
-
 use std::sync::Arc;
 
 use gpui_kit::component::{
@@ -20,24 +17,22 @@ use crate::writes::Write;
 /// and from the screen, as the screen on show may be another feature's.
 pub(super) struct Chooser {
     pub(super) menu: Entity<PopupMenu>,
-    /// Where focus returns when it closes.
     previous_focus: Option<FocusHandle>,
     _dismissal: Subscription,
 }
 
 impl Playlists {
-    /// Asks for a name and creates a playlist starting with `songs`.
     pub fn open_new_playlist(
         &mut self,
         songs: Arc<[Song]>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Its shortcut still works over a dialog.
+        // Its shortcut still works over a dialog
         if window.has_active_dialog(cx) {
             return;
         }
-        // Before the dialog, which returns focus to where it was opened from.
+        // Before the dialog, which returns focus to where it was opened from
         self.close_chooser(window, cx);
         let form = self.new_playlist_form(songs, window, cx);
         open_name_dialog("New Playlist", form, window, cx);
@@ -83,7 +78,7 @@ impl Playlists {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // A list on its way would not have the new playlist.
+        // A list on its way would not have the new playlist
         self.edits += 1;
         let client = self.session.client().clone();
         self._create_task = cx.spawn_in(window, async move |this, cx| {
@@ -119,13 +114,13 @@ impl Playlists {
         cx: &mut Context<Self>,
     ) {
         let id = created.playlist().id().clone();
-        // Without a list, the one on its way has the new playlist.
+        // Without a list, the one on its way has the new playlist
         if let Some(mut playlists) = self.loaded_list().map(|list| list.to_vec()) {
             playlists.push(created.playlist().clone());
             self.set_list(playlists, window, cx);
         }
         if song_count == 0 {
-            // It may be hidden by the filter, which it should not stay under.
+            // It may be hidden by the filter, which it should not stay under
             self.filter
                 .update(cx, |filter, cx| filter.set_value("", window, cx));
             self.apply_filter(cx);

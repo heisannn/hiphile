@@ -39,14 +39,12 @@ struct Fields {
     cover_art: Option<CoverArtId>,
     /// Seconds.
     duration: Option<u64>,
-    /// Bytes in the original file.
     size: Option<u64>,
     suffix: Option<String>,
     content_type: Option<String>,
     sampling_rate: Option<u32>,
     bit_depth: Option<u32>,
     channel_count: Option<u32>,
-    /// When the user last played it, in RFC 3339.
     played: Option<String>,
 }
 

@@ -43,10 +43,10 @@ use crate::{
     PLAYLISTS_CONTEXT, Play, PlayNext, ROOT_CONTEXT, Remove, Rename, SONGS_CONTEXT, ShowAlbum,
 };
 
-/// Pixel size requested for the detail cover. The renderer aliases an image
-/// drawn at less than half its size, so this stays close to the on-screen size.
+/// The renderer aliases an image drawn at less than half its size, so this stays
+/// close to the on-screen size.
 const COVER_PIXELS: u32 = 256;
-/// Pixel size requested for a song row's cover, the same as the player's.
+/// The same as the player's.
 const ROW_COVER_PIXELS: u32 = 48;
 
 pub enum PlaylistsEvent {
@@ -59,15 +59,10 @@ pub enum PlaylistsEvent {
     LeftPlaylist(PlaylistId),
 }
 
-/// The server's playlists beside the songs of the selected one. Owns the
-/// playlists, the selection, both lists' focus, and the writes on their way
-/// to the server.
 pub struct Playlists {
     session: session::Session,
     list: List,
-    /// Why updating a list already on show failed.
     refresh_error: Option<SharedString>,
-    /// The loaded playlists, ready to search.
     index: Arc<fuzzy::Index>,
     /// Positions in the loaded playlists that match the filter, the best first.
     visible: Arc<Vec<usize>>,
@@ -82,7 +77,6 @@ pub struct Playlists {
     songs_focus: FocusHandle,
     list_scroll: UniformListScrollHandle,
     songs_scroll: UniformListScrollHandle,
-    /// The split between the list and the detail.
     panes: Entity<ResizableState>,
     writes: WriteQueue,
     /// The playlist of the write under way.
@@ -142,13 +136,13 @@ impl Playlists {
                 InputEvent::PressEnter { .. } => this.list_focus.focus(window, cx),
                 _ => {}
             }),
-            // Focus changes the selection treatment of the rows.
+            // Focus changes the selection treatment of the rows
             cx.on_focus(&list_focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&list_focus, window, |_, _, cx| cx.notify()),
             cx.on_focus(&songs_focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&songs_focus, window, |_, _, cx| cx.notify()),
         ];
-        // The last session's choices must not outlive it.
+        // The last session's choices must not outlive it
         actions::set_playlist_choices(Vec::new(), cx);
         let mut this = Self {
             session,
@@ -210,7 +204,7 @@ impl Playlists {
                 .await;
             this.update_in(cx, |this, window, cx| match result {
                 // A list from before the latest change would undo it on
-                // screen; the save of that change fetches another.
+                // screen, and the save of that change fetches another.
                 Ok(playlists) if this.edits == edits => {
                     this.refresh_error = None;
                     this.set_list(playlists, window, cx);
@@ -334,8 +328,8 @@ impl Playlists {
         self.selected.as_ref()
     }
 
-    /// Selects `playlist` and brings it into view in the list, clearing a
-    /// filter that hides it. One that has gone leaves the selection as it is.
+    /// Clears a filter that hides `playlist`. One that has gone leaves the selection
+    /// as it is.
     pub fn reveal_playlist(
         &mut self,
         playlist: PlaylistId,
@@ -354,7 +348,7 @@ impl Playlists {
             self.apply_filter(cx);
         }
         self.select(playlist, window, cx);
-        // Selecting the playlist already selected does not scroll.
+        // Selecting the playlist already selected does not scroll
         self.scroll_to_selected();
         self.list_focus.focus(window, cx);
     }
@@ -411,7 +405,7 @@ impl Playlists {
                 }
                 match result {
                     Ok(loaded) => this.show_detail(loaded, window, cx),
-                    // Songs on show stay there, if they are what the server has.
+                    // Songs on show stay there, if they are what the server has
                     Err(_) if this.loaded_detail().is_some() && !this.diverged => {}
                     Err(error) => {
                         this.after_load = None;
@@ -425,7 +419,6 @@ impl Playlists {
         });
     }
 
-    /// Fetches the selected playlist again without leaving what is on show.
     fn reload_detail(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(selected) = self.selected.clone() {
             self.fetch_detail(selected, window, cx);
@@ -438,8 +431,8 @@ impl Playlists {
         }
     }
 
-    /// Shows what the server has. Rows that didn't change keep their identity,
-    /// which also keeps their selection and any menu open on them.
+    /// Rows that didn't change keep their identity, which also keeps their selection
+    /// and any menu open on them.
     fn show_detail(
         &mut self,
         loaded: PlaylistWithSongs,
@@ -467,7 +460,7 @@ impl Playlists {
                     Some((ix, shown.entries.get(ix)?.song().id().clone()))
                 });
                 let entries = Entries::new(songs);
-                // Follows the selected song to where it is now.
+                // Follows the selected song to where it is now
                 self.selected_entry = selected_song.and_then(|(ix, song)| {
                     let same_place = entries
                         .get(ix)
@@ -507,13 +500,10 @@ impl Playlists {
         }
     }
 
-    /// The narrowest the screen can be while showing its list at its current
-    /// width beside the detail.
     pub fn min_width(&self, window: &Window, cx: &App) -> gpui_kit::Pixels {
         MasterDetail::min_width(&self.panes, window, cx)
     }
 
-    /// Marks `song` in the song list, or clears the mark.
     pub fn set_now_playing(&mut self, song: Option<SongId>, playing: bool, cx: &mut Context<Self>) {
         let now_playing = NowPlaying::new(song, playing);
         if self.now_playing != now_playing {
@@ -695,7 +685,6 @@ impl Playlists {
             })
     }
 
-    /// Whether the signed-in user can change the selected playlist.
     fn is_editable(&self) -> bool {
         self.selected_playlist()
             .is_some_and(|playlist| playlist.is_editable_by(self.session.username()))
@@ -971,10 +960,8 @@ impl Playlists {
             .into_any_element()
     }
 
-    /// The playlist's commands besides Play.
-    ///
-    /// The list's commands act on the playlist on show, so the menu dispatches
-    /// them there, whichever list has focus.
+    /// The list's commands act on the playlist on show, so the menu dispatches them
+    /// there, whichever list has focus.
     fn render_playlist_menu(&self, editable: bool, has_songs: bool) -> impl IntoElement {
         let list_focus = self.list_focus.clone();
         Button::new("playlist-menu")

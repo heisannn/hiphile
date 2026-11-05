@@ -7,7 +7,6 @@ use gpui_kit::{
     SharedString, Styled as _, Window, div,
 };
 
-/// A name that is plain text, for one with nowhere to go.
 pub(crate) fn plain_name(name: SharedString, color: Hsla) -> AnyElement {
     div()
         .min_w_0()
@@ -17,8 +16,7 @@ pub(crate) fn plain_name(name: SharedString, color: Hsla) -> AnyElement {
         .into_any_element()
 }
 
-/// A name in a row's text that goes somewhere when clicked. It is not a Tab
-/// stop: from the keyboard, the view with the selection handles going there.
+/// It is not a Tab stop: from the keyboard, the view with the selection handles going there.
 ///
 /// Quiet until the pointer is on it: a row's details are read far more often
 /// than they are clicked. The hover is the name's own, as the button keeps its
@@ -32,7 +30,7 @@ pub(crate) fn name_link(
     cx: &App,
 ) -> AnyElement {
     let foreground = cx.theme().foreground;
-    // Over a row that is itself hovered, since the pointer is on both.
+    // Over a row that is itself hovered, since the pointer is on both
     let hover_background = foreground.opacity(0.1);
     Button::new(id)
         .text()
@@ -56,7 +54,7 @@ pub(crate) fn name_link(
                 .hover(move |this| this.text_color(foreground).bg(hover_background))
                 .child(name),
         )
-        // Inside a row or a card, whose own click means something else.
+        // Inside a row or a card, whose own click means something else
         .on_click(move |_, window, cx| {
             cx.stop_propagation();
             on_click(window, cx);
