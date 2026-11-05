@@ -1,51 +1,48 @@
+use fuzzy::{Index, Speller};
 use subsonic::Album;
 
-/// Positions of the albums whose name or artist contains `query`, ignoring
-/// case, in their original order. An empty query matches every album.
-pub(crate) fn matching_albums(albums: &[Album], query: &str) -> Vec<usize> {
-    let query = query.trim().to_lowercase();
-    albums
-        .iter()
-        .enumerate()
-        .filter(|(_, album)| {
-            query.is_empty()
-                || album.name().to_lowercase().contains(&query)
-                || album
-                    .artist()
-                    .is_some_and(|artist| artist.to_lowercase().contains(&query))
-        })
-        .map(|(ix, _)| ix)
-        .collect()
+/// `albums`, to find by their name or artist.
+pub(crate) fn album_index(albums: &[Album], speller: Option<&dyn Speller>) -> Index {
+    Index::new(
+        albums.iter().map(|album| {
+            let name = Some(album.name());
+            [name, album.artist()].into_iter().flatten()
+        }),
+        speller,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn albums() -> Vec<Album> {
-        let json = r#"[
-            {"id":"1","name":"Kind of Blue","artist":"Miles Davis"},
-            {"id":"2","name":"Blue Train","artist":"John Coltrane"},
-            {"id":"3","name":"Giant Steps","artist":"John Coltrane"},
-            {"id":"4","name":"Untitled"}
-        ]"#;
-        serde_json::from_str(json).unwrap()
+    fn index() -> Index {
+        let albums: Vec<Album> = serde_json::from_str(
+            r#"[
+                {"id":"1","name":"Kind of Blue","artist":"Miles Davis"},
+                {"id":"2","name":"Blue Train","artist":"John Coltrane"},
+                {"id":"3","name":"Giant Steps","artist":"John Coltrane"},
+                {"id":"4","name":"Untitled"}
+            ]"#,
+        )
+        .unwrap();
+        album_index(&albums, None)
     }
 
     #[test]
     fn empty_query_matches_everything() {
-        assert_eq!(matching_albums(&albums(), "  "), [0, 1, 2, 3]);
+        assert_eq!(index().search("  "), [0, 1, 2, 3]);
     }
 
     #[test]
-    fn matches_name_or_artist_ignoring_case() {
-        assert_eq!(matching_albums(&albums(), "blue"), [0, 1]);
-        assert_eq!(matching_albums(&albums(), "COLTRANE"), [1, 2]);
+    fn matches_name_or_artist_ignoring_case_the_better_first() {
+        assert_eq!(index().search("blue"), [1, 0]);
+        assert_eq!(index().search("COLTRANE"), [1, 2]);
     }
 
     #[test]
     fn albums_without_artist_match_by_name() {
-        assert_eq!(matching_albums(&albums(), "untitled"), [3]);
-        assert!(matching_albums(&albums(), "nobody").is_empty());
+        assert_eq!(index().search("untitled"), [3]);
+        assert!(index().search("nobody").is_empty());
     }
 }

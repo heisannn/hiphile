@@ -18,6 +18,7 @@ audio = { path = "crates/audio" }
 catalog = { path = "crates/catalog" }
 client = { path = "crates/client" }
 config = { path = "crates/config" }
+fuzzy = { path = "crates/fuzzy" }
 home = { path = "crates/home" }
 library = { path = "crates/library" }
 lyrics = { path = "crates/lyrics" }
@@ -50,19 +51,27 @@ http = "1.5"
 gpui-kit = { version = "0.9", features = ["gpui-fast"] }
 hex = "0.4"
 keyring-core = "1.0"
+# Pinned: a new version may read compiled dictionaries differently, and the bundle in
+# `crates/fuzzy/src/bundle.rs` is compiled by this one.
+lindera = { version = "=6.2.0", default-features = false, features = ["mmap"] }
 md-5 = "0.11"
+nucleo-matcher = "0.3"
 rand = "0.10"
 reqwest = "0.13"
 roxmltree = "0.21"
 rtrb = "0.4"
 rubato = "5.0"
+ruzstd = "0.8"
 rusqlite = { version = "0.41", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
+sha2 = "0.11"
 symphonia = { version = "0.6", features = ["all"] }
+tar = "0.4"
 tempfile = "3.27"
 thiserror = "2.0"
 toml_edit = "0.25"
+unicode-normalization = "0.1"
 tokio = { version = "1.54", features = ["rt-multi-thread", "macros"] }
 url = "2.5"
 windows-native-keyring-store = "1.1"

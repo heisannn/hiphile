@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Writes the bundle of dictionaries that `crates/fuzzy/src/bundle.rs` names, and prints what that
+# file needs to hold to fetch it. Publish it as the asset of a release tagged with its name.
+#
+#   script/build-readings readings-1 dist/
+#
+# Lindera compiles its dictionaries when a crate embedding them builds, so a scratch crate does
+# that and the compiled directories are taken from its build output. It needs about 6 GB of memory
+# and 5 GB of disk, and downloads the dictionaries' sources from lindera.dev.
+set -euo pipefail
+
+name="${1:?usage: build-readings <name> <output directory>}"
+out="${2:?usage: build-readings <name> <output directory>}"
+root="$(cd "$(dirname "$0")/.." && pwd)"
+lindera="$(grep -E '^lindera = ' "$root/Cargo.toml" | sed -E 's/.*version = "=([^"]+)".*/\1/')"
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+mkdir -p "$work/scratch/src" "$out"
+cat >"$work/scratch/Cargo.toml" <<EOF
+[package]
+name = "scratch"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+lindera = { version = "=$lindera", default-features = false, features = [
+  "embed-ipadic", "embed-sudachidict", "embed-ipadic-neologd",
+] }
+
+[workspace]
+EOF
+echo 'fn main() {}' >"$work/scratch/src/main.rs"
+CARGO_TARGET_DIR="$work/target" cargo build --release --manifest-path "$work/scratch/Cargo.toml"
+
+# The directory of one dictionary's build output, as the crate that built it named it.
+build_output() {
+  find "$work/target/release/build" -type d -path "*/out/$1" -print -quit
+}
+
+bundle="$work/$name"
+mkdir -p "$bundle"
+cp -R "$(build_output lindera-ipadic)" "$bundle/ipadic"
+cp -R "$(build_output lindera-sudachidict)" "$bundle/sudachi"
+
+# People's names from NEologd, whose readings the others lack. The whole of it is 700 MB, and goes
+# stale: it was last updated in 2020, so it only ever adds to what the others read.
+source_archive="$(find "$work/target/release/build" -name 'mecab-ipadic-neologd-*.tar.gz' -print -quit)"
+mkdir -p "$work/neologd"
+tar xzf "$source_archive" -C "$work/neologd" --strip-components 1
+python3 -I - "$work/neologd" "$bundle/names.tsv" <<'EOF'
+import glob
+import re
+import sys
+
+source, target = sys.argv[1:]
+kanji = re.compile(r"[㐀-鿿]")
+names = {}
+for path in glob.glob(f"{source}/mecab-user-dict-seed.*.csv"):
+    for line in open(path, encoding="utf8", errors="ignore"):
+        # A surface holding a comma comes quoted; those are not names.
+        fields = line.rstrip("\n").split(",")
+        if len(fields) >= 13 and fields[4:6] == ["名詞", "固有名詞"] and fields[6] == "人名":
+            if kanji.search(fields[0]):
+                names.setdefault(fields[0], fields[11])
+# In the order of their bytes, which `Names` in crates/fuzzy/src/reader.rs searches by.
+lines = sorted(f"{name}\t{reading}\n".encode() for name, reading in names.items())
+with open(target, "wb") as out:
+    out.writelines(lines)
+EOF
+
+# Each dictionary's terms come with it. Lindera's copy of NEologd holds only the terms of the IPADIC
+# it builds on, so NEologd's own are kept in this repository.
+registry="$(dirname "$(find "$HOME/.cargo/registry/src" -type d -name "lindera-$lindera" -print -quit)")"
+for dictionary in ipadic sudachidict; do
+  cp "$registry/lindera-$dictionary-$lindera/NOTICE.txt" "$bundle/NOTICE-$dictionary.txt"
+done
+cp "$work/neologd/COPYING" "$bundle/COPYING-ipadic.txt"
+cp "$root"/script/readings-notices/* "$bundle/"
+
+archive="$out/$name.tar.zst"
+tar cf - -C "$bundle" . | zstd -19 -T0 -q -f -o "$archive"
+
+echo
+echo "name:           $name"
+echo "file:           $archive"
+echo "sha256:         $(shasum -a 256 "$archive" | cut -d' ' -f1)"
+echo "download_bytes: $(wc -c <"$archive" | tr -d ' ')"
+echo "disk_bytes:     $(($(du -sk "$bundle" | cut -f1) * 1024))"

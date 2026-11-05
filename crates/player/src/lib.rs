@@ -104,7 +104,7 @@ pub fn init(context: &'static str, cx: &mut App) {
             "cmd-alt-s",
             "cmd-alt-r",
             "cmd-l",
-            "cmd-shift-p",
+            "cmd-p",
         ]
     } else {
         [
@@ -118,7 +118,7 @@ pub fn init(context: &'static str, cx: &mut App) {
             "ctrl-alt-s",
             "ctrl-alt-r",
             "ctrl-l",
-            "ctrl-shift-p",
+            "ctrl-p",
         ]
     };
     cx.bind_keys([

@@ -1,17 +1,11 @@
 use std::collections::HashMap;
 
+use fuzzy::{Index, Speller};
 use subsonic::{Album, Artist, ArtistId, CoverArtId, Song};
 
-/// Positions of the artists whose name contains `query`, ignoring case, in
-/// their original order. An empty query matches every artist.
-pub(crate) fn matching_artists(artists: &[Artist], query: &str) -> Vec<usize> {
-    let query = query.trim().to_lowercase();
-    artists
-        .iter()
-        .enumerate()
-        .filter(|(_, artist)| query.is_empty() || artist.name().to_lowercase().contains(&query))
-        .map(|(ix, _)| ix)
-        .collect()
+/// `artists`, to find by their name.
+pub(crate) fn artist_index(artists: &[Artist], speller: Option<&dyn Speller>) -> Index {
+    Index::new(artists.iter().map(|artist| [artist.name()]), speller)
 }
 
 /// The artists that `albums` name, by name, to show until the server says.
@@ -129,8 +123,9 @@ mod tests {
             Artist::new(ArtistId::new("1"), "Miles Davis".into(), None, None),
             Artist::new(ArtistId::new("2"), "Bill Evans".into(), None, None),
         ];
-        assert_eq!(matching_artists(&artists, " "), [0, 1]);
-        assert_eq!(matching_artists(&artists, "EVANS"), [1]);
-        assert!(matching_artists(&artists, "nobody").is_empty());
+        let index = artist_index(&artists, None);
+        assert_eq!(index.search(" "), [0, 1]);
+        assert_eq!(index.search("EVANS"), [1]);
+        assert!(index.search("nobody").is_empty());
     }
 }

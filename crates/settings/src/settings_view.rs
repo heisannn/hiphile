@@ -1,19 +1,22 @@
 use std::time::Duration;
 
+use fuzzy::bundle::BUNDLE;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, StyledExt as _, TitleBar,
     button::Button,
     group_box::GroupBoxVariant,
     h_flex,
+    progress::Progress,
     radio::{Radio, RadioGroup},
     setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
     v_flex,
 };
 use gpui_kit::{
-    AppContext as _, Axis, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
+    App, AppContext as _, Axis, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, Window, div,
 };
+use session::{Readings, ReadingsState};
 
 use crate::appearance_settings::{AppearanceSettings, CHOICES};
 use crate::audio_settings::{AudioSettings, MATCH_SONG, SYSTEM_DEFAULT};
@@ -44,6 +47,7 @@ pub(crate) struct SettingsView {
     discord: Entity<DiscordSettings>,
     imgbb_key_field: Entity<ImgbbKeyField>,
     lyrics: Entity<LyricsSettings>,
+    readings: Option<Entity<Readings>>,
     focus: FocusHandle,
     _appearance_changes: Subscription,
     _system_appearance_changes: Subscription,
@@ -53,6 +57,7 @@ pub(crate) struct SettingsView {
     _song_cache_usage_changes: Subscription,
     _discord_changes: Subscription,
     _lyrics_changes: Subscription,
+    _readings_changes: Option<Subscription>,
     _refresh: Task<()>,
 }
 
@@ -89,7 +94,12 @@ impl SettingsView {
         let cover_cache_field = cx.new(|cx| CacheLimitField::new(cover_cache.clone(), window, cx));
         let imgbb_key_field = cx.new(|cx| ImgbbKeyField::new(discord.clone(), window, cx));
         let lyrics = crate::lyrics_settings(cx);
+        let readings = session::readings(cx);
         Self {
+            _readings_changes: readings
+                .as_ref()
+                .map(|readings| cx.observe(readings, |_, _, cx| cx.notify())),
+            readings,
             _appearance_changes: cx.observe(&appearance, |_, _, cx| cx.notify()),
             _system_appearance_changes: crate::follow_system_appearance(window),
             appearance,
@@ -302,10 +312,91 @@ impl SettingsView {
             covers = covers
                 .footer(move |_, cx| div().text_color(cx.theme().danger).child(error.clone()));
         }
-        SettingPage::new("Storage")
+        let mut page = SettingPage::new("Storage")
             .icon(IconName::HardDrive)
             .group(songs)
-            .group(covers)
+            .group(covers);
+        if let Some(readings) = &self.readings {
+            page = page.group(romaji_search_group(readings, cx));
+        }
+        page
+    }
+}
+
+/// Finding kanji by romaji: whether to, and how the dictionary for it is doing.
+fn romaji_search_group(readings: &Entity<Readings>, cx: &App) -> SettingGroup {
+    let toggle = SettingField::switch(
+        {
+            let readings = readings.clone();
+            move |cx| readings.read(cx).is_on()
+        },
+        {
+            let readings = readings.clone();
+            move |is_on, cx| readings.update(cx, |readings, cx| readings.set_on(is_on, cx))
+        },
+    );
+    let description = format!(
+        "Downloads a dictionary of {}, which takes {} on this computer.",
+        format_size(BUNDLE.download_bytes),
+        format_size(BUNDLE.disk_bytes),
+    );
+    let mut group = SettingGroup::new().title("Romaji search").item(
+        SettingItem::new("Find kanji by romaji", toggle)
+            .description(description)
+            .keywords(["romaji", "dictionary", "search"]),
+    );
+
+    let readings = readings.clone();
+    let state = readings.read(cx).state().clone();
+    let errors = [
+        readings_error(&state),
+        readings.read(cx).choice_error().cloned(),
+    ];
+    if matches!(
+        state,
+        ReadingsState::Downloading(_) | ReadingsState::Failed(_)
+    ) {
+        let status = SettingField::render(move |_, _, cx| match readings.read(cx).state() {
+            ReadingsState::Downloading(fraction) => {
+                let percent = (fraction * 100.).round();
+                h_flex()
+                    .gap_3()
+                    .child(
+                        Progress::new("readings-download")
+                            .w_32()
+                            .value(percent)
+                            .accessibility_label("Dictionary download"),
+                    )
+                    .child(div().text_sm().child(format!("{percent}%")))
+                    .into_any_element()
+            }
+            _ => {
+                let readings = readings.clone();
+                Button::new("retry-readings")
+                    .outline()
+                    .label("Retry")
+                    .accessibility_label("Retry downloading the dictionary")
+                    .on_click(move |_, _, cx| readings.update(cx, |it, cx| it.retry(cx)))
+                    .into_any_element()
+            }
+        });
+        group = group.item(SettingItem::new("Dictionary", status));
+    }
+    if errors.iter().any(Option::is_some) {
+        group = group.footer(move |_, cx| {
+            v_flex()
+                .gap_1()
+                .text_color(cx.theme().danger)
+                .children(errors.iter().flatten().cloned())
+        });
+    }
+    group
+}
+
+fn readings_error(state: &ReadingsState) -> Option<SharedString> {
+    match state {
+        ReadingsState::Failed(error) => Some(error.clone()),
+        _ => None,
     }
 }
 

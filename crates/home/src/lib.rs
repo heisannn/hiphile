@@ -49,9 +49,9 @@ struct AddSelectionToPlaylist {
 /// Registers key bindings. Call before building the menu bar.
 pub fn init(cx: &mut App) {
     let (play, show_in_library, choose_playlist) = if cx.platform_info().is_mac() {
-        ("cmd-enter", "cmd-l", "cmd-shift-p")
+        ("cmd-enter", "cmd-l", "cmd-p")
     } else {
-        ("ctrl-enter", "ctrl-l", "ctrl-shift-p")
+        ("ctrl-enter", "ctrl-l", "ctrl-p")
     };
     bind_list_navigation(HOME_CONTEXT, cx);
     cx.bind_keys([

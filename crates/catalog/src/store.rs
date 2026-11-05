@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::{self, File, TryLockError};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -8,7 +9,7 @@ use md5::{Digest, Md5};
 use rusqlite::{
     Connection, ErrorCode, OptionalExtension as _, Transaction, TransactionBehavior, params,
 };
-use subsonic::{Album, AlbumId, AlbumWithSongs, ArtistId, Song};
+use subsonic::{Album, AlbumId, AlbumWithSongs, Artist, ArtistId, Song};
 use url::Url;
 
 use crate::Error;
@@ -17,9 +18,13 @@ use crate::Error;
 /// another version is emptied, and the next sync fills it again.
 ///
 /// 2: songs keep their file size.
-const SCHEMA_VERSION: i32 = 2;
+/// 3: how texts read is kept.
+/// 4: artists are kept, and readings keep their romaji.
+const SCHEMA_VERSION: i32 = 4;
 const DATABASE: &str = "catalog.sqlite";
 const SYNC_LOCK: &str = "sync.lock";
+/// The meta key for what the `readings` table was worked out with.
+const READINGS_SOURCE: &str = "readings_source";
 /// How long a write by another connection, such as the CLI's, may hold up
 /// this one.
 pub(crate) const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -58,7 +63,47 @@ CREATE TABLE songs (
     generation INTEGER NOT NULL
 );
 CREATE INDEX songs_by_album ON songs (album_id, disc, track);
+
+CREATE TABLE artists (
+    id         TEXT PRIMARY KEY,
+    -- Position in the list the server sent.
+    ord        INTEGER NOT NULL,
+    name       TEXT NOT NULL,
+    json       TEXT NOT NULL,
+    generation INTEGER NOT NULL
+);
+CREATE INDEX artists_by_ord ON artists (ord);
+
+-- How texts read, by the text and not by what bears it, which any list may share.
+-- `readings` is a JSON array of kana; an empty one means it was tried and came to
+-- nothing. `romaji` is how those are spelled for matching, in the matcher's form.
+CREATE TABLE readings (
+    text     TEXT PRIMARY KEY,
+    readings TEXT NOT NULL,
+    romaji   TEXT NOT NULL
+) WITHOUT ROWID;
 ";
+
+/// How one text reads, to keep: see [`Catalog::put_readings`].
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct SavedReading {
+    pub text: String,
+    /// Each way it may read, in kana.
+    pub readings: Vec<String>,
+    /// How those are spelled for matching, in a form of the matcher's own.
+    pub romaji: String,
+}
+
+impl SavedReading {
+    pub fn new(text: String, readings: Vec<String>, romaji: String) -> Self {
+        Self {
+            text,
+            readings,
+            romaji,
+        }
+    }
+}
 
 /// The albums recommended last and the day they were picked for.
 #[derive(Clone, Debug)]
@@ -72,6 +117,7 @@ pub struct Recommended {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
     Albums,
+    Artists,
     Songs,
 }
 
@@ -79,6 +125,7 @@ impl Kind {
     fn table(self) -> &'static str {
         match self {
             Self::Albums => "albums",
+            Self::Artists => "artists",
             Self::Songs => "songs",
         }
     }
@@ -148,6 +195,15 @@ impl Catalog {
 
     pub fn dir(&self) -> &Path {
         &self.inner.dir
+    }
+
+    /// Every artist, in the server's name order.
+    pub fn artists(&self) -> Result<Vec<Artist>, Error> {
+        let connection = self.connection();
+        let mut statement =
+            connection.prepare_cached("SELECT json FROM artists ORDER BY ord, id")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|json| Ok(serde_json::from_str(&json?)?)).collect()
     }
 
     /// Every album, in the server's name order.
@@ -285,6 +341,62 @@ impl Catalog {
         Ok(())
     }
 
+    /// Each distinct text that finds an album or a song: names, titles and
+    /// artists, without reading the items whole.
+    pub fn texts(&self) -> Result<Vec<String>, Error> {
+        let connection = self.connection();
+        let mut statement = connection.prepare_cached(
+            "SELECT name FROM albums
+             UNION SELECT artist FROM albums WHERE artist IS NOT NULL
+             UNION SELECT name FROM artists
+             UNION SELECT title FROM songs
+             UNION SELECT artist FROM songs WHERE artist IS NOT NULL
+             UNION SELECT json_extract(json, '$.album') FROM songs
+                 WHERE json_extract(json, '$.album') IS NOT NULL",
+        )?;
+        let texts = statement.query_map([], |row| row.get(0))?;
+        Ok(texts.collect::<Result<_, _>>()?)
+    }
+
+    /// The romaji of each text kept so far, as worked out with `source`. Nothing
+    /// worked out with anything else counts.
+    pub fn romaji(&self, source: &str) -> Result<HashMap<String, String>, Error> {
+        let connection = self.connection();
+        if get_meta(&connection, READINGS_SOURCE)?.as_deref() != Some(source) {
+            return Ok(HashMap::new());
+        }
+        let mut statement = connection.prepare_cached("SELECT text, romaji FROM readings")?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Keeps how these texts read as worked out with `source`, in place of
+    /// anything worked out with something else.
+    pub fn put_readings(&self, source: &str, readings: &[SavedReading]) -> Result<(), Error> {
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        if get_meta(&transaction, READINGS_SOURCE)?.as_deref() != Some(source) {
+            transaction.execute("DELETE FROM readings", [])?;
+            set_meta(&transaction, READINGS_SOURCE, source)?;
+        }
+        {
+            let mut insert = transaction.prepare_cached(
+                "INSERT INTO readings (text, readings, romaji) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (text) DO UPDATE SET
+                     readings = excluded.readings, romaji = excluded.romaji",
+            )?;
+            for reading in readings {
+                insert.execute(params![
+                    reading.text,
+                    serde_json::to_string(&reading.readings)?,
+                    reading.romaji,
+                ])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
     /// `None` while another sync of this library holds the lock.
     pub(crate) fn try_lock_sync(&self) -> Result<Option<SyncLock>, Error> {
         let path = self.inner.dir.join(SYNC_LOCK);
@@ -352,7 +464,32 @@ impl Catalog {
         Ok(next)
     }
 
-    /// Keeps a page of albums that starts at `offset` in the name order.
+    /// Keeps every artist in the server's name order.
+    pub(crate) fn store_artists(&self, generation: i64, artists: &[Artist]) -> Result<(), Error> {
+        let mut connection = self.connection();
+        let transaction = connection.transaction()?;
+        {
+            let mut statement = transaction.prepare_cached(
+                "INSERT INTO artists (id, ord, name, json, generation)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT (id) DO UPDATE SET
+                     ord = excluded.ord, name = excluded.name, json = excluded.json,
+                     generation = excluded.generation",
+            )?;
+            for (artist, ord) in artists.iter().zip(0_i64..) {
+                statement.execute(params![
+                    artist.id().as_str(),
+                    ord,
+                    artist.name(),
+                    serde_json::to_string(artist)?,
+                    generation,
+                ])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub(crate) fn store_albums(
         &self,
         generation: i64,
@@ -444,7 +581,7 @@ impl Catalog {
         Ok(())
     }
 
-    fn count(&self, kind: Kind) -> Result<usize, Error> {
+    pub(crate) fn count(&self, kind: Kind) -> Result<usize, Error> {
         let count: i64 = self.connection().query_row(
             &format!("SELECT count(*) FROM {}", kind.table()),
             [],
@@ -761,6 +898,95 @@ mod tests {
         let catalog = Catalog::open(dir.path()).unwrap();
         catalog.put_recommended("alice", "2026-11-04", &[]).unwrap();
         assert!(catalog.recommended("bob").unwrap().is_none());
+    }
+
+    #[test]
+    fn texts_name_every_field_a_list_finds_by_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(dir.path()).unwrap();
+        let albums: Vec<Album> = serde_json::from_value(serde_json::json!([
+            { "id": "a", "name": "教育", "artist": "東京事変" },
+        ]))
+        .unwrap();
+        let songs: Vec<Song> = serde_json::from_value(serde_json::json!([
+            { "id": "s", "title": "群青日和", "artist": "東京事変", "album": "教育" },
+            { "id": "t", "title": "遭難", "album": "別の盤" },
+        ]))
+        .unwrap();
+        let generation = catalog.begin(Kind::Albums).unwrap();
+        catalog.store_albums(generation, 0, &albums).unwrap();
+        let generation = catalog.begin(Kind::Songs).unwrap();
+        catalog.store_songs(generation, &songs).unwrap();
+        let artists: Vec<Artist> = serde_json::from_value(serde_json::json!([
+            { "id": "t", "name": "東京事変" },
+            { "id": "s", "name": "椎名林檎" },
+        ]))
+        .unwrap();
+        let generation = catalog.begin(Kind::Artists).unwrap();
+        catalog.store_artists(generation, &artists).unwrap();
+
+        let mut texts = catalog.texts().unwrap();
+        texts.sort();
+
+        let mut expected = ["教育", "東京事変", "椎名林檎", "群青日和", "遭難", "別の盤"];
+        expected.sort_unstable();
+        assert_eq!(texts, expected);
+    }
+
+    #[test]
+    fn artists_come_back_whole_in_the_order_the_server_sent() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(dir.path()).unwrap();
+        let artists: Vec<Artist> = serde_json::from_value(serde_json::json!([
+            { "id": "z", "name": "Zebra", "coverArt": "c", "albumCount": 2 },
+            { "id": "a", "name": "Apple" },
+        ]))
+        .unwrap();
+        let generation = catalog.begin(Kind::Artists).unwrap();
+        catalog.store_artists(generation, &artists).unwrap();
+
+        assert_eq!(catalog.artists().unwrap(), artists);
+    }
+
+    fn reading(text: &str, romaji: &str) -> SavedReading {
+        SavedReading {
+            text: text.to_owned(),
+            readings: vec!["ハクジツ".to_owned()],
+            romaji: romaji.to_owned(),
+        }
+    }
+
+    #[test]
+    fn readings_last_with_the_kana_beside_the_romaji() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(dir.path()).unwrap();
+        assert!(catalog.romaji("a").unwrap().is_empty());
+
+        catalog
+            .put_readings("a", &[reading("白日", "spelled")])
+            .unwrap();
+
+        let reopened = Catalog::open(dir.path()).unwrap();
+        assert_eq!(reopened.romaji("a").unwrap()["白日"], "spelled");
+        let kana: String = reopened
+            .connection()
+            .query_row("SELECT readings FROM readings", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(kana, r#"["ハクジツ"]"#);
+    }
+
+    #[test]
+    fn readings_add_up_within_a_source_and_another_source_replaces_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(dir.path()).unwrap();
+        catalog.put_readings("a", &[reading("白日", "")]).unwrap();
+        catalog.put_readings("a", &[reading("群青", "")]).unwrap();
+        assert_eq!(catalog.romaji("a").unwrap().len(), 2);
+        assert!(catalog.romaji("b").unwrap().is_empty());
+
+        catalog.put_readings("b", &[reading("群青", "")]).unwrap();
+        assert_eq!(catalog.romaji("b").unwrap().len(), 1);
+        assert!(catalog.romaji("a").unwrap().is_empty());
     }
 
     #[test]

@@ -37,9 +37,9 @@ actions!(
 /// Registers key bindings. Call before building the menu bar.
 pub fn init(cx: &mut App) {
     let (find, add_to_playlist, go_to_album) = if cx.platform_info().is_mac() {
-        ("cmd-f", "cmd-shift-p", "cmd-l")
+        ("cmd-f", "cmd-p", "cmd-l")
     } else {
-        ("ctrl-f", "ctrl-shift-p", "ctrl-l")
+        ("ctrl-f", "ctrl-p", "ctrl-l")
     };
     bind_list_navigation(SONGS_CONTEXT, cx);
     cx.bind_keys([

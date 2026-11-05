@@ -1,0 +1,37 @@
+Dictionaries for hiphile's search by romaji
+===========================================
+
+hiphile itself is under the MIT License. This bundle is not: each part of it
+stays under the terms of where it came from.
+
+ipadic/
+    IPADIC (mecab-ipadic-2.7.0-20070801), compiled by Lindera.
+    Terms: COPYING-ipadic.txt, NOTICE-ipadic.txt
+
+sudachi/
+    SudachiDict Full, compiled by Lindera.
+    Terms: LICENSE-Apache-2.0.txt, NOTICE-sudachidict.txt
+
+names.tsv
+    Derived from mecab-ipadic-NEologd (mecab-user-dict-seed.20200820.csv), as
+    Lindera mirrors it. Copyright (C) 2015-2019 Toshinori Sato (@overlast).
+    Terms: LICENSE-Apache-2.0.txt, COPYING-mecab-ipadic-neologd.txt
+
+    Changed from the original: script/build-readings in the hiphile repository
+    keeps only the entries classed as people's names whose surface has a kanji,
+    keeps only their surface and reading, and sorts them.
+
+Hatena Keyword
+--------------
+
+As COPYING-mecab-ipadic-neologd.txt says, most of the surfaces and readings in
+NEologd come from Hatena's keyword list, which is Hatena's copyright. Hatena
+allowed its use for hobby, academic and private purposes, asked that it be
+credited, and asked to be contacted about commercial use:
+
+    Hatena: https://hatena.co.jp/
+    Hatena Keyword: http://developer.hatena.ne.jp/ja/documents/keyword/misc/catalog
+
+SudachiDict also contains part of NEologd, as NOTICE-sudachidict.txt says.
+hiphile uses this bundle without charge. Anyone who wants to use it commercially
+should check these terms first.

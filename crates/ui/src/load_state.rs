@@ -3,7 +3,7 @@ use std::sync::Arc;
 use gpui_kit::component::{ActiveTheme as _, StyledExt as _, button::Button, h_flex, v_flex};
 use gpui_kit::{
     App, Div, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce, SharedString,
-    Styled as _, Window, div,
+    Styled as _, Window, div, prelude::FluentBuilder as _,
 };
 
 use crate::list_navigation::CONTROL_CONTEXT;
@@ -60,6 +60,22 @@ pub fn muted_text(text: &'static str, cx: &App) -> impl IntoElement {
         .text_sm()
         .text_color(cx.theme().muted_foreground)
         .child(text)
+}
+
+/// What a filtered list shows when nothing matches. `note` is what
+/// `session::missing_readings_note` gives.
+pub fn no_matches(
+    message: &'static str,
+    note: Option<&'static str>,
+    cx: &App,
+) -> impl IntoElement + use<> {
+    centered(
+        v_flex()
+            .gap_1()
+            .items_center()
+            .child(muted_text(message, cx))
+            .when_some(note, |this, note| this.child(muted_text(note, cx))),
+    )
 }
 
 /// A failed load in place of what it was to show: what failed, why, and a way

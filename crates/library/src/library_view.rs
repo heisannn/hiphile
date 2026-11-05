@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use actions::{AlbumAction, EnqueueSongs, GoToArtist, Placement, PlaySongs, ShowArtist};
 use catalog::{Mode, Outcome};
+use futures::StreamExt as _;
+use futures::channel::mpsc;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _,
@@ -23,7 +25,7 @@ use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
 use ui::{
     DetailHeader, ListFilter, ListPaneHeader, LoadFailure, MasterDetail, NowPlaying,
     RefreshFailure, album_artist_link, centered, format_duration, format_song_count, join_details,
-    muted_text, row_list,
+    muted_text, no_matches, row_list,
 };
 
 mod album_row;
@@ -32,7 +34,7 @@ mod song_row;
 use album_row::AlbumRow;
 use song_row::SongRow;
 
-use crate::filter::matching_albums;
+use crate::filter::album_index;
 use crate::{
     ALBUMS_CONTEXT, AddAlbumToPlaylist, AddToPlaylist, AddToQueue, Back, FocusFilter,
     LIBRARY_CONTEXT, Open, Play, PlayNext, Refresh, SONGS_CONTEXT,
@@ -42,11 +44,30 @@ use crate::{
 /// high-density displays.
 const COVER_PIXELS: u32 = 512;
 
+/// What a sync is fetching.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncStage {
+    Albums,
+    Artists,
+    Songs,
+}
+
 pub enum LibraryEvent {
     /// A sync brought the album list up to date with the server.
     AlbumsSynced,
+    /// A sync brought the saved artists up to date with the server.
+    ArtistsSynced,
     /// A sync brought the saved songs up to date with the server.
     SongsSynced,
+    /// A sync that is fetching has saved this many items of `stage`, out of about
+    /// `total` when that can be told.
+    SyncProgress {
+        stage: SyncStage,
+        saved: usize,
+        total: Option<usize>,
+    },
+    /// A sync ended, however that went, with no other to follow.
+    SyncFinished,
     /// A sync the user asked for failed, for why.
     SyncFailed(SharedString),
     /// The user chose another album over this one.
@@ -62,7 +83,9 @@ pub struct Library {
     /// Whether the sync under way or last run is one the user asked for, whose
     /// failure they should hear of wherever they are.
     is_sync_requested: bool,
-    /// Positions in the loaded albums that match the filter.
+    /// The loaded albums, ready to search.
+    index: Arc<fuzzy::Index>,
+    /// Positions in the loaded albums that match the filter, the best first.
     visible: Arc<Vec<usize>>,
     selected_album: Option<AlbumId>,
     /// The selected album, when it was asked to show before the list had it.
@@ -81,6 +104,7 @@ pub struct Library {
     _albums_task: Task<()>,
     _album_task: Task<()>,
     _album_action_task: Task<()>,
+    _index_task: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -140,6 +164,7 @@ impl Library {
             albums: Albums::Loading,
             sync: SyncState::Idle,
             is_sync_requested: false,
+            index: Arc::default(),
             visible: Arc::default(),
             selected_album: None,
             revealing: None,
@@ -155,8 +180,17 @@ impl Library {
             _albums_task: Task::ready(()),
             _album_task: Task::ready(()),
             _album_action_task: Task::ready(()),
+            _index_task: Task::ready(()),
             _subscriptions: subscriptions,
         };
+        if let Some(readings) = session::readings(cx) {
+            this._subscriptions.push(cx.subscribe(
+                &readings,
+                |this, _, _: &session::ReadingsChanged, cx| {
+                    this.index_albums(cx);
+                },
+            ));
+        }
         this.sync_library(Mode::IfStale, cx);
         this
     }
@@ -205,6 +239,7 @@ impl Library {
             self.refresh_library(cx);
         } else {
             self.revealing = None;
+            cx.emit(LibraryEvent::SyncFinished);
         }
         cx.notify();
     }
@@ -222,7 +257,7 @@ impl Library {
             .as_ref()
             .is_some_and(|revealing| albums.iter().any(|album| album.id() == revealing));
         self.albums = Albums::Loaded(Arc::new(albums));
-        self.apply_filter(cx);
+        self.index_albums(cx);
         if !keeps_selection {
             self.selected_album = None;
             self.detail = Detail::None;
@@ -266,12 +301,34 @@ impl Library {
 
     fn apply_filter(&mut self, cx: &mut Context<Self>) {
         let query = self.filter.read(cx).value();
-        self.visible = Arc::new(
-            self.loaded_albums()
-                .map(|albums| matching_albums(albums, &query))
-                .unwrap_or_default(),
-        );
+        self.visible = Arc::new(self.index.search(&query));
         cx.notify();
+    }
+
+    /// Makes the albums searchable at once as far as they read without a
+    /// dictionary, then, off the UI thread, as far as they read with one.
+    fn index_albums(&mut self, cx: &mut Context<Self>) {
+        let Some(albums) = self.loaded_albums().cloned() else {
+            return;
+        };
+        self.index = Arc::new(album_index(&albums, None));
+        self._index_task = Task::ready(());
+        self.apply_filter(cx);
+        let Some(book) = self.session.reading_book(cx) else {
+            return;
+        };
+        self._index_task = cx.spawn(async move |this, cx| {
+            let index = cx
+                .background_spawn(async move {
+                    book.read(|speller| album_index(&albums, Some(speller)))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.index = Arc::new(index);
+                this.apply_filter(cx);
+            })
+            .ok();
+        });
     }
 
     pub fn selected_album(&self) -> Option<&AlbumId> {
@@ -631,7 +688,8 @@ impl Library {
             return centered(muted_text("This server has no albums.", cx)).into_any_element();
         }
         if self.visible.is_empty() {
-            return centered(muted_text("No albums match the filter.", cx)).into_any_element();
+            let note = session::missing_readings_note(cx);
+            return no_matches("No albums match the filter.", note, cx).into_any_element();
         }
 
         let visible = self.visible.clone();
@@ -893,12 +951,16 @@ async fn run_sync(
         }
     }
 
-    let outcome = {
-        let (catalog, client) = (catalog.clone(), client.clone());
-        cx.background_spawn(async move { catalog::sync_albums(&catalog, &client, mode).await })
-            .await
-            .map_err(describe_catalog)?
-    };
+    let outcome = watched_sync(
+        this,
+        SyncStage::Albums,
+        catalog.clone(),
+        client.clone(),
+        mode,
+        cx,
+    )
+    .await
+    .map_err(describe_catalog)?;
     let albums = match outcome {
         Outcome::Synced { .. } | Outcome::Unsettled { .. } => {
             Some(saved(cx).await.map_err(describe_catalog)?)
@@ -925,15 +987,75 @@ async fn run_sync(
         .ok();
     }
 
-    let outcome = cx
-        .background_spawn(async move { catalog::sync_songs(&catalog, &client, mode).await })
+    // The songs do not depend on the artists, so the sync goes on to them and
+    // reports the failure at the end.
+    let artists = watched_sync(
+        this,
+        SyncStage::Artists,
+        catalog.clone(),
+        client.clone(),
+        mode,
+        cx,
+    )
+    .await
+    .map_err(describe_catalog);
+    if matches!(
+        artists,
+        Ok(Outcome::Synced { .. } | Outcome::Unsettled { .. })
+    ) {
+        this.update(cx, |_, cx| cx.emit(LibraryEvent::ArtistsSynced))
+            .ok();
+    }
+
+    let songs = watched_sync(this, SyncStage::Songs, catalog, client, mode, cx)
         .await
-        .map_err(describe_catalog)?;
-    if matches!(outcome, Outcome::Synced { .. } | Outcome::Unsettled { .. }) {
+        .map_err(describe_catalog);
+    if matches!(
+        songs,
+        Ok(Outcome::Synced { .. } | Outcome::Unsettled { .. })
+    ) {
         this.update(cx, |_, cx| cx.emit(LibraryEvent::SongsSynced))
             .ok();
     }
-    Ok(())
+    artists.and(songs).map(|_| ())
+}
+
+/// Syncs `stage` off the UI thread, passing on what it has got to as it goes.
+async fn watched_sync(
+    this: &WeakEntity<Library>,
+    stage: SyncStage,
+    catalog: catalog::Catalog,
+    client: client::Client,
+    mode: Mode,
+    cx: &mut AsyncApp,
+) -> Result<Outcome, catalog::Error> {
+    let (sender, mut progress) = mpsc::unbounded();
+    let sync = cx.background_spawn(async move {
+        let report = |progress: catalog::SyncProgress| {
+            sender.unbounded_send(progress).ok();
+        };
+        match stage {
+            SyncStage::Albums => {
+                catalog::sync_albums_watched(&catalog, &client, mode, report).await
+            }
+            SyncStage::Artists => {
+                catalog::sync_artists_watched(&catalog, &client, mode, report).await
+            }
+            SyncStage::Songs => catalog::sync_songs_watched(&catalog, &client, mode, report).await,
+        }
+    });
+    // Ends when the sync does, which drops the sender.
+    while let Some(catalog::SyncProgress { saved, total, .. }) = progress.next().await {
+        this.update(cx, |_, cx| {
+            cx.emit(LibraryEvent::SyncProgress {
+                stage,
+                saved,
+                total,
+            });
+        })
+        .ok();
+    }
+    sync.await
 }
 
 #[cfg(test)]

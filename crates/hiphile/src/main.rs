@@ -6,6 +6,7 @@
 
 mod app_shell;
 mod assets;
+mod library_activity;
 mod navigation;
 
 use gpui_kit::component::TitleBar;
@@ -53,6 +54,7 @@ fn main() {
             songs::init(cx);
             player::init(WORKSPACE_CONTEXT, cx);
             playlists::init(cx);
+            search::init(WORKSPACE_CONTEXT, cx);
             settings::init(cx);
             install_app_commands(cx);
 
@@ -171,6 +173,8 @@ pub(crate) fn set_menus(
             MenuItem::action("Save Queue as Playlist…", SaveQueue),
         ]),
         Menu::new("View").items([
+            MenuItem::action("Search…", search::OpenSearch),
+            MenuItem::separator(),
             MenuItem::action("Back", GoBack),
             MenuItem::action("Forward", GoForward),
             MenuItem::separator(),

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use actions::{EnqueueSongs, GoToArtist, Placement, PlaySongs, ShowAlbum, ShowArtist};
+use fuzzy::Index;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, Sizable as _,
@@ -16,18 +17,19 @@ use gpui_kit::{
     Styled as _, Subscription, Task, UniformListScrollHandle, Window, div,
     prelude::FluentBuilder as _,
 };
+use session::ReadingBook;
 use subsonic::{Song, SongId};
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
 use ui::{
     ListPaneHeader, LoadFailure, NowPlaying, RefreshFailure, centered, filter_input, muted_text,
-    row_list,
+    no_matches, row_list,
 };
 
 mod song_row;
 
 use song_row::SongRow;
 
-use crate::arrange::{Column, Sort, arrange};
+use crate::arrange::{Column, Sort, arrange, song_index};
 use crate::{
     AddToPlaylist, AddToQueue, FocusFilter, GoToAlbum, Open, PlayNext, ROOT_CONTEXT, SONGS_CONTEXT,
 };
@@ -43,9 +45,16 @@ pub struct Songs {
     is_reloading: bool,
     /// Why reading the songs on show again failed.
     refresh_error: Option<SharedString>,
-    /// Positions in the songs that match the filter, in the order of `sort`.
+    /// The loaded songs, ready to search.
+    index: Arc<Index>,
+    /// Positions in the songs that match the filter, in the order they show.
     visible: Arc<Vec<usize>>,
     sort: Sort,
+    /// Whether a filter ranks what it finds rather than following `sort`. So it
+    /// does until a heading is clicked; the next filter from empty does again.
+    by_relevance: bool,
+    /// The filter as last arranged, to tell when a new one starts.
+    query: SharedString,
     /// Kept by song, so it follows the song as the order changes.
     selected: Option<SongId>,
     /// Whether the user chose the selection. Until then it is simply the first
@@ -57,6 +66,7 @@ pub struct Songs {
     scroll: UniformListScrollHandle,
     _load_task: Task<()>,
     _arrange_task: Task<()>,
+    _index_task: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -70,20 +80,43 @@ enum SongList {
 /// the reading started.
 struct Arranged {
     songs: Vec<Song>,
+    index: Index,
     visible: Vec<usize>,
     query: SharedString,
     sort: Sort,
+    by_relevance: bool,
+    /// Whether there were dictionaries to read it with.
+    had_book: bool,
 }
 
 impl Arranged {
-    fn new(songs: Vec<Song>, query: SharedString, sort: Sort) -> Self {
-        let visible = arrange(&songs, &query, sort);
+    fn new(
+        songs: Vec<Song>,
+        book: Option<&ReadingBook>,
+        query: SharedString,
+        sort: Sort,
+        by_relevance: bool,
+    ) -> Self {
+        let index = read_songs(&songs, book);
+        let visible = arrange(&songs, &index, &query, sort, by_relevance);
         Self {
             songs,
+            index,
             visible,
             query,
             sort,
+            by_relevance,
+            had_book: book.is_some(),
         }
+    }
+}
+
+/// `songs` made searchable, as far as they read without a dictionary when there
+/// is no `book` to read them with. Takes a while: call it off the UI thread.
+fn read_songs(songs: &[Song], book: Option<&ReadingBook>) -> Index {
+    match book {
+        Some(book) => book.read(|speller| song_index(songs, Some(speller))),
+        None => song_index(songs, None),
     }
 }
 
@@ -91,9 +124,9 @@ impl Songs {
     pub fn new(session: session::Session, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter songs"));
         let focus = cx.focus_handle().tab_stop(true);
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             cx.subscribe_in(&filter, window, |this, _, event, window, cx| match event {
-                InputEvent::Change => this.rearrange(cx),
+                InputEvent::Change => this.filter_changed(cx),
                 InputEvent::PressEnter { .. } => this.focus.focus(window, cx),
                 _ => {}
             }),
@@ -101,14 +134,24 @@ impl Songs {
             cx.on_focus(&focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&focus, window, |_, _, cx| cx.notify()),
         ];
+        if let Some(readings) = session::readings(cx) {
+            subscriptions.push(
+                cx.subscribe(&readings, |this, _, _: &session::ReadingsChanged, cx| {
+                    this.read_again(cx)
+                }),
+            );
+        }
         Self {
             session,
             is_activated: false,
             songs: SongList::Loading,
             is_reloading: false,
             refresh_error: None,
+            index: Arc::default(),
             visible: Arc::default(),
             sort: Sort::DEFAULT,
+            by_relevance: true,
+            query: SharedString::default(),
             selected: None,
             has_chosen_selection: false,
             now_playing: None,
@@ -117,6 +160,7 @@ impl Songs {
             scroll: UniformListScrollHandle::new(),
             _load_task: Task::ready(()),
             _arrange_task: Task::ready(()),
+            _index_task: Task::ready(()),
             _subscriptions: subscriptions,
         }
     }
@@ -149,6 +193,8 @@ impl Songs {
         let catalog = self.session.catalog().cloned();
         let query = self.filter.read(cx).value();
         let sort = self.sort;
+        let by_relevance = self.by_relevance;
+        let book = self.session.reading_book(cx);
         self._load_task = cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
@@ -161,7 +207,13 @@ impl Songs {
                             .await
                             .map_err(|error| SharedString::from(session::describe(&error)))?,
                     };
-                    Ok(Arranged::new(songs, query, sort))
+                    Ok(Arranged::new(
+                        songs,
+                        book.as_ref(),
+                        query,
+                        sort,
+                        by_relevance,
+                    ))
                 })
                 .await;
             this.update(cx, |this, cx| this.finish_loading(result, cx))
@@ -177,11 +229,21 @@ impl Songs {
                 // Positions worked out for the songs going away mean nothing
                 // for these: `visible` only ever indexes the songs on show.
                 self._arrange_task = Task::ready(());
+                self._index_task = Task::ready(());
                 self.songs = SongList::Loaded(Arc::new(arranged.songs));
+                self.index = Arc::new(arranged.index);
                 self.visible = Arc::new(arranged.visible);
                 self.select_first_unless_chosen();
+                // Dictionaries that came or went during the reading had no songs
+                // yet to read again.
+                if arranged.had_book != self.session.reading_book(cx).is_some() {
+                    self.read_again(cx);
+                }
                 // The filter or the sort may have changed during the reading.
-                if arranged.query != self.filter.read(cx).value() || arranged.sort != self.sort {
+                if arranged.query != self.filter.read(cx).value()
+                    || arranged.sort != self.sort
+                    || arranged.by_relevance != self.by_relevance
+                {
                     self.rearrange(cx);
                 }
             }
@@ -223,11 +285,15 @@ impl Songs {
         let Some(songs) = self.loaded_songs().cloned() else {
             return;
         };
+        let index = self.index.clone();
         let query = self.filter.read(cx).value();
         let sort = self.sort;
+        let by_relevance = self.by_relevance;
         self._arrange_task = cx.spawn(async move |this, cx| {
             let visible = cx
-                .background_spawn(async move { arrange(&songs, &query, sort) })
+                .background_spawn(
+                    async move { arrange(&songs, &index, &query, sort, by_relevance) },
+                )
                 .await;
             this.update(cx, |this, cx| {
                 this.visible = Arc::new(visible);
@@ -239,10 +305,53 @@ impl Songs {
         });
     }
 
+    fn filter_changed(&mut self, cx: &mut Context<Self>) {
+        let query = self.filter.read(cx).value();
+        if self.query.trim().is_empty() {
+            self.by_relevance = true;
+        }
+        self.query = query;
+        self.rearrange(cx);
+    }
+
+    /// Makes the songs searchable again, with dictionaries that have come or
+    /// gone. The songs on show stay as they are until that is done.
+    fn read_again(&mut self, cx: &mut Context<Self>) {
+        let Some(songs) = self.loaded_songs().cloned() else {
+            return;
+        };
+        let book = self.session.reading_book(cx);
+        self._index_task = cx.spawn(async move |this, cx| {
+            let index = cx
+                .background_spawn(async move { read_songs(&songs, book.as_ref()) })
+                .await;
+            this.update(cx, |this, cx| {
+                this.index = Arc::new(index);
+                this.rearrange(cx);
+            })
+            .ok();
+        });
+    }
+
     fn sort_by(&mut self, column: Column, cx: &mut Context<Self>) {
-        self.sort = self.sort.clicked(column);
+        // A heading clicked while the rows follow relevance shows as not sorted,
+        // so it starts from the top rather than turning its column around.
+        self.sort = if self.is_ranked(cx) {
+            Sort {
+                column,
+                is_descending: false,
+            }
+        } else {
+            self.sort.clicked(column)
+        };
+        self.by_relevance = false;
         self.rearrange(cx);
         cx.notify();
+    }
+
+    /// Whether the rows follow relevance rather than a heading.
+    fn is_ranked(&self, cx: &App) -> bool {
+        self.by_relevance && !self.filter.read(cx).value().trim().is_empty()
     }
 
     fn bring_selection_into_view(&self) {
@@ -337,7 +446,8 @@ impl Songs {
         column: Column,
         cx: &mut Context<Self>,
     ) -> Button {
-        let sorted = (self.sort.column == column).then_some(self.sort.is_descending);
+        let sorted =
+            (self.sort.column == column && !self.is_ranked(cx)).then_some(self.sort.is_descending);
         let (icon, description) = match sorted {
             Some(false) => (
                 Some(IconName::ArrowUp),
@@ -437,7 +547,8 @@ impl Songs {
             return centered(muted_text("This server has no songs.", cx)).into_any_element();
         }
         if self.visible.is_empty() {
-            return centered(muted_text("No songs match the filter.", cx)).into_any_element();
+            let note = session::missing_readings_note(cx);
+            return no_matches("No songs match the filter.", note, cx).into_any_element();
         }
         let visible = self.visible.clone();
         let selected = self.selected.clone();

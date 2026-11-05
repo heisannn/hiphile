@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 
+use fuzzy::{Index, Speller};
 use subsonic::Song;
 
 /// A column of the table of songs.
@@ -101,25 +102,35 @@ fn compare(a: &Key, b: &Key, sort: Sort) -> Ordering {
     }
 }
 
-/// Whether `song` has `query`, already lowercased, in its title, artist or album.
-fn matches(song: &Song, query: &str) -> bool {
-    let has = |text: &str| text.to_lowercase().contains(query);
-    query.is_empty()
-        || has(song.title())
-        || song.artist().is_some_and(has)
-        || song.album().is_some_and(has)
+/// `songs`, to find by their title, artist or album.
+pub(crate) fn song_index(songs: &[Song], speller: Option<&dyn Speller>) -> Index {
+    Index::new(
+        songs.iter().map(|song| {
+            let title = Some(song.title());
+            [title, song.artist(), song.album()].into_iter().flatten()
+        }),
+        speller,
+    )
 }
 
-/// Positions of the songs that match `query`, ignoring case, in the order of
-/// `sort`. Songs that compare the same go by ID, so that the order holds
-/// whatever order the songs arrive in.
-pub(crate) fn arrange(songs: &[Song], query: &str, sort: Sort) -> Vec<usize> {
-    let query = query.trim().to_lowercase();
-    let mut keyed: Vec<(usize, Key)> = songs
-        .iter()
-        .enumerate()
-        .filter(|(_, song)| matches(song, &query))
-        .map(|(ix, song)| (ix, Key::new(song)))
+/// Positions of the songs that match `query`: the best first when `by_relevance`
+/// and there is a query to rank by, otherwise in the order of `sort`. Songs that
+/// compare the same go by ID, so that the order holds whatever order the songs
+/// arrive in.
+pub(crate) fn arrange(
+    songs: &[Song],
+    index: &Index,
+    query: &str,
+    sort: Sort,
+    by_relevance: bool,
+) -> Vec<usize> {
+    let found = index.search(query);
+    if by_relevance && !query.trim().is_empty() {
+        return found;
+    }
+    let mut keyed: Vec<(usize, Key)> = found
+        .into_iter()
+        .map(|ix| (ix, Key::new(&songs[ix])))
         .collect();
     keyed.sort_unstable_by(|(a_ix, a), (b_ix, b)| {
         compare(a, b, sort).then_with(|| songs[*a_ix].id().cmp(songs[*b_ix].id()))
@@ -161,7 +172,8 @@ mod tests {
             column,
             is_descending,
         };
-        arrange(songs, query, sort)
+        let index = song_index(songs, None);
+        arrange(songs, &index, query, sort, false)
             .into_iter()
             .map(|ix| songs[ix].id().to_string())
             .collect()
@@ -244,6 +256,26 @@ mod tests {
         assert_eq!(ids(&songs, "coltrane", Column::Title, false), ["b1"]);
         assert_eq!(ids(&songs, "kind of", Column::Title, false), ["a2", "a1"]);
         assert!(ids(&songs, "nobody", Column::Title, false).is_empty());
+    }
+
+    #[test]
+    fn a_query_goes_by_relevance_until_a_heading_is_asked_for() {
+        let songs = [
+            song(json!({ "id": "a", "title": "Kind of Blue" })),
+            song(json!({ "id": "b", "title": "Blue Train" })),
+        ];
+        let index = song_index(&songs, None);
+        let sort = Sort::DEFAULT;
+        assert_eq!(arrange(&songs, &index, "blue", sort, true), [1, 0]);
+        // Sorted by title, where B comes before K.
+        assert_eq!(arrange(&songs, &index, "blue", sort, false), [1, 0]);
+        let by_time = Sort {
+            column: Column::Title,
+            is_descending: true,
+        };
+        assert_eq!(arrange(&songs, &index, "blue", by_time, false), [0, 1]);
+        // Nothing to rank by, so the sort it is.
+        assert_eq!(arrange(&songs, &index, " ", by_time, true), [0, 1]);
     }
 
     #[test]

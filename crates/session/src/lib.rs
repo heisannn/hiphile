@@ -5,6 +5,8 @@
 //! hands to feature views.
 
 mod http;
+mod reading_book;
+mod readings;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -12,13 +14,16 @@ use std::sync::{Arc, Mutex, PoisonError};
 use gpui_kit::{App, Global, SharedString};
 use subsonic::{AlbumId, AlbumWithSongs, CoverArtId, ServerInfo};
 
+pub use reading_book::ReadingBook;
+pub use readings::{Readings, ReadingsChanged, ReadingsState, missing_readings_note, readings};
+
 struct GlobalCovers(catalog::CoverStore);
 
 impl Global for GlobalCovers {}
 
 /// Installs the shared transport, which keeps cover art on disk when the
-/// system has a cache directory. Call once at startup, after
-/// `gpui_kit::init`.
+/// system has a cache directory, and starts fetching what reads kanji. Call
+/// once at startup, after `gpui_kit::init`.
 pub fn init(net: net::Client, cx: &mut App) {
     let capacity = match config::Store::user() {
         Ok(store) => store.cover_cache_capacity(),
@@ -32,6 +37,7 @@ pub fn init(net: net::Client, cx: &mut App) {
     if let Some(covers) = &covers {
         cx.set_global(GlobalCovers(covers.clone()));
     }
+    readings::init(net.clone(), cx);
     cx.set_http_client(Arc::new(http::NetHttpClient::new(net, covers)));
 }
 
@@ -56,6 +62,7 @@ pub struct Session {
     catalog: Option<catalog::Catalog>,
     scrobbles: Option<catalog::Scrobbles>,
     cover_urls: Arc<Mutex<HashMap<(CoverArtId, u32), SharedString>>>,
+    reading_gate: Arc<Mutex<()>>,
 }
 
 impl Session {
@@ -76,7 +83,18 @@ impl Session {
             catalog,
             scrobbles,
             cover_urls: Arc::default(),
+            reading_gate: Arc::default(),
         }
+    }
+
+    /// What reads kanji for building a list's index, when the dictionaries are
+    /// there. Each list asks again: they come and go.
+    pub fn reading_book(&self, cx: &App) -> Option<ReadingBook> {
+        Some(ReadingBook {
+            dir: readings::readings_dir(cx)?,
+            catalog: self.catalog.clone(),
+            gate: self.reading_gate.clone(),
+        })
     }
 
     /// The URL of a cover image `size` pixels across.

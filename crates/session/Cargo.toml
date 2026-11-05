@@ -12,6 +12,7 @@ catalog.workspace = true
 client.workspace = true
 config.workspace = true
 futures.workspace = true
+fuzzy.workspace = true
 gpui-kit.workspace = true
 net.workspace = true
 subsonic.workspace = true

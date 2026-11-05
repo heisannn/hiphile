@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::time::{Duration, SystemTime};
 
-use subsonic::{Album, ScanStatus, Song};
+use subsonic::{Album, Artist, ScanStatus, Song};
 
 use crate::store::Kind;
 use crate::{Catalog, Error};
@@ -21,6 +21,9 @@ pub trait Source: Sync {
         size: u32,
         offset: u32,
     ) -> impl Future<Output = Result<Vec<Album>, client::Error>> + Send;
+
+    /// Every artist, in the order to list them.
+    fn artists(&self) -> impl Future<Output = Result<Vec<Artist>, client::Error>> + Send;
 
     /// One page of every song, in an order that holds between pages.
     fn songs_page(
@@ -42,6 +45,10 @@ impl Source for client::Client {
         offset: u32,
     ) -> impl Future<Output = Result<Vec<Album>, client::Error>> + Send {
         client::Client::albums_page(self, size, offset)
+    }
+
+    fn artists(&self) -> impl Future<Output = Result<Vec<Artist>, client::Error>> + Send {
+        client::Client::artists(self)
     }
 
     fn songs_page(
@@ -84,6 +91,16 @@ pub enum Outcome {
     Busy,
 }
 
+/// How far a sync that is fetching has got.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SyncProgress {
+    /// Items saved so far.
+    pub saved: usize,
+    /// How many there are likely to be in all. A guess: more may arrive.
+    pub total: Option<usize>,
+}
+
 /// Brings the albums up to date with the server.
 ///
 /// Each page is kept as it arrives, so a sync that fails partway leaves the
@@ -95,7 +112,38 @@ pub async fn sync_albums(
     source: &impl Source,
     mode: Mode,
 ) -> Result<Outcome, Error> {
-    run(catalog, source, Kind::Albums, mode).await
+    run(catalog, source, Kind::Albums, mode, &|_| {}).await
+}
+
+/// [`sync_albums`], telling `on_progress` what it has got to. Says nothing when
+/// the albums are up to date.
+pub async fn sync_albums_watched(
+    catalog: &Catalog,
+    source: &impl Source,
+    mode: Mode,
+    on_progress: impl Fn(SyncProgress) + Send + Sync,
+) -> Result<Outcome, Error> {
+    run(catalog, source, Kind::Albums, mode, &on_progress).await
+}
+
+/// Brings the artists up to date with the server, as [`sync_albums`] does albums.
+pub async fn sync_artists(
+    catalog: &Catalog,
+    source: &impl Source,
+    mode: Mode,
+) -> Result<Outcome, Error> {
+    run(catalog, source, Kind::Artists, mode, &|_| {}).await
+}
+
+/// [`sync_artists`], telling `on_progress` what it has got to, as
+/// [`sync_albums_watched`] does.
+pub async fn sync_artists_watched(
+    catalog: &Catalog,
+    source: &impl Source,
+    mode: Mode,
+    on_progress: impl Fn(SyncProgress) + Send + Sync,
+) -> Result<Outcome, Error> {
+    run(catalog, source, Kind::Artists, mode, &on_progress).await
 }
 
 /// Brings every song up to date with the server, as [`sync_albums`] does
@@ -105,7 +153,37 @@ pub async fn sync_songs(
     source: &impl Source,
     mode: Mode,
 ) -> Result<Outcome, Error> {
-    run(catalog, source, Kind::Songs, mode).await
+    run(catalog, source, Kind::Songs, mode, &|_| {}).await
+}
+
+/// [`sync_songs`], telling `on_progress` what it has got to, as
+/// [`sync_albums_watched`] does.
+pub async fn sync_songs_watched(
+    catalog: &Catalog,
+    source: &impl Source,
+    mode: Mode,
+    on_progress: impl Fn(SyncProgress) + Send + Sync,
+) -> Result<Outcome, Error> {
+    run(catalog, source, Kind::Songs, mode, &on_progress).await
+}
+
+/// How many items are likely to arrive, for showing how far a sync has got:
+/// the last sync's number, or the server's count of songs when that is more.
+/// Artists arrive all at once, which leaves nothing to show.
+fn expected_total(
+    catalog: &Catalog,
+    kind: Kind,
+    before: Option<&ScanStatus>,
+) -> Result<Option<usize>, Error> {
+    let scanned = match kind {
+        Kind::Artists => return Ok(None),
+        Kind::Albums => 0,
+        Kind::Songs => before
+            .and_then(ScanStatus::count)
+            .and_then(|count| usize::try_from(count).ok())
+            .unwrap_or_default(),
+    };
+    Ok(Some(catalog.count(kind)?.max(scanned)).filter(|total| *total > 0))
 }
 
 async fn run(
@@ -113,6 +191,7 @@ async fn run(
     source: &impl Source,
     kind: Kind,
     mode: Mode,
+    on_progress: &(impl Fn(SyncProgress) + Sync),
 ) -> Result<Outcome, Error> {
     let Some(_lock) = catalog.try_lock_sync()? else {
         return Ok(Outcome::Busy);
@@ -125,8 +204,10 @@ async fn run(
     }
 
     let before = source.scan_status().await.ok();
+    let total = expected_total(catalog, kind, before.as_ref())?;
     let generation = catalog.begin(kind)?;
     let mut count = 0;
+    on_progress(SyncProgress { saved: 0, total });
     // Pages that shift under the sync send one item twice where they skip
     // another, so an item seen again means one may be missing.
     let mut seen = HashSet::new();
@@ -142,6 +223,15 @@ async fn run(
                 }
                 page.len()
             }
+            // They all come at once, which leaves no next page to ask for.
+            Kind::Artists => {
+                let artists = source.artists().await?;
+                catalog.store_artists(generation, &artists)?;
+                for artist in &artists {
+                    repeated |= !seen.insert(artist.id().as_str().to_owned());
+                }
+                break;
+            }
             Kind::Songs => {
                 let page = source.songs_page(PAGE_SIZE, offset).await?;
                 catalog.store_songs(generation, &page)?;
@@ -152,6 +242,10 @@ async fn run(
             }
         };
         count += received;
+        on_progress(SyncProgress {
+            saved: count,
+            total,
+        });
         if received < PAGE_SIZE as usize {
             break;
         }
@@ -196,6 +290,8 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         albums: Vec<Album>,
+        artists: Vec<Artist>,
+        artists_fail: bool,
         songs: Vec<Song>,
         modified: Option<u64>,
         scanning: bool,
@@ -215,6 +311,13 @@ mod tests {
                 return Err(client::Error::HttpStatus(502));
             }
             Ok(page(&self.albums, size, offset))
+        }
+
+        async fn artists(&self) -> Result<Vec<Artist>, client::Error> {
+            if self.artists_fail {
+                return Err(client::Error::HttpStatus(502));
+            }
+            Ok(self.artists.clone())
         }
 
         async fn songs_page(&self, size: u32, offset: u32) -> Result<Vec<Song>, client::Error> {
@@ -298,6 +401,120 @@ mod tests {
         assert_eq!(stored.len(), 1203);
         assert_eq!(ids(&stored[..3]), ["a1", "a0", "a2"]);
         assert_eq!(stored[1202].id().as_str(), "a1202");
+    }
+
+    fn artist(id: &str) -> Artist {
+        serde_json::from_value(json!({ "id": id, "name": id })).unwrap()
+    }
+
+    fn artist_ids(catalog: &Catalog) -> Vec<String> {
+        let artists = catalog.artists().unwrap();
+        artists.iter().map(|it| it.id().to_string()).collect()
+    }
+
+    #[test]
+    fn artists_are_kept_in_the_server_order_and_go_when_the_server_drops_them() {
+        let (_dir, catalog) = catalog();
+        let mut source = Fake {
+            artists: vec![artist("z"), artist("a"), artist("m")],
+            ..Fake::default()
+        };
+        let outcome = block_on(sync_artists(&catalog, &source, Mode::Always)).unwrap();
+        assert_eq!(outcome, Outcome::Synced { count: 3 });
+        assert_eq!(artist_ids(&catalog), ["z", "a", "m"]);
+
+        source.artists.remove(1);
+        block_on(sync_artists(&catalog, &source, Mode::Always)).unwrap();
+        assert_eq!(artist_ids(&catalog), ["z", "m"]);
+    }
+
+    #[test]
+    fn a_failed_sync_of_artists_keeps_them_and_stays_stale() {
+        let (_dir, catalog) = catalog();
+        let mut source = Fake {
+            artists: vec![artist("a")],
+            ..Fake::default()
+        };
+        block_on(sync_artists(&catalog, &source, Mode::Always)).unwrap();
+
+        source.artists_fail = true;
+        assert!(block_on(sync_artists(&catalog, &source, Mode::Always)).is_err());
+        assert_eq!(artist_ids(&catalog), ["a"]);
+
+        source.artists_fail = false;
+        let outcome = block_on(sync_artists(&catalog, &source, Mode::IfStale)).unwrap();
+        assert_eq!(outcome, Outcome::Synced { count: 1 });
+    }
+
+    /// What a sync of albums told, as it went.
+    fn watched(catalog: &Catalog, source: &Fake, mode: Mode) -> Vec<SyncProgress> {
+        let told = Mutex::new(Vec::new());
+        block_on(sync_albums_watched(catalog, source, mode, |progress| {
+            told.lock().unwrap().push(progress);
+        }))
+        .unwrap();
+        told.into_inner().unwrap()
+    }
+
+    fn saved(told: &[SyncProgress]) -> Vec<usize> {
+        told.iter().map(|progress| progress.saved).collect()
+    }
+
+    #[test]
+    fn a_sync_tells_what_it_saved_page_by_page() {
+        let (_dir, catalog) = catalog();
+        let source = Fake {
+            albums: albums(1203),
+            ..Fake::default()
+        };
+        let told = watched(&catalog, &source, Mode::Always);
+        assert_eq!(saved(&told), [0, 500, 1000, 1203]);
+        assert!(told.iter().all(|progress| progress.total.is_none()));
+    }
+
+    #[test]
+    fn a_sync_expects_as_many_as_the_last_one_saved() {
+        let (_dir, catalog) = catalog();
+        let source = Fake {
+            albums: albums(3),
+            ..Fake::default()
+        };
+        block_on(sync_albums(&catalog, &source, Mode::Always)).unwrap();
+
+        let told = watched(&catalog, &source, Mode::Always);
+
+        assert_eq!(told[0].total, Some(3));
+    }
+
+    #[test]
+    fn a_sync_expects_as_many_songs_as_the_server_counts() {
+        let (_dir, catalog) = catalog();
+        let told = Mutex::new(Vec::new());
+        block_on(sync_songs_watched(
+            &catalog,
+            &Fake::default(),
+            Mode::Always,
+            |progress| told.lock().unwrap().push(progress),
+        ))
+        .unwrap();
+        assert_eq!(told.into_inner().unwrap()[0].total, Some(10));
+    }
+
+    #[test]
+    fn nothing_is_told_of_a_sync_with_nothing_to_fetch() {
+        let (_dir, catalog) = catalog();
+        let source = Fake::default();
+        block_on(sync_albums(&catalog, &source, Mode::Always)).unwrap();
+        assert!(watched(&catalog, &source, Mode::IfStale).is_empty());
+    }
+
+    #[test]
+    fn artists_up_to_date_are_not_asked_for() {
+        let (_dir, catalog) = catalog();
+        let source = Fake::default();
+        block_on(sync_artists(&catalog, &source, Mode::Always)).unwrap();
+        let outcome = block_on(sync_artists(&catalog, &source, Mode::IfStale)).unwrap();
+        assert_eq!(outcome, Outcome::UpToDate);
     }
 
     #[test]

@@ -62,21 +62,9 @@ actions!(
 /// Registers key bindings. Call before building the menu bar.
 pub fn init(cx: &mut App) {
     let (find, play, delete, show_album, add_to_playlist) = if cx.platform_info().is_mac() {
-        (
-            "cmd-f",
-            "cmd-enter",
-            "cmd-backspace",
-            "cmd-l",
-            "cmd-shift-p",
-        )
+        ("cmd-f", "cmd-enter", "cmd-backspace", "cmd-l", "cmd-p")
     } else {
-        (
-            "ctrl-f",
-            "ctrl-enter",
-            "ctrl-backspace",
-            "ctrl-l",
-            "ctrl-shift-p",
-        )
+        ("ctrl-f", "ctrl-enter", "ctrl-backspace", "ctrl-l", "ctrl-p")
     };
     for context in [PLAYLISTS_CONTEXT, SONGS_CONTEXT] {
         bind_list_navigation(context, cx);

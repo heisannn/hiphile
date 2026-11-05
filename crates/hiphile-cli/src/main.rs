@@ -210,6 +210,12 @@ fn sync(args: ServerArgs) -> anyhow::Result<()> {
         catalog::Mode::Always,
     ))?;
     report("albums", albums)?;
+    let artists = block_on(catalog::sync_artists(
+        &catalog,
+        &client,
+        catalog::Mode::Always,
+    ))?;
+    report("artists", artists)?;
     let songs = block_on(catalog::sync_songs(
         &catalog,
         &client,

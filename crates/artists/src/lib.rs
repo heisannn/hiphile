@@ -55,9 +55,9 @@ struct AddSelectionToPlaylist {
 /// Registers key bindings. Call before building the menu bar.
 pub fn init(cx: &mut App) {
     let (find, play, add_to_playlist, go_to_album) = if cx.platform_info().is_mac() {
-        ("cmd-f", "cmd-enter", "cmd-shift-p", "cmd-l")
+        ("cmd-f", "cmd-enter", "cmd-p", "cmd-l")
     } else {
-        ("ctrl-f", "ctrl-enter", "ctrl-shift-p", "ctrl-l")
+        ("ctrl-f", "ctrl-enter", "ctrl-p", "ctrl-l")
     };
     for context in [ARTISTS_CONTEXT, DETAIL_CONTEXT] {
         bind_list_navigation(context, cx);

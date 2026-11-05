@@ -10,7 +10,7 @@ mod library_view;
 use gpui_kit::{App, KeyBinding, actions};
 use ui::list_navigation::bind_list_navigation;
 
-pub use library_view::{Library, LibraryEvent};
+pub use library_view::{Library, LibraryEvent, SyncStage};
 
 /// Key context of the focused album list.
 pub const ALBUMS_CONTEXT: &str = "LibraryAlbums";
@@ -52,9 +52,9 @@ struct AddAlbumToPlaylist {
 /// Registers key bindings. Call before building the menu bar.
 pub fn init(cx: &mut App) {
     let (find, refresh, add_to_playlist, play) = if cx.platform_info().is_mac() {
-        ("cmd-f", "cmd-r", "cmd-shift-p", "cmd-enter")
+        ("cmd-f", "cmd-r", "cmd-p", "cmd-enter")
     } else {
-        ("ctrl-f", "ctrl-r", "ctrl-shift-p", "ctrl-enter")
+        ("ctrl-f", "ctrl-r", "ctrl-p", "ctrl-enter")
     };
     for context in [ALBUMS_CONTEXT, SONGS_CONTEXT] {
         bind_list_navigation(context, cx);

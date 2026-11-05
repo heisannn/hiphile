@@ -22,7 +22,7 @@ use ui::list_navigation::{CONTROL_CONTEXT, ListNavigationExt as _, Motion, page_
 use ui::{
     DetailHeader, ListFilter, ListPaneHeader, LoadFailure, MasterDetail, NowPlaying,
     RefreshFailure, centered, format_duration, format_song_count, join_details, muted_text,
-    row_list,
+    no_matches, row_list,
 };
 
 mod dialogs;
@@ -36,7 +36,7 @@ use playlist_row::PlaylistRow;
 use song_row::SongRow;
 
 use crate::entries::{Entries, EntryId};
-use crate::filter::matching_playlists;
+use crate::filter::playlist_index;
 use crate::writes::WriteQueue;
 use crate::{
     AddToPlaylist, AddToQueue, Back, Delete, FocusFilter, MoveDown, MoveUp, Open,
@@ -67,7 +67,9 @@ pub struct Playlists {
     list: List,
     /// Why updating a list already on show failed.
     refresh_error: Option<SharedString>,
-    /// Positions in the loaded playlists that match the filter.
+    /// The loaded playlists, ready to search.
+    index: Arc<fuzzy::Index>,
+    /// Positions in the loaded playlists that match the filter, the best first.
     visible: Arc<Vec<usize>>,
     selected: Option<PlaylistId>,
     detail: Detail,
@@ -98,6 +100,7 @@ pub struct Playlists {
     _detail_task: Task<()>,
     _write_task: Task<()>,
     _create_task: Task<()>,
+    _index_task: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -151,6 +154,7 @@ impl Playlists {
             session,
             list: List::Loading,
             refresh_error: None,
+            index: Arc::default(),
             visible: Arc::default(),
             selected: None,
             detail: Detail::None,
@@ -173,8 +177,16 @@ impl Playlists {
             _detail_task: Task::ready(()),
             _write_task: Task::ready(()),
             _create_task: Task::ready(()),
+            _index_task: Task::ready(()),
             _subscriptions: subscriptions,
         };
+        if let Some(readings) = session::readings(cx) {
+            this._subscriptions.push(
+                cx.subscribe(&readings, |this, _, _: &session::ReadingsChanged, cx| {
+                    this.index_playlists(cx)
+                }),
+            );
+        }
         this.refresh(window, cx);
         this
     }
@@ -246,7 +258,7 @@ impl Playlists {
             .as_ref()
             .is_some_and(|selected| playlists.iter().any(|playlist| playlist.id() == selected));
         self.list = List::Loaded(Arc::new(playlists));
-        self.apply_filter(cx);
+        self.index_playlists(cx);
         if !keeps_selection {
             self.clear_selection();
             if let Some(first) = self
@@ -288,12 +300,34 @@ impl Playlists {
 
     fn apply_filter(&mut self, cx: &mut Context<Self>) {
         let query = self.filter.read(cx).value();
-        self.visible = Arc::new(
-            self.loaded_list()
-                .map(|playlists| matching_playlists(playlists, &query))
-                .unwrap_or_default(),
-        );
+        self.visible = Arc::new(self.index.search(&query));
         cx.notify();
+    }
+
+    /// Makes the playlists searchable at once as far as they read without a
+    /// dictionary, then, off the UI thread, as far as they read with one.
+    fn index_playlists(&mut self, cx: &mut Context<Self>) {
+        let Some(playlists) = self.loaded_list().cloned() else {
+            return;
+        };
+        self.index = Arc::new(playlist_index(&playlists, None));
+        self._index_task = Task::ready(());
+        self.apply_filter(cx);
+        let Some(book) = self.session.reading_book(cx) else {
+            return;
+        };
+        self._index_task = cx.spawn(async move |this, cx| {
+            let index = cx
+                .background_spawn(async move {
+                    book.read(|speller| playlist_index(&playlists, Some(speller)))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.index = Arc::new(index);
+                this.apply_filter(cx);
+            })
+            .ok();
+        });
     }
 
     pub fn selected_playlist_id(&self) -> Option<&PlaylistId> {
@@ -789,7 +823,8 @@ impl Playlists {
             .into_any_element();
         }
         if self.visible.is_empty() {
-            return centered(muted_text("No playlists match the filter.", cx)).into_any_element();
+            let note = session::missing_readings_note(cx);
+            return no_matches("No playlists match the filter.", note, cx).into_any_element();
         }
 
         let visible = self.visible.clone();

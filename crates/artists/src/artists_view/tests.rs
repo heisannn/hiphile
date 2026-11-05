@@ -122,12 +122,17 @@ fn view_on<'a>(
 /// What a sync keeps in a catalog.
 struct Saved {
     albums: Vec<Album>,
+    artists: Vec<Artist>,
     songs: Vec<Song>,
 }
 
 impl catalog::Source for Saved {
     async fn albums_page(&self, _: u32, _: u32) -> Result<Vec<Album>, client::Error> {
         Ok(self.albums.clone())
+    }
+
+    async fn artists(&self) -> Result<Vec<Artist>, client::Error> {
+        Ok(self.artists.clone())
     }
 
     async fn songs_page(&self, _: u32, _: u32) -> Result<Vec<Song>, client::Error> {
@@ -146,6 +151,7 @@ impl catalog::Source for Saved {
 fn keep(catalog: &catalog::Catalog, saved: Saved) {
     let mode = catalog::Mode::Always;
     futures::executor::block_on(catalog::sync_albums(catalog, &saved, mode)).unwrap();
+    futures::executor::block_on(catalog::sync_artists(catalog, &saved, mode)).unwrap();
     futures::executor::block_on(catalog::sync_songs(catalog, &saved, mode)).unwrap();
 }
 
@@ -232,7 +238,7 @@ fn show(view: &mut Artists, top_songs: usize, similar: Vec<Artist>, cx: &mut Con
         artist("b", "Bill Evans"),
         artist("m", "Miles Davis"),
     ]));
-    view.apply_filter(cx);
+    view.index_artists(cx);
     view.select_artist(ArtistId::new("m"), cx);
     view._albums_task = Task::ready(());
     view._top_songs_task = Task::ready(());
@@ -718,6 +724,7 @@ fn reveal_guest(view: &Entity<Artists>, cx: &mut VisualTestContext) {
 fn guest_songs() -> Saved {
     Saved {
         albums: Vec::new(),
+        artists: Vec::new(),
         songs: vec![
             song_by("b1", "x", "Blue", 1),
             song_by("other", "m", "Blue", 2),
@@ -790,6 +797,68 @@ fn songs_arriving_in_a_sync_fill_the_page_of_an_artist_with_no_albums(cx: &mut T
     });
 }
 
+fn saved_artist(id: &str, name: &str) -> Artist {
+    serde_json::from_value(json!({ "id": id, "name": name })).unwrap()
+}
+
+fn listed_names(view: &Entity<Artists>, cx: &mut VisualTestContext) -> Vec<String> {
+    cx.update(|_, cx| {
+        let artists = view.read(cx).loaded_artists().unwrap().clone();
+        artists.iter().map(|it| it.name().to_owned()).collect()
+    })
+}
+
+#[gpui_kit::test]
+fn the_saved_artists_show_without_asking_the_server(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let catalog = catalog::Catalog::open(dir.path()).unwrap();
+    let saved = Saved {
+        albums: Vec::new(),
+        artists: vec![saved_artist("m", "Miles Davis")],
+        songs: Vec::new(),
+    };
+    keep(&catalog, saved);
+    let (view, cx) = view_with("http://127.0.0.1:9", Some(catalog), cx);
+
+    update(&view, cx, |view, cx| view.activate(cx));
+    wait_until(&view, cx, |view| !view.is_refreshing);
+
+    assert_eq!(listed_names(&view, cx), ["Miles Davis"]);
+    cx.update(|_, cx| assert!(view.read(cx).refresh_error.is_none()));
+}
+
+#[gpui_kit::test]
+fn a_sync_of_artists_changes_the_list_on_show(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let catalog = catalog::Catalog::open(dir.path()).unwrap();
+    let saved = |artists| Saved {
+        albums: Vec::new(),
+        artists,
+        songs: Vec::new(),
+    };
+    keep(&catalog, saved(vec![saved_artist("m", "Miles Davis")]));
+    let (view, cx) = view_with("http://127.0.0.1:9", Some(catalog.clone()), cx);
+    update(&view, cx, |view, cx| view.activate(cx));
+    wait_until(&view, cx, |view| !view.is_refreshing);
+
+    keep(&catalog, saved(vec![saved_artist("j", "John Coltrane")]));
+    update(&view, cx, |view, cx| view.artists_synced(cx));
+    wait_until(&view, cx, |view| !view.is_refreshing);
+
+    assert_eq!(listed_names(&view, cx), ["John Coltrane"]);
+}
+
+#[gpui_kit::test]
+fn a_sync_of_artists_leaves_a_screen_yet_to_show_alone(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let catalog = catalog::Catalog::open(dir.path()).unwrap();
+    let (view, cx) = view_with("http://127.0.0.1:9", Some(catalog), cx);
+
+    update(&view, cx, |view, cx| view.artists_synced(cx));
+
+    cx.update(|_, cx| assert!(!view.read(cx).is_refreshing));
+}
+
 #[gpui_kit::test]
 fn the_saved_albums_show_when_the_server_cannot_be_reached(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
@@ -797,6 +866,7 @@ fn the_saved_albums_show_when_the_server_cannot_be_reached(cx: &mut TestAppConte
     let album: Album = serde_json::from_value(album_json("a1", 1959)).unwrap();
     let saved = Saved {
         albums: vec![album],
+        artists: Vec::new(),
         songs: Vec::new(),
     };
     keep(&catalog, saved);
@@ -1229,7 +1299,7 @@ fn moving_through_artists_asks_the_server_only_about_where_it_stops(cx: &mut Tes
             artist("b", "Bill Evans"),
             artist("m", "Miles Davis"),
         ]));
-        view.apply_filter(cx);
+        view.index_artists(cx);
         view.select_artist(ArtistId::new("b"), cx);
     });
     cx.executor().advance_clock(SERVER_DELAY / 2);

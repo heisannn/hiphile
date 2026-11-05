@@ -25,6 +25,14 @@ fn library_on<'a>(
     url: &str,
     cx: &'a mut TestAppContext,
 ) -> (Entity<Library>, &'a mut VisualTestContext) {
+    library_saving_in(None, url, cx)
+}
+
+fn library_saving_in<'a>(
+    catalog: Option<catalog::Catalog>,
+    url: &str,
+    cx: &'a mut TestAppContext,
+) -> (Entity<Library>, &'a mut VisualTestContext) {
     // The failing requests wake the test from the network's own thread.
     cx.executor().allow_parking();
     cx.update(gpui_kit::init);
@@ -35,7 +43,7 @@ fn library_on<'a>(
         client::Client::new(net, server),
         "alice".to_owned(),
         info,
-        None,
+        catalog,
         None,
     );
     let (library, cx) = cx.add_window_view(|window, cx| Library::new(session, window, cx));
@@ -413,7 +421,10 @@ fn count_events(library: &Entity<Library>, cx: &mut VisualTestContext) -> Rc<Ref
                 LibraryEvent::AlbumsSynced => 0,
                 LibraryEvent::SongsSynced => 1,
                 LibraryEvent::SyncFailed(_) => 2,
-                LibraryEvent::LeftAlbum(_) => return,
+                LibraryEvent::ArtistsSynced
+                | LibraryEvent::SyncProgress { .. }
+                | LibraryEvent::SyncFinished
+                | LibraryEvent::LeftAlbum(_) => return,
             };
             seen.borrow_mut()[ix] += 1;
         })
@@ -431,6 +442,58 @@ fn wait_for(cx: &mut VisualTestContext, done: impl Fn(&mut VisualTestContext) ->
         std::thread::sleep(Duration::from_millis(10));
     }
     panic!("what was waited for never happened");
+}
+
+#[gpui_kit::test]
+fn a_sync_saves_the_artists_and_says_so(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let catalog = catalog::Catalog::open(dir.path()).unwrap();
+    let url = server_answering(json!({
+        "albumList2": { "album": [] },
+        "artists": { "index": [
+            { "name": "M", "artist": [{ "id": "m", "name": "Miles Davis" }] },
+        ]},
+        "searchResult3": { "song": [] },
+        "scanStatus": { "scanning": false },
+    }));
+    let (library, cx) = library_saving_in(Some(catalog.clone()), &url, cx);
+    let told = Rc::new(RefCell::new(false));
+    cx.update(|_, cx| {
+        let told = told.clone();
+        cx.subscribe(&library, move |_, event, _| {
+            if matches!(event, LibraryEvent::ArtistsSynced) {
+                *told.borrow_mut() = true;
+            }
+        })
+        .detach();
+    });
+
+    wait_for(cx, |_| *told.borrow());
+
+    let saved = catalog.artists().unwrap();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].name(), "Miles Davis");
+}
+
+#[gpui_kit::test]
+fn artists_that_fail_to_sync_do_not_stop_the_songs(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let catalog = catalog::Catalog::open(dir.path()).unwrap();
+    let url = server_answering(json!({
+        "albumList2": { "album": [] },
+        "artists": "not a list of artists",
+        "searchResult3": { "song": [{ "id": "s", "title": "So What" }] },
+        "scanStatus": { "scanning": false },
+    }));
+    let (library, cx) = library_saving_in(Some(catalog.clone()), &url, cx);
+    let counts = count_events(&library, cx);
+    cx.update(|_, cx| {
+        library.update(cx, |library, cx| library.refresh_library(cx));
+    });
+
+    wait_for(cx, |_| counts.borrow()[1] > 0 && counts.borrow()[2] > 0);
+
+    assert_eq!(catalog.songs().unwrap().len(), 1);
 }
 
 #[gpui_kit::test]

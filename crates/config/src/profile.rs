@@ -68,6 +68,7 @@ struct Settings {
     sample_rate: Option<u32>,
     appearance: Option<String>,
     lyrics_highlight: Option<String>,
+    romaji_search: Option<bool>,
     imgbb_api_key: Option<String>,
 }
 
@@ -209,6 +210,14 @@ impl Store {
     pub fn lyrics_highlight(&self) -> Result<LyricsHighlight, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         self.parse_lyrics_highlight(settings.lyrics_highlight.as_deref())
+    }
+
+    /// Whether kanji can be searched for by romaji, which takes dictionaries
+    /// that are downloaded for it. On unless the file says otherwise.
+    /// `HIPHILE_ROMAJI_SEARCH` takes precedence over the file.
+    pub fn romaji_search(&self) -> Result<bool, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        Ok(settings.romaji_search.unwrap_or(true))
     }
 
     /// The API key for publishing covers on ImgBB, if there is one.
@@ -363,6 +372,12 @@ impl Store {
             LyricsHighlight::ByLine => "line",
         };
         self.edit(|document| document["lyrics_highlight"] = toml_edit::value(value))
+    }
+
+    /// Records whether kanji can be searched for by romaji, like
+    /// [`Self::save_profile`].
+    pub fn save_romaji_search(&self, is_on: bool) -> Result<(), Error> {
+        self.edit(|document| document["romaji_search"] = toml_edit::value(is_on))
     }
 
     /// Records the ImgBB API key, like [`Self::save_profile`]. `None` removes
@@ -730,6 +745,18 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn romaji_search_round_trips_and_is_on_unless_told_otherwise() {
+        let store = temporary_store("romaji-search");
+        store.save_volume(0.5).unwrap();
+        let is_on = |env: &[(&str, &str)]| read(&store, env).romaji_search.unwrap_or(true);
+        assert!(is_on(&[]));
+
+        store.save_romaji_search(false).unwrap();
+        assert!(!is_on(&[]));
+        assert!(is_on(&[("HIPHILE_ROMAJI_SEARCH", "true")]));
     }
 
     #[test]

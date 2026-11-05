@@ -2,7 +2,7 @@
 # Fails when a crate that must stay GPUI-independent gains a GPUI dependency.
 set -euo pipefail
 
-crates=(subsonic net client audio playback presence catalog config hiphile-cli)
+crates=(subsonic net client audio playback presence catalog config fuzzy hiphile-cli)
 root="$(cd "$(dirname "$0")/.." && pwd)"
 status=0
 for crate in "${crates[@]}"; do

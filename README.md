@@ -58,6 +58,7 @@ Change settings in the app under **hiphile > Settings…**. They are saved to
 | `cover_cache_gib` (`0` for no limit) | `HIPHILE_COVER_CACHE_GIB` | `8` |
 | `appearance` (`"light"` or `"dark"`) | `HIPHILE_APPEARANCE` (also accepts `system`) | System setting |
 | `lyrics_highlight` (`"word"` or `"line"`) | `HIPHILE_LYRICS_HIGHLIGHT` | `"word"` |
+| `romaji_search` (find kanji by romaji; downloads a dictionary) | `HIPHILE_ROMAJI_SEARCH` | `true` |
 | `imgbb_api_key` | `HIPHILE_IMGBB_API_KEY` | None |
 
 ## Roadmap
@@ -65,7 +66,7 @@ Change settings in the app under **hiphile > Settings…**. They are saved to
 - [x] Pure Rust audio backend
 - [x] Automatic device sample rate switching
 - [x] Local music library caching
-- [ ] Fuzzy search
+- [x] Fuzzy search
 
 ## Disclaimer
 
@@ -85,4 +86,5 @@ ImgBB or Discord. It uses third-party services as follows:
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). The dictionaries that `romaji_search` downloads stay under their own terms, listed
+in [script/readings-notices/NOTICE.txt](script/readings-notices/NOTICE.txt).

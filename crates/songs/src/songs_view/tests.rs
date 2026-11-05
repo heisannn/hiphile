@@ -79,6 +79,10 @@ fn catalog_of(dir: &tempfile::TempDir, songs: Vec<Song>) -> catalog::Catalog {
             Ok(Vec::new())
         }
 
+        async fn artists(&self) -> Result<Vec<subsonic::Artist>, client::Error> {
+            Ok(Vec::new())
+        }
+
         async fn songs_page(&self, _: u32, _: u32) -> Result<Vec<Song>, client::Error> {
             Ok(self.0.clone())
         }
@@ -135,7 +139,7 @@ fn table(cx: &mut TestAppContext) -> (Entity<Songs>, &mut VisualTestContext) {
     cx.update(|window, cx| {
         view.update(cx, |view, cx| {
             view.is_activated = true;
-            let arranged = Arranged::new(songs(), "".into(), view.sort);
+            let arranged = Arranged::new(songs(), None, "".into(), view.sort, true);
             view.finish_loading(Ok(arranged), cx);
             view.focus.focus(window, cx);
         });
@@ -204,7 +208,7 @@ fn set_filter(view: &Entity<Songs>, query: &str, cx: &mut VisualTestContext) {
         view.update(cx, |view, cx| {
             view.filter
                 .update(cx, |filter, cx| filter.set_value(query, window, cx));
-            view.rearrange(cx);
+            view.filter_changed(cx);
         });
     });
     cx.run_until_parked();
@@ -248,7 +252,7 @@ fn a_failed_first_load_says_so_and_a_later_one_keeps_the_songs(cx: &mut TestAppC
             view.finish_loading(Err("offline".into()), cx);
             assert!(matches!(view.songs, SongList::Failed(_)));
             assert_eq!(view.refresh_error, None);
-            let arranged = Arranged::new(songs(), "".into(), view.sort);
+            let arranged = Arranged::new(songs(), None, "".into(), view.sort, true);
             view.finish_loading(Ok(arranged), cx);
             view.finish_loading(Err("offline".into()), cx);
             assert!(matches!(view.songs, SongList::Loaded(_)));
@@ -289,7 +293,7 @@ fn a_sort_chosen_during_the_first_load_holds_when_the_songs_arrive(cx: &mut Test
 #[gpui_kit::test]
 fn a_filter_typed_during_a_reload_holds_when_the_songs_arrive(cx: &mut TestAppContext) {
     let (view, cx) = table(cx);
-    let started_with = Arranged::new(songs(), "".into(), Sort::DEFAULT);
+    let started_with = Arranged::new(songs(), None, "".into(), Sort::DEFAULT, true);
     set_filter(&view, "blues", cx);
     assert_eq!(shown(&view, cx), ["b"]);
 
@@ -307,7 +311,7 @@ fn an_order_worked_out_for_songs_since_replaced_is_dropped(cx: &mut TestAppConte
         view.update(cx, |view, cx| {
             // Still working out the order of three songs when one arrives.
             view.sort_by(Column::Time, cx);
-            let arranged = Arranged::new(one_song, "".into(), view.sort);
+            let arranged = Arranged::new(one_song, None, "".into(), view.sort, true);
             view.finish_loading(Ok(arranged), cx);
         });
     });
@@ -317,6 +321,29 @@ fn an_order_worked_out_for_songs_since_replaced_is_dropped(cx: &mut TestAppConte
     // Positions past the end of the songs would panic here.
     let played: Vec<PlaySongs> = dispatched_by("enter", cx);
     assert_eq!(played.len(), 1);
+}
+
+#[gpui_kit::test]
+fn dictionaries_that_went_during_a_load_have_the_songs_read_again(cx: &mut TestAppContext) {
+    let (view, cx) = view_on("http://127.0.0.1:9", cx);
+    let index_before = cx.update(|_, cx| {
+        view.update(cx, |view, cx| {
+            let mut arranged = Arranged::new(
+                songs(),
+                None,
+                SharedString::default(),
+                view.sort,
+                view.by_relevance,
+            );
+            arranged.had_book = true;
+            view.finish_loading(Ok(arranged), cx);
+            view.index.clone()
+        })
+    });
+
+    cx.run_until_parked();
+
+    cx.update(|_, cx| assert!(!Arc::ptr_eq(&index_before, &view.read(cx).index)));
 }
 
 #[gpui_kit::test]
@@ -445,16 +472,44 @@ fn the_selection_follows_its_song_when_the_order_changes(cx: &mut TestAppContext
 }
 
 #[gpui_kit::test]
-fn the_sort_holds_through_a_filter(cx: &mut TestAppContext) {
+fn a_heading_clicked_during_a_filter_holds_until_the_filter_is_emptied(cx: &mut TestAppContext) {
     let (view, cx) = table(cx);
-    cx.update(|_, cx| view.update(cx, |view, cx| view.sort_by(Column::Time, cx)));
-    cx.run_until_parked();
 
     set_filter(&view, "e", cx);
-
+    cx.update(|_, cx| view.update(cx, |view, cx| view.sort_by(Column::Time, cx)));
+    cx.run_until_parked();
     assert_eq!(shown(&view, cx), ["c", "b", "a"]);
+
+    // Typing on keeps to the heading.
+    set_filter(&view, "ee", cx);
+    set_filter(&view, "e", cx);
+    assert_eq!(shown(&view, cx), ["c", "b", "a"]);
+    cx.update(|_, cx| assert!(!view.read(cx).by_relevance));
+
+    // A new filter ranks again, with the sort kept for when it is emptied.
+    set_filter(&view, "", cx);
+    assert_eq!(shown(&view, cx), ["c", "b", "a"]);
+    set_filter(&view, "e", cx);
+    cx.update(|_, cx| assert!(view.read(cx).by_relevance));
     set_filter(&view, "nobody", cx);
     assert!(shown(&view, cx).is_empty());
+}
+
+#[gpui_kit::test]
+fn a_filter_shows_no_heading_as_sorted_until_one_is_clicked(cx: &mut TestAppContext) {
+    let (view, cx) = table(cx);
+    set_filter(&view, "e", cx);
+    cx.update(|_, cx| assert!(view.read(cx).is_ranked(cx)));
+
+    cx.update(|_, cx| view.update(cx, |view, cx| view.sort_by(Column::Title, cx)));
+    cx.run_until_parked();
+
+    cx.update(|_, cx| {
+        let view = view.read(cx);
+        assert!(!view.is_ranked(cx));
+        // The heading was not showing as sorted, so its first click starts it.
+        assert!(!view.sort.is_descending);
+    });
 }
 
 #[gpui_kit::test]

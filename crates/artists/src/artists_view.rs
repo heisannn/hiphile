@@ -23,7 +23,7 @@ use ui::card_grid::GridMotion;
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
 use ui::{
     ListFilter, ListPaneHeader, LoadFailure, MasterDetail, NowPlaying, RefreshFailure, Shelf,
-    centered, muted_text, row_list,
+    centered, muted_text, no_matches, row_list,
 };
 
 mod artist_row;
@@ -32,7 +32,7 @@ mod detail;
 use artist_row::ArtistRow;
 use detail::{Item, ListedDetail};
 
-use crate::list::{album_by_album, artists_of_albums, matching_artists, newest_first};
+use crate::list::{album_by_album, artist_index, artists_of_albums, newest_first};
 use crate::{
     ARTISTS_CONTEXT, AddSelectionToPlaylist, AddToPlaylist, AddToQueue, FocusFilter, Open, Play,
     PlayNext, ROOT_CONTEXT,
@@ -69,7 +69,9 @@ pub struct Artists {
     /// Why updating the artists on show failed.
     refresh_error: Option<SharedString>,
     is_refreshing: bool,
-    /// Positions in the loaded artists that match the filter.
+    /// The loaded artists, ready to search.
+    index: Arc<fuzzy::Index>,
+    /// Positions in the loaded artists that match the filter, the best first.
     visible: Arc<Vec<usize>>,
     selected_artist: Option<ArtistId>,
     /// Whether the list on its way should come to the artist just revealed,
@@ -101,6 +103,7 @@ pub struct Artists {
     _top_songs_task: Task<()>,
     _similar_task: Task<()>,
     _action_task: Task<()>,
+    _index_task: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -131,7 +134,7 @@ impl Artists {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter artists"));
         let list_focus = cx.focus_handle().tab_stop(true);
         let detail_focus = cx.focus_handle().tab_stop(true);
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             cx.subscribe_in(&filter, window, |this, _, event, window, cx| match event {
                 InputEvent::Change => this.apply_filter(cx),
                 InputEvent::PressEnter { .. } => this.list_focus.focus(window, cx),
@@ -143,12 +146,20 @@ impl Artists {
             cx.on_focus(&detail_focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&detail_focus, window, |_, _, cx| cx.notify()),
         ];
+        if let Some(readings) = session::readings(cx) {
+            subscriptions.push(
+                cx.subscribe(&readings, |this, _, _: &session::ReadingsChanged, cx| {
+                    this.index_artists(cx)
+                }),
+            );
+        }
         Self {
             session,
             is_activated: false,
             artists: ArtistList::Loading,
             refresh_error: None,
             is_refreshing: false,
+            index: Arc::default(),
             visible: Arc::default(),
             selected_artist: None,
             revealing: false,
@@ -171,6 +182,7 @@ impl Artists {
             _top_songs_task: Task::ready(()),
             _similar_task: Task::ready(()),
             _action_task: Task::ready(()),
+            _index_task: Task::ready(()),
             _subscriptions: subscriptions,
         }
     }
@@ -183,8 +195,8 @@ impl Artists {
         }
     }
 
-    /// Asks the server again, after the library changed or when the user says.
-    /// Does nothing to a screen that has yet to show.
+    /// Loads the list and the artist on show again, after the library changed or
+    /// when the user says. Does nothing to a screen that has yet to show.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         if !self.is_activated {
             return;
@@ -192,6 +204,14 @@ impl Artists {
         self.load_artists(cx);
         if let Some(artist) = self.selected_artist.clone() {
             self.load_detail(artist, cx);
+        }
+    }
+
+    /// Reads the saved artists again. Does nothing to a screen that has yet to
+    /// show.
+    pub fn artists_synced(&mut self, cx: &mut Context<Self>) {
+        if self.is_activated {
+            self.load_artists(cx);
         }
     }
 
@@ -208,7 +228,8 @@ impl Artists {
         }
     }
 
-    /// Shows what the saved albums say, then what the server says.
+    /// Shows the saved artists, which a sync keeps up to date. Before there are
+    /// any, shows what the saved albums say, then what the server says.
     fn load_artists(&mut self, cx: &mut Context<Self>) {
         self.is_refreshing = true;
         self.refresh_error = None;
@@ -219,16 +240,31 @@ impl Artists {
         let catalog = self.session.catalog().cloned();
         let has_list = self.loaded_artists().is_some();
         self._list_task = cx.spawn(async move |this, cx| {
-            if let (Some(catalog), false) = (catalog, has_list) {
+            if let Some(catalog) = catalog {
                 let saved = cx
-                    .background_spawn(async move { catalog.albums() })
-                    .await
-                    .map(|albums| artists_of_albums(&albums));
+                    .background_spawn(async move {
+                        let artists = catalog.artists()?;
+                        if !artists.is_empty() {
+                            return Ok((artists, true));
+                        }
+                        let albums = catalog.albums()?;
+                        Ok::<_, catalog::Error>((artists_of_albums(&albums), false))
+                    })
+                    .await;
                 // A copy that can't be read only means waiting for the server.
-                if let Ok(saved) = saved
-                    && !saved.is_empty()
-                {
-                    this.update(cx, |this, cx| this.set_artists(saved, cx)).ok();
+                match saved {
+                    Ok((artists, true)) => {
+                        this.update(cx, |this, cx| {
+                            this.finish_loading_artists(Ok(artists), cx);
+                        })
+                        .ok();
+                        return;
+                    }
+                    Ok((artists, false)) if !has_list && !artists.is_empty() => {
+                        this.update(cx, |this, cx| this.set_artists(artists, cx))
+                            .ok();
+                    }
+                    Ok(_) | Err(_) => {}
                 }
             }
             let result = cx
@@ -268,7 +304,7 @@ impl Artists {
             was_listed && !is_listed(&artists, selected)
         });
         self.artists = ArtistList::Loaded(Arc::new(artists));
-        self.apply_filter(cx);
+        self.index_artists(cx);
         if has_gone {
             self.selected_artist = None;
             self.detail = None;
@@ -306,12 +342,34 @@ impl Artists {
 
     fn apply_filter(&mut self, cx: &mut Context<Self>) {
         let query = self.filter.read(cx).value();
-        self.visible = Arc::new(
-            self.loaded_artists()
-                .map(|artists| matching_artists(artists, &query))
-                .unwrap_or_default(),
-        );
+        self.visible = Arc::new(self.index.search(&query));
         cx.notify();
+    }
+
+    /// Makes the artists searchable at once as far as they read without a
+    /// dictionary, then, off the UI thread, as far as they read with one.
+    fn index_artists(&mut self, cx: &mut Context<Self>) {
+        let Some(artists) = self.loaded_artists().cloned() else {
+            return;
+        };
+        self.index = Arc::new(artist_index(&artists, None));
+        self._index_task = Task::ready(());
+        self.apply_filter(cx);
+        let Some(book) = self.session.reading_book(cx) else {
+            return;
+        };
+        self._index_task = cx.spawn(async move |this, cx| {
+            let index = cx
+                .background_spawn(async move {
+                    book.read(|speller| artist_index(&artists, Some(speller)))
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.index = Arc::new(index);
+                this.apply_filter(cx);
+            })
+            .ok();
+        });
     }
 
     pub fn selected_artist(&self) -> Option<&ArtistId> {
@@ -748,7 +806,8 @@ impl Artists {
             return centered(muted_text("This server has no artists.", cx)).into_any_element();
         }
         if self.visible.is_empty() {
-            return centered(muted_text("No artists match the filter.", cx)).into_any_element();
+            let note = session::missing_readings_note(cx);
+            return no_matches("No artists match the filter.", note, cx).into_any_element();
         }
         let visible = self.visible.clone();
         let selected = self.selected_artist.clone();

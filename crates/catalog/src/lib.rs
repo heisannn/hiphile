@@ -1,10 +1,11 @@
 //! Local copy of a server's library, shared by the GUI and the CLI.
 //!
 //! Each server gets one SQLite database in the system cache directory,
-//! holding its albums and songs as the server sent them. [`sync_albums`] and
-//! [`sync_songs`] fetch a whole collection page by page and then remove what
-//! the server no longer has. Albums that were opened keep the songs fetched
-//! for them, through [`Catalog::put_album`].
+//! holding its albums, artists and songs as the server sent them.
+//! [`sync_albums`], [`sync_artists`] and [`sync_songs`] fetch a whole collection
+//! and then remove what the server no longer has. Albums that were opened keep the songs fetched
+//! for them, through [`Catalog::put_album`], and [`Catalog::put_readings`]
+//! keeps how texts read so that they need working out only once.
 //!
 //! [`CoverStore`] keeps cover art images, and [`SongStore`] audio files,
 //! beside each server's library.
@@ -28,8 +29,11 @@ pub use cover_links::{CoverLink, CoverLinks};
 pub use covers::{COVER_CAPACITY, COVER_REFRESH_AFTER, CoverStore, KeptCover};
 pub use scrobbles::{ScrobbleTarget, Scrobbles};
 pub use songs::{KeptSong, SONG_CAPACITY, SongStore};
-pub use store::{Catalog, Recommended};
-pub use sync::{Mode, Outcome, STALE_AFTER, Source, sync_albums, sync_songs};
+pub use store::{Catalog, Recommended, SavedReading};
+pub use sync::{
+    Mode, Outcome, STALE_AFTER, Source, SyncProgress, sync_albums, sync_albums_watched,
+    sync_artists, sync_artists_watched, sync_songs, sync_songs_watched,
+};
 
 use std::path::PathBuf;
 

@@ -56,6 +56,7 @@ cargo run -p hiphile-cli -- --help   # CLIの使用方法を表示する
 | `cover_cache_gib` (`0` は無制限) | `HIPHILE_COVER_CACHE_GIB` | `8` |
 | `appearance` (`"light"` または `"dark"`) | `HIPHILE_APPEARANCE` (`system` も指定可能) | システム設定 |
 | `lyrics_highlight` (`"word"` または `"line"`) | `HIPHILE_LYRICS_HIGHLIGHT` | `"word"` |
+| `romaji_search` (漢字をローマ字で検索。辞書をダウンロードします) | `HIPHILE_ROMAJI_SEARCH` | `true` |
 | `imgbb_api_key` | `HIPHILE_IMGBB_API_KEY` | なし |
 
 ## ロードマップ
@@ -63,7 +64,7 @@ cargo run -p hiphile-cli -- --help   # CLIの使用方法を表示する
 - [x] 純粋な Rust によるオーディオバックエンド
 - [x] デバイスのサンプリングレートの自動切り替え
 - [x] ローカル音楽ライブラリのキャッシュ
-- [ ] あいまい検索 (ファジー検索)
+- [x] あいまい検索 (ファジー検索)
 
 ## 免責事項
 
@@ -77,4 +78,5 @@ hiphile は、Navidrome、Musixmatch、プチリリ (PetitLyrics)、ImgBB、Disc
 
 ## ライセンス
 
-[MIT](LICENSE)
+[MIT](LICENSE)。`romaji_search` がダウンロードする辞書には、それぞれのライセンスが適用されます。一覧は
+[script/readings-notices/NOTICE.txt](script/readings-notices/NOTICE.txt) にあります。

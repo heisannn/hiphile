@@ -26,7 +26,7 @@ pub use cover_cache::CoverCache;
 pub use details::{format_album_count, format_song_count, join_details};
 pub use drag_preview::DragPreview;
 pub use duration::format_duration;
-pub use load_state::{LoadFailure, Shelf, centered, muted_text};
+pub use load_state::{LoadFailure, Shelf, centered, muted_text, no_matches};
 pub use master_detail::{
     DetailHeader, ListFilter, ListPaneHeader, MasterDetail, RefreshFailure, filter_input,
 };

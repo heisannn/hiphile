@@ -11,6 +11,7 @@ actions.workspace = true
 catalog.workspace = true
 client.workspace = true
 futures.workspace = true
+fuzzy.workspace = true
 gpui-kit.workspace = true
 session.workspace = true
 subsonic.workspace = true
