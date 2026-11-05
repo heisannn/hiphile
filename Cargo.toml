@@ -35,6 +35,7 @@ settings = { path = "crates/settings" }
 songs = { path = "crates/songs" }
 subsonic = { path = "crates/subsonic" }
 ui = { path = "crates/ui" }
+updater = { path = "crates/updater" }
 
 # External crates
 anyhow = "1.0"
@@ -67,6 +68,14 @@ rtrb = "0.4"
 rubato = "5.0"
 ruzstd = "0.8"
 rusqlite = { version = "0.41", features = ["bundled"] }
+self_update = { version = "1.3", default-features = false, features = [
+    "archive-zip",
+    "checksums",
+    "compression-zip-deflate",
+    "github",
+    "reqwest",
+    "rustls",
+] }
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 sha2 = "0.11"

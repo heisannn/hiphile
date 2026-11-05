@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Packages a release build as a disk image holding hiphile.app.
-# Usage: script/package-macos <version> <target-dir> <output.dmg>
+# Packages a release build as hiphile.app, twice: in a disk image for people to install, and in a
+# zip for the app to update itself from.
+# Usage: script/package-macos <version> <target-dir> <output-without-extension>
 set -euo pipefail
 
 repo="$(cd "$(dirname "$0")/.." && pwd)"
@@ -54,4 +55,12 @@ plutil -lint "$app/Contents/Info.plist" >/dev/null
 # Without a Developer ID, an ad-hoc signature is what lets the bundle run on Apple silicon.
 codesign --force --sign - "$app"
 
-hdiutil create -quiet -fs HFS+ -volname "hiphile $version" -srcfolder "$root" -format UDZO -ov "$output"
+# Without these flags ditto stores extended attributes as `._*` files, which the updater would
+# unpack as files of their own, and which break the signature.
+ditto -c -k --norsrc --noextattr --keepParent "$app" "$output.zip"
+unpacked="$(mktemp -d)"
+trap 'rm -rf "$root" "$unpacked"' EXIT
+unzip -q "$output.zip" -d "$unpacked"
+codesign --verify --deep --strict "$unpacked/hiphile.app"
+
+hdiutil create -quiet -fs HFS+ -volname "hiphile $version" -srcfolder "$root" -format UDZO -ov "$output.dmg"

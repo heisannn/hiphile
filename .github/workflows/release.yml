@@ -80,6 +80,7 @@ jobs:
       TAG: ${{ needs.release.outputs.tag }}
       TARGET: ${{ matrix.target }}
       PLATFORM: ${{ matrix.platform }}
+      HIPHILE_SELF_UPDATE: "1" # read at compile time: only these builds update themselves
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -94,7 +95,7 @@ jobs:
         run: |
           version="${TAG#v}"
           mkdir dist
-          script/package-macos "$version" "target/$TARGET/release" "dist/hiphile-$version-$PLATFORM.dmg"
+          script/package-macos "$version" "target/$TARGET/release" "dist/hiphile-$version-$PLATFORM"
       - if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -109,11 +110,28 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  # Publishes only when every build succeeded, so a release never appears with builds missing.
+  # Device tests are ignored by default, so a runner without audio output can run the rest.
+  test:
+    name: Test
+    needs: release
+    if: needs.release.outputs.tag != ''
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release.outputs.tag }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable # zizmor: ignore[unpinned-uses,superfluous-actions]
+      - run: cargo test --locked --workspace
+
+  # Publishes only when the tests and every build succeeded: apps update themselves to whatever is
+  # published, and one that does not start cannot update again.
   # After a failure, rerun the failed jobs: the draft and its tag are still there.
   publish:
     name: Publish
-    needs: [release, build]
+    needs: [release, build, test]
     runs-on: ubuntu-latest
     permissions:
       contents: write # to attach the builds and publish the draft

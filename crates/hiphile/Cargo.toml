@@ -26,6 +26,7 @@ session.workspace = true
 settings.workspace = true
 songs.workspace = true
 ui.workspace = true
+updater.workspace = true
 
 [build-dependencies]
 embed-resource.workspace = true

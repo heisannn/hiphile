@@ -56,6 +56,7 @@ fn main() {
             playlists::init(cx);
             favorites::init(cx);
             search::init(WORKSPACE_CONTEXT, cx);
+            updater::init(cx);
             settings::init(cx);
             install_app_commands(cx);
 

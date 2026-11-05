@@ -70,6 +70,7 @@ struct Settings {
     lyrics_highlight: Option<String>,
     romaji_search: Option<bool>,
     discord_presence: Option<bool>,
+    auto_update: Option<bool>,
     imgbb_api_key: Option<String>,
 }
 
@@ -86,6 +87,7 @@ struct Settings {
 /// appearance = "dark"
 /// lyrics_highlight = "line"
 /// discord_presence = false
+/// auto_update = false
 /// imgbb_api_key = "..."
 /// ```
 #[derive(Clone, Debug)]
@@ -227,6 +229,14 @@ impl Store {
     pub fn discord_presence(&self) -> Result<bool, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         Ok(settings.discord_presence.unwrap_or(true))
+    }
+
+    /// Whether new versions are looked for and installed without being asked.
+    /// On unless the file says otherwise. `HIPHILE_AUTO_UPDATE` takes precedence
+    /// over the file.
+    pub fn auto_update(&self) -> Result<bool, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        Ok(settings.auto_update.unwrap_or(true))
     }
 
     /// The API key for publishing covers on ImgBB, if there is one.
@@ -393,6 +403,11 @@ impl Store {
     /// [`Self::save_profile`].
     pub fn save_discord_presence(&self, is_on: bool) -> Result<(), Error> {
         self.edit(|document| document["discord_presence"] = toml_edit::value(is_on))
+    }
+
+    /// Writes [`Self::auto_update`] back, leaving the rest of the file as it is.
+    pub fn save_auto_update(&self, is_on: bool) -> Result<(), Error> {
+        self.edit(|document| document["auto_update"] = toml_edit::value(is_on))
     }
 
     /// Records the ImgBB API key, like [`Self::save_profile`]. `None` removes
@@ -784,6 +799,18 @@ mod tests {
         store.save_discord_presence(false).unwrap();
         assert!(!is_on(&[]));
         assert!(is_on(&[("HIPHILE_DISCORD_PRESENCE", "true")]));
+    }
+
+    #[test]
+    fn auto_update_round_trips_and_is_on_unless_told_otherwise() {
+        let store = temporary_store("auto-update");
+        store.save_volume(0.5).unwrap();
+        let is_on = |env: &[(&str, &str)]| read(&store, env).auto_update.unwrap_or(true);
+        assert!(is_on(&[]));
+
+        store.save_auto_update(false).unwrap();
+        assert!(!is_on(&[]));
+        assert!(is_on(&[("HIPHILE_AUTO_UPDATE", "true")]));
     }
 
     #[test]

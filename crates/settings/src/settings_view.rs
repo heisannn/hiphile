@@ -17,6 +17,7 @@ use gpui_kit::{
     ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, Window, div,
 };
 use session::{Readings, ReadingsState};
+use updater::{UpdateState, Updater};
 
 use crate::appearance_settings::{AppearanceSettings, CHOICES};
 use crate::audio_settings::{AudioSettings, MATCH_SONG, SYSTEM_DEFAULT};
@@ -48,6 +49,8 @@ pub(crate) struct SettingsView {
     imgbb_key_field: Entity<ImgbbKeyField>,
     lyrics: Entity<LyricsSettings>,
     readings: Option<Entity<Readings>>,
+    /// `None` in a build that does not update itself.
+    updater: Option<Entity<Updater>>,
     focus: FocusHandle,
     _appearance_changes: Subscription,
     _system_appearance_changes: Subscription,
@@ -58,6 +61,7 @@ pub(crate) struct SettingsView {
     _discord_changes: Subscription,
     _lyrics_changes: Subscription,
     _readings_changes: Option<Subscription>,
+    _updater_changes: Option<Subscription>,
     _refresh: Task<()>,
 }
 
@@ -95,7 +99,12 @@ impl SettingsView {
         let imgbb_key_field = cx.new(|cx| ImgbbKeyField::new(discord.clone(), window, cx));
         let lyrics = crate::lyrics_settings(cx);
         let readings = session::readings(cx);
+        let updater = updater::updater(cx);
         Self {
+            _updater_changes: updater
+                .as_ref()
+                .map(|updater| cx.observe(updater, |_, _, cx| cx.notify())),
+            updater,
             _readings_changes: readings
                 .as_ref()
                 .map(|readings| cx.observe(readings, |_, _, cx| cx.notify())),
@@ -338,6 +347,76 @@ impl SettingsView {
     }
 }
 
+/// Whether updates come by themselves, and the way to look for one now or start it.
+fn updates_page(updater: &Entity<Updater>, cx: &App) -> SettingPage {
+    let automatic = SettingField::switch(
+        {
+            let updater = updater.clone();
+            move |cx| updater.read(cx).is_automatic()
+        },
+        {
+            let updater = updater.clone();
+            move |is_on, cx| updater.update(cx, |it, cx| it.set_automatic(is_on, cx))
+        },
+    );
+    let action = SettingField::render({
+        let updater = updater.clone();
+        move |_, _, cx| {
+            let state = updater.read(cx).state().clone();
+            let updater = updater.clone();
+            match state {
+                UpdateState::Ready(_) => Button::new("restart-to-update")
+                    .outline()
+                    .label("Restart to update")
+                    .on_click(|_, _, cx| updater::restart(cx)),
+                UpdateState::Available(ref new) | UpdateState::Installing(ref new) => {
+                    let is_installing = matches!(state, UpdateState::Installing(_));
+                    Button::new("install-update")
+                        .outline()
+                        .label(format!("Install version {new}"))
+                        .loading(is_installing)
+                        .on_click(move |_, _, cx| updater.update(cx, |it, cx| it.install(cx)))
+                }
+                _ => Button::new("check-for-updates")
+                    .outline()
+                    .label("Check for updates")
+                    .loading(matches!(state, UpdateState::Checking))
+                    .on_click(move |_, _, cx| updater.update(cx, |it, cx| it.check(cx))),
+            }
+        }
+    });
+
+    let state = updater.read(cx).state();
+    let mut version = SettingItem::new(format!("Version {}", updater::VERSION), action);
+    match state {
+        UpdateState::UpToDate => version = version.description("Up to date"),
+        UpdateState::Ready(new) => {
+            version = version.description(format!("Version {new} starts after a restart"));
+        }
+        UpdateState::Idle
+        | UpdateState::Checking
+        | UpdateState::Available(_)
+        | UpdateState::Installing(_)
+        | UpdateState::Failed(_) => {}
+    }
+    let mut group = SettingGroup::new().items([
+        SettingItem::new("Install updates automatically", automatic),
+        version,
+    ]);
+    let errors: Vec<SharedString> = updater.read(cx).errors().cloned().collect();
+    if !errors.is_empty() {
+        group = group.footer(move |_, cx| {
+            v_flex()
+                .gap_1()
+                .text_color(cx.theme().danger)
+                .children(errors.iter().cloned())
+        });
+    }
+    SettingPage::new("Updates")
+        .icon(IconName::RefreshCw)
+        .group(group)
+}
+
 /// Finding kanji by romaji: whether to, and how the dictionary for it is doing.
 fn romaji_search_group(readings: &Entity<Readings>, cx: &App) -> SettingGroup {
     let toggle = SettingField::switch(
@@ -462,7 +541,8 @@ impl Render for SettingsView {
                         .page(self.lyrics_page(cx))
                         .page(self.storage_page(cx))
                         .page(self.discord_page(cx))
-                        .page(self.appearance_page(cx)),
+                        .page(self.appearance_page(cx))
+                        .pages(self.updater.iter().map(|it| updates_page(it, cx))),
                 ),
             )
     }

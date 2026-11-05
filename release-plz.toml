@@ -45,6 +45,7 @@ changelog_include = [
     "songs",
     "subsonic",
     "ui",
+    "updater",
 ]
 
 # The CLI is not part of the release, so a change to it alone does not start one.
@@ -65,4 +66,8 @@ git_only = false
 
 [[package]]
 name = "media-controls"
+git_only = false
+
+[[package]]
+name = "updater"
 git_only = false

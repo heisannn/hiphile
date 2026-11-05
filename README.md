@@ -34,6 +34,9 @@ The builds are not signed with a developer certificate, so the system warns abou
   `xattr -dr com.apple.quarantine /Applications/hiphile.app` before the first launch.
 - **Windows:** If SmartScreen stops the app, choose **More info**, then **Run anyway**.
 
+From then on, the app installs new versions by itself, and they start the next time it opens.
+Turn this off in **Settings > Updates**.
+
 ## Getting started
 
 ```sh
@@ -61,6 +64,7 @@ Change settings in the app under **hiphile > Settings…**. They are saved to
 | `lyrics_highlight` (`"word"` or `"line"`) | `HIPHILE_LYRICS_HIGHLIGHT` | `"word"` |
 | `romaji_search` (find kanji by romaji; downloads a dictionary) | `HIPHILE_ROMAJI_SEARCH` | `true` |
 | `discord_presence` (show the current song as your Discord status) | `HIPHILE_DISCORD_PRESENCE` | `true` |
+| `auto_update` (install new versions by itself) | `HIPHILE_AUTO_UPDATE` | `true` |
 | `imgbb_api_key` | `HIPHILE_IMGBB_API_KEY` | None |
 
 ## Roadmap

@@ -34,6 +34,9 @@ Hiphile は macOS で開発されています。Windows と Linux は定期的�
   `xattr -dr com.apple.quarantine /Applications/hiphile.app` を実行してください。
 - **Windows:** SmartScreen にブロックされた場合は、**詳細情報** を選んでから **実行** を選んでください。
 
+以降は新しいバージョンをアプリが自動でインストールし、次に開いたときから使えます。
+**Settings > Updates** でオフにできます。
+
 ## はじめに
 
 ```sh
@@ -59,6 +62,7 @@ cargo run -p hiphile-cli -- --help   # CLIの使用方法を表示する
 | `lyrics_highlight` (`"word"` または `"line"`) | `HIPHILE_LYRICS_HIGHLIGHT` | `"word"` |
 | `romaji_search` (漢字をローマ字で検索。辞書をダウンロードします) | `HIPHILE_ROMAJI_SEARCH` | `true` |
 | `discord_presence` (Discord のステータスに現在再生中の曲を表示) | `HIPHILE_DISCORD_PRESENCE` | `true` |
+| `auto_update` (新しいバージョンを自動でインストール) | `HIPHILE_AUTO_UPDATE` | `true` |
 | `imgbb_api_key` | `HIPHILE_IMGBB_API_KEY` | なし |
 
 ## ロードマップ

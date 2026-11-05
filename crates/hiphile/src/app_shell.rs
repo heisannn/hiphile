@@ -35,6 +35,7 @@ use settings::OpenSettings;
 use songs::Songs;
 use subsonic::{AlbumId, ArtistId};
 use ui::CoverCache;
+use updater::UpdateState;
 
 use crate::library_activity::{ActivityChanged, LibraryActivity, NoticeChange};
 use crate::navigation::{History, Location};
@@ -72,6 +73,7 @@ pub struct AppShell {
     _song_cache_changes: Subscription,
     _cover_cache_changes: Subscription,
     _system_appearance_changes: Subscription,
+    _updater_changes: Option<Subscription>,
 }
 
 enum Screen {
@@ -259,6 +261,8 @@ impl AppShell {
             _song_cache_changes: song_cache_changes,
             _cover_cache_changes: cover_cache_changes,
             _system_appearance_changes: settings::follow_system_appearance(window),
+            _updater_changes: updater::updater(cx)
+                .map(|updater| cx.observe(&updater, |_, _, cx| cx.notify())),
         }
     }
 
@@ -1057,6 +1061,8 @@ impl AppShell {
             .destination()
             .and_then(|current| Destination::ALL.iter().position(|d| *d == current));
         let (can_go_back, can_go_forward) = self.history_available(cx);
+        let update_ready = updater::updater(cx)
+            .is_some_and(|updater| matches!(updater.read(cx).state(), UpdateState::Ready(_)));
         TitleBar::new()
             .when(cfg!(target_os = "macos"), |this| {
                 this.pl(MACOS_TITLE_BAR_INSET)
@@ -1116,6 +1122,17 @@ impl AppShell {
                         )
                     })
                     .child(div().flex_1())
+                    .when(update_ready, |this| {
+                        this.child(
+                            title_bar_controls().child(
+                                Button::new("restart-to-update")
+                                    .outline()
+                                    .small()
+                                    .label("Restart to update")
+                                    .on_click(|_, _, cx| updater::restart(cx)),
+                            ),
+                        )
+                    })
                     .child(
                         title_bar_controls().child(
                             Button::new("open-settings")
