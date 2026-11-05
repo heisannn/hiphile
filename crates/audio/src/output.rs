@@ -7,10 +7,53 @@ const STANDARD_RATES: [u32; 10] = [
     44_100, 48_000, 88_200, 96_000, 176_400, 192_000, 352_800, 384_000, 705_600, 768_000,
 ];
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ResamplingWindow {
+    Hann,
+    Hann2,
+    Blackman,
+    Blackman2,
+    BlackmanHarris,
+    #[default]
+    BlackmanHarris2,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Resampling {
+    fft_size: u32,
+    window: ResamplingWindow,
+}
+
+impl Resampling {
+    /// `fft_size` is the least input frames one FFT takes. It is rounded up to
+    /// a multiple of the block the two rates allow, and `0` counts as `1`.
+    pub fn new(fft_size: u32, window: ResamplingWindow) -> Self {
+        Self {
+            fft_size: fft_size.max(1),
+            window,
+        }
+    }
+
+    pub fn fft_size(&self) -> u32 {
+        self.fft_size
+    }
+
+    pub fn window(&self) -> ResamplingWindow {
+        self.window
+    }
+}
+
+impl Default for Resampling {
+    fn default() -> Self {
+        Self::new(256, ResamplingWindow::default())
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OutputSettings {
     device: Option<String>,
     fixed_rate: Option<u32>,
+    resampling: Resampling,
 }
 
 impl OutputSettings {
@@ -18,7 +61,16 @@ impl OutputSettings {
     /// default device. `fixed_rate` runs the device at that rate and resamples
     /// to it; `None` follows each track's rate.
     pub fn new(device: Option<String>, fixed_rate: Option<u32>) -> Self {
-        Self { device, fixed_rate }
+        Self {
+            device,
+            fixed_rate,
+            resampling: Resampling::default(),
+        }
+    }
+
+    pub fn with_resampling(mut self, resampling: Resampling) -> Self {
+        self.resampling = resampling;
+        self
     }
 
     pub fn device(&self) -> Option<&str> {
@@ -27,6 +79,14 @@ impl OutputSettings {
 
     pub fn fixed_rate(&self) -> Option<u32> {
         self.fixed_rate
+    }
+
+    pub fn resampling(&self) -> Resampling {
+        self.resampling
+    }
+
+    pub(crate) fn has_same_device_and_rate(&self, other: &Self) -> bool {
+        self.device == other.device && self.fixed_rate == other.fixed_rate
     }
 }
 

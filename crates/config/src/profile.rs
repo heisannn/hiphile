@@ -52,6 +52,79 @@ pub enum LyricsHighlight {
     ByLine,
 }
 
+pub const RESAMPLING_FFT_SIZES: [u32; 7] = [256, 512, 1024, 2048, 4096, 8192, 16384];
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ResamplingQuality {
+    #[default]
+    Medium,
+    High,
+    Max,
+    Custom {
+        fft_size: u32,
+        window: ResamplingWindow,
+    },
+}
+
+impl ResamplingQuality {
+    pub fn fft_size(self) -> u32 {
+        match self {
+            Self::Medium => 256,
+            Self::High => 1024,
+            Self::Max => 4096,
+            Self::Custom { fft_size, .. } => fft_size,
+        }
+    }
+
+    pub fn window(self) -> ResamplingWindow {
+        match self {
+            Self::Medium | Self::High | Self::Max => ResamplingWindow::BlackmanHarris2,
+            Self::Custom { window, .. } => window,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Max => "max",
+            Self::Custom { .. } => "custom",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResamplingWindow {
+    Hann,
+    Hann2,
+    Blackman,
+    Blackman2,
+    BlackmanHarris,
+    BlackmanHarris2,
+}
+
+impl ResamplingWindow {
+    pub const ALL: [Self; 6] = [
+        Self::Hann,
+        Self::Hann2,
+        Self::Blackman,
+        Self::Blackman2,
+        Self::BlackmanHarris,
+        Self::BlackmanHarris2,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Hann => "hann",
+            Self::Hann2 => "hann-2",
+            Self::Blackman => "blackman",
+            Self::Blackman2 => "blackman-2",
+            Self::BlackmanHarris => "blackman-harris",
+            Self::BlackmanHarris2 => "blackman-harris-2",
+        }
+    }
+}
+
 /// The keys of `config.toml` this crate reads. Others are left alone.
 #[derive(Deserialize)]
 struct Settings {
@@ -63,6 +136,9 @@ struct Settings {
     cover_cache_gib: Option<f64>,
     output_device: Option<String>,
     sample_rate: Option<u32>,
+    resampling: Option<String>,
+    resampling_fft_size: Option<u32>,
+    resampling_window: Option<String>,
     appearance: Option<String>,
     lyrics_highlight: Option<String>,
     romaji_search: Option<bool>,
@@ -81,6 +157,9 @@ struct Settings {
 /// cover_cache_gib = 8
 /// output_device = "coreaudio:BuiltInSpeakerDevice"
 /// sample_rate = 48000
+/// resampling = "custom"
+/// resampling_fft_size = 2048
+/// resampling_window = "hann-2"
 /// appearance = "dark"
 /// lyrics_highlight = "line"
 /// discord_presence = false
@@ -189,6 +268,13 @@ impl Store {
         Ok(settings.sample_rate.filter(|rate| *rate > 0))
     }
 
+    /// Medium unless the file says otherwise. The FFT size and window are only read for
+    /// `custom`, and default to those of medium.
+    pub fn resampling_quality(&self) -> Result<ResamplingQuality, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        self.parse_resampling_quality(&settings)
+    }
+
     /// Light or dark, if one was chosen rather than following the system. `system` in
     /// `HIPHILE_APPEARANCE` sets a choice in the file aside.
     pub fn appearance(&self) -> Result<Option<Appearance>, Error> {
@@ -236,6 +322,47 @@ impl Store {
                 key: "appearance",
                 expected: "\"system\", \"light\" or \"dark\"",
             }),
+        }
+    }
+
+    fn parse_resampling_quality(&self, settings: &Settings) -> Result<ResamplingQuality, Error> {
+        let invalid = |key, expected| Error::InvalidSetting {
+            path: self.config_path(),
+            key,
+            expected,
+        };
+        match settings.resampling.as_deref() {
+            None | Some("medium") => Ok(ResamplingQuality::Medium),
+            Some("high") => Ok(ResamplingQuality::High),
+            Some("max") => Ok(ResamplingQuality::Max),
+            Some("custom") => {
+                let medium = ResamplingQuality::Medium;
+                let fft_size = settings.resampling_fft_size.unwrap_or(medium.fft_size());
+                if !RESAMPLING_FFT_SIZES.contains(&fft_size) {
+                    return Err(invalid(
+                        "resampling_fft_size",
+                        "a power of two from 256 to 16384",
+                    ));
+                }
+                let window = match settings.resampling_window.as_deref() {
+                    None => medium.window(),
+                    Some(name) => ResamplingWindow::ALL
+                        .into_iter()
+                        .find(|window| window.name() == name)
+                        .ok_or_else(|| {
+                            invalid(
+                                "resampling_window",
+                                "\"hann\", \"hann-2\", \"blackman\", \"blackman-2\", \
+                                 \"blackman-harris\" or \"blackman-harris-2\"",
+                            )
+                        })?,
+                };
+                Ok(ResamplingQuality::Custom { fft_size, window })
+            }
+            Some(_) => Err(invalid(
+                "resampling",
+                "\"medium\", \"high\", \"max\" or \"custom\"",
+            )),
         }
     }
 
@@ -321,6 +448,19 @@ impl Store {
             Some(rate) => document["sample_rate"] = toml_edit::value(i64::from(rate)),
             None => {
                 document.remove("sample_rate");
+            }
+        })
+    }
+
+    pub fn save_resampling_quality(&self, quality: ResamplingQuality) -> Result<(), Error> {
+        self.edit(|document| {
+            document["resampling"] = toml_edit::value(quality.name());
+            if let ResamplingQuality::Custom { fft_size, window } = quality {
+                document["resampling_fft_size"] = toml_edit::value(i64::from(fft_size));
+                document["resampling_window"] = toml_edit::value(window.name());
+            } else {
+                document.remove("resampling_fft_size");
+                document.remove("resampling_window");
             }
         })
     }
@@ -571,6 +711,95 @@ mod tests {
         assert_eq!(settings.output_device, None);
         assert_eq!(settings.sample_rate, None);
         assert_eq!(load(&store, &[]), Some(profile));
+    }
+
+    #[test]
+    fn resampling_quality_round_trips_and_is_medium_unless_told_otherwise() {
+        let store = temporary_store("resampling");
+        assert_eq!(
+            store.resampling_quality().unwrap(),
+            ResamplingQuality::Medium
+        );
+
+        let custom = ResamplingQuality::Custom {
+            fft_size: 2048,
+            window: ResamplingWindow::Hann2,
+        };
+        for quality in [
+            custom,
+            ResamplingQuality::High,
+            ResamplingQuality::Max,
+            ResamplingQuality::Medium,
+        ] {
+            store.save_resampling_quality(quality).unwrap();
+            assert_eq!(store.resampling_quality().unwrap(), quality);
+        }
+
+        let text = std::fs::read_to_string(store.config_path()).unwrap();
+        assert!(!text.contains("resampling_fft_size"), "{text}");
+        assert!(!text.contains("resampling_window"), "{text}");
+    }
+
+    #[test]
+    fn resampling_presets_keep_their_sizes_and_custom_fills_in_from_medium() {
+        let store = temporary_store("resampling-presets");
+        let sizes = [
+            ResamplingQuality::Medium,
+            ResamplingQuality::High,
+            ResamplingQuality::Max,
+        ]
+        .map(ResamplingQuality::fft_size);
+        assert_eq!(sizes, [256, 1024, 4096]);
+
+        std::fs::create_dir_all(store.dir()).unwrap();
+        std::fs::write(store.config_path(), "resampling = \"custom\"\n").unwrap();
+        assert_eq!(
+            store.resampling_quality().unwrap(),
+            ResamplingQuality::Custom {
+                fft_size: 256,
+                window: ResamplingWindow::BlackmanHarris2,
+            }
+        );
+    }
+
+    #[test]
+    fn the_environment_sets_a_saved_resampling_quality_aside() {
+        let store = temporary_store("resampling-environment");
+        store
+            .save_resampling_quality(ResamplingQuality::Max)
+            .unwrap();
+        let settings = read(&store, &[("HIPHILE_RESAMPLING", "high")]);
+        assert_eq!(
+            store.parse_resampling_quality(&settings).unwrap(),
+            ResamplingQuality::High
+        );
+    }
+
+    #[test]
+    fn unknown_resampling_values_are_named_and_ignored_without_custom() {
+        let store = temporary_store("resampling-invalid");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        let key = |text: &str| {
+            std::fs::write(store.config_path(), text).unwrap();
+            match store.resampling_quality() {
+                Err(Error::InvalidSetting { key, .. }) => Some(key),
+                Err(error) => panic!("{error}"),
+                Ok(_) => None,
+            }
+        };
+        assert_eq!(key("resampling = \"best\"\n"), Some("resampling"));
+        assert_eq!(
+            key("resampling = \"custom\"\nresampling_fft_size = 300\n"),
+            Some("resampling_fft_size")
+        );
+        assert_eq!(
+            key("resampling = \"custom\"\nresampling_window = \"box\"\n"),
+            Some("resampling_window")
+        );
+        assert_eq!(
+            key("resampling = \"high\"\nresampling_fft_size = 300\n"),
+            None
+        );
     }
 
     #[test]

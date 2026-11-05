@@ -28,5 +28,5 @@ mod track;
 pub use device::{OutputDevice, output_devices};
 pub use engine::{Engine, Event, EventKind, LoadId, PlaybackFormat};
 pub use error::Error;
-pub use output::OutputSettings;
+pub use output::{OutputSettings, Resampling, ResamplingWindow};
 pub use track::Track;

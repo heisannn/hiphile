@@ -552,6 +552,14 @@ fn serve(
                 })
             }
             Some(Command::SetOutput(settings)) if settings == output => Ok(()),
+            // Moving would interrupt the sound for a change that cannot be heard
+            Some(Command::SetOutput(settings))
+                if settings.has_same_device_and_rate(&output)
+                    && !current.as_ref().is_some_and(Playback::may_resample) =>
+            {
+                output = settings;
+                Ok(())
+            }
             Some(Command::SetOutput(settings)) => {
                 output = settings;
                 return_to_sounding(&mut current, &mut next, shared, &emit);
@@ -1025,6 +1033,7 @@ fn keep_device_rate(
         *restore = None;
     }
     OutputSettings::new(output.device().map(str::to_owned), Some(device_rate))
+        .with_resampling(output.resampling())
 }
 
 #[derive(Clone, Copy)]
@@ -1092,6 +1101,11 @@ struct Playback {
 }
 
 impl Playback {
+    /// A joined track can have a resampler the sounding one does not.
+    fn may_resample(&self) -> bool {
+        self.format.is_resampled() || self.joined.is_some()
+    }
+
     /// Goes on from the same position on `settings`, paused if it was.
     fn reopen(
         self,
@@ -1241,7 +1255,7 @@ impl Playback {
         drop(setup);
 
         Ok(Self {
-            converter: Converter::new(source, output)?,
+            converter: Converter::new(source, output, settings.resampling())?,
             format: PlaybackFormat {
                 device: device_name(&device),
                 source_rate: source.rate,
@@ -1353,7 +1367,7 @@ impl Playback {
         };
         let source = feed.spec();
         let converter = if self.finished {
-            match Converter::new(source, output) {
+            match Converter::new(source, output, settings.resampling()) {
                 Ok(converter) => Some(converter),
                 Err(error) => {
                     let state = NextState::Failed(error);
@@ -1640,6 +1654,7 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
+    use crate::output::{Resampling, ResamplingWindow};
     use crate::test_wav::wav;
 
     fn next_event(events: &async_channel::Receiver<Event>) -> Event {
@@ -2305,11 +2320,65 @@ mod tests {
     #[test]
     #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
     fn resampled_tracks_of_one_rate_join_without_a_gap() {
+        resampled_tracks_join_without_a_gap(Resampling::default());
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn resampled_tracks_join_without_a_gap_at_the_largest_fft() {
+        resampled_tracks_join_without_a_gap(Resampling::new(16_384, ResamplingWindow::default()));
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn new_resampling_moves_a_resampled_track() {
+        let (_, id) = loopback_device();
+        let rate = current_rate(&id);
+        let source = if rate == 44_100 { 48_000 } else { 44_100 };
+        let (mut engine, events) = Engine::spawn();
+        let settings = OutputSettings::new(Some(id), Some(rate));
+        engine.set_output(settings.clone());
+        engine.load(Track::new(Cursor::new(wav(source, 2, source * 20, 0))));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+
+        engine.set_output(
+            settings.with_resampling(Resampling::new(4096, ResamplingWindow::default())),
+        );
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::OutputChanged(_)
+        ));
+        engine.shutdown();
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn new_resampling_leaves_a_track_that_is_not_resampled_alone() {
+        let (_, id) = loopback_device();
+        let rate = current_rate(&id);
+        let (mut engine, events) = Engine::spawn();
+        let settings = OutputSettings::new(Some(id), Some(rate));
+        engine.set_output(settings.clone());
+        engine.load(Track::new(Cursor::new(wav(rate, 2, rate * 20, 0))));
+        let EventKind::Started(format) = next_event(&events).kind else {
+            panic!("expected Started");
+        };
+        assert!(!format.is_resampled());
+
+        engine.set_output(
+            settings.with_resampling(Resampling::new(4096, ResamplingWindow::default())),
+        );
+        thread::sleep(Duration::from_millis(300));
+        assert!(events.try_recv().is_err());
+        engine.shutdown();
+    }
+
+    fn resampled_tracks_join_without_a_gap(resampling: Resampling) {
         let (device, id) = loopback_device();
         let rate = current_rate(&id);
         let source = if rate == 44_100 { 48_000 } else { 44_100 };
         let (mut engine, events) = Engine::spawn();
-        engine.set_output(OutputSettings::new(Some(id), Some(rate)));
+        engine.set_output(OutputSettings::new(Some(id), Some(rate)).with_resampling(resampling));
         let (stream, heard) = record(&device, rate);
 
         let track = |from, to| Track::new(Cursor::new(sine_wav(source, from, to)));

@@ -1,36 +1,49 @@
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
-use rubato::{Fft, FixedSync, Indexing, Resampler as _};
+use rubato::{Fft, FixedSync, Indexing, Resampler as _, WindowFunction};
 
 use crate::Error;
-use crate::output::Spec;
+use crate::output::{Resampling, ResamplingWindow, Spec};
 
 const RESAMPLE_CHUNK: usize = 1024;
 
 pub(crate) struct Converter {
     source: Spec,
     output: Spec,
+    resampling: Resampling,
     resampler: Option<RateConverter>,
     mapped: Vec<f32>,
 }
 
 impl Converter {
-    pub(crate) fn new(source: Spec, output: Spec) -> Result<Self, Error> {
+    pub(crate) fn new(source: Spec, output: Spec, resampling: Resampling) -> Result<Self, Error> {
         Ok(Self {
             source,
             output,
-            resampler: Self::resampler(source, output)?,
+            resampling,
+            resampler: Self::resampler(source, output, resampling)?,
             mapped: Vec::new(),
         })
     }
 
-    fn resampler(source: Spec, output: Spec) -> Result<Option<RateConverter>, Error> {
+    fn resampler(
+        source: Spec,
+        output: Spec,
+        resampling: Resampling,
+    ) -> Result<Option<RateConverter>, Error> {
         (source.rate != output.rate)
-            .then(|| RateConverter::new(source.rate, output.rate, usize::from(output.channels)))
+            .then(|| {
+                RateConverter::new(
+                    source.rate,
+                    output.rate,
+                    usize::from(output.channels),
+                    resampling,
+                )
+            })
             .transpose()
     }
 
     pub(crate) fn reset(&mut self) -> Result<(), Error> {
-        self.resampler = Self::resampler(self.source, self.output)?;
+        self.resampler = Self::resampler(self.source, self.output, self.resampling)?;
         Ok(())
     }
 
@@ -104,12 +117,26 @@ struct RateConverter {
 }
 
 impl RateConverter {
-    fn new(from: u32, to: u32, channels: usize) -> Result<Self, Error> {
-        let resampler = Fft::<f32>::new(
+    fn new(from: u32, to: u32, channels: usize, resampling: Resampling) -> Result<Self, Error> {
+        let fft_size = resampling.fft_size() as usize;
+        // Rubato takes the FFT size from `chunk / sub_chunks`, so a chunk
+        // smaller than the FFT could not ask for it.
+        let chunk = RESAMPLE_CHUNK.max(fft_size);
+        let window = match resampling.window() {
+            ResamplingWindow::Hann => WindowFunction::Hann,
+            ResamplingWindow::Hann2 => WindowFunction::Hann2,
+            ResamplingWindow::Blackman => WindowFunction::Blackman,
+            ResamplingWindow::Blackman2 => WindowFunction::Blackman2,
+            ResamplingWindow::BlackmanHarris => WindowFunction::BlackmanHarris,
+            ResamplingWindow::BlackmanHarris2 => WindowFunction::BlackmanHarris2,
+        };
+        let resampler = Fft::<f32>::new_custom(
             from as usize,
             to as usize,
-            RESAMPLE_CHUNK,
+            chunk,
+            chunk / fft_size,
             channels,
+            window,
             FixedSync::Input,
         )
         .map_err(|error| Error::Resample(error.to_string()))?;
@@ -254,7 +281,7 @@ mod tests {
             rate: 48_000,
             channels: 1,
         };
-        let mut converter = Converter::new(source, output).unwrap();
+        let mut converter = Converter::new(source, output, Resampling::default()).unwrap();
         let input = sine(44_100, 44_100);
         let mut out = Vec::new();
         // Uneven pushes, as packets of different sizes would arrive
@@ -277,7 +304,7 @@ mod tests {
             rate: 48_000,
             channels: 1,
         };
-        let mut converter = Converter::new(source, output).unwrap();
+        let mut converter = Converter::new(source, output, Resampling::default()).unwrap();
         let mut out = Vec::new();
         for chunk in sine(44_100, 22_050).chunks(1_000) {
             converter.process(chunk, &mut out).unwrap();
@@ -289,7 +316,7 @@ mod tests {
         assert_eq!(out.len(), 24_000);
         assert_eq!(converter.undelivered_frames(), 0);
 
-        let mut unchanged = Converter::new(source, source).unwrap();
+        let mut unchanged = Converter::new(source, source, Resampling::default()).unwrap();
         unchanged.process(&[0.5; 100], &mut Vec::new()).unwrap();
         assert_eq!(unchanged.undelivered_frames(), 0);
     }
@@ -304,7 +331,7 @@ mod tests {
             rate: 48_000,
             channels: 1,
         };
-        let mut converter = Converter::new(source, output).unwrap();
+        let mut converter = Converter::new(source, output, Resampling::default()).unwrap();
         let mut out = Vec::new();
         converter.process(&sine(96_000, 96_000), &mut out).unwrap();
         converter.finish(&mut out).unwrap();
@@ -343,7 +370,7 @@ mod tests {
                     rate: to,
                     channels: 2,
                 };
-                let mut converter = Converter::new(source, output).unwrap();
+                let mut converter = Converter::new(source, output, Resampling::default()).unwrap();
                 let mut out = Vec::new();
                 for chunk in vec![0.25; frames * 2].chunks(2 * 333) {
                     converter.process(chunk, &mut out).unwrap();
@@ -360,6 +387,102 @@ mod tests {
     }
 
     #[test]
+    fn the_fft_size_reaches_the_resampler() {
+        let fft_size_in = |fft_size| {
+            let resampling = Resampling::new(fft_size, ResamplingWindow::default());
+            RateConverter::new(44_100, 48_000, 2, resampling)
+                .unwrap()
+                .resampler
+                .fft_size_in()
+        };
+        assert_eq!(
+            [256, 1024, 4096, 16_384].map(fft_size_in),
+            [294, 1029, 4116, 16_464]
+        );
+    }
+
+    #[test]
+    fn the_window_reaches_the_resampler() {
+        let source = Spec {
+            rate: 48_000,
+            channels: 1,
+        };
+        let output = Spec {
+            rate: 44_100,
+            channels: 1,
+        };
+        let resampled = |window| {
+            let resampling = Resampling::new(256, window);
+            let mut converter = Converter::new(source, output, resampling).unwrap();
+            let mut out = Vec::new();
+            converter.process(&sine(48_000, 48_000), &mut out).unwrap();
+            converter.finish(&mut out).unwrap();
+            out
+        };
+        assert_ne!(
+            resampled(ResamplingWindow::Hann),
+            resampled(ResamplingWindow::BlackmanHarris2)
+        );
+    }
+
+    /// A larger FFT holds more of the input back and takes more of it at once,
+    /// and a block can then be larger than a whole short track.
+    #[test]
+    fn every_fft_size_keeps_the_whole_track_and_its_level() {
+        let source = Spec {
+            rate: 44_100,
+            channels: 1,
+        };
+        let output = Spec {
+            rate: 48_000,
+            channels: 1,
+        };
+        for fft_size in [256, 512, 1024, 2048, 4096, 8192, 16_384] {
+            let resampling = Resampling::new(fft_size, ResamplingWindow::default());
+            for frames in [100, 44_100] {
+                let mut converter = Converter::new(source, output, resampling).unwrap();
+                let mut out = Vec::new();
+                for chunk in sine(44_100, frames).chunks(1_000) {
+                    converter.process(chunk, &mut out).unwrap();
+                }
+                let delivered = out.len() as u64;
+                assert_eq!(
+                    delivered + converter.undelivered_frames(),
+                    (frames as f64 * 48_000.0 / 44_100.0).round() as u64,
+                    "FFT size {fft_size}, {frames} frames"
+                );
+                converter.finish(&mut out).unwrap();
+                let expected = (frames as f64 * 48_000.0 / 44_100.0).round() as usize;
+                assert_eq!(out.len(), expected, "FFT size {fft_size}, {frames} frames");
+                if frames == 44_100 {
+                    let middle = &out[12_000..36_000];
+                    let peak = middle
+                        .iter()
+                        .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+                    assert!((0.95..=1.05).contains(&peak), "FFT size {fft_size}: {peak}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reset_keeps_the_fft_size() {
+        let source = Spec {
+            rate: 44_100,
+            channels: 1,
+        };
+        let output = Spec {
+            rate: 48_000,
+            channels: 1,
+        };
+        let resampling = Resampling::new(4096, ResamplingWindow::default());
+        let mut converter = Converter::new(source, output, resampling).unwrap();
+        converter.reset().unwrap();
+        let resampler = converter.resampler.as_ref().unwrap();
+        assert_eq!(resampler.resampler.fft_size_in(), 4116);
+    }
+
+    #[test]
     fn short_input_is_flushed_on_finish() {
         let source = Spec {
             rate: 48_000,
@@ -369,7 +492,7 @@ mod tests {
             rate: 44_100,
             channels: 2,
         };
-        let mut converter = Converter::new(source, output).unwrap();
+        let mut converter = Converter::new(source, output, Resampling::default()).unwrap();
         let mut out = Vec::new();
         converter.process(&vec![0.25; 2 * 100], &mut out).unwrap();
         converter.finish(&mut out).unwrap();

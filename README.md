@@ -59,6 +59,9 @@ Change settings in the app under **hiphile > Settings…**. They are saved to
 | `username` | `HIPHILE_USERNAME` | None |
 | `output_device` | `HIPHILE_OUTPUT_DEVICE` | System default |
 | `sample_rate` (Hz) | `HIPHILE_SAMPLE_RATE` | Each file's rate |
+| `resampling` (`medium`, `high`, `max` or `custom`) | `HIPHILE_RESAMPLING` | `medium` |
+| `resampling_fft_size` (with `custom`: a power of two from 256 to 16384) | `HIPHILE_RESAMPLING_FFT_SIZE` | `256` |
+| `resampling_window` (with `custom`: `hann`, `hann-2`, `blackman`, `blackman-2`, `blackman-harris` or `blackman-harris-2`) | `HIPHILE_RESAMPLING_WINDOW` | `blackman-harris-2` |
 | `song_cache_gib` (`0` for no limit) | `HIPHILE_SONG_CACHE_GIB` | `8` |
 | `cover_cache_gib` (`0` for no limit) | `HIPHILE_COVER_CACHE_GIB` | `8` |
 | `appearance` (`"light"` or `"dark"`) | `HIPHILE_APPEARANCE` (also accepts `system`) | System setting |

@@ -20,7 +20,7 @@ use session::{Readings, ReadingsState};
 use updater::{UpdateState, Updater};
 
 use crate::appearance_settings::{AppearanceSettings, CHOICES};
-use crate::audio_settings::{AudioSettings, MATCH_SONG, SYSTEM_DEFAULT};
+use crate::audio_settings::{AudioSettings, MATCH_SONG, QUALITIES, SYSTEM_DEFAULT};
 use crate::cache_limit::CacheLimit;
 use crate::cache_limit_field::CacheLimitField;
 use crate::discord_settings::DiscordSettings;
@@ -239,6 +239,58 @@ impl SettingsView {
         SettingPage::new("Audio")
             .icon(IconName::AudioLines)
             .group(output)
+            .group(self.resampling_group(cx))
+    }
+
+    fn resampling_group(&self, cx: &mut Context<Self>) -> SettingGroup {
+        let quality =
+            SettingField::render({
+                let audio = self.audio.clone();
+                move |_, _, cx| {
+                    let selected = audio.read(cx).quality_ix();
+                    let audio = audio.clone();
+                    RadioGroup::horizontal("resampling-quality")
+                        .selected_index(Some(selected))
+                        .children(QUALITIES.iter().enumerate().map(|(ix, label)| {
+                            Radio::new(("resampling-quality", ix)).label(*label)
+                        }))
+                        .on_click(move |ix, _, cx| {
+                            audio.update(cx, |audio, cx| audio.select_quality(*ix, cx));
+                        })
+                }
+            });
+        let audio = self.audio.read(cx);
+        let fft_size = SettingField::scrollable_dropdown(
+            audio.fft_size_options(),
+            {
+                let audio = self.audio.clone();
+                move |cx| audio.read(cx).fft_size_value()
+            },
+            {
+                let audio = self.audio.clone();
+                move |value: SharedString, cx| {
+                    audio.update(cx, |audio, cx| audio.set_fft_size(&value, cx));
+                }
+            },
+        );
+        let window = SettingField::scrollable_dropdown(
+            audio.window_options(),
+            {
+                let audio = self.audio.clone();
+                move |cx| audio.read(cx).window_value()
+            },
+            {
+                let audio = self.audio.clone();
+                move |value: SharedString, cx| {
+                    audio.update(cx, |audio, cx| audio.set_window(&value, cx));
+                }
+            },
+        );
+        SettingGroup::new().title("Resampling").items([
+            SettingItem::new("Quality", quality).keywords(["resampling"]),
+            SettingItem::new("FFT size", fft_size).keywords(["resampling"]),
+            SettingItem::new("Window", window).keywords(["resampling"]),
+        ])
     }
 
     fn discord_page(&self, cx: &mut Context<Self>) -> SettingPage {

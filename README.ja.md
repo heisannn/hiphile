@@ -57,6 +57,9 @@ cargo run -p hiphile-cli -- --help   # CLIの使用方法を表示する
 | `username` | `HIPHILE_USERNAME` | なし |
 | `output_device` | `HIPHILE_OUTPUT_DEVICE` | システムデフォルト |
 | `sample_rate` (Hz) | `HIPHILE_SAMPLE_RATE` | 各ファイルのレート |
+| `resampling` (`medium`、`high`、`max`、`custom`) | `HIPHILE_RESAMPLING` | `medium` |
+| `resampling_fft_size` (`custom` のとき: 256〜16384 の 2 の累乗) | `HIPHILE_RESAMPLING_FFT_SIZE` | `256` |
+| `resampling_window` (`custom` のとき: `hann`、`hann-2`、`blackman`、`blackman-2`、`blackman-harris`、`blackman-harris-2`) | `HIPHILE_RESAMPLING_WINDOW` | `blackman-harris-2` |
 | `song_cache_gib` (`0` は無制限) | `HIPHILE_SONG_CACHE_GIB` | `8` |
 | `cover_cache_gib` (`0` は無制限) | `HIPHILE_COVER_CACHE_GIB` | `8` |
 | `appearance` (`"light"` または `"dark"`) | `HIPHILE_APPEARANCE` (`system` も指定可能) | システム設定 |
