@@ -5,8 +5,8 @@ use cpal::traits::DeviceTrait;
 use crate::Error;
 
 /// Rates a device can be fixed at, among those it supports.
-const STANDARD_RATES: [u32; 8] = [
-    44_100, 48_000, 88_200, 96_000, 176_400, 192_000, 352_800, 384_000,
+const STANDARD_RATES: [u32; 10] = [
+    44_100, 48_000, 88_200, 96_000, 176_400, 192_000, 352_800, 384_000, 705_600, 768_000,
 ];
 
 /// Where and at what rate the engine plays.
@@ -214,6 +214,10 @@ mod tests {
         assert_eq!(
             standard_rates(&[range(2, 48_000, 192_000)]),
             [48_000, 88_200, 96_000, 176_400, 192_000]
+        );
+        assert_eq!(
+            standard_rates(&[range(2, 384_000, 768_000)]),
+            [384_000, 705_600, 768_000]
         );
         assert!(standard_rates(&[]).is_empty());
     }

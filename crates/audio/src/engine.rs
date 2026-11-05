@@ -2174,6 +2174,30 @@ mod tests {
         );
     }
 
+    /// The device's top rate holds up, resampled and with the buffers it takes.
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_fixed_rate_at_the_top_of_the_device_range_plays() {
+        let device = device_to_open_by_id();
+        let id = device.id().unwrap().to_owned();
+        let original = current_rate(&id);
+        let top = *device.sample_rates().last().unwrap();
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id.clone()), Some(top)));
+        engine.load(Track::new(Cursor::new(wav(44_100, 2, 44_100 * 20, 0))));
+        let EventKind::Started(format) = next_event(&events).kind else {
+            panic!("expected Started");
+        };
+        assert_eq!(format.output_rate(), top);
+        assert!(format.is_resampled());
+        assert_eq!(current_rate(&id), top);
+        thread::sleep(Duration::from_secs(1));
+        assert!(engine.position() >= Duration::from_millis(500));
+        assert_no_event(&events);
+        engine.shutdown();
+        assert_eq!(current_rate(&id), original);
+    }
+
     /// A next track at a rate that takes the device switching still follows,
     /// through a new stream.
     #[test]
