@@ -29,7 +29,7 @@ use player::{
 };
 use playlists::{Playlists, PlaylistsEvent};
 use search::{OpenSearch, Search, SearchEvent};
-use session::Session;
+use session::{ReadingsFailed, ReadingsState, Session};
 use songs::Songs;
 use subsonic::{AlbumId, ArtistId};
 use ui::CoverCache;
@@ -66,6 +66,7 @@ pub struct AppShell {
     /// Whether the queue shows beside the library when the window is wide
     /// enough for it.
     queue_shown: bool,
+    _readings_failures: Option<Subscription>,
     _song_cache_changes: Subscription,
     _cover_cache_changes: Subscription,
     _system_appearance_changes: Subscription,
@@ -195,6 +196,12 @@ impl Workspace {
     }
 }
 
+/// Says that the dictionaries could not be had, which only Settings would show.
+fn tell_readings_failed(error: &str, window: &mut Window, cx: &mut App) {
+    let message = format!("{error} Try again in Settings.");
+    window.push_notification((NotificationType::Error, message), cx);
+}
+
 impl AppShell {
     pub fn new(net: net::Client, window: &mut Window, cx: &mut Context<Self>) -> Self {
         window.set_window_title("hiphile");
@@ -216,12 +223,28 @@ impl AppShell {
                 session::set_cover_capacity(cover_cache.read(cx).capacity(), cx);
             },
         );
+        let readings_failures = session::readings(cx).map(|readings| {
+            // What failed before there was a window to say so in.
+            if let ReadingsState::Failed(error) = readings.read(cx).state().clone() {
+                cx.defer_in(window, move |_, window, cx| {
+                    tell_readings_failed(&error, window, cx);
+                });
+            }
+            cx.subscribe_in(
+                &readings,
+                window,
+                |_, _, ReadingsFailed(error), window, cx| {
+                    tell_readings_failed(error, window, cx);
+                },
+            )
+        });
         Self {
             net,
             keychain,
             focus,
             screen,
             queue_shown,
+            _readings_failures: readings_failures,
             _song_cache_changes: song_cache_changes,
             _cover_cache_changes: cover_cache_changes,
             _system_appearance_changes: settings::follow_system_appearance(window),

@@ -15,7 +15,9 @@ use gpui_kit::{App, Global, SharedString};
 use subsonic::{AlbumId, AlbumWithSongs, CoverArtId, ServerInfo};
 
 pub use reading_book::ReadingBook;
-pub use readings::{Readings, ReadingsChanged, ReadingsState, missing_readings_note, readings};
+pub use readings::{
+    Readings, ReadingsChanged, ReadingsFailed, ReadingsState, missing_readings_note, readings,
+};
 
 struct GlobalCovers(catalog::CoverStore);
 

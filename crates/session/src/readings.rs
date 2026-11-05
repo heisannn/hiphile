@@ -32,6 +32,9 @@ pub enum ReadingsState {
 /// read with them, or for lack of them, is out of date.
 pub struct ReadingsChanged;
 
+/// Emitted when getting the dictionaries failed, with what went wrong.
+pub struct ReadingsFailed(pub SharedString);
+
 /// The dictionaries that read kanji: fetched in the background the first time
 /// the app runs, unless the user turned them off.
 ///
@@ -51,6 +54,8 @@ pub struct Readings {
 }
 
 impl EventEmitter<ReadingsChanged> for Readings {}
+
+impl EventEmitter<ReadingsFailed> for Readings {}
 
 struct GlobalReadings(Entity<Readings>);
 
@@ -148,6 +153,9 @@ impl Readings {
     fn set_state(&mut self, state: ReadingsState, cx: &mut Context<Self>) {
         let was_ready = matches!(self.state, ReadingsState::Ready(_));
         let is_ready = matches!(state, ReadingsState::Ready(_));
+        if let ReadingsState::Failed(error) = &state {
+            cx.emit(ReadingsFailed(error.clone()));
+        }
         self.state = state;
         if was_ready != is_ready {
             cx.emit(ReadingsChanged);
@@ -158,7 +166,10 @@ impl Readings {
     /// Uses the dictionaries on disk, or downloads them if there are none.
     fn fetch(&mut self, cx: &mut Context<Self>) {
         let Some(root) = self.root.clone() else {
-            let error = bundle::Error::NoCacheDir.to_string();
+            let error = format!(
+                "Couldn't download the dictionaries: {}.",
+                bundle::Error::NoCacheDir
+            );
             self.set_state(ReadingsState::Failed(error.into()), cx);
             return;
         };
@@ -275,7 +286,8 @@ async fn download(
     cx: &mut AsyncApp,
 ) -> Result<PathBuf, String> {
     let describe = |error: net::Error| format!("Couldn't download the dictionaries: {error}.");
-    let url = Url::parse(BUNDLE.url).map_err(|error| error.to_string())?;
+    let url = Url::parse(BUNDLE.url)
+        .map_err(|error| format!("Couldn't download the dictionaries: {error}."))?;
     let download = net.download(url).await.map_err(describe)?;
     let total = download.content_length().unwrap_or(BUNDLE.download_bytes);
     let _cancel = CancelOnDrop(download.handle());
@@ -312,6 +324,60 @@ fn fraction_of(read: u64, total: u64) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn without_a_cache_dir(cx: &mut gpui_kit::TestAppContext) -> Entity<Readings> {
+        cx.new(|_| Readings {
+            net: net::Client::new("hiphile-test").unwrap(),
+            store: None,
+            root: None,
+            state: ReadingsState::Off,
+            choice_error: None,
+            _work: Task::ready(()),
+            _save: Task::ready(()),
+        })
+    }
+
+    #[gpui_kit::test]
+    fn every_failure_says_what_went_wrong(cx: &mut gpui_kit::TestAppContext) {
+        let readings = without_a_cache_dir(cx);
+        let failures = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        cx.update(|cx| {
+            let failures = failures.clone();
+            cx.subscribe(&readings, move |_, ReadingsFailed(error), _| {
+                failures.borrow_mut().push(error.clone());
+            })
+            .detach();
+        });
+
+        readings.update(cx, |it, cx| it.fetch(cx));
+        readings.update(cx, |it, cx| it.retry(cx));
+        cx.run_until_parked();
+
+        let failures = failures.borrow();
+        assert_eq!(failures.len(), 2);
+        assert!(failures[0].starts_with("Couldn't download the dictionaries: "));
+        assert!(failures[0].ends_with('.'));
+    }
+
+    #[gpui_kit::test]
+    fn only_a_failure_is_told_as_one(cx: &mut gpui_kit::TestAppContext) {
+        let readings = without_a_cache_dir(cx);
+        let told = std::rc::Rc::new(std::cell::Cell::new(false));
+        cx.update(|cx| {
+            let told = told.clone();
+            cx.subscribe(&readings, move |_, _: &ReadingsFailed, _| told.set(true))
+                .detach();
+        });
+
+        readings.update(cx, |it, cx| {
+            it.set_state(ReadingsState::Downloading(0.5), cx);
+            it.set_state(ReadingsState::Ready("dir".into()), cx);
+            it.set_state(ReadingsState::Off, cx);
+        });
+        cx.run_until_parked();
+
+        assert!(!told.get());
+    }
 
     #[test]
     fn a_bundle_that_cannot_be_opened_goes() {
