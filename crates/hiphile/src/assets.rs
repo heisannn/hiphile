@@ -16,6 +16,7 @@ gpui_kit::assets::icon_assets!(
         MicVocal,
         Repeat,
         Repeat1,
+        Settings,
         Shuffle,
         SkipBack,
         SkipForward,

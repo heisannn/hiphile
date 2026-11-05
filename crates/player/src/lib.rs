@@ -13,7 +13,7 @@ use ui::list_navigation::bind_list_navigation;
 
 pub use lyrics_view::{LYRICS_CONTEXT, LyricsReveal, LyricsView};
 pub use playback::{Placement, RepeatMode};
-pub use player::{Player, PlayerEvent};
+pub use player::{Panels, Player, PlayerEvent};
 pub use queue_view::{QUEUE_CONTEXT, QueueView};
 
 actions!(
@@ -35,7 +35,9 @@ actions!(
         /// Shows the lyrics of the current song, or goes back from them.
         ToggleLyrics,
         /// Goes back from the lyrics.
-        CloseLyrics
+        CloseLyrics,
+        /// Shows or hides the queue, or goes back to it from the lyrics.
+        ToggleQueue
     ]
 );
 

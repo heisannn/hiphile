@@ -26,7 +26,7 @@ use ui::{CoverArt, centered, muted_text, section_failure, section_loading};
 
 use crate::ToggleLyrics;
 use crate::player::{Player, PlayerEvent, cover_hover};
-use crate::transport::{PositionLine, TransportControls, VolumeControl};
+use crate::transport::{PanelToggles, PositionLine, TransportControls, VolumeControl};
 
 /// Key context of the view while it shows.
 pub const LYRICS_CONTEXT: &str = "Lyrics";
@@ -852,10 +852,17 @@ impl LyricsView {
                 h_flex()
                     .mt_2()
                     .justify_between()
+                    .gap_2()
                     .text_xs()
                     .text_color(color)
-                    .child(div().children(format))
-                    .child(VolumeControl::new(self.player.clone())),
+                    .child(div().min_w_0().truncate().children(format))
+                    .child(
+                        h_flex()
+                            .flex_none()
+                            .gap_2()
+                            .child(PanelToggles::new(self.player.clone()))
+                            .child(VolumeControl::new(self.player.clone())),
+                    ),
             )
     }
 

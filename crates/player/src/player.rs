@@ -21,7 +21,7 @@ use subsonic::{CoverArtId, Song, SongId};
 use ui::{AlbumLink, ArtistLink, CoverArt, song_artist_link};
 
 use crate::format;
-use crate::transport::{PositionLine, TransportControls, VolumeControl};
+use crate::transport::{PanelToggles, PositionLine, TransportControls, VolumeControl};
 use crate::{GlobalSongCache, ToggleLyrics};
 
 /// How often the position redraws while playing.
@@ -71,6 +71,19 @@ pub enum PlayerEvent {
     },
 }
 
+/// How the panels that go with the player stand. What lays them out knows this,
+/// and the player shows it on the buttons that toggle them.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Panels {
+    pub is_lyrics_open: bool,
+    /// Whether the queue is to be shown, when it fits.
+    pub is_queue_shown: bool,
+    /// Whether the window has room for the queue.
+    pub queue_fits: bool,
+}
+
+type PanelsSource = Box<dyn Fn(&Window, &App) -> Panels>;
+
 /// The play queue, the audio engine, and the now-playing bar that controls
 /// them. Dropping it, or quitting the app, stops playback and returns the
 /// output device to its sample rate from before.
@@ -109,6 +122,7 @@ pub struct Player {
     large_cover_url: Option<SharedString>,
     /// Whether the bar leaves out its cover, for another that stands in for it.
     is_cover_hidden: bool,
+    panels: PanelsSource,
     error: Option<SharedString>,
     /// The position as a fraction of the song.
     position: Entity<SliderState>,
@@ -273,6 +287,7 @@ impl Player {
             cover_url: None,
             large_cover_url: None,
             is_cover_hidden: false,
+            panels: Box::new(|_, _| Panels::default()),
             error: None,
             position,
             scrub: None,
@@ -405,6 +420,16 @@ impl Player {
     /// or stopped.
     pub(crate) fn is_playing(&self) -> bool {
         matches!(self.state, State::Playing | State::Opening)
+    }
+
+    /// Asks `panels` how they stand whenever the toggles are drawn, as that can
+    /// follow from the window's size.
+    pub fn set_panels(&mut self, panels: impl Fn(&Window, &App) -> Panels + 'static) {
+        self.panels = Box::new(panels);
+    }
+
+    pub(crate) fn panels(&self, window: &Window, cx: &App) -> Panels {
+        (self.panels)(window, cx)
     }
 
     pub(crate) fn set_cover_hidden(&mut self, is_hidden: bool, cx: &mut Context<Self>) {
@@ -1211,6 +1236,7 @@ impl Render for Player {
                     .when_some(format_text, |this, text| {
                         this.child(div().flex_none().opacity(format_shown).child(text))
                     })
+                    .child(PanelToggles::new(cx.entity()))
                     .child(VolumeControl::new(cx.entity())),
             )
     }

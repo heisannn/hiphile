@@ -5,8 +5,7 @@ use actions::{
 use artists::{Artists, ArtistsEvent};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Selectable as _, Sizable as _, StyledExt as _, TitleBar,
-    WindowExt as _,
+    ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _, TitleBar, WindowExt as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     notification::NotificationType,
@@ -23,13 +22,14 @@ use gpui_kit::{
 use home::Home;
 use library::{Library, LibraryEvent, Refresh};
 use player::{
-    CloseLyrics, CycleRepeat, LyricsView, NextSong, Player, PlayerEvent, PreviousSong, QueueView,
-    RepeatMode, SaveQueue, SeekBackward, SeekForward, SetRepeat, ToggleLyrics, ToggleMute,
-    TogglePlayback, ToggleShuffle, VolumeDown, VolumeUp,
+    CloseLyrics, CycleRepeat, LyricsView, NextSong, Panels, Player, PlayerEvent, PreviousSong,
+    QueueView, RepeatMode, SaveQueue, SeekBackward, SeekForward, SetRepeat, ToggleLyrics,
+    ToggleMute, TogglePlayback, ToggleQueue, ToggleShuffle, VolumeDown, VolumeUp,
 };
 use playlists::{Playlists, PlaylistsEvent};
 use search::{OpenSearch, Search, SearchEvent};
 use session::{ReadingsFailed, ReadingsState, Session};
+use settings::OpenSettings;
 use songs::Songs;
 use subsonic::{AlbumId, ArtistId};
 use ui::CoverCache;
@@ -38,7 +38,6 @@ use crate::library_activity::{ActivityChanged, LibraryActivity, NoticeChange};
 use crate::navigation::{History, Location};
 use crate::{
     GoBack, GoForward, ShowAlbums, ShowArtists, ShowHome, ShowPlaylists, ShowSongs, SignOut,
-    ToggleQueue,
 };
 
 /// The queue's width when first shown, in rem.
@@ -295,10 +294,16 @@ impl AppShell {
         let discord_settings = settings::discord_settings(cx);
         let cover_key = discord_settings.read(cx).imgbb_key().map(str::to_owned);
         let is_presence_on = discord_settings.read(cx).is_presence_on();
+        let shell = cx.weak_entity();
         let player = cx.new(|cx| {
             let mut player = Player::new(session.clone(), output, window, cx);
             player.set_cover_key(cover_key.as_deref());
             player.set_presence_on(is_presence_on);
+            player.set_panels(move |window, cx| {
+                shell
+                    .upgrade()
+                    .map_or_else(Panels::default, |shell| shell.read(cx).panels(window, cx))
+            });
             player
         });
         let queue = cx.new(|cx| QueueView::new(player.clone(), window, cx));
@@ -844,6 +849,14 @@ impl AppShell {
         window.viewport_size().width >= workspace.screen_min_width(window, cx) + queue
     }
 
+    fn panels(&self, window: &Window, cx: &App) -> Panels {
+        Panels {
+            is_lyrics_open: self.is_lyrics_open(cx),
+            is_queue_shown: self.queue_shown,
+            queue_fits: self.queue_fits(window, cx),
+        }
+    }
+
     /// Makes `root` go back and forward, by the commands wherever they lead
     /// somewhere, and by what mice and trackpads send for it.
     fn handle_navigation(&self, root: Stateful<Div>, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -973,21 +986,12 @@ impl AppShell {
             .into_any_element()
     }
 
-    fn render_title_bar(
-        &self,
-        queue_visible: bool,
-        queue_fits: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn render_title_bar(&self, cx: &mut Context<Self>) -> AnyElement {
         let signed_in = matches!(self.screen, Screen::Workspace(_));
         let destination_ix = self
             .destination()
             .and_then(|current| Destination::ALL.iter().position(|d| *d == current));
         let (can_go_back, can_go_forward) = self.history_available(cx);
-        let is_lyrics_open = self.is_lyrics_open(cx);
-        let has_song = self
-            .player()
-            .is_some_and(|player| player.read(cx).has_song());
         TitleBar::new()
             .when(cfg!(target_os = "macos"), |this| {
                 this.pl(MACOS_TITLE_BAR_INSET)
@@ -1000,8 +1004,7 @@ impl AppShell {
                     .gap_2()
                     .when(signed_in, |this| {
                         this.child(
-                            h_flex()
-                                .flex_none()
+                            title_bar_controls()
                                 .child(
                                     Button::new("go-back")
                                         .ghost()
@@ -1046,40 +1049,21 @@ impl AppShell {
                                     ),
                             ),
                         )
-                        .child(div().flex_1())
-                        .child(
-                            Button::new("toggle-lyrics")
+                    })
+                    .child(div().flex_1())
+                    .child(
+                        title_bar_controls().child(
+                            Button::new("open-settings")
                                 .ghost()
                                 .small()
-                                .icon(IconName::MicVocal)
-                                .selected(is_lyrics_open)
-                                .disabled(!has_song)
-                                .accessibility_label("Lyrics")
-                                .tooltip_with_action("Lyrics", &ToggleLyrics, None)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.set_lyrics_open(!is_lyrics_open, window, cx);
-                                })),
-                        )
-                        .child(
-                            Button::new("toggle-queue")
-                                .ghost()
-                                .small()
-                                .icon(IconName::ListMusic)
-                                .selected(queue_visible && !is_lyrics_open)
-                                .disabled(!queue_fits)
-                                .accessibility_label("Queue")
-                                .map(|this| {
-                                    if queue_fits {
-                                        this.tooltip_with_action("Queue", &ToggleQueue, None)
-                                    } else {
-                                        this.tooltip("Widen the window to show the queue.")
-                                    }
-                                })
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.toggle_queue(window, cx);
-                                })),
-                        )
-                    }),
+                                .icon(IconName::Settings)
+                                .accessibility_label("Settings")
+                                .tooltip_with_action("Settings", &OpenSettings, None)
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(OpenSettings), cx);
+                                }),
+                        ),
+                    ),
             )
             .into_any_element()
     }
@@ -1110,6 +1094,15 @@ fn follow_discord_settings(
         }
     });
     [key_changes, presence_changes]
+}
+
+/// A row of buttons in the title bar. The title bar moves the window, and on
+/// Windows a press that goes on to the title bar starts that move, which takes
+/// the release and so the click.
+fn title_bar_controls() -> Div {
+    h_flex()
+        .flex_none()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
 }
 
 /// The lyrics of what `player` plays, kept on the chosen highlight for as long as
@@ -1273,8 +1266,11 @@ impl Render for AppShell {
             })
             .when(signed_in, |this| self.handle_song_commands(this, cx))
             .when(signed_in, |this| self.handle_navigation(this, cx))
-            .child(self.render_title_bar(queue_visible, queue_fits, cx))
+            .child(self.render_title_bar(cx))
             .child(self.render_under_title_bar(content, window, cx))
             .children(chooser)
     }
 }
+
+#[cfg(test)]
+mod tests;

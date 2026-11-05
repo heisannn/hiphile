@@ -15,7 +15,9 @@ use ui::format_duration;
 
 use crate::hover_slider::HoverSlider;
 use crate::player::Player;
-use crate::{CycleRepeat, NextSong, PreviousSong, TogglePlayback, ToggleShuffle};
+use crate::{
+    CycleRepeat, NextSong, PreviousSong, ToggleLyrics, TogglePlayback, ToggleQueue, ToggleShuffle,
+};
 
 /// The kit's play and pause icons, filled in, as it has no such icons.
 const PLAY_ICON: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -202,6 +204,62 @@ impl RenderOnce for PositionLine {
     }
 }
 
+/// The lyrics and the queue, whoever lays those out.
+#[derive(IntoElement)]
+pub(crate) struct PanelToggles {
+    player: Entity<Player>,
+}
+
+impl PanelToggles {
+    pub(crate) fn new(player: Entity<Player>) -> Self {
+        Self { player }
+    }
+}
+
+impl RenderOnce for PanelToggles {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let player = self.player.read(cx);
+        let has_song = player.has_song();
+        let panels = player.panels(window, cx);
+        let is_queue_selected =
+            panels.is_queue_shown && panels.queue_fits && !panels.is_lyrics_open;
+        h_flex()
+            .debug_selector(|| "panel-toggles".to_owned())
+            .flex_none()
+            .gap_1()
+            .child(
+                Button::new("toggle-lyrics")
+                    .ghost()
+                    .small()
+                    .icon(IconName::MicVocal)
+                    .accessibility_label("Lyrics")
+                    .tooltip_with_action("Lyrics", &ToggleLyrics, None)
+                    .selected(panels.is_lyrics_open)
+                    .toggled(panels.is_lyrics_open)
+                    .disabled(!has_song)
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleLyrics), cx)),
+            )
+            .child(
+                Button::new("toggle-queue")
+                    .ghost()
+                    .small()
+                    .icon(IconName::ListMusic)
+                    .accessibility_label("Queue")
+                    .map(|this| {
+                        if panels.queue_fits {
+                            this.tooltip_with_action("Queue", &ToggleQueue, None)
+                        } else {
+                            this.tooltip("Widen the window to show the queue.")
+                        }
+                    })
+                    .selected(is_queue_selected)
+                    .toggled(is_queue_selected)
+                    .disabled(!panels.queue_fits)
+                    .on_click(|_, window, cx| window.dispatch_action(Box::new(ToggleQueue), cx)),
+            )
+    }
+}
+
 /// Mute and the volume.
 #[derive(IntoElement)]
 pub(crate) struct VolumeControl {
@@ -228,6 +286,7 @@ impl RenderOnce for VolumeControl {
         let slider = player.volume_state().clone();
         let owner = self.player.clone();
         h_flex()
+            .debug_selector(|| "volume-control".to_owned())
             .flex_none()
             .gap_2()
             .child(
@@ -244,3 +303,6 @@ impl RenderOnce for VolumeControl {
             .child(h_flex().w_20().child(HoverSlider::new(&slider, "Volume")))
     }
 }
+
+#[cfg(test)]
+mod tests;

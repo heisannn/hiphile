@@ -16,7 +16,7 @@ use gpui_kit::{
 };
 use player::{
     NextSong, PreviousSong, RepeatMode, SaveQueue, SeekBackward, SeekForward, SetRepeat,
-    ToggleLyrics, ToggleMute, TogglePlayback, ToggleShuffle, VolumeDown, VolumeUp,
+    ToggleLyrics, ToggleMute, TogglePlayback, ToggleQueue, ToggleShuffle, VolumeDown, VolumeUp,
 };
 
 use app_shell::{AppShell, Destination, WORKSPACE_CONTEXT};
@@ -26,7 +26,6 @@ actions!(
     [
         Quit,
         SignOut,
-        ToggleQueue,
         ShowHome,
         ShowAlbums,
         ShowArtists,
