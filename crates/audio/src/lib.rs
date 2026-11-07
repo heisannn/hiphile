@@ -45,5 +45,10 @@ pub use track::Track;
 /// and resample elsewhere, which would turn DoP into noise.
 pub const CAN_PLAY_DOP: bool = cfg!(target_os = "macos");
 
+/// Whether a device that is not held runs at the rate a stream asks for. Windows
+/// converts such a stream to its mix rate, so raising the rate there only adds a
+/// second conversion.
+pub(crate) const SHARED_STREAM_SETS_RATE: bool = !cfg!(target_os = "windows");
+
 /// Whether this platform can hold a device for one app while playing PCM.
 pub const CAN_PLAY_EXCLUSIVE: bool = cfg!(any(target_os = "macos", target_os = "windows"));

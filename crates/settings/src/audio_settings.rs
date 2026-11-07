@@ -1,5 +1,8 @@
 use audio::{OutputDevice, OutputSettings};
-use config::{DsdOutput, RESAMPLING_FFT_SIZES, ResamplingQuality, ResamplingWindow};
+use config::{
+    DsdOutput, RESAMPLING_FFT_SIZES, ResamplingQuality, ResamplingWindow, SAMPLE_RATE_MULTIPLES,
+    SampleRate,
+};
 use gpui_kit::{AppContext as _, Context, EventEmitter, SharedString, Task};
 use ui::format_sample_rate;
 
@@ -7,6 +10,7 @@ use ui::format_sample_rate;
 pub(crate) const SYSTEM_DEFAULT: &str = "system-default";
 pub(crate) const MATCH_SONG: &str = "match-song";
 pub(crate) const QUALITIES: [&str; 4] = ["Medium", "High", "Max", "Custom"];
+const BASE_RATES: [u32; 2] = [44_100, 48_000];
 
 pub struct OutputChanged;
 
@@ -138,7 +142,7 @@ impl AudioSettings {
 
     pub(crate) fn set_device(&mut self, value: &str, cx: &mut Context<Self>) {
         let device = (value != SYSTEM_DEFAULT).then(|| value.to_owned());
-        let output = self.output_on(device, self.output.fixed_rate());
+        let output = self.output_on(device, self.output.sample_rate());
         if self.output != output {
             self.unsaved.device = true;
             self.set_output(output, cx);
@@ -146,18 +150,23 @@ impl AudioSettings {
     }
 
     pub(crate) fn rate_options(&self) -> Vec<(SharedString, SharedString)> {
-        rate_options(self.selected_device_rates(), self.output.fixed_rate())
+        rate_options(
+            self.selected_device_rates(),
+            self.output.sample_rate(),
+            self.output.can_run_at_song_multiple(),
+        )
     }
 
     pub(crate) fn rate_value(&self) -> SharedString {
-        self.output
-            .fixed_rate()
-            .map_or(MATCH_SONG.into(), |rate| rate.to_string().into())
+        match self.output.sample_rate() {
+            SampleRate::MatchSong => MATCH_SONG.into(),
+            rate => rate.text().into(),
+        }
     }
 
     pub(crate) fn set_rate(&mut self, value: &str, cx: &mut Context<Self>) {
         let device = self.output.device().map(str::to_owned);
-        let output = self.output_on(device, value.parse().ok());
+        let output = self.output_on(device, SampleRate::parse(value).unwrap_or_default());
         if self.output != output {
             self.unsaved.rate = true;
             self.set_output(output, cx);
@@ -259,7 +268,7 @@ impl AudioSettings {
         self.quality = quality;
         self.unsaved.quality = true;
         let device = self.output.device().map(str::to_owned);
-        let output = self.output_on(device, self.output.fixed_rate());
+        let output = self.output_on(device, self.output.sample_rate());
         if self.output == output {
             self.save(cx);
             cx.notify();
@@ -286,7 +295,7 @@ impl AudioSettings {
         }
     }
 
-    fn output_on(&self, device: Option<String>, rate: Option<u32>) -> OutputSettings {
+    fn output_on(&self, device: Option<String>, rate: SampleRate) -> OutputSettings {
         OutputSettings::from_config(device, rate, self.quality, &self.dsd)
             .with_exclusive(self.output.is_exclusive())
     }
@@ -302,7 +311,7 @@ impl AudioSettings {
         self.dsd = dsd;
         self.unsaved.dsd = true;
         let device = self.output.device().map(str::to_owned);
-        let output = self.output_on(device, self.output.fixed_rate());
+        let output = self.output_on(device, self.output.sample_rate());
         if self.output == output {
             self.save(cx);
             cx.notify();
@@ -351,7 +360,7 @@ impl AudioSettings {
                             store.save_output_device(output.device())?;
                         }
                         if unsaved.rate {
-                            store.save_sample_rate(output.fixed_rate())?;
+                            store.save_sample_rate(output.sample_rate())?;
                         }
                         if unsaved.exclusive {
                             store.save_exclusive_mode(output.is_exclusive())?;
@@ -388,7 +397,7 @@ fn read_saved_output() -> (
     let unread = |store, error| {
         let quality = ResamplingQuality::default();
         let dsd = DsdOutput::default();
-        let output = OutputSettings::from_config(None, None, quality, &dsd);
+        let output = OutputSettings::from_config(None, SampleRate::MatchSong, quality, &dsd);
         (store, output, quality, dsd, Some(error))
     };
     let store = match config::Store::user() {
@@ -457,25 +466,54 @@ fn device_options<'a>(
     options
 }
 
-/// `rates` are what the device supports, if it is listed. A fixed rate that
-/// is not among them stays an option; the engine keeps the device's own rate
-/// meanwhile. Without a listed device, nothing is known to be unsupported.
-fn rate_options(rates: Option<&[u32]>, fixed: Option<u32>) -> Vec<(SharedString, SharedString)> {
+/// `rates` are what the device supports, if it is listed. A multiple is offered
+/// if it fits either family of rates. A chosen rate or multiple that does not
+/// fit stays an option; the engine plays at what the device can do meanwhile.
+/// Without a listed device, nothing is known to be unsupported.
+fn rate_options(
+    rates: Option<&[u32]>,
+    selected: SampleRate,
+    can_run_at_multiple: bool,
+) -> Vec<(SharedString, SharedString)> {
+    let listed = rates.unwrap_or_default();
+    let fits = |multiple: u32| {
+        can_run_at_multiple
+            && BASE_RATES
+                .iter()
+                .any(|base| listed.contains(&(base * multiple)))
+    };
+    let multiple_text = |multiple: u32| SampleRate::SongMultiple(multiple).text();
+    let rate_option = |rate: u32, label: String| (rate.to_string().into(), label.into());
+    let unsupported = |label: String| match rates {
+        Some(_) => format!("{label} (not supported)"),
+        None => label,
+    };
+
     let mut options: Vec<(SharedString, SharedString)> =
         vec![(MATCH_SONG.into(), "Match each song".into())];
-    let rate_option = |rate: u32, label: String| (rate.to_string().into(), label.into());
     options.extend(
-        rates
-            .unwrap_or_default()
+        SAMPLE_RATE_MULTIPLES
+            .into_iter()
+            .filter(|multiple| fits(*multiple))
+            .map(|multiple| {
+                let text = SharedString::from(multiple_text(multiple));
+                (text.clone(), text)
+            }),
+    );
+    options.extend(
+        listed
             .iter()
             .map(|rate| rate_option(*rate, format_sample_rate(*rate))),
     );
-    if let Some(fixed) = fixed.filter(|fixed| !rates.unwrap_or_default().contains(fixed)) {
-        let label = match rates {
-            Some(_) => format!("{} (not supported)", format_sample_rate(fixed)),
-            None => format_sample_rate(fixed),
-        };
-        options.push(rate_option(fixed, label));
+    match selected {
+        SampleRate::Fixed(rate) if !listed.contains(&rate) => {
+            options.push(rate_option(rate, unsupported(format_sample_rate(rate))));
+        }
+        SampleRate::SongMultiple(multiple) if !fits(multiple) => {
+            let text = multiple_text(multiple);
+            options.push((text.clone().into(), unsupported(text).into()));
+        }
+        _ => {}
     }
     options
 }
@@ -499,7 +537,7 @@ pub(crate) mod tests {
             let dsd = DsdOutput::default();
             AudioSettings::with(
                 Some(store.clone()),
-                OutputSettings::from_config(None, None, quality, &dsd),
+                OutputSettings::from_config(None, SampleRate::MatchSong, quality, &dsd),
                 quality,
                 dsd,
                 None,
@@ -721,24 +759,89 @@ pub(crate) mod tests {
 
     #[test]
     fn rates_follow_the_device() {
-        let options = rate_options(Some(&[44_100, 96_000]), None);
-        assert_eq!(labels(&options), ["Match each song", "44.1 kHz", "96 kHz"]);
-        assert_eq!(values(&options), [MATCH_SONG, "44100", "96000"]);
+        let options = rate_options(Some(&[44_100, 96_000]), SampleRate::MatchSong, true);
+        assert_eq!(
+            labels(&options),
+            ["Match each song", "x2", "44.1 kHz", "96 kHz"]
+        );
+        assert_eq!(values(&options), [MATCH_SONG, "x2", "44100", "96000"]);
     }
 
     #[test]
     fn a_fixed_rate_is_not_called_unsupported_without_a_device() {
-        let options = rate_options(None, Some(48_000));
+        let options = rate_options(None, SampleRate::Fixed(48_000), true);
         assert_eq!(labels(&options), ["Match each song", "48 kHz"]);
     }
 
     #[test]
     fn a_fixed_rate_the_device_lacks_stays_an_option() {
-        let options = rate_options(Some(&[44_100]), Some(192_000));
+        let options = rate_options(Some(&[44_100]), SampleRate::Fixed(192_000), true);
         assert_eq!(
             labels(&options),
             ["Match each song", "44.1 kHz", "192 kHz (not supported)"]
         );
         assert_eq!(values(&options)[2], "192000");
+    }
+
+    #[test]
+    fn a_multiple_is_offered_when_either_family_reaches_it() {
+        let options = rate_options(
+            Some(&[48_000, 176_400, 192_000]),
+            SampleRate::MatchSong,
+            true,
+        );
+        assert_eq!(
+            values(&options),
+            [MATCH_SONG, "x4", "48000", "176400", "192000"]
+        );
+    }
+
+    #[test]
+    fn a_multiple_the_device_lacks_stays_an_option() {
+        let options = rate_options(Some(&[44_100]), SampleRate::SongMultiple(4), true);
+        assert_eq!(
+            labels(&options),
+            ["Match each song", "44.1 kHz", "x4 (not supported)"]
+        );
+        assert_eq!(values(&options)[2], "x4");
+    }
+
+    #[test]
+    fn a_multiple_is_not_offered_where_it_cannot_reach_the_device() {
+        let rates: &[u32] = &[44_100, 96_000];
+        let options = rate_options(Some(rates), SampleRate::MatchSong, false);
+        assert_eq!(values(&options), [MATCH_SONG, "44100", "96000"]);
+
+        let options = rate_options(Some(rates), SampleRate::SongMultiple(2), false);
+        assert_eq!(
+            labels(&options),
+            [
+                "Match each song",
+                "44.1 kHz",
+                "96 kHz",
+                "x2 (not supported)"
+            ]
+        );
+    }
+
+    #[gpui_kit::test]
+    fn a_multiple_is_told_saved_and_reaches_the_output(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = config::Store::at(dir.path());
+        let (settings, told, _subscription) = settings_saving_to(&store, cx);
+
+        settings.update(cx, |settings, cx| settings.set_rate("x4", cx));
+        cx.run_until_parked();
+
+        assert_eq!(told.get(), 1);
+        assert_eq!(store.sample_rate().unwrap(), SampleRate::SongMultiple(4));
+        settings.read_with(cx, |settings, _| {
+            assert_eq!(settings.output().sample_rate(), SampleRate::SongMultiple(4));
+            assert_eq!(settings.rate_value().as_ref(), "x4");
+        });
+
+        settings.update(cx, |settings, cx| settings.set_rate(MATCH_SONG, cx));
+        cx.run_until_parked();
+        assert_eq!(store.sample_rate().unwrap(), SampleRate::MatchSong);
     }
 }

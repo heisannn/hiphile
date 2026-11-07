@@ -16,7 +16,7 @@ Hiphile is developed on macOS. Windows and Linux are not regularly tested.
 
 - **Library:** Browse albums, artists and songs, get daily recommendations on the home screen, edit playlists, and keep favorites.
 - **Playback:** Gapless playback, repeat, shuffle and an editable queue.
-- **Audio output:** Choose an output device, and switch its sample rate automatically to match each file. On macOS and Windows, keep other apps off the device with exclusive mode. On macOS, play as DSD up to DSD256 through DoP, with the filter and the modulator adjustable. See [how DSD output works](docs/dsd/implementation.md).
+- **Audio output:** Choose an output device, and switch its sample rate automatically to match each file or a multiple of it. On macOS and Windows, keep other apps off the device with exclusive mode. On macOS, play as DSD up to DSD256 through DoP, with the filter and the modulator adjustable. See [how DSD output works](docs/dsd/implementation.md).
 - **Lyrics:** Synced lyrics, highlighted word by word or line by line.
 - **Mini player:** A small window above all others, with the controls and the lyrics.
 - **Local cache:** Library data, cover art and songs are cached on disk, and library data syncs in the background.
@@ -58,7 +58,7 @@ Change settings in the app under **hiphile > Settings…**. They are saved to
 | `server` | `HIPHILE_SERVER` | None |
 | `username` | `HIPHILE_USERNAME` | None |
 | `output_device` | `HIPHILE_OUTPUT_DEVICE` | System default |
-| `sample_rate` (Hz) | `HIPHILE_SAMPLE_RATE` | Each file's rate |
+| `sample_rate` (Hz, or `x2`, `x4`, `x8` or `x16` for that multiple of each file's rate, or the next lower one the device supports; on Windows, multiples need `exclusive_mode`) | `HIPHILE_SAMPLE_RATE` | Each file's rate |
 | `exclusive_mode` (`true` keeps other apps off the output device while playing or paused; macOS uses hog mode and Windows WASAPI exclusive mode) | `HIPHILE_EXCLUSIVE_MODE` | `false` |
 | `resampling` (`medium`, `high`, `max` or `custom`) | `HIPHILE_RESAMPLING` | `medium` |
 | `resampling_fft_size` (with `custom`: a power of two from 256 to 16384) | `HIPHILE_RESAMPLING_FFT_SIZE` | `256` |

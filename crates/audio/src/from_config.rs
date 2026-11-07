@@ -1,4 +1,4 @@
-use config::{DsdFilter, DsdOutput, DsdParameters, DsdRate, ResamplingQuality};
+use config::{DsdFilter, DsdOutput, DsdParameters, DsdRate, ResamplingQuality, SampleRate};
 
 use crate::output::{OutputSettings, Resampling, ResamplingWindow};
 
@@ -7,12 +7,13 @@ impl OutputSettings {
     /// device it was turned on for.
     pub fn from_config(
         device: Option<String>,
-        fixed_rate: Option<u32>,
+        sample_rate: SampleRate,
         quality: ResamplingQuality,
         dsd: &DsdOutput,
     ) -> Self {
         let dop = (dsd.is_on && dsd.device == device).then(|| dsd_settings(dsd));
-        Self::new(device, fixed_rate)
+        Self::new(device, None)
+            .with_sample_rate(sample_rate)
             .with_resampling(Resampling::new(
                 quality.fft_size(),
                 window_of(quality.window()),
@@ -106,13 +107,19 @@ mod tests {
     fn dsd_applies_only_on_its_own_device() {
         let quality = ResamplingQuality::default();
         let dac = Some("dac".to_owned());
-        let on_dac = OutputSettings::from_config(dac.clone(), None, quality, &dsd_for("dac"));
+        let on_dac = OutputSettings::from_config(
+            dac.clone(),
+            SampleRate::MatchSong,
+            quality,
+            &dsd_for("dac"),
+        );
         assert!(on_dac.dop().is_some());
-        let elsewhere = OutputSettings::from_config(dac, None, quality, &dsd_for("other"));
+        let elsewhere =
+            OutputSettings::from_config(dac, SampleRate::MatchSong, quality, &dsd_for("other"));
         assert!(elsewhere.dop().is_none());
         let off = OutputSettings::from_config(
             Some("dac".to_owned()),
-            None,
+            SampleRate::MatchSong,
             quality,
             &DsdOutput::default(),
         );
@@ -138,7 +145,12 @@ mod tests {
     fn dsd_never_applies_on_the_system_default() {
         let mut dsd = DsdOutput::default();
         dsd.is_on = true;
-        let output = OutputSettings::from_config(None, None, ResamplingQuality::default(), &dsd);
+        let output = OutputSettings::from_config(
+            None,
+            SampleRate::MatchSong,
+            ResamplingQuality::default(),
+            &dsd,
+        );
         assert!(output.dop().is_none());
     }
 }

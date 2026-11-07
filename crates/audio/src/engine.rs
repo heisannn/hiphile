@@ -2602,6 +2602,28 @@ mod tests {
 
     #[test]
     #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_song_multiple_runs_the_device_at_that_multiple() {
+        let (_, id) = loopback_device();
+        let original = current_rate(&id);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(
+            OutputSettings::new(Some(id.clone()), None)
+                .with_sample_rate(config::SampleRate::SongMultiple(4)),
+        );
+        engine.load(Track::new(Cursor::new(wav(44_100, 2, 44_100 * 5, 0))));
+        let EventKind::Started(format) = next_event(&events).kind else {
+            panic!("expected Started");
+        };
+        assert_eq!(format.source_rate(), 44_100);
+        assert_eq!(format.output_rate(), 176_400);
+        assert!(format.is_resampled());
+        assert_eq!(current_rate(&id), 176_400);
+        engine.shutdown();
+        assert_eq!(current_rate(&id), original);
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
     fn new_resampling_moves_a_resampled_track() {
         let (_, id) = loopback_device();
         let rate = current_rate(&id);

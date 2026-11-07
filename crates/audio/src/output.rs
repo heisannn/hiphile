@@ -1,3 +1,4 @@
+use config::SampleRate;
 use cpal::traits::DeviceTrait;
 
 use crate::{Error, exclusive_device};
@@ -45,7 +46,7 @@ impl Default for Resampling {
 #[derive(Clone, Debug, PartialEq)]
 pub struct OutputSettings {
     device: Option<String>,
-    fixed_rate: Option<u32>,
+    sample_rate: SampleRate,
     resampling: Resampling,
     dop: Option<dsd::Settings>,
     dop_fades_in: bool,
@@ -65,12 +66,17 @@ impl OutputSettings {
     pub fn new(device: Option<String>, fixed_rate: Option<u32>) -> Self {
         Self {
             device,
-            fixed_rate,
+            sample_rate: fixed_rate.map_or(SampleRate::MatchSong, SampleRate::Fixed),
             resampling: Resampling::default(),
             dop: None,
             dop_fades_in: true,
             exclusive: false,
         }
+    }
+
+    pub fn with_sample_rate(mut self, sample_rate: SampleRate) -> Self {
+        self.sample_rate = sample_rate;
+        self
     }
 
     pub fn with_resampling(mut self, resampling: Resampling) -> Self {
@@ -115,8 +121,23 @@ impl OutputSettings {
         self.device.as_deref()
     }
 
-    pub fn fixed_rate(&self) -> Option<u32> {
-        self.fixed_rate
+    pub fn sample_rate(&self) -> SampleRate {
+        self.sample_rate
+    }
+
+    /// Whether a multiple of the song's rate would reach the device. If not, a
+    /// chosen multiple plays as the song's own rate.
+    pub fn can_run_at_song_multiple(&self) -> bool {
+        self.exclusive || crate::SHARED_STREAM_SETS_RATE
+    }
+
+    fn sample_rate_to_plan(&self) -> SampleRate {
+        match self.sample_rate {
+            SampleRate::SongMultiple(_) if !self.can_run_at_song_multiple() => {
+                SampleRate::MatchSong
+            }
+            sample_rate => sample_rate,
+        }
     }
 
     pub fn resampling(&self) -> Resampling {
@@ -128,7 +149,7 @@ impl OutputSettings {
         self.device == other.device
             && self.dop == other.dop
             && (self.dop.is_some()
-                || (self.fixed_rate == other.fixed_rate && self.exclusive == other.exclusive))
+                || (self.sample_rate == other.sample_rate && self.exclusive == other.exclusive))
     }
 }
 
@@ -203,7 +224,7 @@ pub(crate) fn plan_for(
 ) -> Option<Spec> {
     match settings.dop() {
         Some(dop) => plan_dop(ranges, source.rate, dop),
-        None => plan(ranges, device_rate, source, settings.fixed_rate()),
+        None => plan(ranges, device_rate, source, settings.sample_rate_to_plan()),
     }
 }
 
@@ -219,25 +240,43 @@ fn plan_dop(ranges: &[ConfigRange], source_rate: u32, dop: &dsd::Settings) -> Op
         })
 }
 
-/// `fixed_rate`, or otherwise the source rate, wins whenever the device
-/// supports it, so without a fixed rate the device is switched to the file's
-/// rate and nothing is resampled. Otherwise the device's current rate is kept
-/// and the source is resampled to it. Channels prefer an exact match, then the
-/// smallest layout that holds the source.
+/// The rates `sample_rate` asks for, best first. A multiple the device lacks
+/// gives way to the next lower one, as a whole multiple of the source beats
+/// whatever rate the device happens to be at.
+fn wanted_rates(sample_rate: SampleRate, source_rate: u32) -> Vec<u32> {
+    match sample_rate {
+        SampleRate::MatchSong => vec![source_rate],
+        SampleRate::Fixed(rate) => vec![rate],
+        SampleRate::SongMultiple(multiple) => std::iter::successors(Some(multiple), |multiple| {
+            (*multiple > 1).then_some(multiple / 2)
+        })
+        .map(|multiple| source_rate.saturating_mul(multiple))
+        .collect(),
+    }
+}
+
+/// `sample_rate` wins whenever the device supports it, so when matching songs
+/// the device is switched to the file's rate and nothing is resampled.
+/// Otherwise the device's current rate is kept and the source is resampled to
+/// it. Channels prefer an exact match, then the smallest layout that holds the
+/// source.
 pub(crate) fn plan(
     ranges: &[ConfigRange],
     device_rate: u32,
     source: Spec,
-    fixed_rate: Option<u32>,
+    sample_rate: SampleRate,
 ) -> Option<Spec> {
-    let wanted_rate = fixed_rate.unwrap_or(source.rate);
-    let rate = [wanted_rate, device_rate]
-        .into_iter()
+    let wanted = wanted_rates(sample_rate, source.rate);
+    let rate = wanted
+        .iter()
+        .copied()
+        .chain([device_rate])
         .find(|rate| ranges.iter().any(|range| range.contains(*rate)))
         .or_else(|| {
+            let lowest = *wanted.last()?;
             ranges
                 .first()
-                .map(|range| wanted_rate.clamp(range.min_rate, range.max_rate))
+                .map(|range| lowest.clamp(range.min_rate, range.max_rate))
         })?;
     let mut candidates = ranges
         .iter()
@@ -286,7 +325,7 @@ mod tests {
     #[test]
     fn switches_device_to_supported_source_rate() {
         assert_eq!(
-            plan(&SPEAKERS, 48_000, spec(88_200, 2), None),
+            plan(&SPEAKERS, 48_000, spec(88_200, 2), SampleRate::MatchSong),
             Some(spec(88_200, 2))
         );
     }
@@ -294,7 +333,7 @@ mod tests {
     #[test]
     fn keeps_device_rate_when_source_rate_is_unsupported() {
         assert_eq!(
-            plan(&SPEAKERS, 48_000, spec(192_000, 2), None),
+            plan(&SPEAKERS, 48_000, spec(192_000, 2), SampleRate::MatchSong),
             Some(spec(48_000, 2))
         );
     }
@@ -302,7 +341,7 @@ mod tests {
     #[test]
     fn widens_mono_to_stereo() {
         assert_eq!(
-            plan(&SPEAKERS, 44_100, spec(44_100, 1), None),
+            plan(&SPEAKERS, 44_100, spec(44_100, 1), SampleRate::MatchSong),
             Some(spec(44_100, 2))
         );
     }
@@ -311,7 +350,7 @@ mod tests {
     fn prefers_exact_channel_match() {
         let ranges = [range(2, 44_100, 192_000), range(6, 44_100, 192_000)];
         assert_eq!(
-            plan(&ranges, 48_000, spec(48_000, 6), None),
+            plan(&ranges, 48_000, spec(48_000, 6), SampleRate::MatchSong),
             Some(spec(48_000, 6))
         );
     }
@@ -319,7 +358,7 @@ mod tests {
     #[test]
     fn downmixes_when_device_has_fewer_channels() {
         assert_eq!(
-            plan(&SPEAKERS, 48_000, spec(48_000, 6), None),
+            plan(&SPEAKERS, 48_000, spec(48_000, 6), SampleRate::MatchSong),
             Some(spec(48_000, 2))
         );
     }
@@ -328,7 +367,7 @@ mod tests {
     fn clamps_when_neither_rate_is_listed() {
         let ranges = [range(2, 8_000, 32_000)];
         assert_eq!(
-            plan(&ranges, 44_100, spec(48_000, 2), None),
+            plan(&ranges, 44_100, spec(48_000, 2), SampleRate::MatchSong),
             Some(spec(32_000, 2))
         );
     }
@@ -336,7 +375,12 @@ mod tests {
     #[test]
     fn a_fixed_rate_wins_over_the_source_rate() {
         assert_eq!(
-            plan(&SPEAKERS, 44_100, spec(96_000, 2), Some(48_000)),
+            plan(
+                &SPEAKERS,
+                44_100,
+                spec(96_000, 2),
+                SampleRate::Fixed(48_000)
+            ),
             Some(spec(48_000, 2))
         );
     }
@@ -344,9 +388,120 @@ mod tests {
     #[test]
     fn keeps_device_rate_when_the_fixed_rate_is_unsupported() {
         assert_eq!(
-            plan(&SPEAKERS, 48_000, spec(44_100, 2), Some(192_000)),
+            plan(
+                &SPEAKERS,
+                48_000,
+                spec(44_100, 2),
+                SampleRate::Fixed(192_000)
+            ),
             Some(spec(48_000, 2))
         );
+    }
+
+    #[test]
+    fn a_song_multiple_follows_each_song() {
+        let ranges = [range(2, 44_100, 768_000)];
+        assert_eq!(
+            plan(
+                &ranges,
+                48_000,
+                spec(44_100, 2),
+                SampleRate::SongMultiple(4)
+            ),
+            Some(spec(176_400, 2))
+        );
+        assert_eq!(
+            plan(
+                &ranges,
+                48_000,
+                spec(48_000, 2),
+                SampleRate::SongMultiple(2)
+            ),
+            Some(spec(96_000, 2))
+        );
+    }
+
+    #[test]
+    fn a_song_multiple_the_device_lacks_gives_way_to_a_lower_one() {
+        assert_eq!(
+            plan(
+                &SPEAKERS,
+                48_000,
+                spec(44_100, 2),
+                SampleRate::SongMultiple(16)
+            ),
+            Some(spec(88_200, 2))
+        );
+        assert_eq!(
+            plan(
+                &SPEAKERS,
+                44_100,
+                spec(96_000, 2),
+                SampleRate::SongMultiple(2)
+            ),
+            Some(spec(96_000, 2))
+        );
+    }
+
+    #[test]
+    fn a_song_multiple_keeps_the_device_rate_when_no_multiple_fits() {
+        assert_eq!(
+            plan(
+                &SPEAKERS,
+                48_000,
+                spec(192_000, 2),
+                SampleRate::SongMultiple(2)
+            ),
+            Some(spec(48_000, 2))
+        );
+    }
+
+    #[test]
+    fn a_song_multiple_clamps_from_the_song_rate() {
+        let ranges = [range(2, 100_000, 150_000)];
+        assert_eq!(
+            plan(
+                &ranges,
+                48_000,
+                spec(44_100, 2),
+                SampleRate::SongMultiple(16)
+            ),
+            Some(spec(100_000, 2))
+        );
+    }
+
+    #[test]
+    fn a_song_multiple_needs_a_stream_that_sets_the_rate() {
+        let ranges = [range(2, 44_100, 768_000)];
+        let shared = OutputSettings::new(None, None).with_sample_rate(SampleRate::SongMultiple(4));
+        let expected = if crate::SHARED_STREAM_SETS_RATE {
+            176_400
+        } else {
+            44_100
+        };
+        assert_eq!(
+            plan_for(&shared, &ranges, 48_000, spec(44_100, 2)),
+            Some(spec(expected, 2))
+        );
+        if crate::CAN_PLAY_EXCLUSIVE {
+            let held = shared.with_exclusive(true);
+            assert!(held.can_run_at_song_multiple());
+            assert_eq!(
+                plan_for(&held, &ranges, 48_000, spec(44_100, 2)),
+                Some(spec(176_400, 2))
+            );
+        }
+    }
+
+    #[test]
+    fn another_song_multiple_moves_pcm_but_makes_no_difference_to_dop() {
+        let pcm = |multiple| {
+            OutputSettings::new(Some("dac".to_owned()), None)
+                .with_sample_rate(SampleRate::SongMultiple(multiple))
+        };
+        assert!(!pcm(2).has_same_device_and_rate(&pcm(4)));
+        let dop = |multiple| pcm(multiple).with_dop(Some(dsd::Settings::default()));
+        assert!(dop(2).has_same_device_and_rate(&dop(4)));
     }
 
     #[test]
@@ -438,6 +593,9 @@ mod tests {
 
     #[test]
     fn no_ranges_means_no_plan() {
-        assert_eq!(plan(&[], 48_000, spec(48_000, 2), None), None);
+        assert_eq!(
+            plan(&[], 48_000, spec(48_000, 2), SampleRate::MatchSong),
+            None
+        );
     }
 }

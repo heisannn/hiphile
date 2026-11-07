@@ -11,7 +11,7 @@ pub use keychain::Keychain;
 pub use profile::{
     Appearance, DSD_ORDERS, DSD_SINC_LENGTHS, DsdFilter, DsdOutput, DsdParameters, DsdQuality,
     DsdRate, LyricsHighlight, Profile, RESAMPLING_FFT_SIZES, ResamplingQuality, ResamplingWindow,
-    Store, cache_capacity_of,
+    SAMPLE_RATE_MULTIPLES, SampleRate, Store, cache_capacity_of,
 };
 
 use std::path::PathBuf;

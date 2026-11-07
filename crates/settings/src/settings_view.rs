@@ -76,13 +76,12 @@ fn exclusive_item(audio: &Entity<AudioSettings>, is_dsd_on: bool) -> SettingItem
             }
         },
     );
-    SettingItem::new("Exclusive mode", field)
-        .disabled(is_dsd_on)
-        .description(if is_dsd_on {
-            "DSD needs it while it's on."
-        } else {
-            "While a song is playing or paused, other apps can't use the output device."
-        })
+    let item = SettingItem::new("Exclusive mode", field).disabled(is_dsd_on);
+    if is_dsd_on {
+        item.description("DSD needs it while it's on.")
+    } else {
+        item
+    }
 }
 
 impl SettingsView {

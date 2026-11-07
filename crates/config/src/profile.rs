@@ -52,6 +52,45 @@ pub enum LyricsHighlight {
     ByLine,
 }
 
+pub const SAMPLE_RATE_MULTIPLES: [u32; 4] = [2, 4, 8, 16];
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SampleRate {
+    #[default]
+    MatchSong,
+    /// In Hz.
+    Fixed(u32),
+    /// One of [`SAMPLE_RATE_MULTIPLES`] of each song's own rate.
+    SongMultiple(u32),
+}
+
+impl SampleRate {
+    /// The form `sample_rate` takes in the file: Hz, or `x` and a multiple. `0`
+    /// means each song's own rate.
+    pub fn parse(text: &str) -> Option<Self> {
+        if let Some(multiple) = text.strip_prefix('x') {
+            return multiple
+                .parse()
+                .ok()
+                .filter(|multiple| SAMPLE_RATE_MULTIPLES.contains(multiple))
+                .map(Self::SongMultiple);
+        }
+        match text.parse().ok()? {
+            0 => Some(Self::MatchSong),
+            rate => Some(Self::Fixed(rate)),
+        }
+    }
+
+    /// What [`Self::parse`] reads back as this.
+    pub fn text(self) -> String {
+        match self {
+            Self::MatchSong => "0".to_owned(),
+            Self::Fixed(rate) => rate.to_string(),
+            Self::SongMultiple(multiple) => format!("x{multiple}"),
+        }
+    }
+}
+
 pub const RESAMPLING_FFT_SIZES: [u32; 7] = [256, 512, 1024, 2048, 4096, 8192, 16384];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -290,7 +329,7 @@ struct Settings {
     song_cache_gib: Option<f64>,
     cover_cache_gib: Option<f64>,
     output_device: Option<String>,
-    sample_rate: Option<u32>,
+    sample_rate: Option<String>,
     exclusive_mode: Option<bool>,
     resampling: Option<String>,
     resampling_fft_size: Option<u32>,
@@ -422,7 +461,7 @@ fn save_dsd_parameters(
 /// song_cache_gib = 8
 /// cover_cache_gib = 8
 /// output_device = "coreaudio:BuiltInSpeakerDevice"
-/// sample_rate = 48000
+/// sample_rate = 48000 # Or "x2", "x4", "x8" or "x16", a multiple of each song's rate
 /// exclusive_mode = true
 /// resampling = "custom"
 /// resampling_fft_size = 2048
@@ -543,11 +582,20 @@ impl Store {
         Ok(settings.output_device)
     }
 
-    /// The rate in Hz to run the output device at, if one was chosen rather than each song's
-    /// own.
-    pub fn sample_rate(&self) -> Result<Option<u32>, Error> {
+    pub fn sample_rate(&self) -> Result<SampleRate, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
-        Ok(settings.sample_rate.filter(|rate| *rate > 0))
+        self.parse_sample_rate(&settings)
+    }
+
+    fn parse_sample_rate(&self, settings: &Settings) -> Result<SampleRate, Error> {
+        settings
+            .sample_rate
+            .as_deref()
+            .map_or(Ok(SampleRate::MatchSong), |text| {
+                SampleRate::parse(text).ok_or_else(|| {
+                    self.invalid("sample_rate", r#"a rate in Hz, "x2", "x4", "x8" or "x16""#)
+                })
+            })
     }
 
     /// Whether to keep other apps off the output device while playing.
@@ -877,12 +925,14 @@ impl Store {
         })
     }
 
-    /// `None` removes the key, which means each song's own rate.
-    pub fn save_sample_rate(&self, sample_rate: Option<u32>) -> Result<(), Error> {
+    pub fn save_sample_rate(&self, sample_rate: SampleRate) -> Result<(), Error> {
         self.edit(|document| match sample_rate {
-            Some(rate) => document["sample_rate"] = toml_edit::value(i64::from(rate)),
-            None => {
+            SampleRate::MatchSong => {
                 document.remove("sample_rate");
+            }
+            SampleRate::Fixed(rate) => document["sample_rate"] = toml_edit::value(i64::from(rate)),
+            SampleRate::SongMultiple(_) => {
+                document["sample_rate"] = toml_edit::value(sample_rate.text());
             }
         })
     }
@@ -1203,17 +1253,60 @@ mod tests {
         store.save_profile(&profile).unwrap();
 
         store.save_output_device(Some("coreaudio:device")).unwrap();
-        store.save_sample_rate(Some(96_000)).unwrap();
+        store.save_sample_rate(SampleRate::Fixed(96_000)).unwrap();
         let settings = read(&store, &[]);
         assert_eq!(settings.output_device.as_deref(), Some("coreaudio:device"));
-        assert_eq!(settings.sample_rate, Some(96_000));
+        assert_eq!(store.sample_rate().unwrap(), SampleRate::Fixed(96_000));
 
         store.save_output_device(None).unwrap();
-        store.save_sample_rate(None).unwrap();
+        store.save_sample_rate(SampleRate::MatchSong).unwrap();
         let settings = read(&store, &[]);
         assert_eq!(settings.output_device, None);
         assert_eq!(settings.sample_rate, None);
         assert_eq!(load(&store, &[]), Some(profile));
+    }
+
+    #[test]
+    fn a_song_multiple_round_trips() {
+        let store = temporary_store("sample-rate-multiple");
+        for multiple in SAMPLE_RATE_MULTIPLES {
+            let rate = SampleRate::SongMultiple(multiple);
+            store.save_sample_rate(rate).unwrap();
+            assert_eq!(store.sample_rate().unwrap(), rate);
+        }
+        let text = std::fs::read_to_string(store.config_path()).unwrap();
+        assert!(text.contains("sample_rate = \"x16\""), "{text}");
+    }
+
+    #[test]
+    fn a_sample_rate_is_a_rate_or_an_offered_multiple() {
+        let store = temporary_store("sample-rate-invalid");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        let rate = |text: &str| {
+            std::fs::write(store.config_path(), text).unwrap();
+            store.sample_rate()
+        };
+        assert_eq!(rate("sample_rate = 0\n").unwrap(), SampleRate::MatchSong);
+        assert_eq!(
+            rate("sample_rate = 48000\n").unwrap(),
+            SampleRate::Fixed(48_000)
+        );
+        for text in [
+            "sample_rate = \"x3\"\n",
+            "sample_rate = \"fast\"\n",
+            "sample_rate = -1\n",
+        ] {
+            assert!(
+                matches!(
+                    rate(text),
+                    Err(Error::InvalidSetting {
+                        key: "sample_rate",
+                        ..
+                    })
+                ),
+                "{text}"
+            );
+        }
     }
 
     #[test]
@@ -1540,14 +1633,14 @@ mod tests {
     fn saving_one_output_key_leaves_the_other_alone() {
         let store = temporary_store("output-one-key");
         store.save_output_device(Some("a:b")).unwrap();
-        store.save_sample_rate(Some(44_100)).unwrap();
+        store.save_sample_rate(SampleRate::Fixed(44_100)).unwrap();
 
-        store.save_sample_rate(None).unwrap();
+        store.save_sample_rate(SampleRate::MatchSong).unwrap();
         assert_eq!(read(&store, &[]).output_device.as_deref(), Some("a:b"));
 
-        store.save_sample_rate(Some(96_000)).unwrap();
+        store.save_sample_rate(SampleRate::Fixed(96_000)).unwrap();
         store.save_output_device(None).unwrap();
-        assert_eq!(read(&store, &[]).sample_rate, Some(96_000));
+        assert_eq!(store.sample_rate().unwrap(), SampleRate::Fixed(96_000));
     }
 
     #[test]
@@ -1559,7 +1652,7 @@ mod tests {
             "volume = \"loud\"\noutput_device = \"a:b\"\n",
         )
         .unwrap();
-        store.save_sample_rate(Some(96_000)).unwrap();
+        store.save_sample_rate(SampleRate::Fixed(96_000)).unwrap();
         let text = std::fs::read_to_string(store.config_path()).unwrap();
         assert!(text.contains("volume = \"loud\""), "{text}");
         assert!(text.contains("output_device = \"a:b\""), "{text}");
@@ -1570,7 +1663,7 @@ mod tests {
     fn environment_overrides_the_saved_output() {
         let store = temporary_store("output-environment");
         store.save_output_device(Some("a:b")).unwrap();
-        store.save_sample_rate(Some(44_100)).unwrap();
+        store.save_sample_rate(SampleRate::Fixed(44_100)).unwrap();
         let settings = read(
             &store,
             &[
@@ -1579,7 +1672,15 @@ mod tests {
             ],
         );
         assert_eq!(settings.output_device.as_deref(), Some("c:d"));
-        assert_eq!(settings.sample_rate, Some(48_000));
+        assert_eq!(
+            store.parse_sample_rate(&settings).unwrap(),
+            SampleRate::Fixed(48_000)
+        );
+        let settings = read(&store, &[("HIPHILE_SAMPLE_RATE", "x4")]);
+        assert_eq!(
+            store.parse_sample_rate(&settings).unwrap(),
+            SampleRate::SongMultiple(4)
+        );
     }
 
     #[test]
