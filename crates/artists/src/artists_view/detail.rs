@@ -29,9 +29,9 @@ use ui::list_navigation::{
     SelectPrevious,
 };
 use ui::{
-    ArtistLine, CoverArt, DetailHeader, LoadFailure, PlayState, Shelf, centered,
-    format_album_count, format_duration, format_song_count, join_details, muted_text,
-    section_failure, section_heading, section_loading, song_artist_link, song_with_cover,
+    ArtistLine, CoverArt, DetailHeader, LoadFailure, Shelf, centered, format_album_count,
+    format_duration, format_song_count, join_details, muted_text, section_failure, section_heading,
+    section_loading, skippable_song, song_artist_link, song_row_label, song_with_cover,
 };
 
 use super::{Artists, ShownArtist, TOP_SONGS_COLLAPSED, add_selection_command};
@@ -841,10 +841,11 @@ impl Artists {
             .cover_art()
             .map(|cover_art| self.session.cover_art_url(cover_art, ROW_COVER_PIXELS));
         let state = self.now_playing.as_ref().and_then(|now| now.state_of(&id));
-        let label = PlayState::row_label(&title, state);
+        let label = song_row_label(song, &title, state, cx);
         let focus = self.detail_focus.clone();
         let has_album = song.album_id().is_some();
         let has_artist = song.artist_id().is_some();
+        let row_song = song.clone();
         ListItem::new(ElementId::Name(format!("top-song-{id}").into()))
             .selected(is_selected)
             .secondary_selected(is_focused && is_selected)
@@ -853,12 +854,9 @@ impl Artists {
             .px_6()
             .w_full()
             .accessibility_label(label)
-            .child(song_with_cover(
-                cover,
-                title,
-                details,
-                state,
-                duration.into(),
+            .child(skippable_song(
+                &row_song,
+                song_with_cover(cover, title, details, state, duration.into(), cx),
                 cx,
             ))
             .on_click(cx.listener({
@@ -879,12 +877,10 @@ impl Artists {
                 }),
             )
             .context_menu(move |menu, window, cx| {
-                let menu = menu
-                    .action_context(focus.clone())
-                    .menu("Play", Box::new(Play))
-                    .menu("Play Next", Box::new(PlayNext))
-                    .menu("Add to Queue", Box::new(AddToQueue))
-                    .separator();
+                let menu = menu.action_context(focus.clone());
+                let menu =
+                    actions::queue_menu_items(menu, &row_song, Play, PlayNext, AddToQueue, cx)
+                        .separator();
                 let menu =
                     actions::add_to_playlist_submenu(menu, add_selection_command, window, cx);
                 actions::favorite_menu_item(menu, &target, cx)

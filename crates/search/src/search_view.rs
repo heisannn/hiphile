@@ -7,7 +7,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, AsyncApp, Context, Entity, EventEmitter, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, Window, div, rems,
+    ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, Window, div,
+    prelude::FluentBuilder as _, rems,
 };
 use subsonic::{AlbumId, ArtistId, Song};
 use ui::no_matches;
@@ -240,14 +241,20 @@ fn show_spinner(
     }
 }
 
-fn item(name: impl Into<SharedString>, detail: Option<String>) -> CommandItem {
+fn item(name: impl Into<SharedString>, detail: Option<String>, is_skipped: bool) -> CommandItem {
     let name = name.into();
     let detail: Option<SharedString> = detail.map(Into::into);
-    CommandItem::new().label(name.clone()).child(move |_, cx| {
+    let label: SharedString = if is_skipped {
+        format!("{name}, skipped").into()
+    } else {
+        name.clone()
+    };
+    CommandItem::new().label(label).child(move |_, cx| {
         h_flex()
             .w_full()
             .min_w_0()
             .gap_3()
+            .when(is_skipped, |this| this.opacity(ui::SKIPPED_OPACITY))
             .child(
                 div()
                     .min_w_0()
@@ -268,17 +275,25 @@ fn item(name: impl Into<SharedString>, detail: Option<String>) -> CommandItem {
     })
 }
 
-fn item_of(hit: &Hit) -> CommandItem {
+fn item_of(hit: &Hit, cx: &App) -> CommandItem {
     match hit {
-        Hit::Artist(artist) => item(artist.name.clone(), None),
-        Hit::Album(album) => item(album.name().to_owned(), album.artist().map(str::to_owned)),
+        Hit::Artist(artist) => item(artist.name.clone(), None, false),
+        Hit::Album(album) => item(
+            album.name().to_owned(),
+            album.artist().map(str::to_owned),
+            false,
+        ),
         Hit::Song(song) => {
             let detail = [song.artist(), song.album()]
                 .into_iter()
                 .flatten()
                 .collect::<Vec<_>>()
                 .join(" · ");
-            item(song.title().to_owned(), Some(detail))
+            item(
+                song.title().to_owned(),
+                Some(detail),
+                actions::is_skipped(song, cx),
+            )
         }
     }
 }
@@ -291,7 +306,7 @@ impl Render for Search {
         let groups = self.results.sections.iter().map(|(label, hits)| {
             CommandGroup::new()
                 .label(*label)
-                .items(hits.iter().map(item_of))
+                .items(hits.iter().map(|hit| item_of(hit, cx)))
         });
         let mut palette = Command::new(&self.state)
             .bordered(false)

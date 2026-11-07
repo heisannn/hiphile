@@ -156,6 +156,7 @@ struct Workspace {
     _audio_changes: [Subscription; 2],
     _discord_changes: [Subscription; 2],
     _lyrics_changes: [Subscription; 2],
+    _queue_changes: Subscription,
     _focus_lost: Subscription,
 }
 
@@ -399,6 +400,7 @@ impl AppShell {
         let favorites_events = cx.subscribe_in(&favorites, window, Self::on_favorites_event);
         let audio_changes = follow_audio_settings(&audio_settings, &player, cx);
         let discord_changes = follow_discord_settings(&discord_settings, &player, cx);
+        let queue_changes = follow_queue_settings(&player, cx);
         // A focused control that goes away, such as Retry once loading starts,
         // would leave no focus and no working shortcuts.
         let focus_lost = cx.on_focus_lost(window, |this, window, cx| {
@@ -434,6 +436,7 @@ impl AppShell {
             _audio_changes: audio_changes,
             _discord_changes: discord_changes,
             _lyrics_changes: lyrics_changes,
+            _queue_changes: queue_changes,
             _focus_lost: focus_lost,
         };
         workspace.focus_destination(window, cx);
@@ -454,7 +457,11 @@ impl AppShell {
             SearchEvent::ShowAlbum(album) => self.show_album(album, window, cx),
             SearchEvent::PlaySong(song) => {
                 let songs = [song.clone()];
-                self.update_player(window, cx, |player, _, cx| player.play(&songs, 0, cx));
+                self.update_player(window, cx, |player, window, cx| {
+                    if !player.play(&songs, 0, cx) {
+                        notify_skipped(window, cx);
+                    }
+                });
             }
         }
     }
@@ -826,6 +833,35 @@ impl AppShell {
         }
     }
 
+    fn play_songs(&mut self, action: &PlaySongs, window: &mut Window, cx: &mut Context<Self>) {
+        self.update_player(window, cx, |player, window, cx| {
+            let is_queued = match action.start_ix() {
+                Some(start_ix) => player.play(action.songs(), start_ix, cx),
+                None => player.play_whole(action.songs(), cx),
+            };
+            if !is_queued {
+                notify_skipped(window, cx);
+            }
+        });
+    }
+
+    fn enqueue_songs(
+        &mut self,
+        action: &EnqueueSongs,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let placement = match action.placement() {
+            actions::Placement::Next => player::Placement::Next,
+            actions::Placement::Last => player::Placement::Last,
+        };
+        self.update_player(window, cx, |player, window, cx| {
+            if !player.enqueue(action.songs(), placement, cx) {
+                notify_skipped(window, cx);
+            }
+        });
+    }
+
     fn update_player(
         &self,
         window: &mut Window,
@@ -1170,6 +1206,27 @@ fn follow_audio_settings(
     [output_changes, transitions_changes]
 }
 
+fn follow_queue_settings(player: &Entity<Player>, cx: &mut Context<AppShell>) -> Subscription {
+    let queue_settings = settings::queue_settings(cx);
+    actions::set_skip_instrumentals(queue_settings.read(cx).is_skip_instrumentals_on(), cx);
+    cx.subscribe(&queue_settings, {
+        let player = player.downgrade();
+        move |_, queue_settings, _: &settings::SkipInstrumentalsChanged, cx| {
+            let is_on = queue_settings.read(cx).is_skip_instrumentals_on();
+            actions::set_skip_instrumentals(is_on, cx);
+            player
+                .update(cx, |player, cx| player.apply_skipping(cx))
+                .ok();
+        }
+    })
+}
+
+fn notify_skipped(window: &mut Window, cx: &mut App) {
+    let message =
+        "Instrumentals are being skipped. Turn off Skip instrumentals in Settings to play them.";
+    window.push_notification((NotificationType::Info, message), cx);
+}
+
 fn follow_discord_settings(
     discord_settings: &Entity<settings::DiscordSettings>,
     player: &Entity<Player>,
@@ -1332,21 +1389,8 @@ impl Render for AppShell {
                         playlists.open_chooser(action.songs().clone(), window, cx);
                     });
                 }))
-                .on_action(cx.listener(|this, action: &PlaySongs, window, cx| {
-                    this.update_player(window, cx, |player, _, cx| match action.start_ix() {
-                        Some(start_ix) => player.play(action.songs(), start_ix, cx),
-                        None => player.play_whole(action.songs(), cx),
-                    });
-                }))
-                .on_action(cx.listener(|this, action: &EnqueueSongs, window, cx| {
-                    let placement = match action.placement() {
-                        actions::Placement::Next => player::Placement::Next,
-                        actions::Placement::Last => player::Placement::Last,
-                    };
-                    this.update_player(window, cx, |player, _, cx| {
-                        player.enqueue(action.songs(), placement, cx)
-                    });
-                }))
+                .on_action(cx.listener(Self::play_songs))
+                .on_action(cx.listener(Self::enqueue_songs))
                 .on_action(cx.listener(|this, _: &VolumeUp, window, cx| {
                     this.update_player(window, cx, Player::volume_up);
                 }))

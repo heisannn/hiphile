@@ -11,6 +11,7 @@ use gpui_kit::{
 use subsonic::{Song, StarTarget};
 use ui::{
     ArtistLine, CoverArt, PlayState, PlayStateIcon, ReorderExt as _, RowText, format_duration,
+    skippable_song, song_row_label,
 };
 
 use super::Playlists;
@@ -62,8 +63,9 @@ impl RenderOnce for SongRow {
             .h_12()
             .px_6()
             .w_full()
-            .accessibility_label(PlayState::row_label(&title, state))
-            .child(
+            .accessibility_label(song_row_label(&song, &title, state, cx))
+            .child(skippable_song(
+                &song,
                 h_flex()
                     .w_full()
                     .min_w_0()
@@ -89,7 +91,8 @@ impl RenderOnce for SongRow {
                             .text_color(muted_foreground)
                             .child(duration),
                     ),
-            )
+                cx,
+            ))
             .on_click(move |event, window, cx| {
                 on_click
                     .update(cx, |this, cx| {
@@ -121,11 +124,8 @@ impl RenderOnce for SongRow {
             })
         })
         .context_menu(move |menu, window, cx| {
-            let menu = menu
-                .action_context(songs_focus.clone())
-                .menu("Play", Box::new(Open))
-                .menu("Play Next", Box::new(PlayNext))
-                .menu("Add to Queue", Box::new(AddToQueue))
+            let menu = menu.action_context(songs_focus.clone());
+            let menu = actions::queue_menu_items(menu, &song, Open, PlayNext, AddToQueue, cx)
                 .when(is_editable, |menu| {
                     menu.separator()
                         .menu_with_disabled("Move Up", Box::new(MoveUp), ix == 0)

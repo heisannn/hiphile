@@ -392,16 +392,41 @@ impl Player {
             .collect()
     }
 
-    pub fn play(&mut self, songs: &[Song], start_ix: usize, cx: &mut Context<Self>) {
-        self.queue.replace(songs.to_vec(), start_ix);
+    /// Leaves out the songs that are skipped. Changes nothing and returns `false`
+    /// when the song at `start_ix` is one of them.
+    pub fn play(&mut self, songs: &[Song], start_ix: usize, cx: &mut Context<Self>) -> bool {
+        if songs
+            .get(start_ix)
+            .is_some_and(|song| actions::is_skipped(song, cx))
+        {
+            return false;
+        }
+        let mut kept = Vec::with_capacity(songs.len());
+        let mut kept_start_ix = start_ix;
+        for (ix, song) in songs.iter().enumerate() {
+            if !actions::is_skipped(song, cx) {
+                kept.push(song.clone());
+            } else if ix < start_ix {
+                kept_start_ix -= 1;
+            }
+        }
+        self.queue.replace(kept, kept_start_ix);
         self.queue_changed(cx);
         self.play_current(cx);
+        true
     }
 
-    pub fn play_whole(&mut self, songs: &[Song], cx: &mut Context<Self>) {
-        self.queue.replace_from_start(songs.to_vec());
+    /// Leaves out the songs that are skipped. Changes nothing and returns `false`
+    /// when that is all of them.
+    pub fn play_whole(&mut self, songs: &[Song], cx: &mut Context<Self>) -> bool {
+        let kept = actions::without_skipped(songs, cx);
+        if kept.is_empty() && !songs.is_empty() {
+            return false;
+        }
+        self.queue.replace_from_start(kept);
         self.queue_changed(cx);
         self.play_current(cx);
+        true
     }
 
     /// Adds `songs` to the queue at `placement`. When nothing is playing or
@@ -409,18 +434,56 @@ impl Player {
     /// current song, otherwise from the entry after the current one, so
     /// that songs already waiting are not skipped. The current one is
     /// stopped only after it failed.
-    pub fn enqueue(&mut self, songs: &[Song], placement: Placement, cx: &mut Context<Self>) {
+    ///
+    /// Leaves out the songs that are skipped. Changes nothing and returns `false`
+    /// when that is all of them.
+    pub fn enqueue(
+        &mut self,
+        songs: &[Song],
+        placement: Placement,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let had_current = self.has_song();
-        if self.queue.insert(songs.to_vec(), placement).is_none() {
-            return;
+        let kept = actions::without_skipped(songs, cx);
+        if self.queue.insert(kept, placement).is_none() {
+            return songs.is_empty();
         }
         self.queue_changed(cx);
         if self.state != State::Stopped {
-            return;
+            return true;
         }
         // Without a current song, the first one added has become it
         if !had_current || self.queue.advance().is_some() {
             self.play_current(cx);
+        }
+        true
+    }
+
+    /// Takes out the waiting songs that are skipped. The current one plays on
+    /// and goes when it is no longer current.
+    pub fn apply_skipping(&mut self, cx: &mut Context<Self>) {
+        let is_current_skipped = self
+            .queue
+            .current()
+            .is_some_and(|song| actions::is_skipped(song, cx));
+        self.queue.set_current_leaving(is_current_skipped);
+        let current = self.queue.current_id();
+        let skipped: Vec<_> = self
+            .queue
+            .entries()
+            .iter()
+            .filter(|entry| Some(entry.id()) != current && actions::is_skipped(entry.item(), cx))
+            .map(|entry| entry.id())
+            .collect();
+        for id in skipped {
+            self.queue.remove(id);
+        }
+        self.queue_changed(cx);
+    }
+
+    fn remove_left(&mut self, cx: &mut Context<Self>) {
+        if self.queue.remove_left() {
+            self.queue_changed(cx);
         }
     }
 
@@ -1041,6 +1104,7 @@ impl Player {
             self.cover_url = None;
         }
         self.set_state(State::Stopped, cx);
+        self.remove_left(cx);
     }
 
     fn play_current(&mut self, cx: &mut Context<Self>) {
@@ -1117,6 +1181,7 @@ impl Player {
             .cover_art()
             .map(|cover_art| self.session.cover_art_url(cover_art, LARGE_COVER_PIXELS));
         self.set_state(State::Opening, cx);
+        self.remove_left(cx);
     }
 
     /// Makes the entry that follows the current one ready to go on to,
@@ -1724,6 +1789,128 @@ mod tests {
         });
         assert_eq!(current_title(&player, cx).as_deref(), Some("a"));
         assert!(!player.read_with(cx, |player, _| player.is_playing()));
+    }
+
+    fn queued_titles(player: &Entity<Player>, cx: &mut VisualTestContext) -> Vec<String> {
+        player.read_with(cx, |player, _| {
+            let songs = player.queued_songs();
+            songs.iter().map(|song| song.title().to_owned()).collect()
+        })
+    }
+
+    #[gpui_kit::test]
+    fn skipped_songs_stay_out_of_the_queue(cx: &mut TestAppContext) {
+        let (player, cx) = idle_player(cx);
+        cx.update(|_, cx| actions::set_skip_instrumentals(true, cx));
+        let inst = named_song("a [instrumental]");
+        let vocal = named_song("b");
+        let other = named_song("c");
+        let songs = [inst.clone(), vocal.clone(), inst.clone(), other.clone()];
+
+        player.update(cx, |player, cx| {
+            player.fill_queue(std::slice::from_ref(&vocal), 0);
+            player.pretend_playing(true, cx);
+            assert!(player.enqueue(&songs, Placement::Last, cx));
+        });
+        assert_eq!(queued_titles(&player, cx), ["b", "b", "c"]);
+
+        player.update(cx, |player, cx| {
+            assert!(!player.enqueue(std::slice::from_ref(&inst), Placement::Next, cx));
+            assert!(!player.play(&songs, 2, cx));
+            assert!(!player.play_whole(std::slice::from_ref(&inst), cx));
+        });
+        assert_eq!(queued_titles(&player, cx), ["b", "b", "c"]);
+
+        player.update(cx, |player, cx| assert!(player.play(&songs, 3, cx)));
+        assert_eq!(queued_titles(&player, cx), ["b", "c"]);
+        assert_eq!(current_title(&player, cx).as_deref(), Some("c"));
+
+        player.update(cx, |player, cx| assert!(player.play_whole(&songs, cx)));
+        assert_eq!(queued_titles(&player, cx), ["b", "c"]);
+    }
+
+    #[gpui_kit::test]
+    fn turning_on_skipping_takes_out_what_waits_but_not_what_plays(cx: &mut TestAppContext) {
+        let (player, cx) = idle_player(cx);
+        player.update(cx, |player, cx| {
+            player.fill_queue(
+                &[
+                    named_song("a"),
+                    named_song("b (Off Vocal)"),
+                    named_song("c [instrumental]"),
+                    named_song("d"),
+                    named_song("e (オリジナル・カラオケ)"),
+                ],
+                2,
+            );
+            player.pretend_playing(true, cx);
+            player.apply_skipping(cx);
+        });
+        assert_eq!(queued_titles(&player, cx).len(), 5);
+
+        cx.update(|_, cx| actions::set_skip_instrumentals(true, cx));
+        player.update(cx, |player, cx| player.apply_skipping(cx));
+        assert_eq!(queued_titles(&player, cx), ["a", "c [instrumental]", "d"]);
+        assert_eq!(
+            current_title(&player, cx).as_deref(),
+            Some("c [instrumental]")
+        );
+    }
+
+    #[gpui_kit::test]
+    fn a_skipped_song_goes_when_the_player_moves_on_and_never_comes_back(cx: &mut TestAppContext) {
+        let (player, cx) = idle_player(cx);
+        cx.update(|_, cx| actions::set_skip_instrumentals(true, cx));
+        let changes = Rc::new(Cell::new(0));
+        let _changes = cx.update(|_, cx| {
+            let changes = changes.clone();
+            cx.subscribe(&player, move |_, event: &PlayerEvent, _| {
+                if matches!(event, PlayerEvent::QueueChanged) {
+                    changes.set(changes.get() + 1);
+                }
+            })
+        });
+        player.update(cx, |player, cx| {
+            player.fill_queue(
+                &[
+                    named_song("a"),
+                    named_song("b [instrumental]"),
+                    named_song("c"),
+                ],
+                1,
+            );
+            player.set_repeat(RepeatMode::All, cx);
+            player.pretend_playing(true, cx);
+            player.apply_skipping(cx);
+        });
+        assert_eq!(queued_titles(&player, cx).len(), 3);
+        assert_eq!(changes.get(), 1);
+
+        player.update(cx, |player, cx| player.next(cx));
+        assert_eq!(current_title(&player, cx).as_deref(), Some("c"));
+        assert_eq!(queued_titles(&player, cx), ["a", "c"]);
+        assert_eq!(changes.get(), 2);
+
+        player.update(cx, |player, cx| player.next(cx));
+        assert_eq!(current_title(&player, cx).as_deref(), Some("a"));
+        assert_eq!(queued_titles(&player, cx), ["a", "c"]);
+    }
+
+    #[gpui_kit::test]
+    fn turning_off_skipping_keeps_the_current_song(cx: &mut TestAppContext) {
+        let (player, cx) = idle_player(cx);
+        cx.update(|_, cx| actions::set_skip_instrumentals(true, cx));
+        player.update(cx, |player, cx| {
+            player.fill_queue(&[named_song("a [instrumental]"), named_song("b")], 0);
+            player.pretend_playing(true, cx);
+            player.apply_skipping(cx);
+        });
+        cx.update(|_, cx| actions::set_skip_instrumentals(false, cx));
+        player.update(cx, |player, cx| {
+            player.apply_skipping(cx);
+            player.next(cx);
+        });
+        assert_eq!(queued_titles(&player, cx), ["a [instrumental]", "b"]);
     }
 
     #[gpui_kit::test]

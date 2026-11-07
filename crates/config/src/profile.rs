@@ -335,6 +335,7 @@ struct Settings {
     exclusive_mode: Option<bool>,
     trim_silence: Option<bool>,
     crossfade_seconds: Option<u32>,
+    skip_instrumentals: Option<bool>,
     resampling: Option<String>,
     resampling_fft_size: Option<u32>,
     resampling_window: Option<String>,
@@ -469,6 +470,7 @@ fn save_dsd_parameters(
 /// exclusive_mode = true
 /// trim_silence = true
 /// crossfade_seconds = 5
+/// skip_instrumentals = true
 /// resampling = "custom"
 /// resampling_fft_size = 2048
 /// resampling_window = "hann-2"
@@ -657,6 +659,11 @@ impl Store {
     pub fn romaji_search(&self) -> Result<bool, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         Ok(settings.romaji_search.unwrap_or(true))
+    }
+
+    pub fn skip_instrumentals(&self) -> Result<bool, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        Ok(settings.skip_instrumentals.unwrap_or(false))
     }
 
     /// On unless the file says otherwise.
@@ -974,6 +981,16 @@ impl Store {
                 document["trim_silence"] = toml_edit::value(true);
             } else {
                 document.remove("trim_silence");
+            }
+        })
+    }
+
+    pub fn save_skip_instrumentals(&self, is_on: bool) -> Result<(), Error> {
+        self.edit(|document| {
+            if is_on {
+                document["skip_instrumentals"] = toml_edit::value(true);
+            } else {
+                document.remove("skip_instrumentals");
             }
         })
     }
@@ -1362,6 +1379,27 @@ mod tests {
         assert!(!store.trim_silence().unwrap());
         let text = std::fs::read_to_string(store.config_path()).unwrap();
         assert!(!text.contains("trim_silence"), "{text}");
+    }
+
+    #[test]
+    fn skip_instrumentals_round_trips_and_is_off_unless_told_otherwise() {
+        let store = temporary_store("skip-instrumentals");
+        assert!(!store.skip_instrumentals().unwrap());
+
+        store.save_skip_instrumentals(true).unwrap();
+        assert!(store.skip_instrumentals().unwrap());
+
+        store.save_skip_instrumentals(false).unwrap();
+        assert!(!store.skip_instrumentals().unwrap());
+        let text = std::fs::read_to_string(store.config_path()).unwrap();
+        assert!(!text.contains("skip_instrumentals"), "{text}");
+    }
+
+    #[test]
+    fn environment_overrides_the_saved_skip_instrumentals() {
+        let store = temporary_store("skip-instrumentals-environment");
+        let settings = read(&store, &[("HIPHILE_SKIP_INSTRUMENTALS", "true")]);
+        assert_eq!(settings.skip_instrumentals, Some(true));
     }
 
     #[test]

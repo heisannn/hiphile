@@ -8,7 +8,8 @@ use gpui_kit::{
 };
 use subsonic::{Album, Artist, Song, StarTarget};
 use ui::{
-    ArtistLine, CoverArt, PlayState, RowText, format_album_count, format_duration, song_with_cover,
+    ArtistLine, CoverArt, PlayState, RowText, format_album_count, format_duration, skippable_song,
+    song_row_label, song_with_cover,
 };
 
 use super::{Favorites, add_selection_command};
@@ -87,21 +88,15 @@ impl RenderOnce for SongRow {
         let has_album = song.album_id().is_some();
         let has_artist = song.artist_id().is_some();
         let (row, target, focus) = context.row(format!("favorite-song-{}", song.id()));
-        row.accessibility_label(PlayState::row_label(&title, state))
-            .child(song_with_cover(
-                cover,
-                title,
-                details,
-                state,
-                duration.into(),
+        row.accessibility_label(song_row_label(&song, &title, state, cx))
+            .child(skippable_song(
+                &song,
+                song_with_cover(cover, title, details, state, duration.into(), cx),
                 cx,
             ))
             .context_menu(move |menu, window, cx| {
-                let menu = menu
-                    .action_context(focus.clone())
-                    .menu("Play", Box::new(Open))
-                    .menu("Play Next", Box::new(PlayNext))
-                    .menu("Add to Queue", Box::new(AddToQueue))
+                let menu = menu.action_context(focus.clone());
+                let menu = actions::queue_menu_items(menu, &song, Open, PlayNext, AddToQueue, cx)
                     .separator();
                 let menu =
                     actions::add_to_playlist_submenu(menu, add_selection_command, window, cx);

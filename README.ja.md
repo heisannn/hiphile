@@ -81,6 +81,7 @@ cargo run -p hiphile-cli -- --help   # CLIの使用方法を表示する
 | `dsd_dither_db` (`custom` のとき: `-160`〜`-20`) | `HIPHILE_DSD_DITHER_DB` | なし |
 | `dsd_input_level_db` (`custom` のとき: `-24`〜`6`) | `HIPHILE_DSD_INPUT_LEVEL_DB` | `0` |
 | `dsd_limiter_ceiling_db` (`custom` のとき: `off`、または `-6`〜`3`) | `HIPHILE_DSD_LIMITER_CEILING_DB` | `1` |
+| `skip_instrumentals` (曲名からインストと分かる曲をグレーアウトし、キューに追加しない。アプリのみで `hiphile-cli` には効きません) | `HIPHILE_SKIP_INSTRUMENTALS` | `false` |
 | `song_cache_gib` (`0` は無制限) | `HIPHILE_SONG_CACHE_GIB` | `8` |
 | `cover_cache_gib` (`0` は無制限) | `HIPHILE_COVER_CACHE_GIB` | `8` |
 | `appearance` (`"light"` または `"dark"`) | `HIPHILE_APPEARANCE` (`system` も指定可能) | システム設定 |

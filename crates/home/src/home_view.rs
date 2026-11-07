@@ -26,8 +26,8 @@ use ui::list_navigation::{
     SelectFirst, SelectLast, SelectNext, SelectPageDown, SelectPageUp, SelectPrevious,
 };
 use ui::{
-    ArtistLine, CoverArt, NowPlaying, PlayState, Shelf, format_duration, section_failure,
-    section_heading, section_heading_with_action, section_loading, song_with_cover,
+    ArtistLine, CoverArt, NowPlaying, Shelf, format_duration, section_failure, section_heading,
+    section_heading_with_action, section_loading, skippable_song, song_row_label, song_with_cover,
 };
 
 use crate::layout::{AlbumShelf, Item};
@@ -818,10 +818,11 @@ impl Home {
             .cover_art()
             .map(|cover_art| self.session.cover_art_url(cover_art, ROW_COVER_PIXELS));
         let marker = self.now_playing.as_ref().and_then(|now| now.state_of(&id));
-        let label = PlayState::row_label(&title, marker);
+        let label = song_row_label(song, &title, marker, cx);
         let focus = self.focus.clone();
         let has_album = song.album_id().is_some();
         let has_artist = song.artist_id().is_some();
+        let row_song = song.clone();
         ListItem::new(ElementId::Name(format!("home-song-{id}").into()))
             .selected(is_selected)
             .secondary_selected(focused && is_selected)
@@ -830,12 +831,9 @@ impl Home {
             .px_6()
             .w_full()
             .accessibility_label(label)
-            .child(song_with_cover(
-                cover,
-                title,
-                details,
-                marker,
-                duration.into(),
+            .child(skippable_song(
+                &row_song,
+                song_with_cover(cover, title, details, marker, duration.into(), cx),
                 cx,
             ))
             .on_click(cx.listener({
@@ -856,12 +854,10 @@ impl Home {
                 }),
             )
             .context_menu(move |menu, window, cx| {
-                let menu = menu
-                    .action_context(focus.clone())
-                    .menu("Play", Box::new(Play))
-                    .menu("Play Next", Box::new(PlayNext))
-                    .menu("Add to Queue", Box::new(AddToQueue))
-                    .separator();
+                let menu = menu.action_context(focus.clone());
+                let menu =
+                    actions::queue_menu_items(menu, &row_song, Play, PlayNext, AddToQueue, cx)
+                        .separator();
                 let menu =
                     actions::add_to_playlist_submenu(menu, add_selection_command, window, cx);
                 actions::favorite_menu_item(menu, &target, cx)

@@ -8,7 +8,10 @@ use gpui_kit::{
     SharedString, Styled as _, WeakEntity, Window, div, prelude::FluentBuilder as _,
 };
 use subsonic::{Song, StarTarget};
-use ui::{AlbumLink, PlayState, PlayStateIcon, format_duration, song_artist_link};
+use ui::{
+    AlbumLink, PlayState, PlayStateIcon, format_duration, skippable_song, song_artist_link,
+    song_row_label,
+};
 
 use super::{Songs, columns};
 use crate::{AddToQueue, GoToAlbum, Open, PlayNext};
@@ -48,8 +51,9 @@ impl RenderOnce for SongRow {
             .h_8()
             .px_4()
             .w_full()
-            .accessibility_label(PlayState::row_label(&title, state))
-            .child(
+            .accessibility_label(song_row_label(&song, &title, state, cx))
+            .child(skippable_song(
+                &song,
                 columns(
                     state.map(PlayStateIcon::new),
                     div().min_w_0().truncate().child(title),
@@ -59,7 +63,8 @@ impl RenderOnce for SongRow {
                     cx,
                 )
                 .text_sm(),
-            )
+                cx,
+            ))
             .on_click(move |event, window, cx| {
                 on_click
                     .update(cx, |this, cx| {
@@ -82,11 +87,8 @@ impl RenderOnce for SongRow {
                     .ok();
             })
             .context_menu(move |menu, window, cx| {
-                let menu = menu
-                    .action_context(focus.clone())
-                    .menu("Play", Box::new(Open))
-                    .menu("Play Next", Box::new(PlayNext))
-                    .menu("Add to Queue", Box::new(AddToQueue))
+                let menu = menu.action_context(focus.clone());
+                let menu = actions::queue_menu_items(menu, &song, Open, PlayNext, AddToQueue, cx)
                     .separator();
                 let menu = actions::add_to_playlist_submenu(
                     menu,

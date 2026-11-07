@@ -61,6 +61,9 @@ pub struct Queue<T> {
     repeat: RepeatMode,
     /// While shuffled, every entry in the order to go back to.
     unshuffled: Option<Vec<EntryId>>,
+    /// Goes from the queue once it is no longer current, and until then is
+    /// never gone back to on its own, whatever the repeat.
+    leaving: Option<EntryId>,
     next_id: u64,
 }
 
@@ -71,6 +74,7 @@ impl<T> Default for Queue<T> {
             current_ix: None,
             repeat: RepeatMode::default(),
             unshuffled: None,
+            leaving: None,
             next_id: 0,
         }
     }
@@ -131,10 +135,23 @@ impl<T> Queue<T> {
     pub fn following_ix(&self) -> Option<usize> {
         let ix = self.current_ix?;
         match self.repeat {
-            RepeatMode::One => Some(ix),
-            RepeatMode::All => Some((ix + 1) % self.entries.len()),
-            RepeatMode::Off => (ix + 1 < self.entries.len()).then_some(ix + 1),
+            RepeatMode::One if !self.is_current_leaving() => Some(ix),
+            _ => self.next_ix(ix),
         }
+    }
+
+    fn next_ix(&self, ix: usize) -> Option<usize> {
+        match self.repeat {
+            RepeatMode::Off => (ix + 1 < self.entries.len()).then_some(ix + 1),
+            RepeatMode::All | RepeatMode::One => {
+                let next = (ix + 1) % self.entries.len();
+                (next != ix || !self.is_current_leaving()).then_some(next)
+            }
+        }
+    }
+
+    fn is_current_leaving(&self) -> bool {
+        self.leaving.is_some() && self.leaving == self.current_id()
     }
 
     pub fn following(&self) -> Option<&T> {
@@ -201,10 +218,7 @@ impl<T: Clone> Queue<T> {
     /// An explicit skip leaves a repeated single song, unlike [`Self::following_ix`].
     pub fn advance(&mut self) -> Option<&T> {
         let ix = self.current_ix?;
-        self.go_to(match self.repeat {
-            RepeatMode::Off => (ix + 1 < self.entries.len()).then_some(ix + 1),
-            RepeatMode::All | RepeatMode::One => Some((ix + 1) % self.entries.len()),
-        })
+        self.go_to(self.next_ix(ix))
     }
 
     /// A shuffled queue starting over does so in a new order, from the entry already
@@ -272,6 +286,20 @@ impl<T: Clone> Queue<T> {
         }
         Arc::make_mut(&mut self.entries).splice(at..at, new);
         Some(first)
+    }
+
+    /// Whether the current entry goes from the queue once another is current.
+    pub fn set_current_leaving(&mut self, is_leaving: bool) {
+        self.leaving = self.current_id().filter(|_| is_leaving);
+    }
+
+    /// Removes the entry that was to leave, if it is no longer current. Returns
+    /// whether it was removed.
+    pub fn remove_left(&mut self) -> bool {
+        if self.is_current_leaving() {
+            return false;
+        }
+        self.leaving.take().is_some_and(|id| self.remove(id))
     }
 
     /// Removes the entry, unless it is the current one: skip past that
@@ -410,6 +438,48 @@ mod tests {
         assert_eq!(queue.follow().copied(), Some("b"));
         queue.set_repeat(RepeatMode::All);
         assert_eq!(queue.follow().copied(), Some("a"));
+    }
+
+    #[test]
+    fn a_leaving_entry_stays_until_another_is_current_and_is_not_repeated() {
+        let mut queue = queue(&["a", "b", "c"], 1);
+        queue.set_repeat(RepeatMode::One);
+        assert_eq!(queue.following(), Some(&"b"));
+
+        queue.set_current_leaving(true);
+        assert_eq!(queue.following(), Some(&"c"));
+        assert!(!queue.remove_left());
+        assert_eq!(queue.len(), 3);
+
+        queue.follow();
+        assert!(queue.remove_left());
+        assert_eq!(queue.current(), Some(&"c"));
+        assert_eq!(queue.current_ix(), Some(1));
+        assert_eq!(queue.len(), 2);
+        assert!(!queue.remove_left());
+    }
+
+    #[test]
+    fn a_leaving_entry_alone_has_nothing_after_it_and_goes_when_playback_ends() {
+        let mut queue = queue(&["a"], 0);
+        queue.set_repeat(RepeatMode::All);
+        queue.set_current_leaving(true);
+        assert_eq!(queue.following(), None);
+        assert_eq!(queue.advance(), None);
+        assert!(queue.remove_left());
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn an_entry_told_to_stay_after_all_stays() {
+        let mut queue = queue(&["a", "b"], 0);
+        queue.set_repeat(RepeatMode::One);
+        queue.set_current_leaving(true);
+        queue.set_current_leaving(false);
+        assert_eq!(queue.following(), Some(&"a"));
+        queue.advance();
+        assert!(!queue.remove_left());
+        assert_eq!(queue.len(), 2);
     }
 
     #[test]

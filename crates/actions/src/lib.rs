@@ -8,11 +8,17 @@ use std::collections::HashSet;
 use std::fmt::Display;
 use std::sync::Arc;
 
+mod instrumentals;
+
 use gpui_kit::component::{WindowExt as _, menu::PopupMenu, notification::NotificationType};
 use gpui_kit::{
     Action, App, Context, Global, KeyBinding, SharedString, Subscription, Window, actions,
 };
 use subsonic::{Album, AlbumId, Artist, ArtistId, PlaylistId, Song, StarTarget};
+
+pub use instrumentals::{
+    is_instrumental, is_skipped, queue_menu_items, set_skip_instrumentals, without_skipped,
+};
 
 #[derive(Clone, Debug, PartialEq, Action)]
 #[action(namespace = hiphile, no_json)]

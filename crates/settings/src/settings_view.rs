@@ -27,6 +27,7 @@ use crate::discord_settings::DiscordSettings;
 use crate::dsd_section::dsd_groups;
 use crate::imgbb_key_field::ImgbbKeyField;
 use crate::lyrics_settings::{self, LyricsSettings};
+use crate::queue_settings::QueueSettings;
 use crate::song_cache_usage::{SongCacheUsage, format_size};
 use crate::{CloseWindow, SETTINGS_CONTEXT};
 
@@ -48,6 +49,7 @@ pub(crate) struct SettingsView {
     discord: Entity<DiscordSettings>,
     imgbb_key_field: Entity<ImgbbKeyField>,
     lyrics: Entity<LyricsSettings>,
+    queue: Entity<QueueSettings>,
     readings: Option<Entity<Readings>>,
     /// `None` in a build that does not update itself.
     updater: Option<Entity<Updater>>,
@@ -60,6 +62,7 @@ pub(crate) struct SettingsView {
     _song_cache_usage_changes: Subscription,
     _discord_changes: Subscription,
     _lyrics_changes: Subscription,
+    _queue_changes: Subscription,
     _readings_changes: Option<Subscription>,
     _updater_changes: Option<Subscription>,
     _refresh: Task<()>,
@@ -119,6 +122,7 @@ impl SettingsView {
         let cover_cache_field = cx.new(|cx| CacheLimitField::new(cover_cache.clone(), window, cx));
         let imgbb_key_field = cx.new(|cx| ImgbbKeyField::new(discord.clone(), window, cx));
         let lyrics = crate::lyrics_settings(cx);
+        let queue = crate::queue_settings(cx);
         let readings = session::readings(cx);
         let updater = updater::updater(cx);
         Self {
@@ -142,6 +146,8 @@ impl SettingsView {
             imgbb_key_field,
             _lyrics_changes: cx.observe(&lyrics, |_, _, cx| cx.notify()),
             lyrics,
+            _queue_changes: cx.observe(&queue, |_, _, cx| cx.notify()),
+            queue,
             audio,
             song_cache,
             song_cache_field,
@@ -213,6 +219,30 @@ impl SettingsView {
         }
         SettingPage::new("Lyrics")
             .icon(IconName::MicVocal)
+            .group(group)
+    }
+
+    fn queue_page(&self, cx: &mut Context<Self>) -> SettingPage {
+        let skip_instrumentals = SettingField::switch(
+            {
+                let queue = self.queue.clone();
+                move |cx| queue.read(cx).is_skip_instrumentals_on()
+            },
+            {
+                let queue = self.queue.clone();
+                move |is_on, cx| {
+                    queue.update(cx, |queue, cx| queue.set_skip_instrumentals(is_on, cx));
+                }
+            },
+        );
+        let mut group =
+            SettingGroup::new().item(SettingItem::new("Skip instrumentals", skip_instrumentals));
+        if let Some(error) = self.queue.read(cx).error().cloned() {
+            group =
+                group.footer(move |_, cx| div().text_color(cx.theme().danger).child(error.clone()));
+        }
+        SettingPage::new("Queue")
+            .icon(IconName::ListMusic)
             .group(group)
     }
 
@@ -677,6 +707,7 @@ impl Render for SettingsView {
                     Settings::new("settings")
                         .with_group_variant(GroupBoxVariant::Outline)
                         .page(self.audio_page(cx))
+                        .page(self.queue_page(cx))
                         .page(self.lyrics_page(cx))
                         .page(self.storage_page(cx))
                         .page(self.discord_page(cx))

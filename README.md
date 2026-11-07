@@ -83,6 +83,7 @@ Change settings in the app under **hiphile > Settings…**. They are saved to
 | `dsd_dither_db` (with `custom`: `-160` to `-20`) | `HIPHILE_DSD_DITHER_DB` | None |
 | `dsd_input_level_db` (with `custom`: `-24` to `6`) | `HIPHILE_DSD_INPUT_LEVEL_DB` | `0` |
 | `dsd_limiter_ceiling_db` (with `custom`: `off`, or `-6` to `3`) | `HIPHILE_DSD_LIMITER_CEILING_DB` | `1` |
+| `skip_instrumentals` (grey out songs whose titles mark them as instrumental, and keep them out of the queue; the app only, not `hiphile-cli`) | `HIPHILE_SKIP_INSTRUMENTALS` | `false` |
 | `song_cache_gib` (`0` for no limit) | `HIPHILE_SONG_CACHE_GIB` | `8` |
 | `cover_cache_gib` (`0` for no limit) | `HIPHILE_COVER_CACHE_GIB` | `8` |
 | `appearance` (`"light"` or `"dark"`) | `HIPHILE_APPEARANCE` (also accepts `system`) | System setting |

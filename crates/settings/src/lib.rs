@@ -11,6 +11,7 @@ mod dsd_settings;
 mod imgbb_key_field;
 mod lyrics_settings;
 mod number_field;
+mod queue_settings;
 mod settings_view;
 mod song_cache_usage;
 
@@ -25,6 +26,7 @@ pub use audio_settings::{AudioSettings, OutputChanged, TransitionsChanged};
 pub use cache_limit::{CacheLimit, CacheLimitChanged};
 pub use discord_settings::{DiscordSettings, ImgbbKeyChanged, PresenceChanged};
 pub use lyrics_settings::{LyricsHighlightChanged, LyricsSettings};
+pub use queue_settings::{QueueSettings, SkipInstrumentalsChanged};
 
 use appearance_settings::AppearanceSettings;
 use settings_view::SettingsView;
@@ -40,6 +42,7 @@ struct GlobalSettings {
     cover_cache: Entity<CacheLimit>,
     discord: Entity<DiscordSettings>,
     lyrics: Entity<LyricsSettings>,
+    queue: Entity<QueueSettings>,
     /// It may have been closed since.
     window: Option<AnyWindowHandle>,
 }
@@ -55,6 +58,7 @@ pub fn init(cx: &mut App) {
     let cover_cache = cx.new(|cx| CacheLimit::new(CacheKind::Covers, cx));
     let discord = cx.new(DiscordSettings::new);
     let lyrics = cx.new(LyricsSettings::new);
+    let queue = cx.new(QueueSettings::new);
     cx.set_global(GlobalSettings {
         appearance,
         audio,
@@ -62,6 +66,7 @@ pub fn init(cx: &mut App) {
         cover_cache,
         discord,
         lyrics,
+        queue,
         window: None,
     });
     // Deferred because an action reaches this handler while its window is being
@@ -89,6 +94,10 @@ pub fn discord_settings(cx: &App) -> Entity<DiscordSettings> {
 
 pub fn lyrics_settings(cx: &App) -> Entity<LyricsSettings> {
     cx.global::<GlobalSettings>().lyrics.clone()
+}
+
+pub fn queue_settings(cx: &App) -> Entity<QueueSettings> {
+    cx.global::<GlobalSettings>().queue.clone()
 }
 
 pub fn song_cache_settings(cx: &App) -> Entity<CacheLimit> {
