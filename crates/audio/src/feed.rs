@@ -1,10 +1,15 @@
 //! Decoding ahead of the device, on a thread of each track's own: reading a
 //! track may wait on the network, and nothing else should wait with it.
 
+mod silence;
+
 use std::collections::VecDeque;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::Duration;
+
+use silence::SilenceGate;
 
 use crate::decode::Decoder;
 use crate::output::Spec;
@@ -15,6 +20,9 @@ pub(crate) enum Item {
     Samples(Vec<f32>),
     /// Where decoding went on after a [`Feed::seek`], or `None` past the end.
     Seeked(Option<Duration>),
+    /// Where the next samples come from in the track, past silence left out.
+    /// Unlike a seek this leaves what came before to play.
+    Skipped(Duration),
     End,
     Failed(Error),
 }
@@ -36,6 +44,8 @@ struct State {
     seek: Option<Duration>,
     /// Nothing more comes without a seek.
     ended: bool,
+    /// Where the first sample after opening or the last seek comes from.
+    resumes_at: Duration,
     closed: bool,
 }
 
@@ -88,7 +98,7 @@ impl Channel {
         }
         match &item {
             Item::Samples(samples) => state.samples += samples.len(),
-            Item::Seeked(Some(_)) => {}
+            Item::Seeked(Some(at)) | Item::Skipped(at) => state.resumes_at = *at,
             Item::Seeked(None) | Item::End | Item::Failed(_) => state.ended = true,
         }
         state.items.push_back(item);
@@ -100,6 +110,7 @@ impl Channel {
         state.items.clear();
         state.samples = 0;
         state.ended = false;
+        state.resumes_at = to;
         drop(state);
         self.changed.notify_all();
     }
@@ -107,6 +118,10 @@ impl Channel {
 
 fn samples_in(time: Duration, spec: Spec) -> usize {
     (time.as_secs_f64() * f64::from(spec.rate) * f64::from(spec.channels)) as usize
+}
+
+fn time_of(samples: usize, spec: Spec) -> Duration {
+    Duration::from_secs_f64(samples as f64 / (f64::from(spec.rate) * f64::from(spec.channels)))
 }
 
 /// Ends the thread, once any read it is blocked on returns. Whoever drops it
@@ -141,7 +156,7 @@ impl Drop for PanicReport {
     }
 }
 
-fn run(track: Track, channel: &Channel) {
+fn run(track: Track, trim_silence: Arc<AtomicBool>, channel: &Channel) {
     let mut decoder = match Decoder::open(track) {
         Ok(decoder) => decoder,
         Err(error) => {
@@ -154,21 +169,26 @@ fn run(track: Track, channel: &Channel) {
         spec,
         duration: decoder.duration(),
     }));
+    let mut gate = SilenceGate::new(spec, trim_silence);
+    let mut items = Vec::new();
     while let Some(work) = channel.next_work(spec) {
-        let item = match work {
-            Work::Seek(to) => decoder.seek(to).map(Item::Seeked),
+        match work {
+            Work::Seek(to) => match decoder.seek(to) {
+                Ok(resumed) => gate.seeked(resumed, &mut items),
+                Err(error) => items.push(Item::Failed(error)),
+            },
             Work::Decode => {
                 let mut samples = Vec::new();
-                decoder.decode_into(&mut samples).map(|more| {
-                    if more {
-                        Item::Samples(samples)
-                    } else {
-                        Item::End
-                    }
-                })
+                match decoder.decode_into(&mut samples) {
+                    Ok(true) => gate.pass(samples, &mut items),
+                    Ok(false) => gate.end(&mut items),
+                    Err(error) => items.push(Item::Failed(error)),
+                }
             }
-        };
-        channel.push(item.unwrap_or_else(Item::Failed));
+        }
+        for item in items.drain(..) {
+            channel.push(item);
+        }
     }
 }
 
@@ -182,8 +202,13 @@ pub(crate) enum Polled {
 
 impl Opening {
     /// Starts opening `track`, decoding `ahead` of what has been taken once
-    /// it has opened.
-    pub(crate) fn start(track: Track, ahead: Duration) -> Result<Self, Error> {
+    /// it has opened. What `trim_silence` says applies to what is decoded from
+    /// then on; see [`SilenceGate`].
+    pub(crate) fn start(
+        track: Track,
+        ahead: Duration,
+        trim_silence: Arc<AtomicBool>,
+    ) -> Result<Self, Error> {
         let channel = Arc::new(Channel {
             state: Mutex::new(State {
                 opened: None,
@@ -193,6 +218,7 @@ impl Opening {
                 ahead,
                 seek: None,
                 ended: false,
+                resumes_at: Duration::ZERO,
                 closed: false,
             }),
             changed: Condvar::new(),
@@ -203,7 +229,7 @@ impl Opening {
                 let channel = channel.clone();
                 move || {
                     let _report = PanicReport(channel.clone());
-                    run(track, &channel);
+                    run(track, trim_silence, &channel);
                 }
             })
             .map_err(|error| Error::Read(error.to_string()))?;
@@ -271,6 +297,24 @@ impl Feed {
             self.link.0.changed.notify_all();
         }
         false
+    }
+
+    /// How much audio is ready to take.
+    pub(crate) fn ready(&self) -> Duration {
+        time_of(self.link.0.lock().samples, self.spec)
+    }
+
+    /// How much audio is left of the track, once all of it is ready to take.
+    pub(crate) fn time_left(&self) -> Option<Duration> {
+        let state = self.link.0.lock();
+        (state.seek.is_none() && matches!(state.items.back(), Some(Item::End)))
+            .then(|| time_of(state.samples, self.spec))
+    }
+
+    /// Where the first sample after opening or the last seek comes from in the
+    /// track, once [`Self::has_ahead`] says it is ready to take.
+    pub(crate) fn resumes_at(&self) -> Duration {
+        self.link.0.lock().resumes_at
     }
 
     /// Goes on from `to`, reported as an [`Item::Seeked`] first of all. What

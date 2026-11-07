@@ -10,6 +10,7 @@ use crate::convert::Converter;
 use crate::device::device_name;
 use crate::exclusive_device::{Exclusive, OriginalFormat};
 use crate::feed::{Feed, Item, Opening, Polled};
+use crate::mix::Blend;
 use crate::output::{self, ConfigRange, OutputSettings, Spec};
 use crate::stream::Stream;
 use crate::track::Cancel;
@@ -75,7 +76,8 @@ pub enum EventKind {
     /// The track moved to other output settings, or to the rate someone else
     /// set on the device, and goes on from where it was, paused if it was.
     OutputChanged(PlaybackFormat),
-    /// The track played to its end. `next` is the [`Engine::set_next`] load
+    /// The track played to its end, or to where the next one starts fading in
+    /// over it. `next` is the [`Engine::set_next`] load
     /// that goes on from here and reports [`EventKind::Started`] or
     /// [`EventKind::Failed`] next, perhaps after [`EventKind::Buffering`]; with
     /// `None`, nothing else plays.
@@ -137,6 +139,18 @@ impl PlaybackFormat {
     }
 }
 
+/// How one track goes over to the next on PCM. DoP plays tracks whole and joins
+/// them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Transitions {
+    /// Leaves out the silence around a track and any longer than a pause
+    /// inside it. Positions stay those of the file.
+    pub trim_silence: bool,
+    /// How long tracks overlap, for those that play at the same device rate
+    /// with this much of them ready to go. Zero joins them without a gap.
+    pub crossfade: Duration,
+}
+
 /// Identifies one `load`, `set_next` or `stop` request. Work and errors from
 /// a generation that is not current are discarded, so a superseded track can
 /// never end, fail, or report a device error on behalf of the one that
@@ -166,6 +180,14 @@ struct Shared {
     output_rate: AtomicU32,
     /// `f32` bits; read by the audio callback.
     volume: AtomicU32,
+    /// Where in its track the next track's first sample comes from, in frames.
+    /// Set before [`Playback::next_at`], and read by the audio callback.
+    next_position: AtomicU64,
+    crossfade_millis: AtomicU64,
+    wants_trim_silence: AtomicBool,
+    is_dop: AtomicBool,
+    /// What decoding threads go by: [`Self::wants_trim_silence`], except on DoP.
+    trim_silence: Arc<AtomicBool>,
     issued: AtomicU64,
     generation: AtomicU64,
     /// Never touched by the audio callback.
@@ -184,6 +206,11 @@ impl Shared {
             frames_played: AtomicU64::new(0),
             output_rate: AtomicU32::new(0),
             volume: AtomicU32::new(1.0f32.to_bits()),
+            next_position: AtomicU64::new(0),
+            crossfade_millis: AtomicU64::new(0),
+            wants_trim_silence: AtomicBool::new(false),
+            is_dop: AtomicBool::new(false),
+            trim_silence: Arc::new(AtomicBool::new(false)),
             issued: AtomicU64::new(0),
             generation: AtomicU64::new(0),
             cancels: Mutex::default(),
@@ -197,6 +224,16 @@ impl Shared {
         }
         let frames = self.frames_played.load(Ordering::Relaxed);
         Duration::from_secs_f64(frames as f64 / f64::from(rate))
+    }
+
+    fn crossfade(&self) -> Duration {
+        Duration::from_millis(self.crossfade_millis.load(Ordering::Relaxed))
+    }
+
+    fn update_trim_silence(&self) {
+        let is_on =
+            self.wants_trim_silence.load(Ordering::Relaxed) && !self.is_dop.load(Ordering::Relaxed);
+        self.trim_silence.store(is_on, Ordering::Relaxed);
     }
 
     fn is_current(&self, generation: Generation) -> bool {
@@ -374,6 +411,10 @@ impl Engine {
     /// at once and reports [`EventKind::OutputChanged`], or
     /// [`EventKind::Failed`] if it cannot.
     pub fn set_output(&self, output: OutputSettings) {
+        self.shared
+            .is_dop
+            .store(output.dop().is_some(), Ordering::Relaxed);
+        self.shared.update_trim_silence();
         self.send(Command::SetOutput(output));
     }
 
@@ -395,7 +436,19 @@ impl Engine {
             .store(volume.to_bits(), Ordering::Relaxed);
     }
 
-    /// How much of the current track the device has played.
+    /// From now on, including for the track playing and the one set to follow.
+    pub fn set_transitions(&self, transitions: Transitions) {
+        let millis = u64::try_from(transitions.crossfade.as_millis()).unwrap_or(u64::MAX);
+        self.shared
+            .crossfade_millis
+            .store(millis, Ordering::Relaxed);
+        self.shared
+            .wants_trim_silence
+            .store(transitions.trim_silence, Ordering::Relaxed);
+        self.shared.update_trim_silence();
+    }
+
+    /// Where the device is in the current track's file.
     pub fn position(&self) -> Duration {
         self.shared.position()
     }
@@ -526,14 +579,14 @@ fn serve(
                 // A newer request already replaced this one; dropping the
                 // track releases its source.
                 if shared.is_current(generation) {
-                    pending = Some(Pending::load(generation, track));
+                    pending = Some(Pending::load(generation, track, shared));
                 }
                 Ok(())
             }
             Some(Command::SetNext(generation, track)) => {
                 let abandoned = abandon_next(&mut current, shared, &emit);
                 if current.is_some() || pending.is_some() {
-                    next = Some(Next::open(generation, track));
+                    next = Some(Next::open(generation, track, shared));
                 } else {
                     shared.release_next(generation);
                 }
@@ -878,8 +931,8 @@ enum NextState {
 }
 
 impl Next {
-    fn open(generation: Generation, track: Track) -> Self {
-        let state = match Opening::start(track, FIRST_HOLD) {
+    fn open(generation: Generation, track: Track, shared: &Shared) -> Self {
+        let state = match Opening::start(track, FIRST_HOLD, shared.trim_silence.clone()) {
             Ok(opening) => NextState::Opening(opening),
             Err(error) => NextState::Failed(error),
         };
@@ -915,12 +968,12 @@ struct Pending {
 }
 
 impl Pending {
-    fn load(generation: Generation, track: Track) -> Self {
+    fn load(generation: Generation, track: Track, shared: &Shared) -> Self {
         let position = track.start_at;
         let paused = track.start_paused;
         let fades_in = track.fades_in;
         let mut pending = Self {
-            track: Next::open(generation, track),
+            track: Next::open(generation, track, shared),
             start: Start {
                 paused,
                 fades_in,
@@ -959,10 +1012,50 @@ impl Pending {
 struct Joined {
     /// Of the next track; the playback still has the sounding one's.
     generation: Generation,
+    /// `None` when the sounding track is in [`Playback::crossfade`].
+    behind: Option<Behind>,
+    format: PlaybackFormat,
+}
+
+struct Behind {
     feed: Feed,
     /// `None` when the next track goes through the same one.
     converter: Option<Converter>,
-    format: PlaybackFormat,
+}
+
+/// The track fading out while the one being written fades in. Goes on after
+/// the device has reached the new track, which by then is the current one.
+struct Crossfade {
+    feed: Feed,
+    converter: Converter,
+    blend: Blend,
+}
+
+impl Crossfade {
+    /// Takes more of the outgoing track for the blend. Returns whether any
+    /// came. A failure counts as its end, which is no reason to stop the track
+    /// taking over.
+    fn take_outgoing(&mut self) -> bool {
+        let Some(item) = self.feed.take() else {
+            return false;
+        };
+        let finished = match item {
+            Item::Samples(samples) => self
+                .converter
+                .process(&samples, self.blend.outgoing_mut())
+                .is_err(),
+            Item::Seeked(_) | Item::Skipped(_) => false,
+            Item::End => {
+                self.converter.finish(self.blend.outgoing_mut()).ok();
+                true
+            }
+            Item::Failed(_) => true,
+        };
+        if finished {
+            self.blend.end_outgoing();
+        }
+        true
+    }
 }
 
 /// What the engine needs to switch a device back to the sample rate it had
@@ -1174,6 +1267,7 @@ struct Playback {
     /// The device's configurations, to tell whether a next track fits.
     ranges: Vec<ConfigRange>,
     joined: Option<Joined>,
+    crossfade: Option<Crossfade>,
     /// Why the track being written stopped, reported once it is sounding.
     failure: Option<Error>,
     /// The number of the first sample of the track that joined, until the
@@ -1425,6 +1519,7 @@ impl Playback {
             dop_paused,
             ranges,
             joined: None,
+            crossfade: None,
             failure: None,
             next_at,
             sounding,
@@ -1472,6 +1567,7 @@ impl Playback {
             .store(self.frames_in(to), Ordering::Relaxed);
         self.feed.seek(to);
         self.converter.reset()?;
+        self.crossfade = None;
         self.pending.clear();
         self.pending_ix = 0;
         self.finished = false;
@@ -1496,10 +1592,10 @@ impl Playback {
     /// converter. A resampler flushed at the end of a track dents the audio
     /// on either side of the joint, so this is tried before it is flushed.
     fn join(&mut self, next: Next, settings: &OutputSettings, shared: &Shared) -> Option<Next> {
-        let next = next.polled();
+        let next = self.crossfade_into(next.polled(), settings, shared)?;
         let all_written = self.finished && self.pending_ix == self.pending.len();
         let ready = all_written || (self.decoded_all && !self.finished);
-        if !ready || self.joined.is_some() || self.failure.is_some() {
+        if !ready || self.joined.is_some() || self.crossfade.is_some() || self.failure.is_some() {
             return Some(next);
         }
         let generation = next.generation;
@@ -1538,31 +1634,130 @@ impl Playback {
         };
         let next_at = self.written
             + self.converter.undelivered_frames() * u64::from(self.format.output_channels);
-        let format = PlaybackFormat {
-            device: self.format.device.clone(),
-            source_rate: source.rate,
-            source_channels: source.channels,
-            output_rate: output.rate,
-            output_channels: output.channels,
-            dop: self.format.dop,
-            duration: feed.duration(),
-        };
+        let format = self.format_of(&feed);
+        let start = feed.resumes_at();
         self.joined = Some(Joined {
             generation,
-            feed: std::mem::replace(&mut self.feed, feed),
-            converter: converter.map(|converter| std::mem::replace(&mut self.converter, converter)),
+            behind: Some(Behind {
+                feed: std::mem::replace(&mut self.feed, feed),
+                converter: converter
+                    .map(|converter| std::mem::replace(&mut self.converter, converter)),
+            }),
             format: std::mem::replace(&mut self.format, format),
         });
         self.decoded_all = false;
         self.finished = false;
         self.emptied_at = None;
+        self.mark_next_at(next_at, start, shared);
+        None
+    }
+
+    /// Starts fading `next` in over the current track, if that has no more
+    /// than the length of the fade left. Otherwise gives `next` back, which
+    /// may then join or get its turn in another way.
+    ///
+    /// A fade takes up at most half of a track, or a short one would hardly be
+    /// heard. All that goes into the fade is decoded before it starts, so it
+    /// can begin only when the next track has its share ready, and it is that
+    /// much shorter for coming late.
+    fn crossfade_into(
+        &mut self,
+        next: Next,
+        settings: &OutputSettings,
+        shared: &Shared,
+    ) -> Option<Next> {
+        let length = shared.crossfade();
+        if length.is_zero()
+            || self.format.dop.is_some()
+            || self.crossfade.is_some()
+            || self.joined.is_some()
+            || self.failure.is_some()
+        {
+            return Some(next);
+        }
+        self.feed.has_ahead(length + FIRST_HOLD);
+        if let NextState::Ready(feed) = &next.state {
+            feed.has_ahead(length + FIRST_HOLD);
+        }
+        let longest = self
+            .format
+            .duration
+            .map_or(length, |duration| length.min(duration / 2));
+        let Some(left) = self
+            .feed
+            .time_left()
+            .filter(|left| !left.is_zero() && *left <= longest)
+        else {
+            return Some(next);
+        };
+        let generation = next.generation;
+        let output = Spec {
+            rate: self.format.output_rate,
+            channels: self.format.output_channels,
+        };
+        let needed = left + FIRST_HOLD;
+        let feed = match next.state {
+            NextState::Ready(feed)
+                if output::plan_for(settings, &self.ranges, output.rate, feed.spec())
+                    == Some(output)
+                    && feed.has_ahead(needed)
+                    && feed.ready() >= needed =>
+            {
+                feed
+            }
+            state => return Some(Next { generation, state }),
+        };
+        let converter = match self.converter.following(feed.spec(), settings) {
+            Ok(converter) => converter,
+            Err(error) => {
+                let state = NextState::Failed(error);
+                return Some(Next { generation, state });
+            }
+        };
+        let frames = (left.as_secs_f64() * f64::from(output.rate)) as u64
+            + self.converter.undelivered_frames();
+        let next_at = self.written + (self.pending.len() - self.pending_ix) as u64;
+        let format = self.format_of(&feed);
+        let start = feed.resumes_at();
+        self.crossfade = Some(Crossfade {
+            feed: std::mem::replace(&mut self.feed, feed),
+            converter: std::mem::replace(&mut self.converter, converter),
+            blend: Blend::new(usize::from(output.channels), frames),
+        });
+        self.joined = Some(Joined {
+            generation,
+            behind: None,
+            format: std::mem::replace(&mut self.format, format),
+        });
+        self.emptied_at = None;
+        self.mark_next_at(next_at, start, shared);
+        None
+    }
+
+    fn format_of(&self, feed: &Feed) -> PlaybackFormat {
+        let source = feed.spec();
+        PlaybackFormat {
+            device: self.format.device.clone(),
+            source_rate: source.rate,
+            source_channels: source.channels,
+            output_rate: self.format.output_rate,
+            output_channels: self.format.output_channels,
+            dop: self.format.dop,
+            duration: feed.duration(),
+        }
+    }
+
+    /// Tells the audio callback the sample where the next track starts, and
+    /// where in its file that is.
+    fn mark_next_at(&self, next_at: u64, start: Duration, shared: &Shared) {
+        let position = self.frames_in(start);
+        shared.next_position.store(position, Ordering::Relaxed);
         // After no samples at all, the device is at the next track already,
         // and the callback sees no crossing to restart the position at.
         if next_at == 0 {
-            shared.frames_played.store(0, Ordering::Relaxed);
+            shared.frames_played.store(position, Ordering::Relaxed);
         }
         self.next_at.store(next_at, Ordering::Release);
-        None
     }
 
     /// The track that joined, once the device has reached it.
@@ -1583,8 +1778,14 @@ impl Playback {
             return None;
         }
         let joined = self.joined.take()?;
-        let feed = std::mem::replace(&mut self.feed, joined.feed);
-        if let Some(converter) = joined.converter {
+        let behind = joined.behind.or_else(|| {
+            self.crossfade.take().map(|crossfade| Behind {
+                feed: crossfade.feed,
+                converter: Some(crossfade.converter),
+            })
+        })?;
+        let feed = std::mem::replace(&mut self.feed, behind.feed);
+        if let Some(converter) = behind.converter {
             self.converter = converter;
         }
         self.format = joined.format;
@@ -1709,22 +1910,48 @@ impl Playback {
                 self.finished = true;
                 continue;
             }
+            if let Some(crossfade) = self
+                .crossfade
+                .as_mut()
+                .filter(|crossfade| crossfade.blend.wants_outgoing())
+            {
+                if !crossfade.take_outgoing() {
+                    return Ok(Fill::Playing);
+                }
+                self.deliver_mix();
+                continue;
+            }
             match self.feed.take() {
                 None => return Ok(Fill::Playing),
-                Some(Item::Samples(samples)) => {
-                    self.converter.process(&samples, &mut self.pending)?;
-                }
+                Some(Item::Samples(samples)) => match &mut self.crossfade {
+                    None => self.converter.process(&samples, &mut self.pending)?,
+                    Some(crossfade) => {
+                        self.converter
+                            .process(&samples, crossfade.blend.incoming_mut())?;
+                        self.deliver_mix();
+                    }
+                },
                 // A track that joined rewound to its start, while the device
                 // is still in the sounding one.
-                Some(Item::Seeked(Some(_))) if self.joined.is_some() => {}
+                Some(Item::Seeked(Some(_)) | Item::Skipped(_)) if self.joined.is_some() => {}
                 Some(Item::Seeked(Some(resumed))) => {
                     shared
                         .frames_played
                         .store(self.frames_in(resumed), Ordering::Relaxed);
                 }
+                Some(Item::Skipped(to)) => {
+                    // What the ring buffer holds still comes before it
+                    let buffered = (self.capacity - self.producer.slots())
+                        / usize::from(self.format.output_channels);
+                    shared.frames_played.store(
+                        self.frames_in(to).saturating_sub(buffered as u64),
+                        Ordering::Relaxed,
+                    );
+                }
                 // Past the end, the track ends once the device has played out
                 Some(Item::Seeked(None)) => self.finished = true,
                 Some(Item::End) => {
+                    self.cut_crossfade();
                     // Leaves a next track its chance to join before the
                     // converter is flushed.
                     self.decoded_all = true;
@@ -1732,6 +1959,24 @@ impl Playback {
                 }
                 Some(Item::Failed(error)) => return Err(error),
             }
+        }
+    }
+
+    /// Passes on all the crossfade can mix so far, and ends it once it is over.
+    fn deliver_mix(&mut self) {
+        if let Some(crossfade) = &mut self.crossfade {
+            crossfade.blend.mix_into(&mut self.pending);
+            if crossfade.blend.is_done() {
+                self.crossfade = None;
+            }
+        }
+    }
+
+    /// A track that has less in it than was ready when the fade started, such
+    /// as one cut short while decoding, cannot take it to its end.
+    fn cut_crossfade(&mut self) {
+        if let Some(mut crossfade) = self.crossfade.take() {
+            crossfade.blend.cut_into(&mut self.pending);
         }
     }
 }
@@ -1843,7 +2088,8 @@ impl RingReader {
                 .compare_exchange(next_starts, 0, Ordering::AcqRel, Ordering::Relaxed)
                 .is_ok();
         if crossed {
-            let frames = (self.read - next_starts) / self.channels as u64;
+            let frames = (self.read - next_starts) / self.channels as u64
+                + self.shared.next_position.load(Ordering::Relaxed);
             self.shared.frames_played.store(frames, Ordering::Relaxed);
         } else {
             self.shared
@@ -4076,5 +4322,439 @@ mod tests {
     #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
     fn dsd256_starts_exactly_after_the_lead_in() {
         dop_starts_exactly_after_the_lead_in(dsd::DopRate::Dsd256, 705_600);
+    }
+
+    const HALF: i16 = 16_384;
+    const QUARTER: i16 = 8_192;
+
+    /// Stereo WAV of stretches of `seconds` at a constant level, which a
+    /// loopback device hands back exactly.
+    fn levels_wav(rate: u32, stretches: &[(u32, i16)]) -> Vec<u8> {
+        let frames = stretches.iter().map(|(seconds, _)| seconds * rate).sum();
+        crate::test_wav::wav_with(rate, 2, frames, |frame| {
+            let mut left = frame;
+            for (seconds, level) in stretches {
+                if left < seconds * rate {
+                    return *level;
+                }
+                left -= seconds * rate;
+            }
+            0
+        })
+    }
+
+    /// A loopback device at a rate these tests can keep up with in a debug
+    /// build, whatever tests before them have left it at. Recording DoP sets a
+    /// rate the engine then has no reason to restore.
+    fn loopback_at_a_low_rate() -> (cpal::Device, String, u32) {
+        const RATE: u32 = 48_000;
+        let (device, id) = loopback_device();
+        set_rate_from_outside(&id, RATE);
+        (device, id, RATE)
+    }
+
+    /// `heard` up to its first silence, which is its end for a track that plays
+    /// without a gap. A loopback device can sound old data after a stream ends,
+    /// and a gap in the sound leaves less than the length expected.
+    fn up_to_first_gap(heard: &[f32], rate: u32) -> &[f32] {
+        let start = heard.iter().position(|sample| sample.abs() > 0.1).unwrap();
+        let sound = &heard[start..];
+        let gap = (rate / 1_000) as usize;
+        let len = sound
+            .windows(gap)
+            .position(|window| window.iter().all(|sample| sample.abs() < 1e-3))
+            .unwrap_or(sound.len());
+        &sound[..len]
+    }
+
+    /// The next event that is not about waiting for data, which a track may do
+    /// on a slow machine.
+    fn next_outcome(events: &async_channel::Receiver<Event>) -> Event {
+        loop {
+            let event = next_event_within(events, Duration::from_secs(20));
+            if !matches!(event.kind, EventKind::Buffering(_)) {
+                return event;
+            }
+        }
+    }
+
+    fn track_of(bytes: Vec<u8>) -> Track {
+        Track::new(Cursor::new(bytes)).extension("wav")
+    }
+
+    fn crossfading(length: Duration) -> Transitions {
+        Transitions {
+            trim_silence: false,
+            crossfade: length,
+        }
+    }
+
+    /// Plays two tracks through and returns what the device took of them from
+    /// the first sound to the last.
+    fn heard_of_two_tracks(
+        transitions: Transitions,
+        first: Vec<u8>,
+        second: Vec<u8>,
+        rate: u32,
+        id: String,
+        device: &cpal::Device,
+    ) -> Vec<f32> {
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id), None));
+        engine.set_transitions(transitions);
+        let (stream, heard) = record(device, rate);
+        let a = engine.load(track_of(first));
+        let b = engine.set_next(track_of(second));
+        let event = next_outcome(&events);
+        assert_eq!(event.load, a);
+        assert!(matches!(event.kind, EventKind::Started(_)), "{event:?}");
+        let event = next_outcome(&events);
+        assert_eq!(event.load, a);
+        assert!(
+            matches!(event.kind, EventKind::Ended { next: Some(next) } if next == b),
+            "{event:?}"
+        );
+        let event = next_outcome(&events);
+        assert_eq!(event.load, b);
+        assert!(matches!(event.kind, EventKind::Started(_)), "{event:?}");
+        let event = next_outcome(&events);
+        assert!(
+            matches!(event.kind, EventKind::Ended { next: None }),
+            "{event:?}"
+        );
+        thread::sleep(Duration::from_millis(200));
+        drop(stream);
+        engine.shutdown();
+        let heard = heard.lock().unwrap();
+        up_to_first_gap(&heard, rate).to_vec()
+    }
+
+    /// `heard` holds `high` for `before`, slides down, and holds `low` for
+    /// `after`, never going out of those bounds, with `length` in all.
+    fn assert_slide(
+        heard: &[f32],
+        rate: u32,
+        (high, before): (f32, f32),
+        (low, after): (f32, f32),
+        length: f32,
+    ) {
+        let frames = |seconds: f32| (seconds * rate as f32) as usize;
+        let seconds = heard.len() as f32 / rate as f32;
+        assert!((seconds - length).abs() < 0.1, "{seconds}");
+        let near = |sample: &f32, level: f32| (sample - level).abs() < 1e-3;
+        assert!(
+            heard[..frames(before)].iter().all(|s| near(s, high)),
+            "the first track does not hold its level"
+        );
+        let tail = heard.len() - frames(after);
+        let stray = heard[tail..].iter().position(|s| !near(s, low));
+        assert!(
+            stray.is_none(),
+            "the second track does not hold its level: {} frames from the end of {}, {}",
+            heard.len() - tail - stray.unwrap_or(0),
+            heard.len(),
+            stray.map_or(0.0, |stray| heard[tail + stray]),
+        );
+        assert!(heard.windows(2).all(|pair| pair[1] <= pair[0] + 1e-3));
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_next_track_fades_in_over_the_end_of_the_current_one() {
+        let (device, id, rate) = loopback_at_a_low_rate();
+        let heard = heard_of_two_tracks(
+            crossfading(Duration::from_secs(1)),
+            levels_wav(rate, &[(4, HALF)]),
+            levels_wav(rate, &[(4, QUARTER)]),
+            rate,
+            id,
+            &device,
+        );
+        assert_slide(&heard, rate, (0.5, 2.8), (0.25, 2.9), 7.0);
+        let slid = heard.iter().filter(|s| **s > 0.26 && **s < 0.49).count();
+        let slid = slid as f32 / rate as f32;
+        assert!(slid > 0.5 && slid < 1.0, "{slid}");
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_fade_takes_up_at_most_half_of_a_track() {
+        let (device, id, rate) = loopback_at_a_low_rate();
+        let heard = heard_of_two_tracks(
+            crossfading(Duration::from_secs(5)),
+            levels_wav(rate, &[(2, HALF)]),
+            levels_wav(rate, &[(8, QUARTER)]),
+            rate,
+            id,
+            &device,
+        );
+        assert_slide(&heard, rate, (0.5, 0.9), (0.25, 3.0), 9.0);
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_next_track_too_short_for_the_fade_fades_for_what_it_has() {
+        let (device, id, rate) = loopback_at_a_low_rate();
+        let heard = heard_of_two_tracks(
+            crossfading(Duration::from_secs(4)),
+            levels_wav(rate, &[(10, HALF)]),
+            levels_wav(rate, &[(3, QUARTER)]),
+            rate,
+            id,
+            &device,
+        );
+        // Starts with a second to go, leaving the two seconds it must have ready
+        assert_slide(&heard, rate, (0.5, 8.8), (0.25, 1.9), 12.0);
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn silence_around_tracks_goes_and_they_join_where_the_sound_ends() {
+        let (device, id, rate) = loopback_at_a_low_rate();
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id), None));
+        engine.set_transitions(Transitions {
+            trim_silence: true,
+            crossfade: Duration::ZERO,
+        });
+        let (stream, heard) = record(&device, rate);
+        let a = levels_wav(rate, &[(2, 0), (1, HALF), (2, 0)]);
+        let b = levels_wav(rate, &[(3, 0), (1, QUARTER), (2, 0)]);
+        engine.load(track_of(a));
+        engine.set_next(track_of(b));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        thread::sleep(Duration::from_millis(300));
+        let position = engine.position();
+        assert!(position >= Duration::from_secs(2), "{position:?}");
+        assert!(position < Duration::from_secs(3), "{position:?}");
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::Ended { next: Some(_) }
+        ));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        thread::sleep(Duration::from_millis(300));
+        let position = engine.position();
+        assert!(position >= Duration::from_secs(3), "{position:?}");
+        assert!(position < Duration::from_secs(4), "{position:?}");
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::Ended { next: None }
+        ));
+        thread::sleep(Duration::from_millis(200));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let seconds = up_to_first_gap(&heard, rate).len() as f32 / rate as f32;
+        assert!((seconds - 2.0).abs() < 0.05, "{seconds}");
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_long_silence_inside_a_track_goes_and_the_position_stays_that_of_the_file() {
+        let (device, id, rate) = loopback_at_a_low_rate();
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id), None));
+        engine.set_transitions(Transitions {
+            trim_silence: true,
+            crossfade: Duration::ZERO,
+        });
+        let (stream, heard) = record(&device, rate);
+        engine.load(track_of(levels_wav(rate, &[(1, HALF), (11, 0), (1, HALF)])));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        assert!(matches!(
+            next_outcome(&events).kind,
+            EventKind::Ended { next: None }
+        ));
+        let position = engine.position();
+        assert!(position > Duration::from_millis(12_900), "{position:?}");
+        assert!(position < Duration::from_millis(13_100), "{position:?}");
+        thread::sleep(Duration::from_millis(200));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let seconds = up_to_first_gap(&heard, rate).len() as f32 / rate as f32;
+        assert!((seconds - 2.0).abs() < 0.05, "{seconds}");
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_fade_starts_where_the_sound_ends_and_comes_in_where_it_starts() {
+        let (device, id, rate) = loopback_at_a_low_rate();
+        let heard = heard_of_two_tracks(
+            Transitions {
+                trim_silence: true,
+                crossfade: Duration::from_secs(1),
+            },
+            levels_wav(rate, &[(1, 0), (4, HALF), (6, 0)]),
+            levels_wav(rate, &[(3, 0), (4, QUARTER), (1, 0)]),
+            rate,
+            id,
+            &device,
+        );
+        assert_slide(&heard, rate, (0.5, 2.8), (0.25, 2.9), 7.0);
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_next_track_at_another_rate_comes_on_after_the_current_one_ends() {
+        let (_, id, rate) = loopback_at_a_low_rate();
+        let other = *device_to_open_by_id()
+            .sample_rates()
+            .iter()
+            .find(|other| **other != rate)
+            .unwrap();
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id), None));
+        engine.set_transitions(crossfading(Duration::from_secs(2)));
+        engine.load(track_of(levels_wav(rate, &[(3, HALF)])));
+        engine.set_next(track_of(levels_wav(other, &[(1, QUARTER)])));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        let started = Instant::now();
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::Ended { next: Some(_) }
+        ));
+        assert!(started.elapsed() >= Duration::from_millis(2_800));
+        let EventKind::Started(format) = next_event(&events).kind else {
+            panic!("expected Started");
+        };
+        assert_eq!(format.output_rate(), other);
+        engine.shutdown();
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn taking_the_next_track_back_before_the_device_reaches_its_fade() {
+        let (device, id, rate) = loopback_at_a_low_rate();
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id), None));
+        engine.set_transitions(crossfading(Duration::from_secs(1)));
+        let (stream, heard) = record(&device, rate);
+        engine.load(track_of(levels_wav(rate, &[(3, HALF)])));
+        engine.set_next(track_of(levels_wav(rate, &[(3, QUARTER)])));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        // The fade is written half a second ahead of the device at most
+        while engine.position() < Duration::from_millis(1_800) {
+            thread::sleep(Duration::from_millis(1));
+        }
+        engine.clear_next();
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::Ended { next: None }
+        ));
+        thread::sleep(Duration::from_millis(200));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let sound = sounding_part(&heard);
+        let wrong = sound
+            .iter()
+            .filter(|s| s.abs() > 1e-3 && (**s - 0.5).abs() > 1e-3);
+        assert_eq!(wrong.count(), 0, "the next track was heard");
+        let played = sound.iter().filter(|s| s.abs() > 1e-3).count() as f32 / rate as f32;
+        assert!((played - 3.0).abs() < 0.1, "{played}");
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_seek_ends_the_fade() {
+        let (device, id, rate) = loopback_at_a_low_rate();
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id), None));
+        engine.set_transitions(crossfading(Duration::from_secs(2)));
+        let (stream, heard) = record(&device, rate);
+        engine.load(track_of(levels_wav(rate, &[(4, HALF)])));
+        engine.set_next(track_of(levels_wav(rate, &[(8, QUARTER)])));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::Ended { next: Some(_) }
+        ));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        thread::sleep(Duration::from_millis(300));
+        engine.seek(Duration::from_secs(6));
+        let sought_at = heard.lock().unwrap().len();
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::Ended { next: None }
+        ));
+        thread::sleep(Duration::from_millis(100));
+        drop(stream);
+        let position = engine.position();
+        assert!(position >= Duration::from_millis(7_900), "{position:?}");
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let after = &heard[sought_at + rate as usize / 10..];
+        let sound = sounding_part(after);
+        let seconds = sound.len() as f32 / rate as f32;
+        assert!((seconds - 2.0).abs() < 0.2, "{seconds}");
+        let wrong = sound
+            .iter()
+            .filter(|s| s.abs() > 1e-3 && (**s - 0.25).abs() > 1e-3);
+        assert_eq!(wrong.count(), 0, "the fade went on after the seek");
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn dop_joins_tracks_whole_whatever_the_transitions() {
+        let (device, id) = loopback_device();
+        let frame_rate = 176_400;
+        let (stream, heard) = record_dop(&device, frame_rate);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_transitions(Transitions {
+            trim_silence: true,
+            crossfade: Duration::from_secs(1),
+        });
+        engine.set_output(dop_settings(id, dsd::DopRate::Dsd64));
+        engine.load(track_of(sine_wav(44_100, 0, 88_200)));
+        engine.set_next(track_of(sine_wav(44_100, 88_200, 176_400)));
+        assert!(matches!(next_outcome(&events).kind, EventKind::Started(_)));
+        assert!(matches!(
+            next_outcome(&events).kind,
+            EventKind::Ended { next: Some(_) }
+        ));
+        assert!(matches!(next_outcome(&events).kind, EventKind::Started(_)));
+        assert!(matches!(
+            next_outcome(&events).kind,
+            EventKind::Ended { next: None }
+        ));
+        thread::sleep(Duration::from_millis(300));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let words = dop_words(stream_run(&heard));
+        let blocks = tone_by_block(&words, frame_rate, 997.0);
+        let sounding = sounding_blocks(&blocks);
+        let seconds = sounding.len() as f64 * 50.0 / 997.0;
+        assert!((seconds - 4.0).abs() < 0.1, "{seconds}");
+        for (level, _) in &sounding[1..sounding.len() - 1] {
+            assert!((level - 0.25).abs() < 0.01, "{level}");
+        }
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn dop_keeps_the_silence_of_a_track() {
+        let (device, id) = loopback_device();
+        let frame_rate = 176_400;
+        let (stream, _heard) = record_dop(&device, frame_rate);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_transitions(Transitions {
+            trim_silence: true,
+            crossfade: Duration::ZERO,
+        });
+        engine.set_output(dop_settings(id, dsd::DopRate::Dsd64));
+        engine.load(track_of(levels_wav(44_100, &[(5, 0), (1, HALF)])));
+        assert!(matches!(next_outcome(&events).kind, EventKind::Started(_)));
+        thread::sleep(Duration::from_millis(1_500));
+        let position = engine.position();
+        assert!(position < Duration::from_secs(2), "{position:?}");
+        drop(stream);
+        engine.shutdown();
     }
 }

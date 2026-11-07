@@ -260,6 +260,8 @@ With the default base rate, every track plans to the same rate, so a track joins
 of it has arrived. With Match each song, a track from the other family needs a new stream, and so
 gets a new lead-in.
 
+Trim silence and Crossfade apply to PCM only: on DoP, tracks always play whole and join as above.
+
 ### Changing settings
 
 | Change | Effect |

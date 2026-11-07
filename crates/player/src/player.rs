@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use audio::{Engine, Event, EventKind, LoadId, OutputSettings, PlaybackFormat};
+use audio::{Engine, Event, EventKind, LoadId, OutputSettings, PlaybackFormat, Transitions};
 use futures::AsyncReadExt as _;
 use gpui_kit::base::{Transition, transition};
 use gpui_kit::component::{
@@ -354,6 +354,10 @@ impl Player {
         if self.state == State::Stopped && self.resume.is_some() {
             self.open_current(false, cx);
         }
+    }
+
+    pub fn set_transitions(&mut self, transitions: Transitions) {
+        self.engine.set_transitions(transitions);
     }
 
     /// Publishes covers with this ImgBB API key from now on, or none without
@@ -2221,6 +2225,31 @@ mod tests {
             is_playing_song(player, "c")
         });
         assert_eq!(server.streamed()[..3], ["a", "b", "c"]);
+    }
+
+    #[gpui_kit::test]
+    #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
+    fn a_crossfade_shows_the_next_song_as_it_starts_fading_in(cx: &mut TestAppContext) {
+        let server = Server::default();
+        let songs = [server.add("a", wav(2_000)), server.add("b", wav(5_000))];
+        let (player, cx) = player(&server, cx);
+        player.update(cx, |player, cx| {
+            player.set_transitions(Transitions {
+                trim_silence: false,
+                crossfade: Duration::from_secs(1),
+            });
+            player.play(&songs, 0, cx);
+        });
+        wait_until(&player, cx, "a to play", |player| {
+            is_playing_song(player, "a")
+        });
+        let started = std::time::Instant::now();
+        wait_until(&player, cx, "b to play", |player| {
+            is_playing_song(player, "b")
+        });
+        let played = started.elapsed();
+        assert!(played < Duration::from_millis(1_500), "{played:?}");
+        assert!(played > Duration::from_millis(500), "{played:?}");
     }
 
     /// With nothing left to come next, playback ends after the song, even when

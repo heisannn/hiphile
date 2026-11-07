@@ -319,6 +319,8 @@ impl Default for DsdOutput {
     }
 }
 
+pub const LONGEST_CROSSFADE_SECONDS: u32 = 12;
+
 /// The keys of `config.toml` this crate reads. Others are left alone.
 #[derive(Deserialize)]
 struct Settings {
@@ -331,6 +333,8 @@ struct Settings {
     output_device: Option<String>,
     sample_rate: Option<String>,
     exclusive_mode: Option<bool>,
+    trim_silence: Option<bool>,
+    crossfade_seconds: Option<u32>,
     resampling: Option<String>,
     resampling_fft_size: Option<u32>,
     resampling_window: Option<String>,
@@ -463,6 +467,8 @@ fn save_dsd_parameters(
 /// output_device = "coreaudio:BuiltInSpeakerDevice"
 /// sample_rate = 48000 # Or "x2", "x4", "x8" or "x16", a multiple of each song's rate
 /// exclusive_mode = true
+/// trim_silence = true
+/// crossfade_seconds = 5
 /// resampling = "custom"
 /// resampling_fft_size = 2048
 /// resampling_window = "hann-2"
@@ -602,6 +608,22 @@ impl Store {
     pub fn exclusive_mode(&self) -> Result<bool, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         Ok(settings.exclusive_mode.unwrap_or(false))
+    }
+
+    /// Whether to leave out the silence around songs.
+    pub fn trim_silence(&self) -> Result<bool, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        Ok(settings.trim_silence.unwrap_or(false))
+    }
+
+    /// How long songs overlap, up to [`LONGEST_CROSSFADE_SECONDS`]; `0` joins them.
+    pub fn crossfade_seconds(&self) -> Result<u32, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        let seconds = settings.crossfade_seconds.unwrap_or(0);
+        if seconds > LONGEST_CROSSFADE_SECONDS {
+            return Err(self.invalid("crossfade_seconds", "whole seconds from 0 to 12"));
+        }
+        Ok(seconds)
     }
 
     /// Medium unless the file says otherwise. The FFT size and window are only read for
@@ -943,6 +965,26 @@ impl Store {
                 document["exclusive_mode"] = toml_edit::value(true);
             } else {
                 document.remove("exclusive_mode");
+            }
+        })
+    }
+
+    pub fn save_trim_silence(&self, is_on: bool) -> Result<(), Error> {
+        self.edit(|document| {
+            if is_on {
+                document["trim_silence"] = toml_edit::value(true);
+            } else {
+                document.remove("trim_silence");
+            }
+        })
+    }
+
+    pub fn save_crossfade_seconds(&self, seconds: u32) -> Result<(), Error> {
+        self.edit(|document| {
+            if seconds == 0 {
+                document.remove("crossfade_seconds");
+            } else {
+                document["crossfade_seconds"] = toml_edit::value(i64::from(seconds));
             }
         })
     }
@@ -1307,6 +1349,53 @@ mod tests {
                 "{text}"
             );
         }
+    }
+
+    #[test]
+    fn trim_silence_round_trips_and_is_off_unless_told_otherwise() {
+        let store = temporary_store("trim-silence");
+        assert!(!store.trim_silence().unwrap());
+
+        store.save_trim_silence(true).unwrap();
+        assert!(store.trim_silence().unwrap());
+
+        store.save_trim_silence(false).unwrap();
+        assert!(!store.trim_silence().unwrap());
+        let text = std::fs::read_to_string(store.config_path()).unwrap();
+        assert!(!text.contains("trim_silence"), "{text}");
+    }
+
+    #[test]
+    fn crossfade_round_trips_and_is_off_unless_told_otherwise() {
+        let store = temporary_store("crossfade");
+        assert_eq!(store.crossfade_seconds().unwrap(), 0);
+
+        store.save_crossfade_seconds(5).unwrap();
+        assert_eq!(store.crossfade_seconds().unwrap(), 5);
+
+        store.save_crossfade_seconds(0).unwrap();
+        assert_eq!(store.crossfade_seconds().unwrap(), 0);
+        let text = std::fs::read_to_string(store.config_path()).unwrap();
+        assert!(!text.contains("crossfade_seconds"), "{text}");
+    }
+
+    #[test]
+    fn a_crossfade_longer_than_the_longest_is_reported() {
+        let store = temporary_store("long-crossfade");
+        store
+            .save_crossfade_seconds(LONGEST_CROSSFADE_SECONDS)
+            .unwrap();
+        assert!(store.crossfade_seconds().is_ok());
+        store
+            .save_crossfade_seconds(LONGEST_CROSSFADE_SECONDS + 1)
+            .unwrap();
+        assert!(matches!(
+            store.crossfade_seconds(),
+            Err(Error::InvalidSetting {
+                key: "crossfade_seconds",
+                ..
+            })
+        ));
     }
 
     #[test]

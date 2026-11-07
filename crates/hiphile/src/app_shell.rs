@@ -153,7 +153,7 @@ struct Workspace {
     _favorites_events: Subscription,
     _search_events: Subscription,
     _activity_changes: Subscription,
-    _output_changes: Subscription,
+    _audio_changes: [Subscription; 2],
     _discord_changes: [Subscription; 2],
     _lyrics_changes: [Subscription; 2],
     _focus_lost: Subscription,
@@ -302,12 +302,14 @@ impl AppShell {
         let activity_changes = cx.subscribe_in(&activity, window, Self::on_library_activity);
         let audio_settings = settings::audio_settings(cx);
         let output = audio_settings.read(cx).output().clone();
+        let transitions = audio_settings.read(cx).transitions();
         let discord_settings = settings::discord_settings(cx);
         let cover_key = discord_settings.read(cx).imgbb_key().map(str::to_owned);
         let is_presence_on = discord_settings.read(cx).is_presence_on();
         let shell = cx.weak_entity();
         let player = cx.new(|cx| {
             let mut player = Player::new(session.clone(), output, window, cx);
+            player.set_transitions(transitions);
             player.set_cover_key(cover_key.as_deref());
             player.set_presence_on(is_presence_on);
             player.set_panels(move |window, cx| {
@@ -395,15 +397,7 @@ impl AppShell {
         });
         let playlists_events = cx.subscribe_in(&playlists, window, Self::on_playlists_event);
         let favorites_events = cx.subscribe_in(&favorites, window, Self::on_favorites_event);
-        let output_changes = cx.subscribe(&audio_settings, {
-            let player = player.downgrade();
-            move |_, audio_settings, _: &settings::OutputChanged, cx| {
-                let output = audio_settings.read(cx).output().clone();
-                player
-                    .update(cx, |player, cx| player.set_output(output, cx))
-                    .ok();
-            }
-        });
+        let audio_changes = follow_audio_settings(&audio_settings, &player, cx);
         let discord_changes = follow_discord_settings(&discord_settings, &player, cx);
         // A focused control that goes away, such as Retry once loading starts,
         // would leave no focus and no working shortcuts.
@@ -437,7 +431,7 @@ impl AppShell {
             _favorites_events: favorites_events,
             _search_events: search_events,
             _activity_changes: activity_changes,
-            _output_changes: output_changes,
+            _audio_changes: audio_changes,
             _discord_changes: discord_changes,
             _lyrics_changes: lyrics_changes,
             _focus_lost: focus_lost,
@@ -1148,6 +1142,32 @@ impl AppShell {
             )
             .into_any_element()
     }
+}
+
+fn follow_audio_settings(
+    audio_settings: &Entity<settings::AudioSettings>,
+    player: &Entity<Player>,
+    cx: &mut Context<AppShell>,
+) -> [Subscription; 2] {
+    let output_changes = cx.subscribe(audio_settings, {
+        let player = player.downgrade();
+        move |_, audio_settings, _: &settings::OutputChanged, cx| {
+            let output = audio_settings.read(cx).output().clone();
+            player
+                .update(cx, |player, cx| player.set_output(output, cx))
+                .ok();
+        }
+    });
+    let transitions_changes = cx.subscribe(audio_settings, {
+        let player = player.downgrade();
+        move |_, audio_settings, _: &settings::TransitionsChanged, cx| {
+            let transitions = audio_settings.read(cx).transitions();
+            player
+                .update(cx, |player, _| player.set_transitions(transitions))
+                .ok();
+        }
+    });
+    [output_changes, transitions_changes]
 }
 
 fn follow_discord_settings(

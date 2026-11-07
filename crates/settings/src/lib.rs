@@ -21,7 +21,7 @@ use gpui_kit::{
     TitlebarOptions, Window, WindowBounds, WindowOptions, actions, px, size,
 };
 
-pub use audio_settings::{AudioSettings, OutputChanged};
+pub use audio_settings::{AudioSettings, OutputChanged, TransitionsChanged};
 pub use cache_limit::{CacheLimit, CacheLimitChanged};
 pub use discord_settings::{DiscordSettings, ImgbbKeyChanged, PresenceChanged};
 pub use lyrics_settings::{LyricsHighlightChanged, LyricsSettings};

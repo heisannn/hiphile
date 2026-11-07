@@ -284,6 +284,7 @@ fn play(args: ServerArgs, ids: Vec<String>, query: Option<String>) -> anyhow::Re
     queue.replace(songs, 0);
     let (engine, events) = audio::Engine::spawn();
     engine.set_output(output_settings());
+    engine.set_transitions(transitions());
     let song_cache = song_cache();
     let mut failures = 0;
     while let Some(song) = queue.current().cloned() {
@@ -295,6 +296,17 @@ fn play(args: ServerArgs, ids: Vec<String>, query: Option<String>) -> anyhow::Re
     }
     anyhow::ensure!(failures == 0, "{failures} song(s) could not be played");
     Ok(())
+}
+
+/// Songs play one by one here, so a crossfade never comes into it.
+fn transitions() -> audio::Transitions {
+    let trim_silence = config::Store::user()
+        .ok()
+        .and_then(|store| store.trim_silence().ok());
+    audio::Transitions {
+        trim_silence: trim_silence.unwrap_or(false),
+        crossfade: Duration::ZERO,
+    }
 }
 
 /// Settings that cannot be read mean the system's default device and each song's own rate.

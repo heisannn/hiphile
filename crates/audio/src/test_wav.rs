@@ -14,7 +14,12 @@ pub(crate) fn counting_frame(sample: f32) -> u32 {
     (sample * 32_768.0).round() as u32
 }
 
-fn wav_with(rate: u32, channels: u16, frames: u32, sample: impl Fn(u32) -> i16) -> Vec<u8> {
+pub(crate) fn wav_with(
+    rate: u32,
+    channels: u16,
+    frames: u32,
+    sample: impl Fn(u32) -> i16,
+) -> Vec<u8> {
     let data_len = frames * u32::from(channels) * 2;
     let mut bytes = Vec::with_capacity(44 + data_len as usize);
     bytes.extend_from_slice(b"RIFF");

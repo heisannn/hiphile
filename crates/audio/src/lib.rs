@@ -14,6 +14,11 @@
 //! when the device does not have to change for it, so no sample is lost
 //! between them. Otherwise the stream reopens at the track's rate in between.
 //!
+//! On PCM, the silence around a track goes on its decoding thread, which still
+//! reports positions in the file. A crossfade writes both tracks to the same ring
+//! buffer too, mixed after each one's rate conversion, from the moment the first
+//! has only the length of the fade left.
+//!
 //! With DoP settings, the converter turns the track into DSD words on the
 //! engine thread, the same ring buffer carries those, and the callback makes
 //! them DoP frames at full level. The engine then holds the device for itself,
@@ -28,6 +33,7 @@ mod error;
 mod exclusive_device;
 mod feed;
 mod from_config;
+mod mix;
 mod output;
 mod stream;
 #[cfg(test)]
@@ -36,7 +42,7 @@ mod track;
 
 pub use device::{OutputDevice, output_devices};
 pub use dsd::{DopRate, Settings as DsdSettings};
-pub use engine::{Engine, Event, EventKind, LoadId, PlaybackFormat};
+pub use engine::{Engine, Event, EventKind, LoadId, PlaybackFormat, Transitions};
 pub use error::Error;
 pub use output::{OutputSettings, Resampling, ResamplingWindow};
 pub use track::Track;

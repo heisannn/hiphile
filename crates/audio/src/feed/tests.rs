@@ -3,7 +3,7 @@ use std::sync::mpsc;
 use std::time::Instant;
 
 use super::*;
-use crate::test_wav::{counting_frame, wav, wav_counting};
+use crate::test_wav::{counting_frame, wav, wav_counting, wav_with};
 
 const WAIT: Duration = Duration::from_secs(5);
 
@@ -29,8 +29,12 @@ fn opened_feed(mut opening: Option<Opening>) -> Feed {
     })
 }
 
+fn start(track: Track, ahead: Duration) -> Result<Opening, Error> {
+    Opening::start(track, ahead, Arc::new(AtomicBool::new(false)))
+}
+
 fn opened(track: Track, ahead: Duration) -> Feed {
-    opened_feed(Some(Opening::start(track.extension("wav"), ahead).unwrap()))
+    opened_feed(Some(start(track.extension("wav"), ahead).unwrap()))
 }
 
 /// One second at 8 kHz, whose samples each hold their frame number.
@@ -43,7 +47,7 @@ fn counted(feed: &Feed) -> Vec<f32> {
     loop {
         match wait_for(|| feed.take()) {
             Item::Samples(samples) => all.extend(samples),
-            Item::Seeked(_) => {}
+            Item::Seeked(_) | Item::Skipped(_) => {}
             Item::End => return all,
             Item::Failed(error) => panic!("{error}"),
         }
@@ -167,7 +171,7 @@ fn a_seek_past_the_end_reports_it() {
 
 #[test]
 fn a_seek_made_while_opening_comes_first() {
-    let opening = Opening::start(
+    let opening = start(
         Track::new(Cursor::new(second())).extension("wav"),
         Duration::from_secs(5),
     )
@@ -211,7 +215,7 @@ fn a_decoder_that_panics_once_open_fails_the_track() {
         match wait_for(|| feed.take()) {
             Item::Failed(_) => break,
             Item::End => panic!("the source panics before the end"),
-            Item::Samples(_) | Item::Seeked(_) => {}
+            Item::Samples(_) | Item::Seeked(_) | Item::Skipped(_) => {}
         }
     }
     assert!(feed.has_ahead(Duration::from_secs(30)));
@@ -221,7 +225,7 @@ fn a_decoder_that_panics_once_open_fails_the_track() {
 fn a_decoder_that_panics_while_opening_fails_to_open() {
     let source = PanicsAtTheEnd(Cursor::new(Vec::new()));
     let track = Track::new(source).extension("wav");
-    let mut opening = Some(Opening::start(track, Duration::from_secs(1)).unwrap());
+    let mut opening = Some(start(track, Duration::from_secs(1)).unwrap());
     wait_for(|| match opening.take().unwrap().poll() {
         Polled::Waiting(waiting) => {
             opening = Some(waiting);
@@ -235,7 +239,7 @@ fn a_decoder_that_panics_while_opening_fails_to_open() {
 #[test]
 fn data_that_is_not_audio_fails_to_open() {
     let mut opening = Some(
-        Opening::start(
+        start(
             Track::new(Cursor::new(b"not audio".to_vec())),
             Duration::from_secs(1),
         )
@@ -249,4 +253,67 @@ fn data_that_is_not_audio_fails_to_open() {
         Polled::Opened(_) => panic!("opened"),
         Polled::Failed(_) => Some(()),
     });
+}
+
+fn trimmed(wav: Vec<u8>, ahead: Duration) -> Feed {
+    let track = Track::new(Cursor::new(wav)).extension("wav");
+    let trim = Arc::new(AtomicBool::new(true));
+    opened_feed(Some(Opening::start(track, ahead, trim).unwrap()))
+}
+
+/// Half a second of silence, half of sound, and half of silence again, at 8 kHz.
+fn sound_between_silence() -> Vec<u8> {
+    wav_with(8_000, 1, 12_000, |frame| {
+        if (4_000..8_000).contains(&frame) {
+            1_000
+        } else {
+            0
+        }
+    })
+}
+
+#[test]
+fn trimmed_silence_counts_for_nothing_ahead_and_the_track_says_where_it_starts() {
+    let feed = trimmed(sound_between_silence(), Duration::from_secs(10));
+    wait_for(|| feed.has_ahead(Duration::from_secs(10)).then_some(()));
+    assert_eq!(feed.ready(), Duration::from_millis(500));
+    assert_eq!(feed.time_left(), Some(Duration::from_millis(500)));
+    assert_eq!(feed.resumes_at(), Duration::from_millis(500));
+    assert_eq!(counted(&feed).len(), 4_000);
+}
+
+#[test]
+fn a_seek_back_starts_at_the_sound_again() {
+    let feed = trimmed(sound_between_silence(), Duration::from_secs(10));
+    wait_for(|| feed.has_ahead(Duration::from_secs(10)).then_some(()));
+    feed.seek(Duration::ZERO);
+    assert_eq!(feed.time_left(), None);
+    wait_for(|| feed.has_ahead(Duration::from_secs(10)).then_some(()));
+    assert_eq!(feed.resumes_at(), Duration::from_millis(500));
+    assert!(matches!(
+        wait_for(|| feed.take()),
+        Item::Seeked(Some(at)) if at == Duration::from_millis(500)
+    ));
+}
+
+#[test]
+fn silence_before_the_sound_is_told_as_skipped() {
+    let feed = trimmed(sound_between_silence(), Duration::from_secs(10));
+    assert!(matches!(
+        wait_for(|| feed.take()),
+        Item::Skipped(at) if at == Duration::from_millis(500)
+    ));
+}
+
+#[test]
+fn the_time_left_is_known_only_once_the_end_has_been_decoded() {
+    let feed = opened(
+        Track::new(Cursor::new(second())),
+        Duration::from_millis(100),
+    );
+    wait_for(|| feed.has_ahead(Duration::from_millis(100)).then_some(()));
+    assert_eq!(feed.time_left(), None);
+    assert!(feed.ready() >= Duration::from_millis(100));
+    wait_for(|| feed.has_ahead(Duration::from_secs(2)).then_some(()));
+    assert_eq!(feed.time_left(), Some(Duration::from_secs(1)));
 }

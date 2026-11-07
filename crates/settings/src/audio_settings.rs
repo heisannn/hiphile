@@ -1,4 +1,6 @@
-use audio::{OutputDevice, OutputSettings};
+use std::time::Duration;
+
+use audio::{OutputDevice, OutputSettings, Transitions};
 use config::{
     DsdOutput, RESAMPLING_FFT_SIZES, ResamplingQuality, ResamplingWindow, SAMPLE_RATE_MULTIPLES,
     SampleRate,
@@ -14,10 +16,13 @@ const BASE_RATES: [u32; 2] = [44_100, 48_000];
 
 pub struct OutputChanged;
 
+pub struct TransitionsChanged;
+
 pub struct AudioSettings {
     /// `None` without a home directory: choices then last until quitting.
     store: Option<config::Store>,
     output: OutputSettings,
+    transitions: Transitions,
     quality: ResamplingQuality,
     dsd: DsdOutput,
     /// What `dsd` was when last saved, to write only what has changed since.
@@ -41,16 +46,22 @@ struct Unsaved {
     device: bool,
     rate: bool,
     exclusive: bool,
+    trim_silence: bool,
+    crossfade: bool,
     quality: bool,
     dsd: bool,
 }
 
 impl EventEmitter<OutputChanged> for AudioSettings {}
+impl EventEmitter<TransitionsChanged> for AudioSettings {}
 
 impl AudioSettings {
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
         let (store, output, quality, dsd, save_error) = read_saved_output();
+        let (transitions, transitions_error) = read_saved_transitions(store.as_ref());
+        let save_error = save_error.or(transitions_error);
         let mut this = Self::with(store, output, quality, dsd, save_error);
+        this.transitions = transitions;
         this.list_devices(cx);
         this
     }
@@ -65,6 +76,7 @@ impl AudioSettings {
         Self {
             store,
             output,
+            transitions: Transitions::default(),
             quality,
             saved_dsd: dsd.clone(),
             dsd,
@@ -81,6 +93,60 @@ impl AudioSettings {
 
     pub fn output(&self) -> &OutputSettings {
         &self.output
+    }
+
+    pub fn transitions(&self) -> Transitions {
+        self.transitions
+    }
+
+    pub(crate) fn is_trim_silence_on(&self) -> bool {
+        self.transitions.trim_silence
+    }
+
+    pub(crate) fn set_trim_silence(&mut self, is_on: bool, cx: &mut Context<Self>) {
+        if self.transitions.trim_silence != is_on {
+            self.transitions.trim_silence = is_on;
+            self.unsaved.trim_silence = true;
+            self.transitions_changed(cx);
+        }
+    }
+
+    pub(crate) fn crossfade_options() -> Vec<(SharedString, SharedString)> {
+        std::iter::once(("0".into(), "Off".into()))
+            .chain(
+                (1..=config::LONGEST_CROSSFADE_SECONDS)
+                    .map(|seconds| (seconds.to_string().into(), format!("{seconds} s").into())),
+            )
+            .collect()
+    }
+
+    pub(crate) fn crossfade_value(&self) -> SharedString {
+        self.transitions.crossfade.as_secs().to_string().into()
+    }
+
+    pub(crate) fn set_crossfade(&mut self, value: &str, cx: &mut Context<Self>) {
+        let crossfade = Duration::from_secs(value.parse().unwrap_or(0));
+        if self.transitions.crossfade != crossfade {
+            self.transitions.crossfade = crossfade;
+            self.unsaved.crossfade = true;
+            self.transitions_changed(cx);
+        }
+    }
+
+    /// Why some songs will not crossfade, when the device has to switch its
+    /// rate between them.
+    pub(crate) fn crossfade_note(&self) -> Option<&'static str> {
+        (!self.transitions.crossfade.is_zero()
+            && !matches!(self.output.sample_rate(), SampleRate::Fixed(_)))
+        .then_some(
+            "Songs at another sample rate play apart. Set a fixed Sample rate to crossfade them too.",
+        )
+    }
+
+    fn transitions_changed(&mut self, cx: &mut Context<Self>) {
+        self.save(cx);
+        cx.emit(TransitionsChanged);
+        cx.notify();
     }
 
     /// Lists the devices again, unless a listing is still in progress:
@@ -338,18 +404,27 @@ impl AudioSettings {
         }
         self.saving = true;
         self._save = cx.spawn(async move |this, cx| {
-            while let Ok(Some((output, quality, saved_dsd, dsd, unsaved))) =
-                this.update(cx, |this, _| {
+            while let Ok(Some((output, transitions, quality, saved_dsd, dsd, unsaved))) = this
+                .update(cx, |this, _| {
                     let unsaved = std::mem::take(&mut this.unsaved);
                     this.saving = unsaved.device
                         || unsaved.rate
                         || unsaved.exclusive
+                        || unsaved.trim_silence
+                        || unsaved.crossfade
                         || unsaved.quality
                         || unsaved.dsd;
                     let saved_dsd = std::mem::replace(&mut this.saved_dsd, this.dsd.clone());
                     this.saving.then(|| {
                         let dsd = this.dsd.clone();
-                        (this.output.clone(), this.quality, saved_dsd, dsd, unsaved)
+                        (
+                            this.output.clone(),
+                            this.transitions,
+                            this.quality,
+                            saved_dsd,
+                            dsd,
+                            unsaved,
+                        )
                     })
                 })
             {
@@ -364,6 +439,14 @@ impl AudioSettings {
                         }
                         if unsaved.exclusive {
                             store.save_exclusive_mode(output.is_exclusive())?;
+                        }
+                        if unsaved.trim_silence {
+                            store.save_trim_silence(transitions.trim_silence)?;
+                        }
+                        if unsaved.crossfade {
+                            store.save_crossfade_seconds(
+                                u32::try_from(transitions.crossfade.as_secs()).unwrap_or(0),
+                            )?;
                         }
                         if unsaved.quality {
                             store.save_resampling_quality(quality)?;
@@ -429,6 +512,27 @@ fn read_saved_output() -> (
             let error = format!("Couldn't read the audio settings: {error}.").into();
             unread(Some(store), error)
         }
+    }
+}
+
+/// What the file says about moving between songs, and why that could not be
+/// read. No store means the output's own error has said so already.
+fn read_saved_transitions(store: Option<&config::Store>) -> (Transitions, Option<SharedString>) {
+    let Some(store) = store else {
+        return (Transitions::default(), None);
+    };
+    match (store.trim_silence(), store.crossfade_seconds()) {
+        (Ok(trim_silence), Ok(seconds)) => (
+            Transitions {
+                trim_silence,
+                crossfade: Duration::from_secs(u64::from(seconds)),
+            },
+            None,
+        ),
+        (Err(error), _) | (_, Err(error)) => (
+            Transitions::default(),
+            Some(format!("Couldn't read the audio settings: {error}.").into()),
+        ),
     }
 }
 
@@ -672,6 +776,82 @@ pub(crate) mod tests {
 
         settings.read_with(cx, |settings, _| {
             assert_eq!(settings.output().resampling().fft_size(), 1024);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn transitions_are_told_saved_and_leave_the_output_alone(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = config::Store::at(dir.path());
+        let (settings, told_output, _subscription) = settings_saving_to(&store, cx);
+        let told = Rc::new(Cell::new(0));
+        let _told = cx.update(|cx| {
+            let told = told.clone();
+            cx.subscribe(&settings, move |_, _: &TransitionsChanged, _| {
+                told.set(told.get() + 1);
+            })
+        });
+
+        settings.update(cx, |settings, cx| {
+            settings.set_trim_silence(true, cx);
+            settings.set_trim_silence(true, cx);
+            settings.set_crossfade("5", cx);
+            settings.set_crossfade("5", cx);
+        });
+        cx.run_until_parked();
+        assert_eq!(told.get(), 2);
+        assert_eq!(told_output.get(), 0);
+        assert!(store.trim_silence().unwrap());
+        assert_eq!(store.crossfade_seconds().unwrap(), 5);
+        settings.read_with(cx, |settings, _| {
+            assert_eq!(settings.crossfade_value().as_ref(), "5");
+            assert!(settings.is_trim_silence_on());
+            assert_eq!(settings.transitions().crossfade, Duration::from_secs(5));
+        });
+
+        settings.update(cx, |settings, cx| {
+            settings.set_trim_silence(false, cx);
+            settings.set_crossfade("0", cx);
+        });
+        cx.run_until_parked();
+        assert!(!store.trim_silence().unwrap());
+        assert_eq!(store.crossfade_seconds().unwrap(), 0);
+    }
+
+    #[test]
+    fn saved_transitions_come_back_and_bad_ones_are_told() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = config::Store::at(dir.path());
+        store.save_trim_silence(true).unwrap();
+        store.save_crossfade_seconds(3).unwrap();
+        let (transitions, error) = read_saved_transitions(Some(&store));
+        assert!(transitions.trim_silence);
+        assert_eq!(transitions.crossfade, Duration::from_secs(3));
+        assert!(error.is_none());
+
+        store
+            .save_crossfade_seconds(config::LONGEST_CROSSFADE_SECONDS + 1)
+            .unwrap();
+        let (transitions, error) = read_saved_transitions(Some(&store));
+        assert_eq!(transitions, Transitions::default());
+        assert!(error.is_some());
+    }
+
+    #[gpui_kit::test]
+    fn the_crossfade_note_says_when_the_device_may_have_to_switch(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = config::Store::at(dir.path());
+        let (settings, _told, _subscription) = settings_saving_to(&store, cx);
+        settings.read_with(cx, |settings, _| {
+            assert!(settings.crossfade_note().is_none());
+        });
+        settings.update(cx, |settings, cx| settings.set_crossfade("5", cx));
+        settings.read_with(cx, |settings, _| {
+            assert!(settings.crossfade_note().is_some());
+        });
+        settings.update(cx, |settings, cx| settings.set_rate("48000", cx));
+        settings.read_with(cx, |settings, _| {
+            assert!(settings.crossfade_note().is_none());
         });
     }
 

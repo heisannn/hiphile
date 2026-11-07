@@ -35,6 +35,8 @@ use crate::{CloseWindow, SETTINGS_CONTEXT};
 /// Neither reports a change that reaches here.
 const REFRESH: Duration = Duration::from_secs(2);
 
+const PCM_ONLY: &str = "DSD plays songs whole while it's on.";
+
 pub(crate) struct SettingsView {
     appearance: Entity<AppearanceSettings>,
     audio: Entity<AudioSettings>,
@@ -269,8 +271,58 @@ impl SettingsView {
         SettingPage::new("Audio")
             .icon(IconName::AudioLines)
             .group(output)
+            .group(self.between_songs_group(cx))
             .group(self.resampling_group(cx))
             .groups(dsd_groups(&self.audio, cx))
+    }
+
+    fn between_songs_group(&self, cx: &mut Context<Self>) -> SettingGroup {
+        let trim_silence = SettingField::switch(
+            {
+                let audio = self.audio.clone();
+                move |cx| audio.read(cx).is_trim_silence_on()
+            },
+            {
+                let audio = self.audio.clone();
+                move |is_on, cx| {
+                    audio.update(cx, |audio, cx| audio.set_trim_silence(is_on, cx));
+                }
+            },
+        );
+        let crossfade = SettingField::scrollable_dropdown(
+            AudioSettings::crossfade_options(),
+            {
+                let audio = self.audio.clone();
+                move |cx| audio.read(cx).crossfade_value()
+            },
+            {
+                let audio = self.audio.clone();
+                move |value: SharedString, cx| {
+                    audio.update(cx, |audio, cx| audio.set_crossfade(&value, cx));
+                }
+            },
+        );
+        let audio = self.audio.read(cx);
+        let is_dsd_on = audio.is_dsd_on();
+        let trim_silence = SettingItem::new("Trim silence", trim_silence)
+            .disabled(is_dsd_on)
+            .description(if is_dsd_on {
+                PCM_ONLY
+            } else {
+                "Silence longer than 10 seconds inside a song goes too."
+            });
+        let mut crossfade = SettingItem::new("Crossfade", crossfade).disabled(is_dsd_on);
+        let note = if is_dsd_on {
+            Some(PCM_ONLY)
+        } else {
+            audio.crossfade_note()
+        };
+        if let Some(note) = note {
+            crossfade = crossfade.description(note);
+        }
+        SettingGroup::new()
+            .title("Between songs")
+            .items([trim_silence, crossfade])
     }
 
     fn resampling_group(&self, cx: &mut Context<Self>) -> SettingGroup {

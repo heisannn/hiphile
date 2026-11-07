@@ -15,7 +15,7 @@ Hiphile は macOS で開発されています。Windows と Linux は定期的�
 ## 機能
 
 - **ライブラリ:** アルバム、アーティスト、曲の閲覧、ホーム画面でのデイリーおすすめ機能、プレイリストの編集、お気に入り。
-- **再生:** ギャップレス再生、リピート、シャッフル、編集可能な再生待ちリスト (キュー)。
+- **再生:** ギャップレス再生、PCM 再生時の曲の前後の無音の削除とクロスフェード、リピート、シャッフル、編集可能な再生待ちリスト (キュー)。
 - **オーディオ出力:** 出力デバイスの選択、および各ファイルのサンプリングレートまたはその倍率に合わせて自動的に切り替える機能。macOS と Windows では排他モードで他のアプリをデバイスから締め出せます。macOS では DoP による DSD256 までの DSD 再生に対応し、フィルターとモジュレーターを調整できます。詳しくは [DSD 出力の仕組み](docs/dsd/implementation.md)(英語)をご覧ください。
 - **歌詞:** 同期歌詞、単語単位または行単位でのハイライト表示。
 - **ミニプレイヤー:** 再生コントロールと歌詞を表示する、常に最前面の小さなウィンドウ。
@@ -58,6 +58,8 @@ cargo run -p hiphile-cli -- --help   # CLIの使用方法を表示する
 | `output_device` | `HIPHILE_OUTPUT_DEVICE` | システムデフォルト |
 | `sample_rate` (Hz、または各ファイルのレートの倍率を表す `x2`、`x4`、`x8`、`x16`。デバイスが対応しない倍率は、対応する範囲で次に低い倍率になります。Windows で倍率を使うには `exclusive_mode` が必要です) | `HIPHILE_SAMPLE_RATE` | 各ファイルのレート |
 | `exclusive_mode` (`true` で再生中と一時停止中に他のアプリが出力デバイスを使えなくなります。macOS は hog mode、Windows は WASAPI 排他モードを使います) | `HIPHILE_EXCLUSIVE_MODE` | `false` |
+| `trim_silence` (`true` で曲の前後の無音と、曲の途中の 10 秒を超える無音を飛ばします。PCM のみ) | `HIPHILE_TRIM_SILENCE` | `false` |
+| `crossfade_seconds` (`0` から `12`。PCM のみ。デバイスのレートを切り替える必要がある曲の間はクロスフェードしません。すべての曲でクロスフェードするには `sample_rate` を固定してください) | `HIPHILE_CROSSFADE_SECONDS` | `0` |
 | `resampling` (`medium`、`high`、`max`、`custom`) | `HIPHILE_RESAMPLING` | `medium` |
 | `resampling_fft_size` (`custom` のとき: 256〜16384 の 2 の累乗) | `HIPHILE_RESAMPLING_FFT_SIZE` | `256` |
 | `resampling_window` (`custom` のとき: `hann`、`hann-2`、`blackman`、`blackman-2`、`blackman-harris`、`blackman-harris-2`) | `HIPHILE_RESAMPLING_WINDOW` | `blackman-harris-2` |
