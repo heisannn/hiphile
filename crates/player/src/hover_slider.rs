@@ -86,7 +86,11 @@ impl RenderOnce for HoverSlider {
         let state = self.state.read(cx);
         let (min, max) = (state.min_value(), state.max_value());
         let fraction = (state.value().end() - min) / (max - min);
-        let color = cx.theme().slider_bar;
+        let color = if self.disabled {
+            cx.theme().muted_foreground
+        } else {
+            cx.theme().slider_bar
+        };
         let radius = cx.theme().radius_full();
 
         h_flex()

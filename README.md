@@ -16,7 +16,7 @@ Hiphile is developed on macOS. Windows and Linux are not regularly tested.
 
 - **Library:** Browse albums, artists and songs, get daily recommendations on the home screen, edit playlists, and keep favorites.
 - **Playback:** Gapless playback, repeat, shuffle and an editable queue.
-- **Audio output:** Choose an output device, and switch its sample rate automatically to match each file.
+- **Audio output:** Choose an output device, and switch its sample rate automatically to match each file. On macOS, play as DSD up to DSD256 through DoP, with the filter and the modulator adjustable. See [how DSD output works](docs/dsd/implementation.md).
 - **Lyrics:** Synced lyrics, highlighted word by word or line by line.
 - **Mini player:** A small window above all others, with the controls and the lyrics.
 - **Local cache:** Library data, cover art and songs are cached on disk, and library data syncs in the background.
@@ -62,6 +62,24 @@ Change settings in the app under **hiphile > Settings…**. They are saved to
 | `resampling` (`medium`, `high`, `max` or `custom`) | `HIPHILE_RESAMPLING` | `medium` |
 | `resampling_fft_size` (with `custom`: a power of two from 256 to 16384) | `HIPHILE_RESAMPLING_FFT_SIZE` | `256` |
 | `resampling_window` (with `custom`: `hann`, `hann-2`, `blackman`, `blackman-2`, `blackman-harris` or `blackman-harris-2`) | `HIPHILE_RESAMPLING_WINDOW` | `blackman-harris-2` |
+| `output_format` (`pcm` or `dsd`; macOS, for the device in `dop_device`) | `HIPHILE_OUTPUT_FORMAT` | `pcm` |
+| `dop_device` (the output device DSD is on for) | `HIPHILE_DOP_DEVICE` | None |
+| `dsd_rate` (`64`, `128` or `256`) | `HIPHILE_DSD_RATE` | `256`; turning DSD on in Settings picks the highest the device has |
+| `dsd_base_rate` (`44100`, or `match` to play songs of the 48 kHz family at DSD rates based on 48 kHz, which some DACs don't decode) | `HIPHILE_DSD_BASE_RATE` | `44100` |
+| `dsd_fade_in` (whether sound rises over 3 seconds when DSD turns on or its settings change) | `HIPHILE_DSD_FADE_IN` | `true` |
+| `dsd_quality` (`low`, `medium`, `high`, `max` or `custom`) | `HIPHILE_DSD_QUALITY` | `high` |
+| `dsd_filter` (with `custom`: `sinc` or `fft`) | `HIPHILE_DSD_FILTER` | `sinc` |
+| `dsd_sinc_length` (with `sinc`: `256`, `512`, `1024` or `2048`) | `HIPHILE_DSD_SINC_LENGTH` | `1024` |
+| `dsd_fft_size` (with `fft`: a power of two from 256 to 16384) | `HIPHILE_DSD_FFT_SIZE` | `4096` |
+| `dsd_window` (with `custom`: as `resampling_window`) | `HIPHILE_DSD_WINDOW` | `blackman-harris-2` |
+| `dsd_cutoff` (with `sinc`: a fraction of the source's Nyquist frequency, from `0.5` to `1`) | `HIPHILE_DSD_CUTOFF` | Chosen by the resampler |
+| `dsd_order` (with `custom`: `3`, `5`, `7` or `9`) | `HIPHILE_DSD_ORDER` | `7` |
+| `dsd_noise_gain` (with `custom`: `1.2` to `1.5`) | `HIPHILE_DSD_NOISE_GAIN` | `1.4` |
+| `dsd_noise_band` (with `custom`: `20000` or `48000`) | `HIPHILE_DSD_NOISE_BAND` | `20000` |
+| `dsd_optimized_zeros` (with `custom`) | `HIPHILE_DSD_OPTIMIZED_ZEROS` | `true` |
+| `dsd_dither_db` (with `custom`: `-160` to `-20`) | `HIPHILE_DSD_DITHER_DB` | None |
+| `dsd_input_level_db` (with `custom`: `-24` to `6`) | `HIPHILE_DSD_INPUT_LEVEL_DB` | `0` |
+| `dsd_limiter_ceiling_db` (with `custom`: `off`, or `-6` to `3`) | `HIPHILE_DSD_LIMITER_CEILING_DB` | `1` |
 | `song_cache_gib` (`0` for no limit) | `HIPHILE_SONG_CACHE_GIB` | `8` |
 | `cover_cache_gib` (`0` for no limit) | `HIPHILE_COVER_CACHE_GIB` | `8` |
 | `appearance` (`"light"` or `"dark"`) | `HIPHILE_APPEARANCE` (also accepts `system`) | System setting |
@@ -77,6 +95,7 @@ Change settings in the app under **hiphile > Settings…**. They are saved to
 - [x] Automatic device sample rate switching
 - [x] Local music library caching
 - [x] Fuzzy search
+- [x] DSD output over DoP
 
 ## Disclaimer
 

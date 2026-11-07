@@ -125,6 +125,161 @@ impl ResamplingWindow {
     }
 }
 
+pub const DSD_SINC_LENGTHS: [u32; 4] = [256, 512, 1024, 2048];
+pub const DSD_ORDERS: [u8; 4] = [3, 5, 7, 9];
+const DSD_NOISE_GAINS: std::ops::RangeInclusive<f64> = 1.2..=1.5;
+const DSD_CUTOFFS: std::ops::RangeInclusive<f64> = 0.5..=1.0;
+const DSD_DITHER_DBS: std::ops::RangeInclusive<f64> = -160.0..=-20.0;
+const DSD_INPUT_LEVEL_DBS: std::ops::RangeInclusive<f64> = -24.0..=6.0;
+const DSD_CEILING_DBS: std::ops::RangeInclusive<f64> = -6.0..=3.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DsdRate {
+    Dsd64,
+    Dsd128,
+    Dsd256,
+}
+
+impl DsdRate {
+    pub const ALL: [Self; 3] = [Self::Dsd64, Self::Dsd128, Self::Dsd256];
+
+    /// As a multiple of 44.1 kHz, which is how DSD rates are named.
+    pub fn multiple(self) -> u16 {
+        match self {
+            Self::Dsd64 => 64,
+            Self::Dsd128 => 128,
+            Self::Dsd256 => 256,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DsdFilter {
+    Sinc {
+        length: u32,
+        window: ResamplingWindow,
+        /// As a fraction of the source's Nyquist frequency. `None` lets the
+        /// resampler choose.
+        cutoff: Option<f64>,
+    },
+    Fft {
+        size: u32,
+        window: ResamplingWindow,
+    },
+}
+
+impl DsdFilter {
+    pub fn window(self) -> ResamplingWindow {
+        match self {
+            Self::Sinc { window, .. } | Self::Fft { window, .. } => window,
+        }
+    }
+
+    /// The same filter with `window`.
+    pub fn with_window(self, window: ResamplingWindow) -> Self {
+        match self {
+            Self::Sinc { length, cutoff, .. } => Self::Sinc {
+                length,
+                window,
+                cutoff,
+            },
+            Self::Fft { size, .. } => Self::Fft { size, window },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct DsdParameters {
+    pub filter: DsdFilter,
+    pub order: u8,
+    pub noise_gain: f64,
+    pub wide_noise_band: bool,
+    pub optimized_zeros: bool,
+    /// `None` for no dither.
+    pub dither_db: Option<f64>,
+    pub input_level_db: f64,
+    /// `None` for no limiter.
+    pub limiter_ceiling_db: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum DsdQuality {
+    Low,
+    Medium,
+    #[default]
+    High,
+    Max,
+    Custom(DsdParameters),
+}
+
+impl DsdQuality {
+    pub fn parameters(self) -> DsdParameters {
+        let preset = |order, length| DsdParameters {
+            filter: DsdFilter::Sinc {
+                length,
+                window: ResamplingWindow::BlackmanHarris2,
+                cutoff: None,
+            },
+            order,
+            noise_gain: 1.4,
+            wide_noise_band: false,
+            optimized_zeros: true,
+            dither_db: None,
+            input_level_db: 0.0,
+            limiter_ceiling_db: Some(1.0),
+        };
+        match self {
+            Self::Low => preset(5, 256),
+            Self::Medium => preset(7, 512),
+            Self::High => preset(7, 1024),
+            // Not order 9: at these noise gains it measures no quieter than 7
+            Self::Max => preset(7, 2048),
+            Self::Custom(parameters) => parameters,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Max => "max",
+            Self::Custom(_) => "custom",
+        }
+    }
+}
+
+/// What the file says about DSD output. It is on for the one device it was
+/// turned on for, since DoP on a device that cannot decode it is loud noise.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct DsdOutput {
+    pub is_on: bool,
+    pub device: Option<String>,
+    /// `None` until one is chosen, which means DSD256.
+    pub rate: Option<DsdRate>,
+    /// Plays songs of the 48 kHz family at the 48 kHz family's DSD rates.
+    pub matches_song_family: bool,
+    pub quality: DsdQuality,
+    /// Raises the level from silence where sound would otherwise start at
+    /// full level.
+    pub fades_in: bool,
+}
+
+impl Default for DsdOutput {
+    fn default() -> Self {
+        Self {
+            is_on: false,
+            device: None,
+            rate: None,
+            matches_song_family: false,
+            quality: DsdQuality::default(),
+            fades_in: true,
+        }
+    }
+}
+
 /// The keys of `config.toml` this crate reads. Others are left alone.
 #[derive(Deserialize)]
 struct Settings {
@@ -139,12 +294,122 @@ struct Settings {
     resampling: Option<String>,
     resampling_fft_size: Option<u32>,
     resampling_window: Option<String>,
+    output_format: Option<String>,
+    dop_device: Option<String>,
+    dsd_rate: Option<u16>,
+    dsd_base_rate: Option<String>,
+    dsd_fade_in: Option<bool>,
+    dsd_quality: Option<String>,
+    dsd_filter: Option<String>,
+    dsd_sinc_length: Option<u32>,
+    dsd_fft_size: Option<u32>,
+    dsd_window: Option<String>,
+    dsd_cutoff: Option<f64>,
+    dsd_order: Option<u8>,
+    dsd_noise_gain: Option<f64>,
+    dsd_noise_band: Option<u32>,
+    dsd_optimized_zeros: Option<bool>,
+    dsd_dither_db: Option<f64>,
+    dsd_input_level_db: Option<f64>,
+    dsd_limiter_ceiling_db: Option<String>,
     appearance: Option<String>,
     lyrics_highlight: Option<String>,
     romaji_search: Option<bool>,
     discord_presence: Option<bool>,
     auto_update: Option<bool>,
     imgbb_api_key: Option<String>,
+}
+
+const DSD_PARAMETER_KEYS: [&str; 12] = [
+    "dsd_filter",
+    "dsd_sinc_length",
+    "dsd_fft_size",
+    "dsd_window",
+    "dsd_cutoff",
+    "dsd_order",
+    "dsd_noise_gain",
+    "dsd_noise_band",
+    "dsd_optimized_zeros",
+    "dsd_dither_db",
+    "dsd_input_level_db",
+    "dsd_limiter_ceiling_db",
+];
+
+/// The keys `parameters` come to. What is at its default has none.
+fn dsd_parameter_items(parameters: &DsdParameters) -> Vec<(&'static str, toml_edit::Item)> {
+    let mut items = vec![(
+        "dsd_window",
+        toml_edit::value(parameters.filter.window().name()),
+    )];
+    match parameters.filter {
+        DsdFilter::Sinc { length, cutoff, .. } => {
+            items.push(("dsd_filter", toml_edit::value("sinc")));
+            items.push(("dsd_sinc_length", toml_edit::value(i64::from(length))));
+            if let Some(cutoff) = cutoff {
+                items.push(("dsd_cutoff", toml_edit::value(cutoff)));
+            }
+        }
+        DsdFilter::Fft { size, .. } => {
+            items.push(("dsd_filter", toml_edit::value("fft")));
+            items.push(("dsd_fft_size", toml_edit::value(i64::from(size))));
+        }
+    }
+    items.push(("dsd_order", toml_edit::value(i64::from(parameters.order))));
+    items.push(("dsd_noise_gain", toml_edit::value(parameters.noise_gain)));
+    items.push((
+        "dsd_noise_band",
+        toml_edit::value(if parameters.wide_noise_band {
+            48_000
+        } else {
+            20_000
+        }),
+    ));
+    items.push((
+        "dsd_optimized_zeros",
+        toml_edit::value(parameters.optimized_zeros),
+    ));
+    if let Some(dither_db) = parameters.dither_db {
+        items.push(("dsd_dither_db", toml_edit::value(dither_db)));
+    }
+    items.push((
+        "dsd_input_level_db",
+        toml_edit::value(parameters.input_level_db),
+    ));
+    items.push((
+        "dsd_limiter_ceiling_db",
+        match parameters.limiter_ceiling_db {
+            Some(ceiling) => toml_edit::value(ceiling),
+            None => toml_edit::value("off"),
+        },
+    ));
+    items
+}
+
+/// Writes the keys of `after` that differ from those of `before`, and removes
+/// those it no longer has. Without `before` that is all of them.
+fn save_dsd_parameters(
+    document: &mut toml_edit::DocumentMut,
+    before: Option<&DsdParameters>,
+    after: Option<&DsdParameters>,
+) {
+    let before = before.map_or_else(Vec::new, dsd_parameter_items);
+    let after = after.map_or_else(Vec::new, dsd_parameter_items);
+    let find = |items: &[(&'static str, toml_edit::Item)], key: &str| {
+        items
+            .iter()
+            .find(|(name, _)| *name == key)
+            .map(|(_, item)| item.to_string())
+    };
+    for key in DSD_PARAMETER_KEYS {
+        if before.is_empty() || after.is_empty() || find(&before, key) != find(&after, key) {
+            match after.iter().find(|(name, _)| *name == key) {
+                Some((_, item)) => document[key] = item.clone(),
+                None => {
+                    document.remove(key);
+                }
+            }
+        }
+    }
 }
 
 /// The settings directory and its `config.toml`:
@@ -160,6 +425,21 @@ struct Settings {
 /// resampling = "custom"
 /// resampling_fft_size = 2048
 /// resampling_window = "hann-2"
+/// output_format = "dsd"
+/// dop_device = "coreaudio:SomeDacUid"
+/// dsd_rate = 256
+/// dsd_base_rate = "match"
+/// dsd_fade_in = false
+/// dsd_quality = "custom"
+/// dsd_filter = "sinc"
+/// dsd_sinc_length = 1024
+/// dsd_window = "blackman-harris-2"
+/// dsd_order = 7
+/// dsd_noise_gain = 1.4
+/// dsd_noise_band = 20000
+/// dsd_optimized_zeros = true
+/// dsd_input_level_db = 0.0
+/// dsd_limiter_ceiling_db = 1.0
 /// appearance = "dark"
 /// lyrics_highlight = "line"
 /// discord_presence = false
@@ -275,6 +555,13 @@ impl Store {
         self.parse_resampling_quality(&settings)
     }
 
+    /// Off unless the file says otherwise. The parameters are only read for
+    /// the custom quality, and default to those of high.
+    pub fn dsd_output(&self) -> Result<DsdOutput, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        self.parse_dsd_output(&settings)
+    }
+
     /// Light or dark, if one was chosen rather than following the system. `system` in
     /// `HIPHILE_APPEARANCE` sets a choice in the file aside.
     pub fn appearance(&self) -> Result<Option<Appearance>, Error> {
@@ -363,6 +650,146 @@ impl Store {
                 "resampling",
                 "\"medium\", \"high\", \"max\" or \"custom\"",
             )),
+        }
+    }
+
+    fn parse_dsd_output(&self, settings: &Settings) -> Result<DsdOutput, Error> {
+        let is_on = match settings.output_format.as_deref() {
+            None | Some("pcm") => false,
+            Some("dsd") => true,
+            Some(_) => return Err(self.invalid("output_format", "\"pcm\" or \"dsd\"")),
+        };
+        let rate = settings
+            .dsd_rate
+            .map(|multiple| {
+                DsdRate::ALL
+                    .into_iter()
+                    .find(|rate| rate.multiple() == multiple)
+                    .ok_or_else(|| self.invalid("dsd_rate", "64, 128 or 256"))
+            })
+            .transpose()?;
+        let matches_song_family = match settings.dsd_base_rate.as_deref() {
+            None | Some("44100") => false,
+            Some("match") => true,
+            Some(_) => return Err(self.invalid("dsd_base_rate", "44100 or \"match\"")),
+        };
+        Ok(DsdOutput {
+            is_on,
+            device: settings.dop_device.clone().filter(|id| !id.is_empty()),
+            rate,
+            matches_song_family,
+            quality: self.parse_dsd_quality(settings)?,
+            fades_in: settings.dsd_fade_in.unwrap_or(true),
+        })
+    }
+
+    fn parse_dsd_quality(&self, settings: &Settings) -> Result<DsdQuality, Error> {
+        match settings.dsd_quality.as_deref() {
+            Some("low") => Ok(DsdQuality::Low),
+            Some("medium") => Ok(DsdQuality::Medium),
+            None | Some("high") => Ok(DsdQuality::High),
+            Some("max") => Ok(DsdQuality::Max),
+            Some("custom") => self.parse_dsd_parameters(settings).map(DsdQuality::Custom),
+            Some(_) => Err(self.invalid(
+                "dsd_quality",
+                "\"low\", \"medium\", \"high\", \"max\" or \"custom\"",
+            )),
+        }
+    }
+
+    fn parse_dsd_parameters(&self, settings: &Settings) -> Result<DsdParameters, Error> {
+        let high = DsdQuality::High.parameters();
+        let order = settings.dsd_order.unwrap_or(high.order);
+        if !DSD_ORDERS.contains(&order) {
+            return Err(self.invalid("dsd_order", "3, 5, 7 or 9"));
+        }
+        let noise_gain = settings.dsd_noise_gain.unwrap_or(high.noise_gain);
+        if !DSD_NOISE_GAINS.contains(&noise_gain) {
+            return Err(self.invalid("dsd_noise_gain", "a number from 1.2 to 1.5"));
+        }
+        let wide_noise_band = match settings.dsd_noise_band {
+            None | Some(20_000) => false,
+            Some(48_000) => true,
+            Some(_) => return Err(self.invalid("dsd_noise_band", "20000 or 48000")),
+        };
+        let dither_db = settings.dsd_dither_db;
+        if dither_db.is_some_and(|dither_db| !DSD_DITHER_DBS.contains(&dither_db)) {
+            return Err(self.invalid("dsd_dither_db", "a number from -160 to -20"));
+        }
+        let input_level_db = settings.dsd_input_level_db.unwrap_or(high.input_level_db);
+        if !DSD_INPUT_LEVEL_DBS.contains(&input_level_db) {
+            return Err(self.invalid("dsd_input_level_db", "a number from -24 to 6"));
+        }
+        let limiter_ceiling_db = match settings.dsd_limiter_ceiling_db.as_deref() {
+            None => high.limiter_ceiling_db,
+            Some("off") => None,
+            Some(text) => Some(
+                text.parse()
+                    .ok()
+                    .filter(|ceiling| DSD_CEILING_DBS.contains(ceiling))
+                    .ok_or_else(|| {
+                        self.invalid("dsd_limiter_ceiling_db", "\"off\" or a number from -6 to 3")
+                    })?,
+            ),
+        };
+        Ok(DsdParameters {
+            filter: self.parse_dsd_filter(settings)?,
+            order,
+            noise_gain,
+            wide_noise_band,
+            optimized_zeros: settings.dsd_optimized_zeros.unwrap_or(high.optimized_zeros),
+            dither_db,
+            input_level_db,
+            limiter_ceiling_db,
+        })
+    }
+
+    fn parse_dsd_filter(&self, settings: &Settings) -> Result<DsdFilter, Error> {
+        let window = match settings.dsd_window.as_deref() {
+            None => ResamplingWindow::BlackmanHarris2,
+            Some(name) => ResamplingWindow::ALL
+                .into_iter()
+                .find(|window| window.name() == name)
+                .ok_or_else(|| {
+                    self.invalid(
+                        "dsd_window",
+                        "\"hann\", \"hann-2\", \"blackman\", \"blackman-2\", \
+                         \"blackman-harris\" or \"blackman-harris-2\"",
+                    )
+                })?,
+        };
+        match settings.dsd_filter.as_deref() {
+            None | Some("sinc") => {
+                let length = settings.dsd_sinc_length.unwrap_or(1024);
+                if !DSD_SINC_LENGTHS.contains(&length) {
+                    return Err(self.invalid("dsd_sinc_length", "256, 512, 1024 or 2048"));
+                }
+                let cutoff = settings.dsd_cutoff;
+                if cutoff.is_some_and(|cutoff| !DSD_CUTOFFS.contains(&cutoff)) {
+                    return Err(self.invalid("dsd_cutoff", "a number from 0.5 to 1"));
+                }
+                Ok(DsdFilter::Sinc {
+                    length,
+                    window,
+                    cutoff,
+                })
+            }
+            Some("fft") => {
+                let size = settings.dsd_fft_size.unwrap_or(4096);
+                if !RESAMPLING_FFT_SIZES.contains(&size) {
+                    return Err(self.invalid("dsd_fft_size", "a power of two from 256 to 16384"));
+                }
+                Ok(DsdFilter::Fft { size, window })
+            }
+            Some(_) => Err(self.invalid("dsd_filter", "\"sinc\" or \"fft\"")),
+        }
+    }
+
+    fn invalid(&self, key: &'static str, expected: &'static str) -> Error {
+        Error::InvalidSetting {
+            path: self.config_path(),
+            key,
+            expected,
         }
     }
 
@@ -461,6 +888,64 @@ impl Store {
             } else {
                 document.remove("resampling_fft_size");
                 document.remove("resampling_window");
+            }
+        })
+    }
+
+    /// Writes only what the quality uses, so that a key left over from another
+    /// one cannot come back unnoticed.
+    /// Writes only what differs from `before`, the values in use until now:
+    /// the rest may have come from the environment, or from a file that could
+    /// not be read, and turning DSD on is not to be written behind anyone's back.
+    pub fn save_dsd_changes(&self, before: &DsdOutput, after: &DsdOutput) -> Result<(), Error> {
+        self.edit(|document| {
+            if before.is_on != after.is_on {
+                document["output_format"] =
+                    toml_edit::value(if after.is_on { "dsd" } else { "pcm" });
+            }
+            if before.device != after.device {
+                match &after.device {
+                    Some(device) => document["dop_device"] = toml_edit::value(device.as_str()),
+                    None => {
+                        document.remove("dop_device");
+                    }
+                }
+            }
+            if before.rate != after.rate {
+                match after.rate {
+                    Some(rate) => {
+                        document["dsd_rate"] = toml_edit::value(i64::from(rate.multiple()));
+                    }
+                    None => {
+                        document.remove("dsd_rate");
+                    }
+                }
+            }
+            if before.matches_song_family != after.matches_song_family {
+                if after.matches_song_family {
+                    document["dsd_base_rate"] = toml_edit::value("match");
+                } else {
+                    document.remove("dsd_base_rate");
+                }
+            }
+            if before.fades_in != after.fades_in {
+                if after.fades_in {
+                    document.remove("dsd_fade_in");
+                } else {
+                    document["dsd_fade_in"] = toml_edit::value(false);
+                }
+            }
+            if before.quality != after.quality {
+                document["dsd_quality"] = toml_edit::value(after.quality.name());
+                let custom = |quality: &DsdQuality| match quality {
+                    DsdQuality::Custom(parameters) => Some(*parameters),
+                    _ => None,
+                };
+                save_dsd_parameters(
+                    document,
+                    custom(&before.quality).as_ref(),
+                    custom(&after.quality).as_ref(),
+                );
             }
         })
     }
@@ -760,6 +1245,223 @@ mod tests {
                 window: ResamplingWindow::BlackmanHarris2,
             }
         );
+    }
+
+    #[test]
+    fn dsd_is_off_and_high_unless_told_otherwise() {
+        let store = temporary_store("dsd-default");
+        assert_eq!(store.dsd_output().unwrap(), DsdOutput::default());
+        assert_eq!(DsdOutput::default().quality, DsdQuality::High);
+    }
+
+    #[test]
+    fn dsd_output_round_trips() {
+        let store = temporary_store("dsd-round-trip");
+        let custom = |filter, limiter_ceiling_db| {
+            DsdQuality::Custom(DsdParameters {
+                filter,
+                order: 9,
+                noise_gain: 1.35,
+                wide_noise_band: true,
+                optimized_zeros: false,
+                dither_db: Some(-100.0),
+                input_level_db: -3.0,
+                limiter_ceiling_db,
+            })
+        };
+        let sinc = DsdFilter::Sinc {
+            length: 2048,
+            window: ResamplingWindow::Hann2,
+            cutoff: Some(0.75),
+        };
+        let fft = DsdFilter::Fft {
+            size: 8192,
+            window: ResamplingWindow::Blackman,
+        };
+        for quality in [
+            DsdQuality::Low,
+            DsdQuality::Medium,
+            DsdQuality::High,
+            DsdQuality::Max,
+            custom(sinc, Some(0.0)),
+            custom(fft, None),
+        ] {
+            let output = DsdOutput {
+                is_on: true,
+                device: Some("coreaudio:dac".to_owned()),
+                rate: Some(DsdRate::Dsd128),
+                matches_song_family: true,
+                quality,
+                fades_in: false,
+            };
+            let before = store.dsd_output().unwrap();
+            store.save_dsd_changes(&before, &output).unwrap();
+            assert_eq!(store.dsd_output().unwrap(), output);
+        }
+    }
+
+    #[test]
+    fn a_dsd_preset_leaves_no_custom_values_in_the_file() {
+        let store = temporary_store("dsd-preset");
+        let custom = DsdOutput {
+            quality: DsdQuality::Custom(DsdQuality::High.parameters()),
+            ..DsdOutput::default()
+        };
+        store
+            .save_dsd_changes(&DsdOutput::default(), &custom)
+            .unwrap();
+        store
+            .save_dsd_changes(&custom, &DsdOutput::default())
+            .unwrap();
+        let text = std::fs::read_to_string(store.config_path()).unwrap();
+        for key in DSD_PARAMETER_KEYS {
+            assert!(!text.contains(key), "{text}");
+        }
+    }
+
+    #[test]
+    fn only_what_changed_of_the_dsd_output_is_saved() {
+        let store = temporary_store("dsd-changes");
+        let from_environment = DsdOutput {
+            is_on: true,
+            device: Some("coreaudio:dac".to_owned()),
+            rate: Some(DsdRate::Dsd64),
+            ..DsdOutput::default()
+        };
+        let custom = DsdOutput {
+            quality: DsdQuality::Custom(DsdQuality::High.parameters()),
+            ..from_environment.clone()
+        };
+        store.save_dsd_changes(&from_environment, &custom).unwrap();
+        let text = std::fs::read_to_string(store.config_path()).unwrap();
+        for key in ["output_format", "dop_device", "dsd_rate"] {
+            assert!(!text.contains(key), "{text}");
+        }
+        assert!(text.contains("dsd_quality = \"custom\""), "{text}");
+        assert!(text.contains("dsd_order"), "{text}");
+
+        std::fs::write(store.config_path(), "").unwrap();
+        let mut parameters = DsdQuality::High.parameters();
+        parameters.order = 9;
+        let changed = DsdOutput {
+            quality: DsdQuality::Custom(parameters),
+            ..from_environment
+        };
+        store.save_dsd_changes(&custom, &changed).unwrap();
+        let text = std::fs::read_to_string(store.config_path()).unwrap();
+        assert!(text.contains("dsd_order = 9"), "{text}");
+        assert!(!text.contains("dsd_noise_gain"), "{text}");
+    }
+
+    #[test]
+    fn dsd_fades_in_unless_told_otherwise() {
+        let store = temporary_store("dsd-fade-in");
+        assert!(store.dsd_output().unwrap().fades_in);
+        let off = DsdOutput {
+            fades_in: false,
+            ..DsdOutput::default()
+        };
+        store.save_dsd_changes(&DsdOutput::default(), &off).unwrap();
+        assert!(!store.dsd_output().unwrap().fades_in);
+        store.save_dsd_changes(&off, &DsdOutput::default()).unwrap();
+        let text = std::fs::read_to_string(store.config_path()).unwrap();
+        assert!(!text.contains("dsd_fade_in"), "{text}");
+    }
+
+    #[test]
+    fn a_dsd_cutoff_is_saved_as_written() {
+        let store = temporary_store("dsd-cutoff");
+        let mut parameters = DsdQuality::High.parameters();
+        parameters.filter = DsdFilter::Sinc {
+            length: 1024,
+            window: ResamplingWindow::BlackmanHarris2,
+            cutoff: Some(0.85),
+        };
+        let output = DsdOutput {
+            quality: DsdQuality::Custom(parameters),
+            ..DsdOutput::default()
+        };
+        store
+            .save_dsd_changes(&DsdOutput::default(), &output)
+            .unwrap();
+        let text = std::fs::read_to_string(store.config_path()).unwrap();
+        assert!(text.contains("dsd_cutoff = 0.85\n"), "{text}");
+        assert_eq!(store.dsd_output().unwrap(), output);
+    }
+
+    #[test]
+    fn dsd_presets_differ_in_their_order_and_filter_length() {
+        let sinc_length = |quality: DsdQuality| match quality.parameters().filter {
+            DsdFilter::Sinc { length, .. } => length,
+            DsdFilter::Fft { .. } => 0,
+        };
+        assert_eq!(DsdQuality::Low.parameters().order, 5);
+        assert_eq!(sinc_length(DsdQuality::Low), 256);
+        assert_eq!(sinc_length(DsdQuality::Medium), 512);
+        assert_eq!(sinc_length(DsdQuality::High), 1024);
+        assert_eq!(sinc_length(DsdQuality::Max), 2048);
+    }
+
+    #[test]
+    fn the_environment_sets_a_saved_dsd_output_aside() {
+        let store = temporary_store("dsd-environment");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        std::fs::write(store.config_path(), "output_format = \"pcm\"\n").unwrap();
+        let settings = read(
+            &store,
+            &[
+                ("HIPHILE_OUTPUT_FORMAT", "dsd"),
+                ("HIPHILE_DSD_RATE", "64"),
+                ("HIPHILE_DSD_QUALITY", "custom"),
+                ("HIPHILE_DSD_NOISE_GAIN", "1.3"),
+                ("HIPHILE_DSD_LIMITER_CEILING_DB", "off"),
+            ],
+        );
+        let output = store.parse_dsd_output(&settings).unwrap();
+        assert!(output.is_on);
+        assert_eq!(output.rate, Some(DsdRate::Dsd64));
+        let parameters = output.quality.parameters();
+        assert!((parameters.noise_gain - 1.3).abs() < 1e-9);
+        assert_eq!(parameters.limiter_ceiling_db, None);
+    }
+
+    #[test]
+    fn unknown_dsd_values_are_named() {
+        let store = temporary_store("dsd-invalid");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        let key = |text: &str| {
+            std::fs::write(store.config_path(), text).unwrap();
+            match store.dsd_output() {
+                Err(Error::InvalidSetting { key, .. }) => Some(key),
+                Err(error) => panic!("{error}"),
+                Ok(_) => None,
+            }
+        };
+        assert_eq!(key("output_format = \"sacd\"\n"), Some("output_format"));
+        assert_eq!(key("dsd_rate = 512\n"), Some("dsd_rate"));
+        assert_eq!(key("dsd_base_rate = 48000\n"), Some("dsd_base_rate"));
+        assert_eq!(key("dsd_base_rate = 44100\n"), None);
+        assert_eq!(key("dsd_quality = \"best\"\n"), Some("dsd_quality"));
+        assert_eq!(key("dsd_quality = \"balanced\"\n"), Some("dsd_quality"));
+        let custom = |line: &str| format!("dsd_quality = \"custom\"\n{line}\n");
+        for (line, expected) in [
+            ("dsd_order = 4", "dsd_order"),
+            ("dsd_noise_gain = 1.6", "dsd_noise_gain"),
+            ("dsd_noise_band = 30000", "dsd_noise_band"),
+            ("dsd_filter = \"iir\"", "dsd_filter"),
+            ("dsd_sinc_length = 300", "dsd_sinc_length"),
+            ("dsd_cutoff = 1.5", "dsd_cutoff"),
+            ("dsd_window = \"flat\"", "dsd_window"),
+            ("dsd_dither_db = 0", "dsd_dither_db"),
+            ("dsd_input_level_db = 12", "dsd_input_level_db"),
+            ("dsd_limiter_ceiling_db = 9", "dsd_limiter_ceiling_db"),
+            ("dsd_limiter_ceiling_db = \"on\"", "dsd_limiter_ceiling_db"),
+            ("dsd_filter = \"fft\"\ndsd_fft_size = 300", "dsd_fft_size"),
+        ] {
+            assert_eq!(key(&custom(line)), Some(expected), "{line}");
+        }
+        // Without custom they are not read
+        assert_eq!(key("dsd_order = 4\n"), None);
     }
 
     #[test]

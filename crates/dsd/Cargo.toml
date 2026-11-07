@@ -1,0 +1,14 @@
+[package]
+name = "dsd"
+description = "PCM to DSD conversion for DoP output: oversampling, limiting and 1-bit modulation. No GPUI, no I/O."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+rubato.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

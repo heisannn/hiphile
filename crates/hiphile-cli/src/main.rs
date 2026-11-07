@@ -301,19 +301,12 @@ fn play(args: ServerArgs, ids: Vec<String>, query: Option<String>) -> anyhow::Re
 fn output_settings() -> audio::OutputSettings {
     let saved = || -> anyhow::Result<audio::OutputSettings> {
         let store = config::Store::user()?;
-        let quality = store.resampling_quality()?;
-        let window = match quality.window() {
-            config::ResamplingWindow::Hann => audio::ResamplingWindow::Hann,
-            config::ResamplingWindow::Hann2 => audio::ResamplingWindow::Hann2,
-            config::ResamplingWindow::Blackman => audio::ResamplingWindow::Blackman,
-            config::ResamplingWindow::Blackman2 => audio::ResamplingWindow::Blackman2,
-            config::ResamplingWindow::BlackmanHarris => audio::ResamplingWindow::BlackmanHarris,
-            config::ResamplingWindow::BlackmanHarris2 => audio::ResamplingWindow::BlackmanHarris2,
-        };
-        Ok(
-            audio::OutputSettings::new(store.output_device()?, store.sample_rate()?)
-                .with_resampling(audio::Resampling::new(quality.fft_size(), window)),
-        )
+        Ok(audio::OutputSettings::from_config(
+            store.output_device()?,
+            store.sample_rate()?,
+            store.resampling_quality()?,
+            &store.dsd_output()?,
+        ))
     };
     saved().unwrap_or_else(|error| {
         eprintln!("warning: using the default audio output: {error:#}");
@@ -430,12 +423,12 @@ fn describe_format(format: &audio::PlaybackFormat) -> String {
         format.output_rate(),
         format.output_channels()
     );
-    let resampled = if format.is_resampled() {
-        " (resampled)"
-    } else {
-        ""
+    let conversion = match format.dop_rate() {
+        Some(rate) => format!(" ({rate} DoP)"),
+        None if format.is_resampled() => " (resampled)".to_owned(),
+        None => String::new(),
     };
-    format!("{source} -> {output}{resampled}")
+    format!("{source} -> {output}{conversion}")
 }
 
 fn clock(duration: Duration) -> String {

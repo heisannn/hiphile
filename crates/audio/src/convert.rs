@@ -1,35 +1,88 @@
+use std::time::Duration;
+
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
-use rubato::{Fft, FixedSync, Indexing, Resampler as _, WindowFunction};
+use rubato::{Fft, FixedSync, Indexing, Resampler as _};
 
 use crate::Error;
-use crate::output::{Resampling, ResamplingWindow, Spec};
+use crate::output::{OutputSettings, Resampling, Spec};
 
 const RESAMPLE_CHUNK: usize = 1024;
 
 pub(crate) struct Converter {
     source: Spec,
     output: Spec,
-    resampling: Resampling,
-    resampler: Option<RateConverter>,
+    stage: Stage,
     mapped: Vec<f32>,
+    words: Vec<u16>,
+}
+
+enum Stage {
+    Pcm {
+        resampling: Resampling,
+        resampler: Option<Box<RateConverter>>,
+    },
+    /// Its samples are DSD words as whole numbers, which `f32` holds exactly.
+    Dop(Box<dsd::Encoder>),
 }
 
 impl Converter {
     pub(crate) fn new(source: Spec, output: Spec, resampling: Resampling) -> Result<Self, Error> {
-        Ok(Self {
+        let resampler = Self::resampler(source, output, resampling)?;
+        Ok(Self::around(
             source,
             output,
-            resampling,
-            resampler: Self::resampler(source, output, resampling)?,
+            Stage::Pcm {
+                resampling,
+                resampler,
+            },
+        ))
+    }
+
+    /// As `settings` say, for `source` on a stream of `output`.
+    pub(crate) fn for_settings(
+        source: Spec,
+        output: Spec,
+        settings: &OutputSettings,
+    ) -> Result<Self, Error> {
+        match settings.dop() {
+            None => Self::new(source, output, settings.resampling()),
+            Some(dop) => {
+                let encoder = dsd::Encoder::new(source.rate, output.rate, dop)?;
+                Ok(Self::around(source, output, Stage::Dop(Box::new(encoder))))
+            }
+        }
+    }
+
+    /// For the track that comes on after this one, on the same stream.
+    pub(crate) fn following(&self, source: Spec, settings: &OutputSettings) -> Result<Self, Error> {
+        match &self.stage {
+            Stage::Pcm { .. } => Self::for_settings(source, self.output, settings),
+            Stage::Dop(encoder) => {
+                let encoder = encoder.for_next_track(source.rate)?;
+                Ok(Self::around(
+                    source,
+                    self.output,
+                    Stage::Dop(Box::new(encoder)),
+                ))
+            }
+        }
+    }
+
+    fn around(source: Spec, output: Spec, stage: Stage) -> Self {
+        Self {
+            source,
+            output,
+            stage,
             mapped: Vec::new(),
-        })
+            words: Vec::new(),
+        }
     }
 
     fn resampler(
         source: Spec,
         output: Spec,
         resampling: Resampling,
-    ) -> Result<Option<RateConverter>, Error> {
+    ) -> Result<Option<Box<RateConverter>>, Error> {
         (source.rate != output.rate)
             .then(|| {
                 RateConverter::new(
@@ -38,43 +91,84 @@ impl Converter {
                     usize::from(output.channels),
                     resampling,
                 )
+                .map(Box::new)
             })
             .transpose()
     }
 
     pub(crate) fn reset(&mut self) -> Result<(), Error> {
-        self.resampler = Self::resampler(self.source, self.output, self.resampling)?;
+        match &mut self.stage {
+            Stage::Pcm {
+                resampling,
+                resampler,
+            } => *resampler = Self::resampler(self.source, self.output, *resampling)?,
+            Stage::Dop(encoder) => encoder.reset()?,
+        }
         Ok(())
+    }
+
+    /// Raises DoP output from silence, starting with the next input.
+    pub(crate) fn fade_in(&mut self, length: Duration) {
+        if let Stage::Dop(encoder) = &mut self.stage {
+            encoder.fade_in(length);
+        }
+    }
+
+    pub(crate) fn is_fading(&self) -> bool {
+        matches!(&self.stage, Stage::Dop(encoder) if encoder.is_fading())
     }
 
     pub(crate) fn process(&mut self, input: &[f32], out: &mut Vec<f32>) -> Result<(), Error> {
         let from = usize::from(self.source.channels);
         let to = usize::from(self.output.channels);
-        match &mut self.resampler {
-            None => {
+        match &mut self.stage {
+            Stage::Pcm {
+                resampler: None, ..
+            } => {
                 map_channels(input, from, to, out);
                 Ok(())
             }
-            Some(resampler) => {
+            Stage::Pcm {
+                resampler: Some(resampler),
+                ..
+            } => {
                 self.mapped.clear();
                 map_channels(input, from, to, &mut self.mapped);
                 resampler.push(&self.mapped, out)
+            }
+            Stage::Dop(encoder) => {
+                self.mapped.clear();
+                map_channels(input, from, to, &mut self.mapped);
+                self.words.clear();
+                encoder.push(&self.mapped, &mut self.words)?;
+                out.extend(self.words.iter().copied().map(f32::from));
+                Ok(())
             }
         }
     }
 
     /// Frames that the input so far comes to, still inside the resampler.
     pub(crate) fn undelivered_frames(&self) -> u64 {
-        self.resampler
-            .as_ref()
-            .map_or(0, RateConverter::undelivered_frames)
+        match &self.stage {
+            Stage::Pcm { resampler, .. } => resampler
+                .as_ref()
+                .map_or(0, |resampler| resampler.undelivered_frames()),
+            Stage::Dop(encoder) => encoder.undelivered_frames(),
+        }
     }
 
     /// Appends whatever the resampler still holds once the input has ended.
     pub(crate) fn finish(&mut self, out: &mut Vec<f32>) -> Result<(), Error> {
-        match &mut self.resampler {
-            None => Ok(()),
-            Some(resampler) => resampler.finish(out),
+        match &mut self.stage {
+            Stage::Pcm { resampler, .. } => resampler
+                .as_mut()
+                .map_or(Ok(()), |resampler| resampler.finish(out)),
+            Stage::Dop(encoder) => {
+                self.words.clear();
+                encoder.finish(&mut self.words)?;
+                out.extend(self.words.iter().copied().map(f32::from));
+                Ok(())
+            }
         }
     }
 }
@@ -122,21 +216,13 @@ impl RateConverter {
         // Rubato takes the FFT size from `chunk / sub_chunks`, so a chunk
         // smaller than the FFT could not ask for it.
         let chunk = RESAMPLE_CHUNK.max(fft_size);
-        let window = match resampling.window() {
-            ResamplingWindow::Hann => WindowFunction::Hann,
-            ResamplingWindow::Hann2 => WindowFunction::Hann2,
-            ResamplingWindow::Blackman => WindowFunction::Blackman,
-            ResamplingWindow::Blackman2 => WindowFunction::Blackman2,
-            ResamplingWindow::BlackmanHarris => WindowFunction::BlackmanHarris,
-            ResamplingWindow::BlackmanHarris2 => WindowFunction::BlackmanHarris2,
-        };
         let resampler = Fft::<f32>::new_custom(
             from as usize,
             to as usize,
             chunk,
             chunk / fft_size,
             channels,
-            window,
+            resampling.window().into(),
             FixedSync::Input,
         )
         .map_err(|error| Error::Resample(error.to_string()))?;
@@ -153,8 +239,14 @@ impl RateConverter {
         })
     }
 
+    /// A sample that is not a finite number counts as silence: it would panic
+    /// inside the FFT.
     fn push(&mut self, samples: &[f32], out: &mut Vec<f32>) -> Result<(), Error> {
-        self.input.extend_from_slice(samples);
+        self.input.extend(
+            samples
+                .iter()
+                .map(|sample| if sample.is_finite() { *sample } else { 0.0 }),
+        );
         self.frames_in += (samples.len() / self.channels) as u64;
         let mut consumed = 0;
         loop {
@@ -238,6 +330,7 @@ impl RateConverter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::output::ResamplingWindow;
 
     fn mapped(input: &[f32], from: usize, to: usize) -> Vec<f32> {
         let mut out = Vec::new();
@@ -478,8 +571,29 @@ mod tests {
         let resampling = Resampling::new(4096, ResamplingWindow::default());
         let mut converter = Converter::new(source, output, resampling).unwrap();
         converter.reset().unwrap();
-        let resampler = converter.resampler.as_ref().unwrap();
+        let Stage::Pcm {
+            resampler: Some(resampler),
+            ..
+        } = &converter.stage
+        else {
+            panic!("expected a resampler");
+        };
         assert_eq!(resampler.resampler.fft_size_in(), 4116);
+    }
+
+    #[test]
+    fn samples_that_are_no_numbers_do_not_stop_the_resampler() {
+        let spec = |rate| Spec { rate, channels: 2 };
+        let mut converter =
+            Converter::new(spec(44_100), spec(48_000), Resampling::default()).unwrap();
+        let mut input = vec![0.25; 2 * 4_410];
+        input[1_000] = f32::NAN;
+        input[1_001] = f32::INFINITY;
+        let mut out = Vec::new();
+        converter.process(&input, &mut out).unwrap();
+        converter.finish(&mut out).unwrap();
+        assert_eq!(out.len() / 2, 4_800);
+        assert!(out.iter().all(|sample| sample.is_finite()));
     }
 
     #[test]

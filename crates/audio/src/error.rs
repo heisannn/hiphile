@@ -6,6 +6,14 @@ pub enum Error {
     OutputDeviceUnavailable,
     #[error("the output device does not accept 32-bit float audio")]
     UnsupportedOutputFormat,
+    #[error("the output device cannot run at the rate this DSD rate needs")]
+    UnsupportedDopRate,
+    #[error("DSD needs the output device for itself, and process {0} is holding it")]
+    DeviceHeld(i32),
+    #[error("could not take the output device for DSD: {0}")]
+    ExclusiveOutput(String),
+    #[error("the DSD modulator became unstable: lower Noise gain or Input level")]
+    DsdUnstable,
     #[error("audio output failed: {0}")]
     Output(String),
     #[error("the file format is not supported: {0}")]
@@ -32,6 +40,15 @@ impl Error {
 impl From<cpal::Error> for Error {
     fn from(error: cpal::Error) -> Self {
         Self::Output(error.to_string())
+    }
+}
+
+impl From<dsd::Error> for Error {
+    fn from(error: dsd::Error) -> Self {
+        match error {
+            dsd::Error::Resample(message) => Self::Resample(message),
+            dsd::Error::Unstable => Self::DsdUnstable,
+        }
     }
 }
 

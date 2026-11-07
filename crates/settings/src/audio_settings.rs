@@ -1,5 +1,5 @@
-use audio::{OutputDevice, OutputSettings, Resampling};
-use config::{RESAMPLING_FFT_SIZES, ResamplingQuality, ResamplingWindow};
+use audio::{OutputDevice, OutputSettings};
+use config::{DsdOutput, RESAMPLING_FFT_SIZES, ResamplingQuality, ResamplingWindow};
 use gpui_kit::{AppContext as _, Context, EventEmitter, SharedString, Task};
 use ui::format_sample_rate;
 
@@ -15,6 +15,9 @@ pub struct AudioSettings {
     store: Option<config::Store>,
     output: OutputSettings,
     quality: ResamplingQuality,
+    dsd: DsdOutput,
+    /// What `dsd` was when last saved, to write only what has changed since.
+    saved_dsd: DsdOutput,
     /// `None` until first listed.
     devices: Option<Vec<OutputDevice>>,
     list_error: Option<SharedString>,
@@ -34,14 +37,15 @@ struct Unsaved {
     device: bool,
     rate: bool,
     quality: bool,
+    dsd: bool,
 }
 
 impl EventEmitter<OutputChanged> for AudioSettings {}
 
 impl AudioSettings {
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
-        let (store, output, quality, save_error) = read_saved_output();
-        let mut this = Self::with(store, output, quality, save_error);
+        let (store, output, quality, dsd, save_error) = read_saved_output();
+        let mut this = Self::with(store, output, quality, dsd, save_error);
         this.list_devices(cx);
         this
     }
@@ -50,12 +54,15 @@ impl AudioSettings {
         store: Option<config::Store>,
         output: OutputSettings,
         quality: ResamplingQuality,
+        dsd: DsdOutput,
         save_error: Option<SharedString>,
     ) -> Self {
         Self {
             store,
             output,
             quality,
+            saved_dsd: dsd.clone(),
+            dsd,
             devices: None,
             list_error: None,
             save_error,
@@ -130,8 +137,7 @@ impl AudioSettings {
 
     pub(crate) fn set_device(&mut self, value: &str, cx: &mut Context<Self>) {
         let device = (value != SYSTEM_DEFAULT).then(|| value.to_owned());
-        let output = OutputSettings::new(device, self.output.fixed_rate())
-            .with_resampling(self.output.resampling());
+        let output = self.output_on(device, self.output.fixed_rate());
         if self.output != output {
             self.unsaved.device = true;
             self.set_output(output, cx);
@@ -150,8 +156,7 @@ impl AudioSettings {
 
     pub(crate) fn set_rate(&mut self, value: &str, cx: &mut Context<Self>) {
         let device = self.output.device().map(str::to_owned);
-        let output = OutputSettings::new(device, value.parse().ok())
-            .with_resampling(self.output.resampling());
+        let output = self.output_on(device, value.parse().ok());
         if self.output != output {
             self.unsaved.rate = true;
             self.set_output(output, cx);
@@ -235,7 +240,8 @@ impl AudioSettings {
         }
         self.quality = quality;
         self.unsaved.quality = true;
-        let output = self.output.clone().with_resampling(resampling_of(quality));
+        let device = self.output.device().map(str::to_owned);
+        let output = self.output_on(device, self.output.fixed_rate());
         if self.output == output {
             self.save(cx);
             cx.notify();
@@ -245,12 +251,39 @@ impl AudioSettings {
     }
 
     fn selected_device_rates(&self) -> Option<&[u32]> {
+        self.selected_device().map(OutputDevice::sample_rates)
+    }
+
+    pub(crate) fn selected_device(&self) -> Option<&OutputDevice> {
         let mut devices = self.devices.iter().flatten();
-        let device = match self.output.device() {
+        match self.output.device() {
             Some(id) => devices.find(|device| device.id() == Some(id)),
             None => devices.find(|device| device.is_default()),
-        };
-        device.map(OutputDevice::sample_rates)
+        }
+    }
+
+    fn output_on(&self, device: Option<String>, rate: Option<u32>) -> OutputSettings {
+        OutputSettings::from_config(device, rate, self.quality, &self.dsd)
+    }
+
+    pub(crate) fn dsd(&self) -> &DsdOutput {
+        &self.dsd
+    }
+
+    pub(crate) fn set_dsd(&mut self, dsd: DsdOutput, cx: &mut Context<Self>) {
+        if self.dsd == dsd {
+            return;
+        }
+        self.dsd = dsd;
+        self.unsaved.dsd = true;
+        let device = self.output.device().map(str::to_owned);
+        let output = self.output_on(device, self.output.fixed_rate());
+        if self.output == output {
+            self.save(cx);
+            cx.notify();
+        } else {
+            self.set_output(output, cx);
+        }
     }
 
     fn set_output(&mut self, output: OutputSettings, cx: &mut Context<Self>) {
@@ -271,12 +304,17 @@ impl AudioSettings {
         }
         self.saving = true;
         self._save = cx.spawn(async move |this, cx| {
-            while let Ok(Some((output, quality, unsaved))) = this.update(cx, |this, _| {
-                let unsaved = std::mem::take(&mut this.unsaved);
-                this.saving = unsaved.device || unsaved.rate || unsaved.quality;
-                this.saving
-                    .then(|| (this.output.clone(), this.quality, unsaved))
-            }) {
+            while let Ok(Some((output, quality, saved_dsd, dsd, unsaved))) =
+                this.update(cx, |this, _| {
+                    let unsaved = std::mem::take(&mut this.unsaved);
+                    this.saving = unsaved.device || unsaved.rate || unsaved.quality || unsaved.dsd;
+                    let saved_dsd = std::mem::replace(&mut this.saved_dsd, this.dsd.clone());
+                    this.saving.then(|| {
+                        let dsd = this.dsd.clone();
+                        (this.output.clone(), this.quality, saved_dsd, dsd, unsaved)
+                    })
+                })
+            {
                 let store = store.clone();
                 let saved = cx
                     .background_spawn(async move {
@@ -288,6 +326,9 @@ impl AudioSettings {
                         }
                         if unsaved.quality {
                             store.save_resampling_quality(quality)?;
+                        }
+                        if unsaved.dsd {
+                            store.save_dsd_changes(&saved_dsd, &dsd)?;
                         }
                         Ok::<_, config::Error>(())
                     })
@@ -309,61 +350,45 @@ fn read_saved_output() -> (
     Option<config::Store>,
     OutputSettings,
     ResamplingQuality,
+    DsdOutput,
     Option<SharedString>,
 ) {
+    let unread = |store, error| {
+        let quality = ResamplingQuality::default();
+        let dsd = DsdOutput::default();
+        let output = OutputSettings::from_config(None, None, quality, &dsd);
+        (store, output, quality, dsd, Some(error))
+    };
     let store = match config::Store::user() {
         Ok(store) => store,
         Err(error) => {
-            let error = format!("Audio settings won't be saved: {error}.").into();
-            let quality = ResamplingQuality::default();
-            return (None, output_with(None, None, quality), quality, Some(error));
+            return unread(
+                None,
+                format!("Audio settings won't be saved: {error}.").into(),
+            );
         }
     };
     match (
         store.output_device(),
         store.sample_rate(),
         store.resampling_quality(),
+        store.dsd_output(),
     ) {
-        (Ok(device), Ok(rate), Ok(quality)) => (
-            Some(store),
-            output_with(device, rate, quality),
-            quality,
-            None,
-        ),
-        (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
+        (Ok(device), Ok(rate), Ok(quality), Ok(dsd)) => {
+            let output = OutputSettings::from_config(device, rate, quality, &dsd);
+            (Some(store), output, quality, dsd, None)
+        }
+        (Err(error), _, _, _)
+        | (_, Err(error), _, _)
+        | (_, _, Err(error), _)
+        | (_, _, _, Err(error)) => {
             let error = format!("Couldn't read the audio settings: {error}.").into();
-            let quality = ResamplingQuality::default();
-            (
-                Some(store),
-                output_with(None, None, quality),
-                quality,
-                Some(error),
-            )
+            unread(Some(store), error)
         }
     }
 }
 
-fn output_with(
-    device: Option<String>,
-    rate: Option<u32>,
-    quality: ResamplingQuality,
-) -> OutputSettings {
-    OutputSettings::new(device, rate).with_resampling(resampling_of(quality))
-}
-
-fn resampling_of(quality: ResamplingQuality) -> Resampling {
-    let window = match quality.window() {
-        ResamplingWindow::Hann => audio::ResamplingWindow::Hann,
-        ResamplingWindow::Hann2 => audio::ResamplingWindow::Hann2,
-        ResamplingWindow::Blackman => audio::ResamplingWindow::Blackman,
-        ResamplingWindow::Blackman2 => audio::ResamplingWindow::Blackman2,
-        ResamplingWindow::BlackmanHarris => audio::ResamplingWindow::BlackmanHarris,
-        ResamplingWindow::BlackmanHarris2 => audio::ResamplingWindow::BlackmanHarris2,
-    };
-    Resampling::new(quality.fft_size(), window)
-}
-
-fn window_label(window: ResamplingWindow) -> &'static str {
+pub(crate) fn window_label(window: ResamplingWindow) -> &'static str {
     match window {
         ResamplingWindow::Hann => "Hann",
         ResamplingWindow::Hann2 => "Hann²",
@@ -421,7 +446,7 @@ fn rate_options(rates: Option<&[u32]>, fixed: Option<u32>) -> Vec<(SharedString,
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -430,16 +455,18 @@ mod tests {
     use super::*;
 
     /// `AudioSettings::new` would list the machine's devices.
-    fn settings_saving_to(
+    pub(crate) fn settings_saving_to(
         store: &config::Store,
         cx: &mut TestAppContext,
     ) -> (Entity<AudioSettings>, Rc<Cell<u32>>, gpui_kit::Subscription) {
         let quality = ResamplingQuality::default();
         let settings = cx.new(|_| {
+            let dsd = DsdOutput::default();
             AudioSettings::with(
                 Some(store.clone()),
-                output_with(None, None, quality),
+                OutputSettings::from_config(None, None, quality, &dsd),
                 quality,
+                dsd,
                 None,
             )
         });

@@ -8,11 +8,18 @@ license.workspace = true
 
 [dependencies]
 async-channel.workspace = true
+config.workspace = true
 cpal.workspace = true
+dsd.workspace = true
 rtrb.workspace = true
 rubato.workspace = true
 symphonia.workspace = true
 thiserror.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-audio.workspace = true
+objc2-core-audio-types.workspace = true
+objc2-core-foundation.workspace = true
 
 [lints]
 workspace = true

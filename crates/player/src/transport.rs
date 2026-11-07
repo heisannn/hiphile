@@ -324,6 +324,7 @@ impl RenderOnce for VolumeControl {
             (IconName::Volume2, "Mute")
         };
         let slider = player.volume_state().clone();
+        let is_locked = player.is_volume_locked();
         let owner = self.player.clone();
         h_flex()
             .debug_selector(|| "volume-control".to_owned())
@@ -333,14 +334,25 @@ impl RenderOnce for VolumeControl {
                 Button::new("toggle-mute")
                     .ghost()
                     .small()
+                    .disabled(is_locked)
                     .icon(icon)
                     .accessibility_label(label)
-                    .tooltip_with_action(label, &crate::ToggleMute, None)
+                    .map(|button| {
+                        if is_locked {
+                            button.tooltip("Set the volume on the DAC while playing DSD")
+                        } else {
+                            button.tooltip_with_action(label, &crate::ToggleMute, None)
+                        }
+                    })
                     .on_click(move |_, _, cx| {
                         owner.update(cx, |player, cx| player.toggle_mute(cx));
                     }),
             )
-            .child(h_flex().w_20().child(HoverSlider::new(&slider, "Volume")))
+            .child(
+                h_flex()
+                    .w_20()
+                    .child(HoverSlider::new(&slider, "Volume").disabled(is_locked)),
+            )
     }
 }
 

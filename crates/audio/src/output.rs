@@ -1,22 +1,15 @@
 use cpal::traits::DeviceTrait;
 
-use crate::Error;
+use crate::{Error, dop_device};
+
+const DOP_CHANNELS: u16 = 2;
 
 /// Rates a device can be fixed at, among those it supports.
 const STANDARD_RATES: [u32; 10] = [
     44_100, 48_000, 88_200, 96_000, 176_400, 192_000, 352_800, 384_000, 705_600, 768_000,
 ];
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ResamplingWindow {
-    Hann,
-    Hann2,
-    Blackman,
-    Blackman2,
-    BlackmanHarris,
-    #[default]
-    BlackmanHarris2,
-}
+pub use dsd::ResamplingWindow;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Resampling {
@@ -49,11 +42,19 @@ impl Default for Resampling {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct OutputSettings {
     device: Option<String>,
     fixed_rate: Option<u32>,
     resampling: Resampling,
+    dop: Option<dsd::Settings>,
+    dop_fades_in: bool,
+}
+
+impl Default for OutputSettings {
+    fn default() -> Self {
+        Self::new(None, None)
+    }
 }
 
 impl OutputSettings {
@@ -65,12 +66,36 @@ impl OutputSettings {
             device,
             fixed_rate,
             resampling: Resampling::default(),
+            dop: None,
+            dop_fades_in: true,
         }
     }
 
     pub fn with_resampling(mut self, resampling: Resampling) -> Self {
         self.resampling = resampling;
         self
+    }
+
+    /// Plays as DoP, at full level, on the named device. With no device named
+    /// this stays PCM: the system's default can change to one that makes loud
+    /// noise of DoP.
+    pub fn with_dop(mut self, dop: Option<dsd::Settings>) -> Self {
+        self.dop = dop.filter(|_| self.device.is_some());
+        self
+    }
+
+    /// `false` starts DoP at full level where it would rise from silence.
+    pub fn with_dop_fade_in(mut self, fades_in: bool) -> Self {
+        self.dop_fades_in = fades_in;
+        self
+    }
+
+    pub fn dop_fades_in(&self) -> bool {
+        self.dop_fades_in
+    }
+
+    pub fn dop(&self) -> Option<&dsd::Settings> {
+        self.dop.as_ref()
     }
 
     pub fn device(&self) -> Option<&str> {
@@ -85,8 +110,11 @@ impl OutputSettings {
         self.resampling
     }
 
+    /// DoP runs at the rate its settings call for, whatever the fixed rate.
     pub(crate) fn has_same_device_and_rate(&self, other: &Self) -> bool {
-        self.device == other.device && self.fixed_rate == other.fixed_rate
+        self.device == other.device
+            && self.dop == other.dop
+            && (self.dop.is_some() || self.fixed_rate == other.fixed_rate)
     }
 }
 
@@ -123,12 +151,54 @@ pub(crate) fn config_ranges(device: &cpal::Device) -> Result<Vec<ConfigRange>, E
         .collect())
 }
 
+/// What `device` offers for `settings`, to be planned with [`plan_for`].
+pub(crate) fn ranges_for(
+    device: &cpal::Device,
+    settings: &OutputSettings,
+) -> Result<Vec<ConfigRange>, Error> {
+    if settings.dop().is_none() {
+        return config_ranges(device);
+    }
+    Ok(dop_device::frame_rates(device)
+        .into_iter()
+        .map(|rate| ConfigRange {
+            channels: DOP_CHANNELS,
+            min_rate: rate,
+            max_rate: rate,
+        })
+        .collect())
+}
+
 /// The standard rates within `ranges`, lowest first.
 pub(crate) fn standard_rates(ranges: &[ConfigRange]) -> Vec<u32> {
     STANDARD_RATES
         .into_iter()
         .filter(|rate| ranges.iter().any(|range| range.contains(*rate)))
         .collect()
+}
+
+pub(crate) fn plan_for(
+    settings: &OutputSettings,
+    ranges: &[ConfigRange],
+    device_rate: u32,
+    source: Spec,
+) -> Option<Spec> {
+    match settings.dop() {
+        Some(dop) => plan_dop(ranges, source.rate, dop),
+        None => plan(ranges, device_rate, source, settings.fixed_rate()),
+    }
+}
+
+/// A device that lacks the first rate gets the other family's, which is better
+/// than failing or dropping to another DSD rate unasked.
+fn plan_dop(ranges: &[ConfigRange], source_rate: u32, dop: &dsd::Settings) -> Option<Spec> {
+    dop.frame_rates_for(source_rate)
+        .into_iter()
+        .find(|rate| ranges.iter().any(|range| range.contains(*rate)))
+        .map(|rate| Spec {
+            rate,
+            channels: DOP_CHANNELS,
+        })
 }
 
 /// `fixed_rate`, or otherwise the source rate, wins whenever the device
@@ -273,6 +343,67 @@ mod tests {
             [384_000, 705_600, 768_000]
         );
         assert!(standard_rates(&[]).is_empty());
+    }
+
+    #[test]
+    fn dop_takes_the_standard_rate_and_then_the_other_family() {
+        let both = [range(2, 176_400, 176_400), range(2, 192_000, 192_000)];
+        let only_48 = [range(2, 192_000, 192_000)];
+        let at =
+            |rate| dsd::Settings::new(rate, dsd::Filter::default(), dsd::Modulation::default());
+        let dsd64 = at(dsd::DopRate::Dsd64);
+        assert_eq!(plan_dop(&both, 88_200, &dsd64), Some(spec(176_400, 2)));
+        assert_eq!(plan_dop(&both, 96_000, &dsd64), Some(spec(176_400, 2)));
+        assert_eq!(plan_dop(&only_48, 44_100, &dsd64), Some(spec(192_000, 2)));
+        assert_eq!(plan_dop(&only_48, 44_100, &at(dsd::DopRate::Dsd128)), None);
+    }
+
+    #[test]
+    fn dop_can_match_the_family_of_the_source() {
+        let both = [range(2, 176_400, 176_400), range(2, 192_000, 192_000)];
+        let matching = dsd::Settings::new(
+            dsd::DopRate::Dsd64,
+            dsd::Filter::default(),
+            dsd::Modulation::default(),
+        )
+        .with_matching_source_family(true);
+        assert_eq!(plan_dop(&both, 88_200, &matching), Some(spec(176_400, 2)));
+        assert_eq!(plan_dop(&both, 96_000, &matching), Some(spec(192_000, 2)));
+    }
+
+    #[test]
+    fn dop_needs_a_named_device() {
+        let dop = Some(dsd::Settings::default());
+        assert!(
+            OutputSettings::new(None, None)
+                .with_dop(dop)
+                .dop()
+                .is_none()
+        );
+        let named = OutputSettings::new(Some("dac".to_owned()), None).with_dop(dop);
+        assert!(named.dop().is_some());
+    }
+
+    #[test]
+    fn the_fade_makes_no_difference_to_the_stream() {
+        let on = || {
+            OutputSettings::new(Some("dac".to_owned()), None)
+                .with_dop(Some(dsd::Settings::default()))
+        };
+        let without_fade = on().with_dop_fade_in(false);
+        assert_ne!(on(), without_fade);
+        assert!(on().has_same_device_and_rate(&without_fade));
+    }
+
+    #[test]
+    fn a_fixed_rate_makes_no_difference_to_dop() {
+        let on = |rate| {
+            OutputSettings::new(Some("dac".to_owned()), rate)
+                .with_dop(Some(dsd::Settings::default()))
+        };
+        assert!(on(None).has_same_device_and_rate(&on(Some(48_000))));
+        let pcm = |rate| OutputSettings::new(Some("dac".to_owned()), rate);
+        assert!(!pcm(None).has_same_device_and_rate(&pcm(Some(48_000))));
     }
 
     #[test]

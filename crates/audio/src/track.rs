@@ -14,6 +14,7 @@ pub struct Track {
     pub(crate) cancel: Option<Cancel>,
     pub(crate) start_at: Duration,
     pub(crate) start_paused: bool,
+    pub(crate) fades_in: bool,
 }
 
 impl Track {
@@ -32,6 +33,7 @@ impl Track {
             cancel: None,
             start_at: Duration::ZERO,
             start_paused: false,
+            fades_in: false,
         }
     }
 
@@ -46,6 +48,7 @@ impl Track {
             cancel: None,
             start_at: Duration::ZERO,
             start_paused: false,
+            fades_in: false,
         }
     }
 
@@ -56,6 +59,13 @@ impl Track {
 
     pub fn start_paused(mut self, paused: bool) -> Self {
         self.start_paused = paused;
+        self
+    }
+
+    /// Raises the level from silence when playing as DoP, whose level cannot
+    /// otherwise be turned down.
+    pub fn fade_in(mut self, fades_in: bool) -> Self {
+        self.fades_in = fades_in;
         self
     }
 

@@ -1,7 +1,7 @@
 use cpal::traits::{DeviceTrait, HostTrait};
 
-use crate::Error;
 use crate::output;
+use crate::{Error, dop_device};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutputDevice {
@@ -9,6 +9,7 @@ pub struct OutputDevice {
     name: String,
     sample_rate: Option<u32>,
     sample_rates: Vec<u32>,
+    dop_rates: Vec<u32>,
     is_default: bool,
 }
 
@@ -31,6 +32,12 @@ impl OutputDevice {
     /// The standard rates the device can run at, lowest first.
     pub fn sample_rates(&self) -> &[u32] {
         &self.sample_rates
+    }
+
+    /// The DoP rates at which frames would reach the device intact. Says
+    /// nothing about whether it decodes them.
+    pub fn dop_rates(&self) -> &[u32] {
+        &self.dop_rates
     }
 
     pub fn is_default(&self) -> bool {
@@ -60,6 +67,7 @@ pub fn output_devices() -> Result<Vec<OutputDevice>, Error> {
                 name: device_name(&device),
                 sample_rate,
                 sample_rates,
+                dop_rates: dop_device::frame_rates(&device),
                 is_default,
             }
         })

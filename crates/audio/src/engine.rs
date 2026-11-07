@@ -8,6 +8,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
 use crate::convert::Converter;
 use crate::device::device_name;
+use crate::dop_device::Exclusive;
 use crate::feed::{Feed, Item, Opening, Polled};
 use crate::output::{self, ConfigRange, OutputSettings, Spec};
 use crate::track::Cancel;
@@ -37,6 +38,16 @@ const TAIL_TIMEOUT: Duration = Duration::from_secs(2);
 /// External DACs can take well over cpal's default of a second, and a stream
 /// that gives up leaves the device switching anyway.
 const RATE_SWITCH_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Silence before the first DoP frames of a stream, since a DAC takes a moment
+/// to lock onto DoP and whatever comes before that is lost, and no device
+/// reports when it has. A FiiO K9 at DSD256 still lost a few hundred
+/// milliseconds after 250 ms.
+const DOP_LEAD_IN: Duration = Duration::from_secs(1);
+/// How long the sound rises after DoP takes over from PCM, whose volume may
+/// have been far below full level.
+const DOP_FADE_IN: Duration = Duration::from_secs(3);
+const DOP_CHANNELS: u16 = 2;
 
 /// Serializes switching device rates across engines in this process, so one
 /// engine restoring a rate cannot interleave with another opening a stream.
@@ -83,6 +94,7 @@ pub struct PlaybackFormat {
     source_channels: u16,
     output_rate: u32,
     output_channels: u16,
+    dop: Option<dsd::DopRate>,
     duration: Option<Duration>,
 }
 
@@ -107,8 +119,16 @@ impl PlaybackFormat {
         self.output_channels
     }
 
+    /// The DSD rate, when the output is DoP. [`Self::output_rate`] is then the
+    /// rate of the frames.
+    pub fn dop_rate(&self) -> Option<dsd::DopRate> {
+        self.dop
+    }
+
+    /// PCM going to the device at another rate. DoP is not counted, as it
+    /// always is converted.
     pub fn is_resampled(&self) -> bool {
-        self.source_rate != self.output_rate
+        self.dop.is_none() && self.source_rate != self.output_rate
     }
 
     pub fn duration(&self) -> Option<Duration> {
@@ -465,7 +485,9 @@ fn serve(
             &emit,
         );
         let playing = current.as_ref().is_some_and(|playback| !playback.paused);
-        let timeout = if playing || pending.is_some() {
+        let timeout = if current.as_ref().is_some_and(Playback::has_more_to_fill) {
+            Some(Duration::ZERO)
+        } else if playing || pending.is_some() {
             Some(FILL_INTERVAL)
         } else {
             idle_since
@@ -561,6 +583,12 @@ fn serve(
                 Ok(())
             }
             Some(Command::SetOutput(settings)) => {
+                if settings.dop().is_some()
+                    && output.dop().is_none()
+                    && let Some(pending) = &mut pending
+                {
+                    pending.start.fades_in = true;
+                }
                 output = settings;
                 return_to_sounding(&mut current, &mut next, shared, &emit);
                 current.take().map_or(Ok(()), |playback| {
@@ -652,6 +680,7 @@ fn serve(
             let generation = playback.generation;
             next = next.and_then(|next| playback.join(next, &output, shared));
             let fill = playback.fill(shared);
+            let was_fading = playback.converter.is_fading();
             if matches!(fill, Ok(Fill::Playing)) {
                 continue;
             }
@@ -679,7 +708,10 @@ fn serve(
                         emit(generation, EventKind::Ended { next });
                         pending = Some(Pending {
                             track: following,
-                            start: Start::BEGINNING,
+                            start: Start {
+                                fades_in: was_fading,
+                                ..Start::BEGINNING
+                            },
                         });
                     }
                 },
@@ -874,11 +906,13 @@ impl Pending {
     fn load(generation: Generation, track: Track) -> Self {
         let position = track.start_at;
         let paused = track.start_paused;
+        let fades_in = track.fades_in;
         let mut pending = Self {
             track: Next::open(generation, track),
             start: Start {
-                position: Duration::ZERO,
                 paused,
+                fades_in,
+                ..Start::BEGINNING
             },
         };
         if !position.is_zero() {
@@ -1034,18 +1068,22 @@ fn keep_device_rate(
     }
     OutputSettings::new(output.device().map(str::to_owned), Some(device_rate))
         .with_resampling(output.resampling())
+        .with_dop(output.dop().copied())
+        .with_dop_fade_in(output.dop_fades_in())
 }
 
 #[derive(Clone, Copy)]
 struct Start {
     position: Duration,
     paused: bool,
+    fades_in: bool,
 }
 
 impl Start {
     const BEGINNING: Self = Self {
         position: Duration::ZERO,
         paused: false,
+        fades_in: false,
     };
 }
 
@@ -1078,6 +1116,9 @@ struct Playback {
     generation: Generation,
     /// The generation the stream was opened for, by which its errors name it.
     opened_for: Generation,
+    /// Set while paused on DoP, whose stream keeps running with DoP silence so
+    /// that the DAC stays locked on it.
+    dop_paused: Option<Arc<AtomicBool>>,
     /// The device's configurations, to tell whether a next track fits.
     ranges: Vec<ConfigRange>,
     joined: Option<Joined>,
@@ -1094,16 +1135,20 @@ struct Playback {
     emptied_at: Option<Instant>,
     /// Samples ever written to the ring buffer.
     written: u64,
+    out_of_time: bool,
     /// The audio callback drops samples numbered below this instead of
     /// playing them: what was buffered before a seek.
     flush_until: Arc<AtomicU64>,
     stream: cpal::Stream,
+    /// Dropped after the stream, which is playing on what it holds.
+    exclusive: Option<Exclusive>,
 }
 
 impl Playback {
-    /// A joined track can have a resampler the sounding one does not.
+    /// A joined track can have a resampler the sounding one does not. DoP has
+    /// none, whichever track it is.
     fn may_resample(&self) -> bool {
-        self.format.is_resampled() || self.joined.is_some()
+        self.format.dop.is_none() && (self.format.is_resampled() || self.joined.is_some())
     }
 
     /// Goes on from the same position on `settings`, paused if it was.
@@ -1117,15 +1162,18 @@ impl Playback {
         let start = Start {
             position: shared.position(),
             paused: self.paused,
+            fades_in: settings.dop().is_some(),
         };
         let Self {
             feed,
             generation,
             stream,
+            exclusive,
             ..
         } = self;
         // Release the device before opening it again
         drop(stream);
+        drop(exclusive);
         feed.seek(start.position);
         Self::begin(feed, start, generation, settings, shared, commands, restore)
     }
@@ -1170,8 +1218,15 @@ impl Playback {
             commands,
             restore,
         )?;
-        // Whatever is ready by now, so the first callbacks need not be silent
+        if start.fades_in && settings.dop_fades_in() {
+            playback.converter.fade_in(DOP_FADE_IN);
+        }
+        // Whatever is ready by now, so the first callbacks need not be silent.
+        // Nothing takes from the ring buffer yet, so this ends when it is full.
         playback.fill(shared)?;
+        while playback.has_more_to_fill() {
+            playback.fill(shared)?;
+        }
         if start.paused {
             playback.pause()?;
         } else {
@@ -1200,16 +1255,24 @@ impl Playback {
         if let Some(left) = RateRestore::take_if_other(restore, device_id.as_ref()) {
             left.apply();
         }
-        let ranges = output::config_ranges(&device)?;
+        let ranges = output::ranges_for(&device, settings)?;
         // Held until the stream exists, which is when cpal switches the rate
         let setup = DEVICE_SETUP.lock().unwrap_or_else(PoisonError::into_inner);
         let device_config = device.default_output_config()?;
         let device_rate = device_config.sample_rate();
-        let output = output::plan(&ranges, device_rate, source, settings.fixed_rate())
-            .ok_or(Error::UnsupportedOutputFormat)?;
+        let dop = settings.dop().map(dsd::Settings::rate);
+        let output =
+            output::plan_for(settings, &ranges, device_rate, source).ok_or(if dop.is_some() {
+                Error::UnsupportedDopRate
+            } else {
+                Error::UnsupportedOutputFormat
+            })?;
         if let Some(device_id) = device_id {
             RateRestore::note(restore, device_id, device_config, output.rate);
         }
+        let exclusive = dop
+            .map(|_| Exclusive::take(&device, output.rate))
+            .transpose()?;
         let config = cpal::StreamConfig {
             channels: output.channels,
             sample_rate: output.rate,
@@ -1227,41 +1290,58 @@ impl Playback {
         shared.output_rate.store(output.rate, Ordering::Relaxed);
         let sounding = Arc::new(AtomicBool::new(false));
         let flush_until = Arc::new(AtomicU64::new(0));
-        let stream = device.build_output_stream(
-            config,
-            output_callback(
-                consumer,
-                channels,
-                output.rate,
-                Arc::clone(shared),
-                Arc::clone(&sounding),
-                Arc::clone(&flush_until),
-                Arc::clone(&next_at),
-            ),
-            {
-                let commands = commands.clone();
-                move |error: cpal::Error| {
-                    if matches!(error.kind(), cpal::ErrorKind::StreamInvalidated) {
-                        commands.send(Command::StreamInvalidated(generation)).ok();
-                    } else if is_fatal(error.kind()) {
-                        commands
-                            .send(Command::OutputFailed(generation, error.to_string()))
-                            .ok();
-                    }
+        let reader = RingReader::new(
+            consumer,
+            channels,
+            output.rate,
+            Arc::clone(shared),
+            Arc::clone(&sounding),
+            Arc::clone(&flush_until),
+            Arc::clone(&next_at),
+        );
+        let on_error = {
+            let commands = commands.clone();
+            move |error: cpal::Error| {
+                if matches!(error.kind(), cpal::ErrorKind::StreamInvalidated) {
+                    commands.send(Command::StreamInvalidated(generation)).ok();
+                } else if is_fatal(error.kind()) {
+                    commands
+                        .send(Command::OutputFailed(generation, error.to_string()))
+                        .ok();
                 }
-            },
-            Some(RATE_SWITCH_TIMEOUT),
-        )?;
+            }
+        };
+        let dop_paused = dop.map(|_| Arc::new(AtomicBool::new(false)));
+        let stream = match &dop_paused {
+            None => device.build_output_stream(
+                config,
+                output_callback(reader, Arc::clone(shared)),
+                on_error,
+                Some(RATE_SWITCH_TIMEOUT),
+            )?,
+            // Integers, as asking for them is what gets cpal to set an
+            // integer-only device to more than 16 bits
+            Some(paused) => device.build_output_stream(
+                config,
+                dop_callback(reader, output.rate, Arc::clone(paused)),
+                on_error,
+                Some(RATE_SWITCH_TIMEOUT),
+            )?,
+        };
+        if let Some(exclusive) = &exclusive {
+            exclusive.confirm(output.rate)?;
+        }
         drop(setup);
 
         Ok(Self {
-            converter: Converter::new(source, output, settings.resampling())?,
+            converter: Converter::for_settings(source, output, settings)?,
             format: PlaybackFormat {
                 device: device_name(&device),
                 source_rate: source.rate,
                 source_channels: source.channels,
                 output_rate: output.rate,
                 output_channels: output.channels,
+                dop,
                 duration: feed.duration(),
             },
             feed,
@@ -1276,6 +1356,7 @@ impl Playback {
             hold: FIRST_HOLD,
             generation,
             opened_for: generation,
+            dop_paused,
             ranges,
             joined: None,
             failure: None,
@@ -1283,18 +1364,29 @@ impl Playback {
             sounding,
             emptied_at: None,
             written: 0,
+            out_of_time: false,
             flush_until,
             stream,
+            exclusive,
         })
     }
 
     fn pause(&mut self) -> Result<(), Error> {
-        self.stream.pause()?;
+        match &self.dop_paused {
+            None => self.stream.pause()?,
+            Some(dop_paused) => {
+                dop_paused.store(true, Ordering::Release);
+                self.stream.play()?;
+            }
+        }
         self.paused = true;
         Ok(())
     }
 
     fn resume(&mut self) -> Result<(), Error> {
+        if let Some(dop_paused) = &self.dop_paused {
+            dop_paused.store(false, Ordering::Release);
+        }
         self.stream.play()?;
         self.paused = false;
         Ok(())
@@ -1351,12 +1443,8 @@ impl Playback {
         };
         let feed = match next.state {
             NextState::Ready(feed)
-                if output::plan(
-                    &self.ranges,
-                    output.rate,
-                    feed.spec(),
-                    settings.fixed_rate(),
-                ) == Some(output)
+                if output::plan_for(settings, &self.ranges, output.rate, feed.spec())
+                    == Some(output)
                     // Otherwise it would sound what little has arrived, and
                     // then go silent. It goes on at its turn instead.
                     && feed.has_ahead(FIRST_HOLD) =>
@@ -1367,7 +1455,7 @@ impl Playback {
         };
         let source = feed.spec();
         let converter = if self.finished {
-            match Converter::new(source, output, settings.resampling()) {
+            match self.converter.following(source, settings) {
                 Ok(converter) => Some(converter),
                 Err(error) => {
                     let state = NextState::Failed(error);
@@ -1390,6 +1478,7 @@ impl Playback {
             source_channels: source.channels,
             output_rate: output.rate,
             output_channels: output.channels,
+            dop: self.format.dop,
             duration: feed.duration(),
         };
         self.joined = Some(Joined {
@@ -1443,7 +1532,14 @@ impl Playback {
         })
     }
 
+    /// Whether the last fill stopped for time rather than for want of room or
+    /// data.
+    fn has_more_to_fill(&self) -> bool {
+        self.out_of_time && !self.paused
+    }
+
     fn fill(&mut self, shared: &Shared) -> Result<Fill, Error> {
+        self.out_of_time = false;
         // A next track's failure is not the sounding track's, whose last
         // samples may still be on their way here.
         if self.joined.is_some() && self.failure.is_some() {
@@ -1517,6 +1613,7 @@ impl Playback {
     }
 
     fn write_ahead(&mut self, shared: &Shared) -> Result<Fill, Error> {
+        let started = Instant::now();
         loop {
             if !self.write_pending() {
                 return Ok(Fill::Playing);
@@ -1532,6 +1629,12 @@ impl Playback {
                 let played =
                     !self.sounding.load(Ordering::Acquire) || emptied_at.elapsed() >= TAIL_TIMEOUT;
                 return Ok(if played { Fill::Drained } else { Fill::Playing });
+            }
+            // Encoding can take longer than the sound, and commands must get
+            // through all the same
+            if started.elapsed() >= FILL_INTERVAL {
+                self.out_of_time = true;
+                return Ok(Fill::Playing);
             }
             self.pending.clear();
             self.pending_ix = 0;
@@ -1567,63 +1670,134 @@ impl Playback {
     }
 }
 
-/// The real-time callback: copies whole frames out of the ring buffer and
-/// fills any shortfall with silence. No allocation, locking, or blocking.
+/// The side of the ring buffer in the real-time callback. No allocation,
+/// locking, or blocking.
 ///
 /// `sounding` is true from the moment samples go to the device until a later
 /// callback starts after the device's predicted time for playing the last of
 /// them. Samples numbered below `flush_until` are dropped unplayed. Reaching
 /// `next_at` restarts the position counter, as that sample starts a track.
-fn output_callback(
-    mut consumer: rtrb::Consumer<f32>,
+struct RingReader {
+    consumer: rtrb::Consumer<f32>,
     channels: usize,
     rate: u32,
     shared: Arc<Shared>,
     sounding: Arc<AtomicBool>,
     flush_until: Arc<AtomicU64>,
     next_at: Arc<AtomicU64>,
-) -> impl FnMut(&mut [f32], &cpal::OutputCallbackInfo) + Send + 'static {
-    // When the device will have played the last sample written so far
-    let mut played_by: Option<cpal::StreamInstant> = None;
-    // Samples taken out of the ring buffer, played or dropped
-    let mut read: u64 = 0;
-    move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
-        let stale = flush_until.load(Ordering::Acquire).saturating_sub(read);
+    /// When the device will have played the last sample written so far
+    played_by: Option<cpal::StreamInstant>,
+    /// Samples taken out of the ring buffer, played or dropped
+    read: u64,
+}
+
+impl RingReader {
+    fn new(
+        consumer: rtrb::Consumer<f32>,
+        channels: usize,
+        rate: u32,
+        shared: Arc<Shared>,
+        sounding: Arc<AtomicBool>,
+        flush_until: Arc<AtomicU64>,
+        next_at: Arc<AtomicU64>,
+    ) -> Self {
+        Self {
+            consumer,
+            channels,
+            rate,
+            shared,
+            sounding,
+            flush_until,
+            next_at,
+            played_by: None,
+            read: 0,
+        }
+    }
+
+    /// Takes whole frames of up to `room` samples, handing them to `copy` in
+    /// two parts as the ring buffer holds them, and returns how many.
+    fn take(
+        &mut self,
+        room: usize,
+        info: &cpal::OutputCallbackInfo,
+        copy: impl FnOnce(&[f32], &[f32]),
+    ) -> usize {
+        let stale = self
+            .flush_until
+            .load(Ordering::Acquire)
+            .saturating_sub(self.read);
         if stale > 0 {
             let len = usize::try_from(stale)
                 .unwrap_or(usize::MAX)
-                .min(consumer.slots());
-            if let Ok(chunk) = consumer.read_chunk(len) {
+                .min(self.consumer.slots());
+            if let Ok(chunk) = self.consumer.read_chunk(len) {
                 chunk.commit_all();
-                read += len as u64;
+                self.read += len as u64;
             }
         }
         let timestamp = info.timestamp();
-        let available = consumer.slots().min(data.len());
+        let available = self.consumer.slots().min(room);
         // Whole frames only, so an underrun never shifts the channel order
-        let len = available - available % channels;
+        let len = available - available % self.channels;
         let mut written = 0;
-        if let Ok(chunk) = consumer.read_chunk(len) {
+        if let Ok(chunk) = self.consumer.read_chunk(len) {
             let (first, second) = chunk.as_slices();
-            data[..first.len()].copy_from_slice(first);
-            data[first.len()..first.len() + second.len()].copy_from_slice(second);
+            copy(first, second);
             written = first.len() + second.len();
-            read += written as u64;
+            self.read += written as u64;
             if written > 0 {
-                let frames = (written / channels) as f64;
-                played_by = timestamp
+                let frames = (written / self.channels) as f64;
+                self.played_by = timestamp
                     .playback
-                    .checked_add(Duration::from_secs_f64(frames / f64::from(rate)));
+                    .checked_add(Duration::from_secs_f64(frames / f64::from(self.rate)));
                 // Before the commit: whoever sees the ring buffer empty must
                 // also see these samples as still sounding.
-                sounding.store(true, Ordering::Release);
+                self.sounding.store(true, Ordering::Release);
             }
             chunk.commit_all();
         }
-        if written == 0 && played_by.is_some_and(|played_by| timestamp.callback >= played_by) {
-            played_by = None;
-            sounding.store(false, Ordering::Release);
+        if written == 0
+            && self
+                .played_by
+                .is_some_and(|played_by| timestamp.callback >= played_by)
+        {
+            self.played_by = None;
+            self.sounding.store(false, Ordering::Release);
         }
+        written
+    }
+
+    /// Moves the position on by the `written` samples just handed over.
+    fn count(&mut self, written: usize) {
+        let next_starts = self.next_at.load(Ordering::Acquire);
+        let crossed = next_starts != 0
+            && self.read >= next_starts
+            && self
+                .next_at
+                .compare_exchange(next_starts, 0, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok();
+        if crossed {
+            let frames = (self.read - next_starts) / self.channels as u64;
+            self.shared.frames_played.store(frames, Ordering::Relaxed);
+        } else {
+            self.shared
+                .frames_played
+                .fetch_add((written / self.channels) as u64, Ordering::Relaxed);
+        }
+    }
+}
+
+/// The real-time callback for PCM: copies frames out of the ring buffer and
+/// fills any shortfall with silence.
+fn output_callback(
+    mut reader: RingReader,
+    shared: Arc<Shared>,
+) -> impl FnMut(&mut [f32], &cpal::OutputCallbackInfo) + Send + 'static {
+    move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
+        let written = reader.take(data.len(), info, |first, second| {
+            data[..first.len()].copy_from_slice(first);
+            data[first.len()..first.len() + second.len()].copy_from_slice(second);
+        });
         let volume = f32::from_bits(shared.volume.load(Ordering::Relaxed));
         if volume != 1.0 {
             for sample in &mut data[..written] {
@@ -1631,20 +1805,49 @@ fn output_callback(
             }
         }
         data[written..].fill(0.0);
-        let next_starts = next_at.load(Ordering::Acquire);
-        let crossed = next_starts != 0
-            && read >= next_starts
-            && next_at
-                .compare_exchange(next_starts, 0, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok();
-        if crossed {
-            let frames = (read - next_starts) / channels as u64;
-            shared.frames_played.store(frames, Ordering::Relaxed);
+        reader.count(written);
+    }
+}
+
+/// The real-time callback for DoP: stamps the markers here rather than where
+/// the words are made, so that no flush or underrun can break their
+/// alternation. A DAC takes a broken one for PCM, at full level. There is no
+/// volume, which would turn the words into noise, and all silence is DSD
+/// silence.
+fn dop_callback(
+    mut reader: RingReader,
+    rate: u32,
+    paused: Arc<AtomicBool>,
+) -> impl FnMut(&mut [i32], &cpal::OutputCallbackInfo) + Send + 'static {
+    let mut lead_in_samples =
+        (DOP_LEAD_IN.as_secs_f64() * f64::from(rate)) as usize * usize::from(DOP_CHANNELS);
+    let mut marker_ix = 0;
+    move |data: &mut [i32], info: &cpal::OutputCallbackInfo| {
+        let lead = lead_in_samples.min(data.len());
+        lead_in_samples -= lead;
+        let (silent, rest) = data.split_at_mut(lead);
+        let room = if paused.load(Ordering::Acquire) {
+            0
         } else {
-            shared
-                .frames_played
-                .fetch_add((written / channels) as u64, Ordering::Relaxed);
+            rest.len()
+        };
+        let written = reader.take(room, info, |first, second| {
+            for (slot, word) in rest.iter_mut().zip(first.iter().chain(second)) {
+                // Exact: these are whole numbers that came from a `u16`
+                *slot = *word as i32;
+            }
+        });
+        silent.fill(i32::from(dsd::SILENCE_WORD));
+        rest[written..].fill(i32::from(dsd::SILENCE_WORD));
+        for frame in data.chunks_exact_mut(usize::from(DOP_CHANNELS)) {
+            let marker = dsd::DOP_MARKERS[marker_ix];
+            marker_ix = 1 - marker_ix;
+            for sample in frame {
+                let [_, _, high, low] = sample.to_be_bytes();
+                *sample = i32::from_be_bytes([marker, high, low, 0]);
+            }
         }
+        reader.count(written);
     }
 }
 
@@ -2767,13 +2970,16 @@ mod tests {
         let sounding = Arc::new(AtomicBool::new(false));
         // 1 kHz stereo: one frame per millisecond
         let mut callback = output_callback(
-            consumer,
-            2,
-            1_000,
+            RingReader::new(
+                consumer,
+                2,
+                1_000,
+                shared.clone(),
+                sounding.clone(),
+                Arc::default(),
+                Arc::default(),
+            ),
             shared.clone(),
-            sounding.clone(),
-            Arc::default(),
-            Arc::default(),
         );
         for sample in [0.5; 8] {
             producer.push(sample).unwrap();
@@ -2801,13 +3007,16 @@ mod tests {
         let shared = Arc::new(Shared::new());
         let flush_until = Arc::new(AtomicU64::new(0));
         let mut callback = output_callback(
-            consumer,
-            2,
-            1_000,
+            RingReader::new(
+                consumer,
+                2,
+                1_000,
+                shared.clone(),
+                Arc::default(),
+                flush_until.clone(),
+                Arc::default(),
+            ),
             shared.clone(),
-            Arc::default(),
-            flush_until.clone(),
-            Arc::default(),
         );
         for sample in [0.1; 6] {
             producer.push(sample).unwrap();
@@ -2835,13 +3044,16 @@ mod tests {
         let shared = Arc::new(Shared::new());
         let next_at = Arc::new(AtomicU64::new(0));
         let mut callback = output_callback(
-            consumer,
-            2,
-            1_000,
+            RingReader::new(
+                consumer,
+                2,
+                1_000,
+                shared.clone(),
+                Arc::default(),
+                Arc::default(),
+                next_at.clone(),
+            ),
             shared.clone(),
-            Arc::default(),
-            Arc::default(),
-            next_at.clone(),
         );
         let frames = || shared.frames_played.load(Ordering::Relaxed);
         for sample in [0.1; 8] {
@@ -2881,13 +3093,16 @@ mod tests {
         let shared = Arc::new(Shared::new());
         let next_at = Arc::new(AtomicU64::new(0));
         let mut callback = output_callback(
-            consumer,
-            2,
-            1_000,
+            RingReader::new(
+                consumer,
+                2,
+                1_000,
+                shared.clone(),
+                Arc::default(),
+                Arc::default(),
+                next_at.clone(),
+            ),
             shared.clone(),
-            Arc::default(),
-            Arc::default(),
-            next_at.clone(),
         );
         for sample in [0.1; 4] {
             producer.push(sample).unwrap();
@@ -2906,13 +3121,16 @@ mod tests {
         let shared = Arc::new(Shared::new());
         let sounding = Arc::new(AtomicBool::new(false));
         let mut callback = output_callback(
-            consumer,
-            2,
-            1_000,
+            RingReader::new(
+                consumer,
+                2,
+                1_000,
+                shared.clone(),
+                sounding,
+                Arc::default(),
+                Arc::default(),
+            ),
             shared.clone(),
-            sounding,
-            Arc::default(),
-            Arc::default(),
         );
         for sample in [0.1, 0.2, 0.3] {
             producer.push(sample).unwrap();
@@ -3067,5 +3285,609 @@ mod tests {
         let (engine, events) = Engine::spawn();
         engine.load(Track::new(Cursor::new(b"not audio".to_vec())));
         assert!(matches!(next_event(&events).kind, EventKind::Failed(_)));
+    }
+
+    fn dop_settings(id: String, rate: dsd::DopRate) -> OutputSettings {
+        let dop = dsd::Settings::new(rate, dsd::Filter::default(), dsd::Modulation::default());
+        OutputSettings::new(Some(id), None).with_dop(Some(dop))
+    }
+
+    fn record_dop(device: &cpal::Device, rate: u32) -> (cpal::Stream, Arc<Mutex<Vec<[i32; 2]>>>) {
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let config = cpal::StreamConfig {
+            channels: 2,
+            sample_rate: rate,
+            buffer_size: cpal::BufferSize::Default,
+        };
+        let stream = device
+            .build_input_stream(
+                config,
+                {
+                    let heard = heard.clone();
+                    move |data: &[i32], _: &cpal::InputCallbackInfo| {
+                        heard
+                            .lock()
+                            .unwrap()
+                            .extend_from_slice(data.as_chunks::<2>().0);
+                    }
+                },
+                |_| {},
+                Some(RATE_SWITCH_TIMEOUT),
+            )
+            .unwrap();
+        stream.play().unwrap();
+        (stream, heard)
+    }
+
+    /// The frames from when the stream started until it closed. A DoP frame is
+    /// never zero, and a loopback device can sound old data after a stream
+    /// ends, so the first zero is the end.
+    fn stream_run(heard: &[[i32; 2]]) -> &[[i32; 2]] {
+        let start = heard.iter().position(|frame| frame[0] != 0).unwrap();
+        let len = heard[start..]
+            .iter()
+            .position(|frame| frame[0] == 0)
+            .unwrap_or(heard.len() - start);
+        &heard[start..start + len]
+    }
+
+    /// Asserts that `frames` are DoP throughout and returns their words on
+    /// the left channel.
+    fn dop_words(frames: &[[i32; 2]]) -> Vec<u16> {
+        let mut last_marker = None;
+        frames
+            .iter()
+            .enumerate()
+            .map(|(index, [left, right])| {
+                let [marker, high, low, rest] = left.to_be_bytes();
+                let [right_marker, _, _, right_rest] = right.to_be_bytes();
+                assert_eq!(rest, 0, "frame {index}");
+                assert_eq!(right_rest, 0, "frame {index}");
+                assert_eq!(marker, right_marker, "frame {index}");
+                assert!(
+                    dsd::DOP_MARKERS.contains(&marker),
+                    "frame {index}: {marker:#x}"
+                );
+                assert_ne!(last_marker, Some(marker), "frame {index}");
+                last_marker = Some(marker);
+                u16::from_be_bytes([high, low])
+            })
+            .collect()
+    }
+
+    /// The amplitude and phase of `frequency` in each block of whole periods
+    /// of `words`, read as DSD bits.
+    fn tone_by_block(words: &[u16], frame_rate: u32, frequency: f64) -> Vec<(f64, f64)> {
+        let per_period = f64::from(frame_rate) / frequency;
+        let block = (per_period * 50.0).round() as usize;
+        words
+            .chunks_exact(block)
+            .enumerate()
+            .map(|(block_ix, words)| {
+                let (mut re, mut im) = (0.0, 0.0);
+                for (word_ix, word) in words.iter().enumerate() {
+                    for bit_ix in 0..16usize {
+                        let bit = if word >> (15 - bit_ix) & 1 == 1 {
+                            1.0
+                        } else {
+                            -1.0
+                        };
+                        let at = (block_ix * block + word_ix) as f64 + bit_ix as f64 / 16.0;
+                        let (sin, cos) = (std::f64::consts::TAU * at / per_period).sin_cos();
+                        re += bit * cos;
+                        im += bit * sin;
+                    }
+                }
+                let count = (block * 16) as f64;
+                (2.0 * re.hypot(im) / count, im.atan2(re))
+            })
+            .collect()
+    }
+
+    fn sounding_blocks(blocks: &[(f64, f64)]) -> &[(f64, f64)] {
+        let start = blocks.iter().position(|block| block.0 > 0.2).unwrap();
+        let end = blocks.iter().rposition(|block| block.0 > 0.2).unwrap();
+        &blocks[start..=end]
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn dop_reaches_the_device_exactly_and_at_half_modulation() {
+        let (device, id) = loopback_device();
+        let frame_rate = 176_400;
+        let (stream, heard) = record_dop(&device, frame_rate);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(dop_settings(id, dsd::DopRate::Dsd64));
+        let track = sine_wav(44_100, 0, 44_100);
+        engine.load(Track::new(Cursor::new(track)));
+        let EventKind::Started(format) = next_event(&events).kind else {
+            panic!("expected Started");
+        };
+        assert_eq!(format.output_rate(), frame_rate);
+        assert_eq!(format.dop_rate(), Some(dsd::DopRate::Dsd64));
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::Ended { next: None }
+        ));
+        thread::sleep(Duration::from_millis(300));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let words = dop_words(stream_run(&heard));
+        let silence = usize::from(dsd::SILENCE_WORD);
+        assert!(words.len() > frame_rate as usize / 2);
+        assert_eq!(usize::from(words[0]), silence);
+
+        let blocks = tone_by_block(&words, frame_rate, 997.0);
+        let sounding = sounding_blocks(&blocks);
+        // The blocks at either end are only partly the track
+        for (level, _) in &sounding[1..sounding.len() - 1] {
+            assert!((level - 0.25).abs() < 0.01, "{level}");
+        }
+        let seconds = sounding.len() as f64 * 50.0 / 997.0;
+        assert!((seconds - 1.0).abs() < 0.1, "{seconds}");
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn dop_tracks_of_one_rate_join_without_a_gap() {
+        let (device, id) = loopback_device();
+        let frame_rate = 176_400;
+        let (stream, heard) = record_dop(&device, frame_rate);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(dop_settings(id, dsd::DopRate::Dsd64));
+        engine.load(Track::new(Cursor::new(sine_wav(44_100, 0, 88_200))));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        engine.set_next(Track::new(Cursor::new(sine_wav(44_100, 88_200, 176_400))));
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::Ended { next: Some(_) }
+        ));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::Ended { next: None }
+        ));
+        thread::sleep(Duration::from_millis(300));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let words = dop_words(stream_run(&heard));
+        let blocks = tone_by_block(&words, frame_rate, 997.0);
+        let sounding = sounding_blocks(&blocks);
+        let seconds = sounding.len() as f64 * 50.0 / 997.0;
+        assert!((seconds - 4.0).abs() < 0.1, "{seconds}");
+        let middle = &sounding[1..sounding.len() - 1];
+        let first_phase = middle[0].1;
+        for (level, phase) in middle {
+            assert!((level - 0.25).abs() < 0.01, "{level}");
+            // Whole periods per block, so a lost frame would turn the phase
+            let turned = (phase - first_phase + std::f64::consts::PI)
+                .rem_euclid(std::f64::consts::TAU)
+                - std::f64::consts::PI;
+            assert!(turned.abs() < 0.02, "{turned}");
+        }
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn dop_keeps_its_frames_while_paused_and_after_a_seek() {
+        let (device, id) = loopback_device();
+        let frame_rate = 176_400;
+        let (stream, heard) = record_dop(&device, frame_rate);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(dop_settings(id, dsd::DopRate::Dsd64));
+        engine.load(Track::new(Cursor::new(sine_wav(44_100, 0, 44_100 * 6))));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        thread::sleep(Duration::from_millis(800));
+        engine.pause();
+        thread::sleep(Duration::from_millis(500));
+        let position = engine.position();
+        thread::sleep(Duration::from_millis(200));
+        assert_eq!(engine.position(), position);
+        engine.seek(Duration::from_secs(3));
+        engine.resume();
+        thread::sleep(Duration::from_millis(800));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let words = dop_words(stream_run(&heard));
+        let silent_words = words
+            .iter()
+            .filter(|word| **word == dsd::SILENCE_WORD)
+            .count();
+        assert!(silent_words > frame_rate as usize / 4, "{silent_words}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn dop_holds_the_device_and_lets_go_of_it() {
+        let (device, id) = loopback_device();
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(dop_settings(id.clone(), dsd::DopRate::Dsd64));
+        engine.load(Track::new(Cursor::new(sine_wav(44_100, 0, 44_100 * 3))));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        assert_eq!(
+            crate::dop_device::holder(&device),
+            Some(std::process::id() as i32)
+        );
+
+        engine.stop();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while crate::dop_device::holder(&device) != Some(-1) {
+            assert!(Instant::now() < deadline, "still held");
+            thread::sleep(Duration::from_millis(10));
+        }
+        engine.shutdown();
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn turning_dop_on_moves_a_paused_track_there() {
+        let (_, id) = loopback_device();
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id.clone()), None));
+        engine.load(Track::new(Cursor::new(sine_wav(44_100, 0, 44_100 * 6))));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        thread::sleep(Duration::from_millis(300));
+        engine.pause();
+        engine.set_output(dop_settings(id, dsd::DopRate::Dsd128));
+        let EventKind::OutputChanged(format) = next_event(&events).kind else {
+            panic!("expected OutputChanged");
+        };
+        assert_eq!(format.dop_rate(), Some(dsd::DopRate::Dsd128));
+        assert_eq!(format.output_rate(), 352_800);
+        engine.shutdown();
+    }
+
+    /// That a tone rises from near silence to the full level.
+    fn assert_fades_in(words: &[u16], frame_rate: u32) {
+        let blocks = tone_by_block(words, frame_rate, 997.0);
+        let first = blocks
+            .iter()
+            .find(|block| block.0 > 0.005)
+            .expect("no sound");
+        assert!(first.0 < 0.05, "starts at {}", first.0);
+        let peak = blocks.iter().fold(0.0f64, |peak, block| peak.max(block.0));
+        assert!(peak > 0.2, "only reaches {peak}");
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn new_dop_settings_while_paused_fade_in_again() {
+        let (device, id) = loopback_device();
+        let frame_rate = 176_400;
+        let settings = |order| {
+            let modulation = dsd::Modulation::default().with_order(order);
+            let dop = dsd::Settings::new(dsd::DopRate::Dsd64, dsd::Filter::default(), modulation);
+            OutputSettings::new(Some(id.clone()), None).with_dop(Some(dop))
+        };
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(settings(dsd::Order::Seven));
+        engine.load(Track::new(Cursor::new(sine_wav(44_100, 0, 44_100 * 12))));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        thread::sleep(Duration::from_millis(300));
+        engine.pause();
+        engine.set_output(settings(dsd::Order::Five));
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::OutputChanged(_)
+        ));
+        let (stream, heard) = record_dop(&device, frame_rate);
+        thread::sleep(Duration::from_millis(1_300));
+        engine.resume();
+        thread::sleep(Duration::from_millis(3_500));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        assert_fades_in(&dop_words(stream_run(&heard)), frame_rate);
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn new_resampling_leaves_dop_alone_with_a_next_track_joined() {
+        let (_, id) = loopback_device();
+        let settings = dop_settings(id, dsd::DopRate::Dsd64);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(settings.clone());
+        engine.load(Track::new(Cursor::new(sine_wav(44_100, 0, 44_100 * 2))));
+        engine.set_next(Track::new(Cursor::new(sine_wav(44_100, 0, 44_100 * 2))));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+
+        // The next track is joined only near the end of the first, so one change could miss it
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut fft_sizes = [4096, 8192].into_iter().cycle();
+        let mut ended = false;
+        while !ended {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the tracks did not end"
+            );
+            let fft_size = fft_sizes.next().unwrap();
+            engine.set_output(
+                settings
+                    .clone()
+                    .with_resampling(Resampling::new(fft_size, ResamplingWindow::default())),
+            );
+            thread::sleep(Duration::from_millis(50));
+            while let Ok(event) = events.try_recv() {
+                assert!(!matches!(event.kind, EventKind::OutputChanged(_)));
+                ended |= matches!(event.kind, EventKind::Ended { next: None });
+            }
+        }
+        engine.shutdown();
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn dop_without_its_fade_starts_at_full_level() {
+        let (device, id) = loopback_device();
+        let frame_rate = 176_400;
+        let (stream, heard) = record_dop(&device, frame_rate);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(dop_settings(id, dsd::DopRate::Dsd64).with_dop_fade_in(false));
+        engine.load(Track::new(Cursor::new(sine_wav(44_100, 0, 44_100))).fade_in(true));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::Ended { next: None }
+        ));
+        thread::sleep(Duration::from_millis(300));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let words = dop_words(stream_run(&heard));
+        let lead_in = (DOP_LEAD_IN.as_secs_f64() * f64::from(frame_rate)) as usize;
+        let (level, _) = tone_by_block(&words[lead_in..], frame_rate, 997.0)[0];
+        assert!((level - 0.25).abs() < 0.01, "{level}");
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn dop_turned_on_while_a_track_opens_fades_it_in() {
+        let (device, id) = loopback_device();
+        let frame_rate = 176_400;
+        let (stream, heard) = record_dop(&device, frame_rate);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id.clone()), None));
+        let bytes = sine_wav(44_100, 0, 44_100 * 8);
+        engine.load(slow_track(bytes, 44_100.0 * 4.0 * 4.0));
+        engine.set_output(dop_settings(id, dsd::DopRate::Dsd64));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        thread::sleep(Duration::from_millis(4_500));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        assert_fades_in(&dop_words(stream_run(&heard)), frame_rate);
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_very_short_next_track_ends_on_dop() {
+        let (_, id) = loopback_device();
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(dop_settings(id, dsd::DopRate::Dsd64));
+        engine.load(Track::new(Cursor::new(sine_wav(44_100, 0, 22_050))));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        engine.set_next(Track::new(Cursor::new(sine_wav(48_000, 0, 10))));
+        while !matches!(
+            next_event_within(&events, Duration::from_secs(8)).kind,
+            EventKind::Ended { next: None }
+        ) {}
+        engine.shutdown();
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_pause_gets_through_while_the_encoder_is_busy() {
+        let (_, id) = loopback_device();
+        let filter = dsd::Filter::Sinc {
+            length: dsd::SincLength::L2048,
+            window: dsd::ResamplingWindow::BlackmanHarris2,
+            cutoff: None,
+        };
+        let modulation = dsd::Modulation::default().with_order(dsd::Order::Nine);
+        let dop = dsd::Settings::new(dsd::DopRate::Dsd256, filter, modulation);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id), None).with_dop(Some(dop)));
+        let rate = 11_127;
+        engine.load(Track::new(Cursor::new(sine_wav(rate, 0, rate * 60))));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        thread::sleep(Duration::from_millis(2_500));
+        engine.seek(Duration::from_secs(10));
+        thread::sleep(Duration::from_millis(30));
+        let asked = Instant::now();
+        engine.pause();
+        let mut last = engine.position();
+        let mut steady_since = Instant::now();
+        while steady_since.elapsed() < Duration::from_millis(300) {
+            assert!(
+                asked.elapsed() < Duration::from_secs(5),
+                "never took effect"
+            );
+            thread::sleep(Duration::from_millis(5));
+            let position = engine.position();
+            if position != last {
+                last = position;
+                steady_since = Instant::now();
+            }
+        }
+        let took = steady_since.duration_since(asked);
+        assert!(took < Duration::from_secs(1), "{took:?}");
+        engine.shutdown();
+    }
+
+    #[test]
+    fn dop_frames_alternate_their_markers_over_every_kind_of_silence() {
+        let (mut producer, consumer) = rtrb::RingBuffer::new(1_024);
+        let shared = Arc::new(Shared::new());
+        let paused = Arc::new(AtomicBool::new(false));
+        // A rate low enough for the lead-in to be a single frame
+        let mut callback = dop_callback(
+            RingReader::new(
+                consumer,
+                2,
+                1,
+                shared.clone(),
+                Arc::default(),
+                Arc::default(),
+                Arc::default(),
+            ),
+            1,
+            paused.clone(),
+        );
+        for word in [0x1234u16, 0x5678, 0x9ABC, 0xDEF0] {
+            producer.push(f32::from(word)).unwrap();
+        }
+        let mut data = [0; 10];
+        callback(&mut data, &callback_info(0, 0));
+        let silence = dsd::SILENCE_WORD.to_be_bytes();
+        let frame = |marker: u8, left: u16, right: u16| {
+            let [left_high, left_low] = left.to_be_bytes();
+            let [right_high, right_low] = right.to_be_bytes();
+            [
+                i32::from_be_bytes([marker, left_high, left_low, 0]),
+                i32::from_be_bytes([marker, right_high, right_low, 0]),
+            ]
+        };
+        let idle = u16::from_be_bytes(silence);
+        assert_eq!(data[..2], frame(0x05, idle, idle));
+        assert_eq!(data[2..4], frame(0xFA, 0x1234, 0x5678));
+        assert_eq!(data[4..6], frame(0x05, 0x9ABC, 0xDEF0));
+        assert_eq!(data[6..8], frame(0xFA, idle, idle));
+        assert_eq!(data[8..], frame(0x05, idle, idle));
+
+        producer.push(f32::from(0x1111u16)).unwrap();
+        producer.push(f32::from(0x2222u16)).unwrap();
+        paused.store(true, Ordering::Release);
+        let mut data = [0; 2];
+        callback(&mut data, &callback_info(0, 0));
+        assert_eq!(data, frame(0xFA, idle, idle));
+        assert_eq!(shared.frames_played.load(Ordering::Relaxed), 2);
+
+        paused.store(false, Ordering::Release);
+        callback(&mut data, &callback_info(0, 0));
+        assert_eq!(data, frame(0x05, 0x1111, 0x2222));
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn dop_keeps_one_stream_from_a_44_1_khz_track_to_a_48_khz_one() {
+        let (device, id) = loopback_device();
+        let frame_rate = 705_600;
+        let (stream, heard) = record_dop(&device, frame_rate);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(dop_settings(id, dsd::DopRate::Dsd256));
+        engine.load(Track::new(Cursor::new(sine_wav(44_100, 0, 44_100))));
+        let EventKind::Started(first) = next_event(&events).kind else {
+            panic!("expected Started");
+        };
+        engine.set_next(Track::new(Cursor::new(sine_wav(48_000, 0, 48_000))));
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::Ended { next: Some(_) }
+        ));
+        let EventKind::Started(second) = next_event(&events).kind else {
+            panic!("expected Started");
+        };
+        assert_eq!(first.output_rate(), frame_rate);
+        assert_eq!(second.output_rate(), frame_rate);
+        assert_eq!(second.source_rate(), 48_000);
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::Ended { next: None }
+        ));
+        thread::sleep(Duration::from_millis(300));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let words = dop_words(stream_run(&heard));
+        let blocks = tone_by_block(&words, frame_rate, 997.0);
+        let sounding = sounding_blocks(&blocks);
+        let seconds = sounding.len() as f64 * 50.0 / 997.0;
+        assert!((seconds - 2.0).abs() < 0.1, "{seconds}");
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn dop_can_run_at_the_rate_of_a_48_khz_source_when_asked() {
+        let (device, id) = loopback_device();
+        let frame_rate = 768_000;
+        let (stream, heard) = record_dop(&device, frame_rate);
+        let (mut engine, events) = Engine::spawn();
+        let dop = dsd::Settings::new(
+            dsd::DopRate::Dsd256,
+            dsd::Filter::default(),
+            dsd::Modulation::default(),
+        )
+        .with_matching_source_family(true);
+        engine.set_output(OutputSettings::new(Some(id), None).with_dop(Some(dop)));
+        engine.load(Track::new(Cursor::new(sine_wav(48_000, 0, 48_000))));
+        let EventKind::Started(format) = next_event(&events).kind else {
+            panic!("expected Started");
+        };
+        assert_eq!(format.output_rate(), frame_rate);
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::Ended { next: None }
+        ));
+        thread::sleep(Duration::from_millis(300));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        assert!(dop_words(stream_run(&heard)).len() > frame_rate as usize);
+    }
+
+    /// Fails if any frame of the start of a track is lost: the tone has to
+    /// begin at its first phase, right after the lead-in.
+    fn dop_starts_exactly_after_the_lead_in(rate: dsd::DopRate, frame_rate: u32) {
+        let (device, id) = loopback_device();
+        let (stream, heard) = record_dop(&device, frame_rate);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(dop_settings(id, rate));
+        engine.load(Track::new(Cursor::new(sine_wav(44_100, 0, 44_100))));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::Ended { next: None }
+        ));
+        thread::sleep(Duration::from_millis(300));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let words = dop_words(stream_run(&heard));
+        let lead_in = (DOP_LEAD_IN.as_secs_f64() * f64::from(frame_rate)) as usize;
+        assert!(
+            words[..lead_in]
+                .iter()
+                .all(|word| *word == dsd::SILENCE_WORD)
+        );
+        let blocks = tone_by_block(&words[lead_in..], frame_rate, 997.0);
+        let (level, phase) = blocks[0];
+        assert!((level - 0.25).abs() < 0.01, "{level}");
+        let turned = phase - std::f64::consts::FRAC_PI_2;
+        assert!(turned.abs() < 0.02, "{turned}");
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn dsd64_starts_exactly_after_the_lead_in() {
+        dop_starts_exactly_after_the_lead_in(dsd::DopRate::Dsd64, 176_400);
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn dsd256_starts_exactly_after_the_lead_in() {
+        dop_starts_exactly_after_the_lead_in(dsd::DopRate::Dsd256, 705_600);
     }
 }

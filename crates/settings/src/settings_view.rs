@@ -24,6 +24,7 @@ use crate::audio_settings::{AudioSettings, MATCH_SONG, QUALITIES, SYSTEM_DEFAULT
 use crate::cache_limit::CacheLimit;
 use crate::cache_limit_field::CacheLimitField;
 use crate::discord_settings::DiscordSettings;
+use crate::dsd_section::dsd_groups;
 use crate::imgbb_key_field::ImgbbKeyField;
 use crate::lyrics_settings::{self, LyricsSettings};
 use crate::song_cache_usage::{SongCacheUsage, format_size};
@@ -224,9 +225,13 @@ impl SettingsView {
         .default_value(MATCH_SONG);
 
         let errors: Vec<SharedString> = audio.errors().cloned().collect();
+        let mut rate = SettingItem::new("Sample rate", rate).disabled(audio.is_dsd_on());
+        if audio.is_dsd_on() {
+            rate = rate.description("DSD sets the rate while it's on.");
+        }
         let mut output = SettingGroup::new().items([
             SettingItem::new("Output device", device).disabled(!audio.has_devices()),
-            SettingItem::new("Sample rate", rate),
+            rate,
         ]);
         if !errors.is_empty() {
             output = output.footer(move |_, cx| {
@@ -240,6 +245,7 @@ impl SettingsView {
             .icon(IconName::AudioLines)
             .group(output)
             .group(self.resampling_group(cx))
+            .groups(dsd_groups(&self.audio, cx))
     }
 
     fn resampling_group(&self, cx: &mut Context<Self>) -> SettingGroup {
@@ -248,9 +254,11 @@ impl SettingsView {
                 let audio = self.audio.clone();
                 move |_, _, cx| {
                     let selected = audio.read(cx).quality_ix();
+                    let is_dsd_on = audio.read(cx).is_dsd_on();
                     let audio = audio.clone();
                     RadioGroup::horizontal("resampling-quality")
                         .selected_index(Some(selected))
+                        .disabled(is_dsd_on)
                         .children(QUALITIES.iter().enumerate().map(|(ix, label)| {
                             Radio::new(("resampling-quality", ix)).label(*label)
                         }))
@@ -286,11 +294,19 @@ impl SettingsView {
                 }
             },
         );
-        SettingGroup::new().title("Resampling").items([
-            SettingItem::new("Quality", quality).keywords(["resampling"]),
-            SettingItem::new("FFT size", fft_size).keywords(["resampling"]),
-            SettingItem::new("Window", window).keywords(["resampling"]),
-        ])
+        let is_dsd_on = audio.is_dsd_on();
+        let mut group = SettingGroup::new().title("Resampling").items(
+            [
+                SettingItem::new("Quality", quality),
+                SettingItem::new("FFT size", fft_size),
+                SettingItem::new("Window", window),
+            ]
+            .map(|item| item.keywords(["resampling"]).disabled(is_dsd_on)),
+        );
+        if is_dsd_on {
+            group = group.description("DSD uses the DSD filter settings below while it's on.");
+        }
+        group
     }
 
     fn discord_page(&self, cx: &mut Context<Self>) -> SettingPage {

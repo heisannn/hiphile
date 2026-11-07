@@ -136,6 +136,8 @@ pub struct Player {
     /// From `0.0` to `1.0`, as the slider shows it.
     volume: Entity<SliderState>,
     muted: bool,
+    is_volume_locked: bool,
+    dop_start: DopStart,
     _open: Task<()>,
     _now_playing: Task<()>,
     _media_cover: Task<()>,
@@ -168,6 +170,18 @@ struct Resume {
     paused: bool,
 }
 
+/// How sound starts after DoP has been turned on, which brings it to full level
+/// whatever the volume was. The level has to come down at the DAC first.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum DopStart {
+    #[default]
+    Settled,
+    /// Whatever opens next starts paused, until Play.
+    Held,
+    /// Play came with nothing open, so what opens next plays, fading in.
+    Asked,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum State {
     Stopped,
@@ -186,6 +200,7 @@ impl Player {
         cx: &mut Context<Self>,
     ) -> Self {
         let (engine, events) = Engine::spawn();
+        let is_volume_locked = output.dop().is_some();
         engine.set_output(output);
         let events = cx.spawn(async move |this, cx| {
             while let Ok(event) = events.recv().await {
@@ -303,6 +318,8 @@ impl Player {
             refreshed_position: Duration::ZERO,
             volume,
             muted: false,
+            is_volume_locked,
+            dop_start: DopStart::default(),
             _open: Task::ready(()),
             _now_playing: Task::ready(()),
             _media_cover: Task::ready(()),
@@ -318,8 +335,21 @@ impl Player {
 
     /// Plays on `output` from now on, moving a song already playing there and
     /// picking up one that the last output stopped.
+    ///
+    /// Turning DoP on holds back the sound until Play: see [`DopStart`].
     pub fn set_output(&mut self, output: OutputSettings, cx: &mut Context<Self>) {
+        let is_dop = output.dop().is_some();
+        if !is_dop {
+            self.dop_start = DopStart::Settled;
+        } else if !self.is_volume_locked {
+            if self.is_playing() {
+                self.toggle_playback(cx);
+            }
+            self.dop_start = DopStart::Held;
+        }
+        self.is_volume_locked = is_dop;
         self.engine.set_output(output);
+        cx.notify();
         if self.state == State::Stopped && self.resume.is_some() {
             self.open_current(false, cx);
         }
@@ -532,22 +562,30 @@ impl Player {
                 self.set_state(State::Paused, cx);
             }
             State::Paused => {
+                self.dop_start = DopStart::Settled;
                 self.engine.resume();
                 self.set_state(State::Playing, cx);
                 self.announce_current(cx);
             }
             State::Stopped if self.resume.is_some() => {
+                self.release_dop_start();
                 // Asked to play, whatever it was when it stopped
                 if let Some(resume) = &mut self.resume {
                     resume.paused = false;
                 }
                 self.open_current(false, cx);
             }
-            State::Stopped if self.has_song() => self.play_current(cx),
+            State::Stopped if self.has_song() => {
+                self.release_dop_start();
+                self.play_current(cx);
+            }
             State::Opening => {
                 let resume = self.resume.get_or_insert_default();
                 resume.paused = !resume.paused;
                 let paused = resume.paused;
+                if !paused {
+                    self.release_dop_start();
+                }
                 // Otherwise it is yet to load, which goes by `resume`
                 if self.load.is_some() {
                     if paused {
@@ -559,6 +597,12 @@ impl Player {
                 self.set_state(State::Opening, cx);
             }
             State::Stopped => {}
+        }
+    }
+
+    fn release_dop_start(&mut self) {
+        if self.dop_start == DopStart::Held {
+            self.dop_start = DopStart::Asked;
         }
     }
 
@@ -602,6 +646,11 @@ impl Player {
         self.seek_to(target, window, cx);
     }
 
+    /// Whether the volume can only be changed on the DAC, as with DoP.
+    pub(crate) fn is_volume_locked(&self) -> bool {
+        self.is_volume_locked
+    }
+
     pub fn volume_up(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.step_volume(VOLUME_STEP, window, cx);
     }
@@ -611,6 +660,9 @@ impl Player {
     }
 
     pub fn toggle_mute(&mut self, cx: &mut Context<Self>) {
+        if self.is_volume_locked {
+            return;
+        }
         self.muted = !self.muted;
         let level = self.level(cx);
         self.engine.set_volume(gain(level, self.muted));
@@ -930,6 +982,9 @@ impl Player {
     }
 
     fn step_volume(&mut self, delta: f32, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_volume_locked {
+            return;
+        }
         let level = (self.level(cx) + delta).clamp(0.0, 1.0);
         self.volume
             .update(cx, |slider, cx| slider.set_value(level, window, cx));
@@ -996,6 +1051,9 @@ impl Player {
             self.stop(cx);
             return;
         };
+        if self.dop_start == DopStart::Held {
+            self.resume.get_or_insert_default().paused = true;
+        }
         // Silence the previous song first, and ignore what is still on its
         // way about it, so its end cannot advance the queue a second time.
         self.engine.stop();
@@ -1031,7 +1089,8 @@ impl Player {
                     let track = opened
                         .into_track()
                         .start_at(resume.position)
-                        .start_paused(resume.paused);
+                        .start_paused(resume.paused)
+                        .fade_in(this.dop_start != DopStart::Settled);
                     this.load = Some(this.engine.load(track));
                 }
                 Err(error) => this.fail(&song, &session::describe(&error), cx),
@@ -1151,6 +1210,9 @@ impl Player {
                 self.format = Some(format);
                 self.error = None;
                 self.loaded_ahead = false;
+                if self.dop_start == DopStart::Asked {
+                    self.dop_start = DopStart::Settled;
+                }
                 let paused = self.resume.take().is_some_and(|resume| resume.paused);
                 let state = if paused {
                     State::Paused
@@ -1357,6 +1419,20 @@ fn describe(error: &audio::Error) -> String {
         }
         audio::Error::UnsupportedOutputFormat | audio::Error::Resample(_) => {
             "The output device can't play this audio. Choose another in Settings.".to_owned()
+        }
+        audio::Error::UnsupportedDopRate => {
+            "The output device can't run at this DSD rate. Choose another in Settings.".to_owned()
+        }
+        audio::Error::DeviceHeld(_) => {
+            "DSD needs the output device for itself, and another app is holding it. Close that app and press Play."
+                .to_owned()
+        }
+        audio::Error::ExclusiveOutput(_) => {
+            "DSD couldn't take the output device for itself. Press Play to try again.".to_owned()
+        }
+        audio::Error::DsdUnstable => {
+            "DSD output stopped because the modulator became unstable. Lower Noise gain or Input level in Settings, then press Play."
+                .to_owned()
         }
         audio::Error::Output(_) => "The audio output stopped. Press Play to try again.".to_owned(),
         audio::Error::UnsupportedFormat(_) => "hiphile can't play this file format.".to_owned(),
@@ -1922,6 +1998,139 @@ mod tests {
             assert!(player.arrival.is_none());
             assert!(player.error.is_none());
         });
+    }
+
+    fn dop_output() -> OutputSettings {
+        let device = player_device();
+        OutputSettings::new(Some(device), None).with_dop(Some(audio::DsdSettings::default()))
+    }
+
+    fn player_device() -> String {
+        let name = std::env::var("HIPHILE_TEST_DEVICE")
+            .expect("name a virtual device in HIPHILE_TEST_DEVICE");
+        audio::output_devices()
+            .unwrap()
+            .into_iter()
+            .find(|device| device.name().trim() == name)
+            .and_then(|device| device.id().map(str::to_owned))
+            .expect("no such device")
+    }
+
+    #[gpui_kit::test]
+    #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
+    fn turning_dop_on_pauses_a_playing_song_and_locks_the_volume(cx: &mut TestAppContext) {
+        let server = Server::default();
+        let songs = [server.add("a", wav(5_000))];
+        let (player, cx) = player(&server, cx);
+        player.update(cx, |player, cx| player.play(&songs, 0, cx));
+        wait_until(&player, cx, "a to play", |player| {
+            is_playing_song(player, "a")
+        });
+
+        player.update(cx, |player, cx| {
+            let output = dop_output();
+            player.set_output(output, cx);
+        });
+        assert_eq!(
+            player.read_with(cx, |player, _| player.state),
+            State::Paused
+        );
+        assert!(player.read_with(cx, |player, _| player.is_volume_locked()));
+
+        player.update_in(cx, |player, window, cx| {
+            let before = player.level(cx);
+            player.volume_down(window, cx);
+            player.toggle_mute(cx);
+            assert!((player.level(cx) - before).abs() < f32::EPSILON);
+            assert!(!player.is_muted());
+        });
+
+        player.update(cx, |player, cx| {
+            let device = player_device();
+            player.set_output(OutputSettings::new(Some(device), None), cx);
+        });
+        assert!(!player.read_with(cx, |player, _| player.is_volume_locked()));
+    }
+
+    #[gpui_kit::test]
+    #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
+    fn after_turning_dop_on_songs_wait_for_play(cx: &mut TestAppContext) {
+        let server = Server::default();
+        let songs = [server.add("a", wav(5_000)), server.add("b", wav(5_000))];
+        let (player, cx) = player(&server, cx);
+        player.update(cx, |player, cx| player.set_output(dop_output(), cx));
+        player.update(cx, |player, cx| player.play(&songs, 0, cx));
+        assert!(!player.read_with(cx, |player, _| player.is_playing()));
+        wait_until(&player, cx, "a to wait", |player| {
+            current(player) == Some("a") && player.state == State::Paused
+        });
+
+        player.update(cx, |player, cx| player.next(cx));
+        wait_until(&player, cx, "b to wait", |player| {
+            current(player) == Some("b") && player.state == State::Paused
+        });
+
+        player.update(cx, |player, cx| player.toggle_playback(cx));
+        assert_eq!(
+            player.read_with(cx, |player, _| player.state),
+            State::Playing
+        );
+        assert_eq!(
+            player.read_with(cx, |player, _| player.dop_start),
+            DopStart::Settled
+        );
+
+        player.update(cx, |player, cx| player.previous(cx));
+        wait_until(&player, cx, "a to play", |player| {
+            is_playing_song(player, "a")
+        });
+        // Lets go of the device for the tests after this one
+        player.update(cx, |player, cx| player.stop(cx));
+    }
+
+    #[gpui_kit::test]
+    #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
+    fn turning_dop_on_while_a_song_opens_makes_it_wait(cx: &mut TestAppContext) {
+        let server = Server::default();
+        let songs = [server.add("a", wav(5_000))];
+        let (player, cx) = player(&server, cx);
+        player.update(cx, |player, cx| {
+            player.play(&songs, 0, cx);
+            player.set_output(dop_output(), cx);
+        });
+        wait_until(&player, cx, "a to wait", |player| {
+            current(player) == Some("a") && player.state == State::Paused
+        });
+        // Lets go of the device for the tests after this one
+        player.update(cx, |player, cx| player.stop(cx));
+    }
+
+    #[gpui_kit::test]
+    #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
+    fn play_goes_straight_on_with_nothing_open_after_turning_dop_on(cx: &mut TestAppContext) {
+        let server = Server::default();
+        let songs = [server.add("a", wav(5_000))];
+        let (player, cx) = player(&server, cx);
+        player.update(cx, |player, cx| {
+            player.fill_queue(&songs, 0);
+            player.set_output(dop_output(), cx);
+            player.toggle_playback(cx);
+        });
+        wait_until(&player, cx, "a to play", |player| {
+            is_playing_song(player, "a")
+        });
+        assert_eq!(
+            player.read_with(cx, |player, _| player.dop_start),
+            DopStart::Settled
+        );
+        // Lets go of the device for the tests after this one
+        player.update(cx, |player, cx| player.stop(cx));
+    }
+
+    #[test]
+    fn a_held_device_is_told_apart_from_another_failure() {
+        assert!(describe(&audio::Error::DeviceHeld(1)).contains("another app"));
+        assert!(!describe(&audio::Error::ExclusiveOutput(String::new())).contains("another app"));
     }
 
     #[gpui_kit::test]

@@ -6,6 +6,8 @@ mod audio_settings;
 mod cache_limit;
 mod cache_limit_field;
 mod discord_settings;
+mod dsd_section;
+mod dsd_settings;
 mod imgbb_key_field;
 mod lyrics_settings;
 mod number_field;

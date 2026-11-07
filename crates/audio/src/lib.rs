@@ -13,20 +13,31 @@
 //! A track set to follow the current one is written to the same ring buffer
 //! when the device does not have to change for it, so no sample is lost
 //! between them. Otherwise the stream reopens at the track's rate in between.
+//!
+//! With DoP settings, the converter turns the track into DSD words on the
+//! engine thread, the same ring buffer carries those, and the callback makes
+//! them DoP frames at full level. The engine then holds the device for itself.
 
 mod convert;
 mod decode;
 mod device;
+mod dop_device;
 mod engine;
 mod error;
 mod feed;
+mod from_config;
 mod output;
 #[cfg(test)]
 mod test_wav;
 mod track;
 
 pub use device::{OutputDevice, output_devices};
+pub use dsd::{DopRate, Settings as DsdSettings};
 pub use engine::{Engine, Event, EventKind, LoadId, PlaybackFormat};
 pub use error::Error;
 pub use output::{OutputSettings, Resampling, ResamplingWindow};
 pub use track::Track;
+
+/// Whether this platform's audio can carry DoP at all. Its shared modes mix
+/// and resample elsewhere, which would turn DoP into noise.
+pub const CAN_PLAY_DOP: bool = cfg!(target_os = "macos");
