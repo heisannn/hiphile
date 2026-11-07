@@ -25,6 +25,8 @@ pub(crate) struct NumberRange {
     pub(crate) min: f64,
     pub(crate) max: f64,
     pub(crate) step: f64,
+    /// How many digits may follow the point, with `None` for any.
+    pub(crate) fraction: Option<usize>,
 }
 
 impl NumberRange {
@@ -33,7 +35,7 @@ impl NumberRange {
         InputState::new(window, cx)
             .mask_pattern(MaskPattern::Number {
                 separator: None,
-                fraction: None,
+                fraction: self.fraction,
             })
             .min(self.min)
             .max(self.max)
@@ -45,6 +47,12 @@ impl NumberRange {
         let number = text.parse::<f64>().ok()?;
         // Adding zero turns `-0` into `0`, which is how it should read later
         Some(number.clamp(self.min, self.max) + 0.0)
+    }
+
+    /// Whether `text` is a number that the range does not hold, as `1` on the way to `100` can be
+    pub(crate) fn is_beyond(self, text: &str) -> bool {
+        text.parse::<f64>()
+            .is_ok_and(|number| !(self.min..=self.max).contains(&number))
     }
 
     /// Moves the number in `state` one step and moves focus there, reporting the change as

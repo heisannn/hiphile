@@ -20,7 +20,9 @@ use session::{Readings, ReadingsState};
 use updater::{UpdateState, Updater};
 
 use crate::appearance_settings::{AppearanceSettings, CHOICES};
-use crate::audio_settings::{AudioSettings, MATCH_SONG, QUALITIES, SYSTEM_DEFAULT};
+use crate::audio_settings::{
+    AudioSettings, MATCH_SONG, RESAMPLERS, RUBATO_QUALITIES, SYSTEM_DEFAULT,
+};
 use crate::cache_limit::CacheLimit;
 use crate::cache_limit_field::CacheLimitField;
 use crate::discord_settings::DiscordSettings;
@@ -28,6 +30,7 @@ use crate::dsd_section::dsd_groups;
 use crate::imgbb_key_field::ImgbbKeyField;
 use crate::lyrics_settings::{self, LyricsSettings};
 use crate::queue_settings::QueueSettings;
+use crate::r8brain_section::{R8brainFields, r8brain_groups, r8brain_quality_item};
 use crate::song_cache_usage::{SongCacheUsage, format_size};
 use crate::{CloseWindow, SETTINGS_CONTEXT};
 
@@ -41,6 +44,7 @@ const PCM_ONLY: &str = "DSD plays songs whole while it's on.";
 pub(crate) struct SettingsView {
     appearance: Entity<AppearanceSettings>,
     audio: Entity<AudioSettings>,
+    r8brain_fields: R8brainFields,
     song_cache: Entity<CacheLimit>,
     song_cache_field: Entity<CacheLimitField>,
     cover_cache: Entity<CacheLimit>,
@@ -118,6 +122,7 @@ impl SettingsView {
                 }
             }
         });
+        let r8brain_fields = R8brainFields::new(&audio, window, cx);
         let song_cache_field = cx.new(|cx| CacheLimitField::new(song_cache.clone(), window, cx));
         let cover_cache_field = cx.new(|cx| CacheLimitField::new(cover_cache.clone(), window, cx));
         let imgbb_key_field = cx.new(|cx| ImgbbKeyField::new(discord.clone(), window, cx));
@@ -148,6 +153,7 @@ impl SettingsView {
             lyrics,
             _queue_changes: cx.observe(&queue, |_, _, cx| cx.notify()),
             queue,
+            r8brain_fields,
             audio,
             song_cache,
             song_cache_field,
@@ -304,6 +310,7 @@ impl SettingsView {
             .group(self.play_and_pause_group(cx))
             .group(self.between_songs_group(cx))
             .group(self.resampling_group(cx))
+            .groups(r8brain_groups(&self.audio, &self.r8brain_fields, cx))
             .groups(dsd_groups(&self.audio, cx))
     }
 
@@ -378,24 +385,66 @@ impl SettingsView {
     }
 
     fn resampling_group(&self, cx: &mut Context<Self>) -> SettingGroup {
-        let quality =
-            SettingField::render({
-                let audio = self.audio.clone();
-                move |_, _, cx| {
-                    let selected = audio.read(cx).quality_ix();
-                    let is_dsd_on = audio.read(cx).is_dsd_on();
-                    let audio = audio.clone();
-                    RadioGroup::horizontal("resampling-quality")
-                        .selected_index(Some(selected))
-                        .disabled(is_dsd_on)
-                        .children(QUALITIES.iter().enumerate().map(|(ix, label)| {
-                            Radio::new(("resampling-quality", ix)).label(*label)
-                        }))
-                        .on_click(move |ix, _, cx| {
-                            audio.update(cx, |audio, cx| audio.select_quality(*ix, cx));
-                        })
-                }
-            });
+        let resampler = SettingField::render({
+            let audio = self.audio.clone();
+            move |_, _, cx| {
+                let selected = audio.read(cx).resampler_ix();
+                let is_dsd_on = audio.read(cx).is_dsd_on();
+                let audio = audio.clone();
+                RadioGroup::horizontal("resampler")
+                    .selected_index(Some(selected))
+                    .disabled(is_dsd_on)
+                    .children(
+                        RESAMPLERS
+                            .iter()
+                            .enumerate()
+                            .map(|(ix, label)| Radio::new(("resampler", ix)).label(*label)),
+                    )
+                    .on_click(move |ix, _, cx| {
+                        audio.update(cx, |audio, cx| audio.select_resampler(*ix, cx));
+                    })
+            }
+        });
+        let audio = self.audio.read(cx);
+        let is_dsd_on = audio.is_dsd_on();
+        let mut items = vec![SettingItem::new("Resampler", resampler)];
+        if audio.uses_r8brain() {
+            items.push(r8brain_quality_item(&self.audio));
+        } else {
+            items.extend(self.rubato_items(cx));
+        }
+        let mut group = SettingGroup::new().title("Resampling").items(
+            items
+                .into_iter()
+                .map(|item| item.keywords(["resampling"]).disabled(is_dsd_on)),
+        );
+        if is_dsd_on {
+            group = group.description("DSD uses the DSD filter settings below while it's on.");
+        }
+        group
+    }
+
+    fn rubato_items(&self, cx: &App) -> [SettingItem; 3] {
+        let quality = SettingField::render({
+            let audio = self.audio.clone();
+            move |_, _, cx| {
+                let selected = audio.read(cx).rubato_quality_ix();
+                let is_dsd_on = audio.read(cx).is_dsd_on();
+                let audio = audio.clone();
+                RadioGroup::horizontal("rubato-quality")
+                    .selected_index(Some(selected))
+                    .disabled(is_dsd_on)
+                    .children(
+                        RUBATO_QUALITIES
+                            .iter()
+                            .enumerate()
+                            .map(|(ix, label)| Radio::new(("rubato-quality", ix)).label(*label)),
+                    )
+                    .on_click(move |ix, _, cx| {
+                        audio.update(cx, |audio, cx| audio.select_rubato_quality(*ix, cx));
+                    })
+            }
+        });
         let audio = self.audio.read(cx);
         let fft_size = SettingField::scrollable_dropdown(
             audio.fft_size_options(),
@@ -423,19 +472,11 @@ impl SettingsView {
                 }
             },
         );
-        let is_dsd_on = audio.is_dsd_on();
-        let mut group = SettingGroup::new().title("Resampling").items(
-            [
-                SettingItem::new("Quality", quality),
-                SettingItem::new("FFT size", fft_size),
-                SettingItem::new("Window", window),
-            ]
-            .map(|item| item.keywords(["resampling"]).disabled(is_dsd_on)),
-        );
-        if is_dsd_on {
-            group = group.description("DSD uses the DSD filter settings below while it's on.");
-        }
-        group
+        [
+            SettingItem::new("Quality", quality),
+            SettingItem::new("FFT size", fft_size),
+            SettingItem::new("Window", window),
+        ]
     }
 
     fn discord_page(&self, cx: &mut Context<Self>) -> SettingPage {

@@ -1,6 +1,9 @@
-use config::{DsdFilter, DsdOutput, DsdParameters, DsdRate, ResamplingQuality, SampleRate};
+use config::{
+    DsdFilter, DsdOutput, DsdParameters, DsdRate, R8brainParameters, R8brainPhase,
+    ResamplingQuality, SampleRate,
+};
 
-use crate::output::{OutputSettings, Resampling, ResamplingWindow};
+use crate::output::{self, OutputSettings, R8brainSettings, Resampling, ResamplingWindow};
 
 impl OutputSettings {
     /// What the settings in `config.toml` come to. DSD applies only on the
@@ -14,13 +17,35 @@ impl OutputSettings {
         let dop = (dsd.is_on && dsd.device == device).then(|| dsd_settings(dsd));
         Self::new(device, None)
             .with_sample_rate(sample_rate)
-            .with_resampling(Resampling::new(
-                quality.fft_size(),
-                window_of(quality.window()),
-            ))
+            .with_resampling(match quality {
+                ResamplingQuality::R8brain(parameters) => {
+                    Resampling::R8brain(r8brain_settings(parameters))
+                }
+                _ => Resampling::new(quality.fft_size(), window_of(quality.window())),
+            })
             .with_dop(dop)
             .with_dop_fade_in(dsd.fades_in)
     }
+}
+
+fn r8brain_settings(parameters: R8brainParameters) -> R8brainSettings {
+    let filter = parameters.quality.filter();
+    let performance = parameters.performance;
+    let mut settings = R8brainSettings::default();
+    let options = &mut settings.options;
+    options.transition_band = filter.transition_band;
+    options.attenuation = filter.attenuation;
+    options.phase = match filter.phase {
+        R8brainPhase::Linear => output::R8brainPhase::Linear,
+        R8brainPhase::Minimum => output::R8brainPhase::Minimum,
+    };
+    options.max_input_len = performance.max_input_frames as usize;
+    options.extended_fft = performance.extended_fft;
+    options.whole_stepping = filter.whole_stepping;
+    options.filter_fractions = filter.filter_fractions;
+    settings.cache_limits.filters = performance.filter_cache_size as usize;
+    settings.cache_limits.filter_banks = performance.filter_bank_cache_size as usize;
+    settings
 }
 
 fn dsd_settings(output: &DsdOutput) -> dsd::Settings {
@@ -94,6 +119,8 @@ fn window_of(window: config::ResamplingWindow) -> ResamplingWindow {
 
 #[cfg(test)]
 mod tests {
+    use config::R8brainQuality;
+
     use super::*;
 
     fn dsd_for(device: &str) -> DsdOutput {
@@ -124,6 +151,120 @@ mod tests {
             &DsdOutput::default(),
         );
         assert!(off.dop().is_none());
+    }
+
+    #[test]
+    fn resampling_follows_the_quality() {
+        let resampling_of = |quality| {
+            OutputSettings::from_config(None, SampleRate::MatchSong, quality, &DsdOutput::default())
+                .resampling()
+        };
+        assert_eq!(
+            resampling_of(ResamplingQuality::R8brain(R8brainParameters::default())),
+            Resampling::R8brain(R8brainSettings::default())
+        );
+        assert_eq!(
+            resampling_of(ResamplingQuality::Max),
+            Resampling::new(4096, ResamplingWindow::BlackmanHarris2)
+        );
+    }
+
+    #[test]
+    fn the_ends_of_the_r8brain_ranges_are_what_the_resampler_takes() {
+        let lowest = || {
+            let mut filter = R8brainQuality::High.filter();
+            filter.transition_band = *config::R8BRAIN_TRANSITION_BANDS.start();
+            filter.attenuation = *config::R8BRAIN_ATTENUATIONS.start();
+            filter.filter_fractions = Some(*config::R8BRAIN_FILTER_FRACTIONS.start());
+            let mut parameters = R8brainParameters::default();
+            parameters.quality = R8brainQuality::Custom(filter);
+            parameters.performance.max_input_frames = *config::R8BRAIN_MAX_INPUT_FRAMES.start();
+            parameters.performance.filter_cache_size = *config::R8BRAIN_CACHE_SIZES.start();
+            parameters.performance.filter_bank_cache_size = *config::R8BRAIN_CACHE_SIZES.start();
+            parameters
+        };
+        let highest = || {
+            let mut filter = R8brainQuality::High.filter();
+            filter.transition_band = *config::R8BRAIN_TRANSITION_BANDS.end();
+            filter.attenuation = *config::R8BRAIN_ATTENUATIONS.end();
+            filter.filter_fractions = Some(*config::R8BRAIN_FILTER_FRACTIONS.end());
+            let mut parameters = R8brainParameters::default();
+            parameters.quality = R8brainQuality::Custom(filter);
+            parameters.performance.max_input_frames = *config::R8BRAIN_MAX_INPUT_FRAMES.end();
+            parameters.performance.filter_cache_size = *config::R8BRAIN_CACHE_SIZES.end();
+            parameters.performance.filter_bank_cache_size = *config::R8BRAIN_CACHE_SIZES.end();
+            parameters
+        };
+        for parameters in [lowest(), highest()] {
+            let settings = r8brain_settings(parameters);
+            settings.cache_limits.apply().unwrap();
+            r8brain::Resampler::new(44_100.0, 47_999.5, settings.options).unwrap();
+        }
+        r8brain::CacheLimits::default().apply().unwrap();
+    }
+
+    fn r8brain_preset_options(quality: R8brainQuality) -> r8brain::Options {
+        let mut parameters = R8brainParameters::default();
+        parameters.quality = quality;
+        r8brain_settings(parameters).options
+    }
+
+    const PRESETS: [R8brainQuality; 4] = [
+        R8brainQuality::Low,
+        R8brainQuality::Medium,
+        R8brainQuality::High,
+        R8brainQuality::Max,
+    ];
+
+    #[test]
+    fn each_r8brain_preset_takes_more_delay_than_the_last() {
+        for (source, target) in [
+            (44_100.0, 48_000.0),
+            (48_000.0, 44_100.0),
+            (44_100.0, 96_000.0),
+            (96_000.0, 44_100.0),
+            (44_100.0, 88_200.0),
+            (192_000.0, 48_000.0),
+        ] {
+            let delays = PRESETS.map(|quality| {
+                r8brain::Resampler::new(source, target, r8brain_preset_options(quality))
+                    .unwrap()
+                    .input_before_output(0)
+            });
+            assert!(
+                delays.windows(2).all(|pair| pair[0] < pair[1]),
+                "{source} -> {target}: {delays:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn each_r8brain_preset_keeps_the_top_of_hearing_at_its_level() {
+        const FREQUENCY: f64 = 20_000.0;
+        for quality in PRESETS {
+            let mut resampler =
+                r8brain::Resampler::new(44_100.0, 48_000.0, r8brain_preset_options(quality))
+                    .unwrap();
+            let input: Vec<f64> = (0..66_150)
+                .map(|frame| {
+                    (std::f64::consts::TAU * FREQUENCY * f64::from(frame) / 44_100.0).sin()
+                })
+                .collect();
+            let output = resampler.process(&input);
+            let steady = &output[12_000..output.len() - 12_000];
+            let peak = steady
+                .iter()
+                .fold(0.0f64, |peak, sample| peak.max(sample.abs()));
+            assert!((peak - 1.0).abs() < 1e-3, "{quality:?}: {peak}");
+        }
+    }
+
+    #[test]
+    fn the_default_r8brain_parameters_are_the_default_settings() {
+        assert_eq!(
+            r8brain_settings(R8brainParameters::default()),
+            R8brainSettings::default()
+        );
     }
 
     #[test]

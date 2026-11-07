@@ -11,29 +11,41 @@ pub(crate) const STANDARD_RATES: [u32; 10] = [
 ];
 
 pub use dsd::ResamplingWindow;
+pub use r8brain::Phase as R8brainPhase;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Resampling {
-    fft_size: u32,
-    window: ResamplingWindow,
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct R8brainSettings {
+    pub options: r8brain::Options,
+    pub cache_limits: r8brain::CacheLimits,
+}
+
+impl Default for R8brainSettings {
+    /// The decoder gives 32-bit floating point, which the original has this
+    /// quality for.
+    fn default() -> Self {
+        Self {
+            options: r8brain::Options::BITS_24,
+            cache_limits: r8brain::CacheLimits::default(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Resampling {
+    /// Rubato's. `fft_size` is the least frames one FFT takes at the lower of
+    /// the two rates. It is rounded up to a multiple of the block the two rates
+    /// allow, and `0` counts as `1`.
+    Fft {
+        fft_size: u32,
+        window: ResamplingWindow,
+    },
+    R8brain(R8brainSettings),
 }
 
 impl Resampling {
-    /// `fft_size` is the least input frames one FFT takes. It is rounded up to
-    /// a multiple of the block the two rates allow, and `0` counts as `1`.
     pub fn new(fft_size: u32, window: ResamplingWindow) -> Self {
-        Self {
-            fft_size: fft_size.max(1),
-            window,
-        }
-    }
-
-    pub fn fft_size(&self) -> u32 {
-        self.fft_size
-    }
-
-    pub fn window(&self) -> ResamplingWindow {
-        self.window
+        Self::Fft { fft_size, window }
     }
 }
 

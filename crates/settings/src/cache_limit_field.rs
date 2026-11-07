@@ -8,6 +8,7 @@ const RANGE: NumberRange = NumberRange {
     min: 0.,
     max: MAX_GIB,
     step: 1.,
+    fraction: None,
 };
 
 /// Only this field changes the limit, so what it shows never has to follow the settings, and

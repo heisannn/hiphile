@@ -10,9 +10,11 @@ mod profile;
 pub use keychain::Keychain;
 pub use profile::{
     Appearance, DSD_ORDERS, DSD_SINC_LENGTHS, DsdFilter, DsdOutput, DsdParameters, DsdQuality,
-    DsdRate, LONGEST_CROSSFADE_SECONDS, LyricsHighlight, Profile, RESAMPLING_FFT_SIZES,
-    ResamplingQuality, ResamplingWindow, SAMPLE_RATE_MULTIPLES, SampleRate, Store,
-    cache_capacity_of,
+    DsdRate, LONGEST_CROSSFADE_SECONDS, LyricsHighlight, Profile, R8BRAIN_ATTENUATIONS,
+    R8BRAIN_CACHE_SIZES, R8BRAIN_FILTER_FRACTIONS, R8BRAIN_MAX_INPUT_FRAMES,
+    R8BRAIN_TRANSITION_BANDS, R8brainFilter, R8brainParameters, R8brainPerformance, R8brainPhase,
+    R8brainQuality, RESAMPLING_FFT_SIZES, ResamplingQuality, ResamplingWindow,
+    SAMPLE_RATE_MULTIPLES, SampleRate, Store, cache_capacity_of,
 };
 
 use std::path::PathBuf;

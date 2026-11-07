@@ -12,6 +12,9 @@ mod imgbb_key_field;
 mod lyrics_settings;
 mod number_field;
 mod queue_settings;
+mod r8brain_number_field;
+mod r8brain_section;
+mod r8brain_settings;
 mod settings_view;
 mod song_cache_usage;
 

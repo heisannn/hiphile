@@ -2323,7 +2323,7 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
-    use crate::output::{Resampling, ResamplingWindow};
+    use crate::output::{R8brainSettings, Resampling, ResamplingWindow};
     use crate::test_wav::wav;
 
     fn next_event(events: &async_channel::Receiver<Event>) -> Event {
@@ -3188,6 +3188,46 @@ mod tests {
     #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
     fn resampled_tracks_join_without_a_gap_at_the_largest_fft() {
         resampled_tracks_join_without_a_gap(Resampling::new(16_384, ResamplingWindow::default()));
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn resampled_tracks_join_without_a_gap_on_r8brain() {
+        resampled_tracks_join_without_a_gap(Resampling::R8brain(R8brainSettings::default()));
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn resampled_tracks_join_without_a_gap_on_the_r8brain_presets() {
+        for quality in [
+            config::R8brainQuality::Low,
+            config::R8brainQuality::Medium,
+            config::R8brainQuality::Max,
+        ] {
+            let mut parameters = config::R8brainParameters::default();
+            parameters.quality = quality;
+            let resampling = OutputSettings::from_config(
+                None,
+                config::SampleRate::MatchSong,
+                config::ResamplingQuality::R8brain(parameters),
+                &config::DsdOutput::default(),
+            )
+            .resampling();
+            resampled_tracks_join_without_a_gap(resampling);
+        }
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn resampled_tracks_join_without_a_gap_on_r8brain_with_other_options() {
+        let mut settings = R8brainSettings::default();
+        settings.options.phase = crate::output::R8brainPhase::Minimum;
+        settings.options.transition_band = 0.5;
+        settings.options.extended_fft = true;
+        settings.options.whole_stepping = false;
+        settings.options.filter_fractions = Some(4096);
+        settings.options.max_input_len = 64;
+        resampled_tracks_join_without_a_gap(Resampling::R8brain(settings));
     }
 
     #[test]

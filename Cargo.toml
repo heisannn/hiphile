@@ -29,6 +29,7 @@ playback = { path = "crates/playback" }
 player = { path = "crates/player" }
 playlists = { path = "crates/playlists" }
 presence = { path = "crates/presence" }
+r8brain = { path = "crates/r8brain" }
 search = { path = "crates/search" }
 session = { path = "crates/session" }
 settings = { path = "crates/settings" }
@@ -64,6 +65,7 @@ objc2-core-audio-types = { version = "0.3", default-features = false, features =
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFString"] }
 rand = "0.10"
 raw-window-handle = "0.6"
+realfft = "3.5"
 reqwest = "0.13"
 roxmltree = "0.21"
 rtrb = "0.4"
@@ -113,6 +115,7 @@ too_many_lines = "warn"
 
 [profile.dev.package]
 dsd = { opt-level = 3 }
+r8brain = { opt-level = 3 }
 rubato = { opt-level = 3 }
 realfft = { opt-level = 3 }
 rustfft = { opt-level = 3 }

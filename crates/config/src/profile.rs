@@ -92,8 +92,118 @@ impl SampleRate {
 }
 
 pub const RESAMPLING_FFT_SIZES: [u32; 7] = [256, 512, 1024, 2048, 4096, 8192, 16384];
+pub const R8BRAIN_TRANSITION_BANDS: std::ops::RangeInclusive<f64> = 0.5..=45.0;
+pub const R8BRAIN_ATTENUATIONS: std::ops::RangeInclusive<f64> = 49.0..=218.0;
+pub const R8BRAIN_MAX_INPUT_FRAMES: std::ops::RangeInclusive<u32> = 1..=1_048_576;
+pub const R8BRAIN_FILTER_FRACTIONS: std::ops::RangeInclusive<u32> = 5..=65_536;
+pub const R8BRAIN_CACHE_SIZES: std::ops::RangeInclusive<u32> = 2..=4096;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum R8brainPhase {
+    #[default]
+    Linear,
+    Minimum,
+}
+
+impl R8brainPhase {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Linear => "linear",
+            Self::Minimum => "minimum",
+        }
+    }
+}
+
+/// What decides the sound of the `r8brain` resampling.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct R8brainFilter {
+    /// In percent
+    pub transition_band: f64,
+    /// In decibels
+    pub attenuation: f64,
+    pub phase: R8brainPhase,
+    pub whole_stepping: bool,
+    /// `None` lets the resampler choose.
+    pub filter_fractions: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum R8brainQuality {
+    Low,
+    Medium,
+    #[default]
+    High,
+    Max,
+    Custom(R8brainFilter),
+}
+
+impl R8brainQuality {
+    pub fn filter(self) -> R8brainFilter {
+        let preset = |transition_band, attenuation| R8brainFilter {
+            transition_band,
+            attenuation,
+            phase: R8brainPhase::Linear,
+            whole_stepping: true,
+            filter_fractions: None,
+        };
+        match self {
+            // The delay follows the FFT block, whose size goes by powers of two. These each reach a
+            // longer block than the last: less of a change can take more delay and buy nothing.
+            Self::Low => preset(5.0, 136.45),
+            // The narrowest tenth of a percent that keeps this block from any common song rate to
+            // any device rate, as 2.3 reaches the next one from 48 to 44.1 kHz
+            Self::Medium => preset(2.4, 136.45),
+            // What the original has for 24-bit and 32-bit floating point
+            Self::High => preset(2.0, 180.15),
+            // The ends of the original's ranges
+            Self::Max => preset(0.5, 218.0),
+            Self::Custom(filter) => filter,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Max => "max",
+            Self::Custom(_) => "custom",
+        }
+    }
+}
+
+/// What the file says about the `r8brain` resampling, kept while another one is
+/// in use. Only the quality changes the sound.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct R8brainParameters {
+    pub quality: R8brainQuality,
+    pub performance: R8brainPerformance,
+}
+
+/// Of the `r8brain` resampling, what leaves the sound alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct R8brainPerformance {
+    pub max_input_frames: u32,
+    pub extended_fft: bool,
+    pub filter_cache_size: u32,
+    pub filter_bank_cache_size: u32,
+}
+
+impl Default for R8brainPerformance {
+    fn default() -> Self {
+        Self {
+            max_input_frames: 1024,
+            extended_fft: false,
+            filter_cache_size: 96,
+            filter_bank_cache_size: 12,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum ResamplingQuality {
     #[default]
     Medium,
@@ -103,12 +213,15 @@ pub enum ResamplingQuality {
         fft_size: u32,
         window: ResamplingWindow,
     },
+    /// Takes no FFT size or window of its own, and what it answers for those is
+    /// what a custom quality starts from after it.
+    R8brain(R8brainParameters),
 }
 
 impl ResamplingQuality {
     pub fn fft_size(self) -> u32 {
         match self {
-            Self::Medium => 256,
+            Self::Medium | Self::R8brain(_) => 256,
             Self::High => 1024,
             Self::Max => 4096,
             Self::Custom { fft_size, .. } => fft_size,
@@ -117,7 +230,9 @@ impl ResamplingQuality {
 
     pub fn window(self) -> ResamplingWindow {
         match self {
-            Self::Medium | Self::High | Self::Max => ResamplingWindow::BlackmanHarris2,
+            Self::Medium | Self::High | Self::Max | Self::R8brain(_) => {
+                ResamplingWindow::BlackmanHarris2
+            }
             Self::Custom { window, .. } => window,
         }
     }
@@ -128,6 +243,7 @@ impl ResamplingQuality {
             Self::High => "high",
             Self::Max => "max",
             Self::Custom { .. } => "custom",
+            Self::R8brain(_) => "r8brain",
         }
     }
 }
@@ -340,6 +456,16 @@ struct Settings {
     resampling: Option<String>,
     resampling_fft_size: Option<u32>,
     resampling_window: Option<String>,
+    r8brain_quality: Option<String>,
+    r8brain_transition_band: Option<f64>,
+    r8brain_attenuation: Option<f64>,
+    r8brain_phase: Option<String>,
+    r8brain_max_input_frames: Option<u32>,
+    r8brain_extended_fft: Option<bool>,
+    r8brain_whole_stepping: Option<bool>,
+    r8brain_filter_fractions: Option<u32>,
+    r8brain_filter_cache_size: Option<u32>,
+    r8brain_filter_bank_cache_size: Option<u32>,
     output_format: Option<String>,
     dop_device: Option<String>,
     dsd_rate: Option<u16>,
@@ -458,6 +584,114 @@ fn save_dsd_parameters(
     }
 }
 
+const R8BRAIN_FILTER_KEYS: [&str; 5] = [
+    "r8brain_transition_band",
+    "r8brain_attenuation",
+    "r8brain_phase",
+    "r8brain_whole_stepping",
+    "r8brain_filter_fractions",
+];
+
+/// Writes what differs from `before`, the values in use until now, as the rest may have come from
+/// the environment. Moving to or from a preset writes every filter key, so that a key left over
+/// from another quality cannot come back unnoticed.
+fn write_r8brain_changes(
+    document: &mut toml_edit::DocumentMut,
+    before: R8brainParameters,
+    after: R8brainParameters,
+) {
+    let is_custom =
+        |parameters: R8brainParameters| matches!(parameters.quality, R8brainQuality::Custom(_));
+    let quality_changes = before.quality != after.quality;
+    let preset_changes = quality_changes && !(is_custom(before) && is_custom(after));
+    let text = |item: &Option<toml_edit::Item>| item.as_ref().map(ToString::to_string);
+    for ((key, old), (_, new)) in r8brain_items(before).into_iter().zip(r8brain_items(after)) {
+        let rewrite = match key {
+            "r8brain_quality" => quality_changes,
+            _ if R8BRAIN_FILTER_KEYS.contains(&key) => preset_changes || text(&old) != text(&new),
+            _ => text(&old) != text(&new),
+        };
+        if !rewrite {
+            continue;
+        }
+        match new {
+            Some(item) => document[key] = item,
+            None => {
+                document.remove(key);
+            }
+        }
+    }
+}
+
+/// Only what the quality uses. What is at its default has no key, and so follows the default if
+/// that changes.
+fn r8brain_items(parameters: R8brainParameters) -> [(&'static str, Option<toml_edit::Item>); 10] {
+    let quality = parameters.quality;
+    let high = R8brainQuality::High.filter();
+    let custom = match quality {
+        R8brainQuality::Custom(filter) => Some(filter),
+        _ => None,
+    };
+    let performance = parameters.performance;
+    let default = R8brainPerformance::default();
+    [
+        (
+            "r8brain_quality",
+            (quality != R8brainQuality::High).then(|| toml_edit::value(quality.name())),
+        ),
+        (
+            "r8brain_transition_band",
+            custom
+                .filter(|filter| filter.transition_band != high.transition_band)
+                .map(|filter| toml_edit::value(filter.transition_band)),
+        ),
+        (
+            "r8brain_attenuation",
+            custom
+                .filter(|filter| filter.attenuation != high.attenuation)
+                .map(|filter| toml_edit::value(filter.attenuation)),
+        ),
+        (
+            "r8brain_phase",
+            custom
+                .filter(|filter| filter.phase != high.phase)
+                .map(|filter| toml_edit::value(filter.phase.name())),
+        ),
+        (
+            "r8brain_whole_stepping",
+            custom
+                .filter(|filter| filter.whole_stepping != high.whole_stepping)
+                .map(|filter| toml_edit::value(filter.whole_stepping)),
+        ),
+        (
+            "r8brain_filter_fractions",
+            custom
+                .and_then(|filter| filter.filter_fractions)
+                .map(|fractions| toml_edit::value(i64::from(fractions))),
+        ),
+        (
+            "r8brain_max_input_frames",
+            (performance.max_input_frames != default.max_input_frames)
+                .then(|| toml_edit::value(i64::from(performance.max_input_frames))),
+        ),
+        (
+            "r8brain_extended_fft",
+            (performance.extended_fft != default.extended_fft)
+                .then(|| toml_edit::value(performance.extended_fft)),
+        ),
+        (
+            "r8brain_filter_cache_size",
+            (performance.filter_cache_size != default.filter_cache_size)
+                .then(|| toml_edit::value(i64::from(performance.filter_cache_size))),
+        ),
+        (
+            "r8brain_filter_bank_cache_size",
+            (performance.filter_bank_cache_size != default.filter_bank_cache_size)
+                .then(|| toml_edit::value(i64::from(performance.filter_bank_cache_size))),
+        ),
+    ]
+}
+
 /// The settings directory and its `config.toml`:
 ///
 /// ```toml
@@ -476,6 +710,16 @@ fn save_dsd_parameters(
 /// resampling = "custom"
 /// resampling_fft_size = 2048
 /// resampling_window = "hann-2"
+/// r8brain_quality = "custom"
+/// r8brain_transition_band = 3.0
+/// r8brain_attenuation = 136.45
+/// r8brain_phase = "minimum"
+/// r8brain_max_input_frames = 4096
+/// r8brain_extended_fft = true
+/// r8brain_whole_stepping = false
+/// r8brain_filter_fractions = 2048
+/// r8brain_filter_cache_size = 96
+/// r8brain_filter_bank_cache_size = 12
 /// output_format = "dsd"
 /// dop_device = "coreaudio:SomeDacUid"
 /// dsd_rate = 256
@@ -635,10 +879,17 @@ impl Store {
     }
 
     /// Medium unless the file says otherwise. The FFT size and window are only read for
-    /// `custom`, and default to those of medium.
+    /// `custom`, and default to those of medium. The `r8brain_` keys are only read for `r8brain`,
+    /// and those that decide the sound only for its `custom`, defaulting to those of its `high`.
     pub fn resampling_quality(&self) -> Result<ResamplingQuality, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         self.parse_resampling_quality(&settings)
+    }
+
+    /// Whatever resampling is in use, so that it can come back to these.
+    pub fn r8brain_parameters(&self) -> Result<R8brainParameters, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        self.parse_r8brain_parameters(&settings)
     }
 
     /// Off unless the file says otherwise. The parameters are only read for
@@ -713,6 +964,9 @@ impl Store {
             None | Some("medium") => Ok(ResamplingQuality::Medium),
             Some("high") => Ok(ResamplingQuality::High),
             Some("max") => Ok(ResamplingQuality::Max),
+            Some("r8brain") => self
+                .parse_r8brain_parameters(settings)
+                .map(ResamplingQuality::R8brain),
             Some("custom") => {
                 let medium = ResamplingQuality::Medium;
                 let fft_size = settings.resampling_fft_size.unwrap_or(medium.fft_size());
@@ -739,9 +993,98 @@ impl Store {
             }
             Some(_) => Err(invalid(
                 "resampling",
-                "\"medium\", \"high\", \"max\" or \"custom\"",
+                "\"medium\", \"high\", \"max\", \"custom\" or \"r8brain\"",
             )),
         }
+    }
+
+    fn parse_r8brain_parameters(&self, settings: &Settings) -> Result<R8brainParameters, Error> {
+        let quality = match settings.r8brain_quality.as_deref() {
+            Some("low") => R8brainQuality::Low,
+            Some("medium") => R8brainQuality::Medium,
+            None | Some("high") => R8brainQuality::High,
+            Some("max") => R8brainQuality::Max,
+            Some("custom") => R8brainQuality::Custom(self.parse_r8brain_filter(settings)?),
+            Some(_) => {
+                return Err(self.invalid(
+                    "r8brain_quality",
+                    "\"low\", \"medium\", \"high\", \"max\" or \"custom\"",
+                ));
+            }
+        };
+        Ok(R8brainParameters {
+            quality,
+            performance: self.parse_r8brain_performance(settings)?,
+        })
+    }
+
+    fn parse_r8brain_filter(&self, settings: &Settings) -> Result<R8brainFilter, Error> {
+        let high = R8brainQuality::High.filter();
+        let transition_band = settings
+            .r8brain_transition_band
+            .unwrap_or(high.transition_band);
+        if !R8BRAIN_TRANSITION_BANDS.contains(&transition_band) {
+            return Err(self.invalid("r8brain_transition_band", "a number from 0.5 to 45"));
+        }
+        let attenuation = settings.r8brain_attenuation.unwrap_or(high.attenuation);
+        if !R8BRAIN_ATTENUATIONS.contains(&attenuation) {
+            return Err(self.invalid("r8brain_attenuation", "a number from 49 to 218"));
+        }
+        let phase = match settings.r8brain_phase.as_deref() {
+            None | Some("linear") => R8brainPhase::Linear,
+            Some("minimum") => R8brainPhase::Minimum,
+            Some(_) => return Err(self.invalid("r8brain_phase", "\"linear\" or \"minimum\"")),
+        };
+        let filter_fractions = settings.r8brain_filter_fractions;
+        if filter_fractions.is_some_and(|fractions| !R8BRAIN_FILTER_FRACTIONS.contains(&fractions))
+        {
+            return Err(self.invalid("r8brain_filter_fractions", "a whole number from 5 to 65536"));
+        }
+        Ok(R8brainFilter {
+            transition_band,
+            attenuation,
+            phase,
+            whole_stepping: settings
+                .r8brain_whole_stepping
+                .unwrap_or(high.whole_stepping),
+            filter_fractions,
+        })
+    }
+
+    fn parse_r8brain_performance(&self, settings: &Settings) -> Result<R8brainPerformance, Error> {
+        let default = R8brainPerformance::default();
+        let max_input_frames = settings
+            .r8brain_max_input_frames
+            .unwrap_or(default.max_input_frames);
+        if !R8BRAIN_MAX_INPUT_FRAMES.contains(&max_input_frames) {
+            return Err(self.invalid(
+                "r8brain_max_input_frames",
+                "a whole number from 1 to 1048576",
+            ));
+        }
+        let filter_cache_size = settings
+            .r8brain_filter_cache_size
+            .unwrap_or(default.filter_cache_size);
+        if !R8BRAIN_CACHE_SIZES.contains(&filter_cache_size) {
+            return Err(self.invalid("r8brain_filter_cache_size", "a whole number from 2 to 4096"));
+        }
+        let filter_bank_cache_size = settings
+            .r8brain_filter_bank_cache_size
+            .unwrap_or(default.filter_bank_cache_size);
+        if !R8BRAIN_CACHE_SIZES.contains(&filter_bank_cache_size) {
+            return Err(self.invalid(
+                "r8brain_filter_bank_cache_size",
+                "a whole number from 2 to 4096",
+            ));
+        }
+        Ok(R8brainPerformance {
+            max_input_frames,
+            extended_fft: settings
+                .r8brain_extended_fft
+                .unwrap_or(default.extended_fft),
+            filter_cache_size,
+            filter_bank_cache_size,
+        })
     }
 
     fn parse_dsd_output(&self, settings: &Settings) -> Result<DsdOutput, Error> {
@@ -1033,6 +1376,14 @@ impl Store {
                 document.remove("resampling_window");
             }
         })
+    }
+
+    pub fn save_r8brain_changes(
+        &self,
+        before: R8brainParameters,
+        after: R8brainParameters,
+    ) -> Result<(), Error> {
+        self.edit(|document| write_r8brain_changes(document, before, after))
     }
 
     /// Writes only what the quality uses, so that a key left over from another
@@ -1505,6 +1856,317 @@ mod tests {
         let text = std::fs::read_to_string(store.config_path()).unwrap();
         assert!(!text.contains("resampling_fft_size"), "{text}");
         assert!(!text.contains("resampling_window"), "{text}");
+    }
+
+    #[test]
+    fn r8brain_is_saved_by_name_without_what_custom_leaves_behind() {
+        let store = temporary_store("resampling-r8brain");
+        store
+            .save_resampling_quality(ResamplingQuality::Custom {
+                fft_size: 2048,
+                window: ResamplingWindow::Hann2,
+            })
+            .unwrap();
+        let quality = ResamplingQuality::R8brain(R8brainParameters::default());
+        store.save_resampling_quality(quality).unwrap();
+
+        assert_eq!(store.resampling_quality().unwrap(), quality);
+        let text = std::fs::read_to_string(store.config_path()).unwrap();
+        assert!(text.contains("resampling = \"r8brain\""), "{text}");
+        assert!(!text.contains("resampling_fft_size"), "{text}");
+        assert!(!text.contains("resampling_window"), "{text}");
+    }
+
+    fn unusual_r8brain_parameters() -> R8brainParameters {
+        R8brainParameters {
+            quality: R8brainQuality::Custom(R8brainFilter {
+                transition_band: 3.5,
+                attenuation: 136.45,
+                phase: R8brainPhase::Minimum,
+                whole_stepping: false,
+                filter_fractions: Some(2048),
+            }),
+            performance: R8brainPerformance {
+                max_input_frames: 4096,
+                extended_fft: true,
+                filter_cache_size: 8,
+                filter_bank_cache_size: 3,
+            },
+        }
+    }
+
+    #[test]
+    fn r8brain_parameters_round_trip_and_defaults_take_no_keys() {
+        let store = temporary_store("r8brain-parameters");
+        let parameters = unusual_r8brain_parameters();
+        store
+            .save_r8brain_changes(R8brainParameters::default(), parameters)
+            .unwrap();
+        store
+            .save_resampling_quality(ResamplingQuality::R8brain(parameters))
+            .unwrap();
+        assert_eq!(
+            store.resampling_quality().unwrap(),
+            ResamplingQuality::R8brain(parameters)
+        );
+
+        store
+            .save_r8brain_changes(parameters, R8brainParameters::default())
+            .unwrap();
+        let text = std::fs::read_to_string(store.config_path()).unwrap();
+        assert!(!text.contains("r8brain_"), "{text}");
+    }
+
+    #[test]
+    fn r8brain_presets_are_saved_by_name_without_what_custom_leaves_behind() {
+        let store = temporary_store("r8brain-presets");
+        let mut saved = unusual_r8brain_parameters();
+        store
+            .save_r8brain_changes(R8brainParameters::default(), saved)
+            .unwrap();
+        for quality in [
+            R8brainQuality::Low,
+            R8brainQuality::Medium,
+            R8brainQuality::Max,
+        ] {
+            let parameters = R8brainParameters {
+                quality,
+                ..unusual_r8brain_parameters()
+            };
+            store.save_r8brain_changes(saved, parameters).unwrap();
+            saved = parameters;
+            assert_eq!(store.r8brain_parameters().unwrap(), parameters);
+            let text = std::fs::read_to_string(store.config_path()).unwrap();
+            assert!(
+                text.contains(&format!("r8brain_quality = \"{}\"", quality.name())),
+                "{text}"
+            );
+            for key in R8BRAIN_FILTER_KEYS {
+                assert!(!text.contains(key), "{text}");
+            }
+            assert!(text.contains("r8brain_max_input_frames"), "{text}");
+        }
+    }
+
+    #[test]
+    fn only_what_changed_of_the_r8brain_parameters_is_saved() {
+        let store = temporary_store("r8brain-changes");
+        let from_environment = R8brainParameters {
+            quality: R8brainQuality::Custom(R8brainFilter {
+                attenuation: 100.0,
+                ..R8brainQuality::High.filter()
+            }),
+            ..R8brainParameters::default()
+        };
+        let mut larger_block = from_environment;
+        larger_block.performance.max_input_frames = 4096;
+        store
+            .save_r8brain_changes(from_environment, larger_block)
+            .unwrap();
+        let text = std::fs::read_to_string(store.config_path()).unwrap();
+        assert!(text.contains("r8brain_max_input_frames = 4096"), "{text}");
+        for key in ["r8brain_quality", "r8brain_attenuation"] {
+            assert!(!text.contains(key), "{text}");
+        }
+
+        let mut filter = larger_block.quality.filter();
+        filter.transition_band = 3.0;
+        let wider = R8brainParameters {
+            quality: R8brainQuality::Custom(filter),
+            ..larger_block
+        };
+        store.save_r8brain_changes(larger_block, wider).unwrap();
+        let text = std::fs::read_to_string(store.config_path()).unwrap();
+        assert!(text.contains("r8brain_quality = \"custom\""), "{text}");
+        assert!(text.contains("r8brain_transition_band = 3.0"), "{text}");
+        assert!(!text.contains("r8brain_attenuation"), "{text}");
+    }
+
+    #[test]
+    fn leaving_a_preset_for_custom_drops_what_the_preset_ignored() {
+        let store = temporary_store("r8brain-leftover");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        std::fs::write(store.config_path(), "r8brain_attenuation = 120\n").unwrap();
+        let before = store.r8brain_parameters().unwrap();
+        let after = R8brainParameters {
+            quality: R8brainQuality::Custom(before.quality.filter()),
+            ..before
+        };
+        store.save_r8brain_changes(before, after).unwrap();
+        assert_eq!(store.r8brain_parameters().unwrap(), after);
+    }
+
+    #[test]
+    fn r8brain_presets_rise_in_every_way() {
+        let filters = [
+            R8brainQuality::Low,
+            R8brainQuality::Medium,
+            R8brainQuality::High,
+            R8brainQuality::Max,
+        ]
+        .map(R8brainQuality::filter);
+        for pair in filters.windows(2) {
+            assert!(pair[0].transition_band > pair[1].transition_band);
+            assert!(pair[0].attenuation <= pair[1].attenuation);
+        }
+        for filter in filters {
+            assert!(R8BRAIN_TRANSITION_BANDS.contains(&filter.transition_band));
+            assert!(R8BRAIN_ATTENUATIONS.contains(&filter.attenuation));
+        }
+    }
+
+    #[test]
+    fn r8brain_custom_fills_in_from_high_and_values_are_read_only_for_it() {
+        let store = temporary_store("r8brain-custom");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        std::fs::write(
+            store.config_path(),
+            "r8brain_quality = \"custom\"\nr8brain_attenuation = 100\n",
+        )
+        .unwrap();
+        let filter = store.r8brain_parameters().unwrap().quality.filter();
+        assert_eq!(filter.attenuation, 100.0);
+        assert_eq!(filter.transition_band, 2.0);
+
+        std::fs::write(
+            store.config_path(),
+            "r8brain_quality = \"max\"\nr8brain_attenuation = 100\n",
+        )
+        .unwrap();
+        let parameters = store.r8brain_parameters().unwrap();
+        assert_eq!(parameters.quality, R8brainQuality::Max);
+        assert_eq!(parameters.quality.filter().attenuation, 218.0);
+    }
+
+    #[test]
+    fn r8brain_parameters_stay_while_another_quality_is_in_use() {
+        let store = temporary_store("r8brain-kept");
+        let parameters = unusual_r8brain_parameters();
+        store
+            .save_r8brain_changes(R8brainParameters::default(), parameters)
+            .unwrap();
+        store
+            .save_resampling_quality(ResamplingQuality::R8brain(parameters))
+            .unwrap();
+        store
+            .save_resampling_quality(ResamplingQuality::Max)
+            .unwrap();
+
+        assert_eq!(store.resampling_quality().unwrap(), ResamplingQuality::Max);
+        assert_eq!(store.r8brain_parameters().unwrap(), parameters);
+    }
+
+    #[test]
+    fn r8brain_parameters_default_to_what_the_original_has_for_24_bits() {
+        let store = temporary_store("r8brain-default");
+        let parameters = store.r8brain_parameters().unwrap();
+        assert_eq!(parameters, R8brainParameters::default());
+        assert_eq!(parameters.quality, R8brainQuality::High);
+        let filter = parameters.quality.filter();
+        assert_eq!(filter.transition_band, 2.0);
+        assert_eq!(filter.attenuation, 180.15);
+        assert_eq!(filter.filter_fractions, None);
+    }
+
+    #[test]
+    fn whole_numbers_in_the_file_count_for_the_r8brain_numbers() {
+        let store = temporary_store("r8brain-whole-numbers");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        std::fs::write(
+            store.config_path(),
+            "r8brain_quality = \"custom\"\nr8brain_transition_band = 3\nr8brain_attenuation = 100\n",
+        )
+        .unwrap();
+        let filter = store.r8brain_parameters().unwrap().quality.filter();
+        assert_eq!(filter.transition_band, 3.0);
+        assert_eq!(filter.attenuation, 100.0);
+    }
+
+    #[test]
+    fn the_environment_sets_saved_r8brain_parameters_aside() {
+        let store = temporary_store("r8brain-environment");
+        store
+            .save_r8brain_changes(R8brainParameters::default(), unusual_r8brain_parameters())
+            .unwrap();
+        let settings = read(
+            &store,
+            &[
+                ("HIPHILE_R8BRAIN_ATTENUATION", "100.5"),
+                ("HIPHILE_R8BRAIN_PHASE", "linear"),
+                ("HIPHILE_R8BRAIN_EXTENDED_FFT", "false"),
+                ("HIPHILE_R8BRAIN_FILTER_FRACTIONS", "64"),
+            ],
+        );
+        let parameters = store.parse_r8brain_parameters(&settings).unwrap();
+        let filter = parameters.quality.filter();
+        assert_eq!(filter.attenuation, 100.5);
+        assert_eq!(filter.phase, R8brainPhase::Linear);
+        assert_eq!(filter.filter_fractions, Some(64));
+        assert_eq!(filter.transition_band, 3.5);
+        assert!(!parameters.performance.extended_fft);
+
+        let settings = read(&store, &[("HIPHILE_R8BRAIN_QUALITY", "low")]);
+        assert_eq!(
+            store.parse_r8brain_parameters(&settings).unwrap().quality,
+            R8brainQuality::Low
+        );
+    }
+
+    #[test]
+    fn r8brain_values_outside_their_ranges_are_named_and_ignored_for_other_qualities() {
+        let store = temporary_store("r8brain-invalid");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        let key = |text: &str| {
+            std::fs::write(store.config_path(), text).unwrap();
+            match store.resampling_quality() {
+                Err(Error::InvalidSetting { key, .. }) => Some(key),
+                Err(error) => panic!("{error}"),
+                Ok(_) => None,
+            }
+        };
+        for (line, expected) in [
+            ("r8brain_transition_band = 0.4", "r8brain_transition_band"),
+            ("r8brain_transition_band = 45.5", "r8brain_transition_band"),
+            ("r8brain_attenuation = 48.0", "r8brain_attenuation"),
+            ("r8brain_attenuation = 219.0", "r8brain_attenuation"),
+            ("r8brain_phase = \"mixed\"", "r8brain_phase"),
+            ("r8brain_max_input_frames = 0", "r8brain_max_input_frames"),
+            (
+                "r8brain_max_input_frames = 1048577",
+                "r8brain_max_input_frames",
+            ),
+            ("r8brain_filter_fractions = 4", "r8brain_filter_fractions"),
+            (
+                "r8brain_filter_fractions = 65537",
+                "r8brain_filter_fractions",
+            ),
+            ("r8brain_filter_cache_size = 1", "r8brain_filter_cache_size"),
+            (
+                "r8brain_filter_bank_cache_size = 4097",
+                "r8brain_filter_bank_cache_size",
+            ),
+        ] {
+            assert_eq!(
+                key(&format!(
+                    "resampling = \"r8brain\"\nr8brain_quality = \"custom\"\n{line}\n"
+                )),
+                Some(expected)
+            );
+            assert_eq!(key(&format!("resampling = \"max\"\n{line}\n")), None);
+        }
+        assert_eq!(
+            key("resampling = \"r8brain\"\nr8brain_quality = \"best\"\n"),
+            Some("r8brain_quality")
+        );
+        assert_eq!(
+            key("resampling = \"r8brain\"\nr8brain_attenuation = 1\n"),
+            None
+        );
+        assert_eq!(
+            key("resampling = \"r8brain\"\nr8brain_quality = \"custom\"\n\
+                 r8brain_attenuation = 218\nr8brain_transition_band = 0.5\n"),
+            None
+        );
     }
 
     #[test]

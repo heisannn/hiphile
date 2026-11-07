@@ -16,7 +16,7 @@ Hiphile is developed on macOS. Windows and Linux are not regularly tested.
 
 - **Library:** Browse albums, artists and songs, get daily recommendations on the home screen, edit playlists, and keep favorites.
 - **Playback:** Gapless playback, on PCM trimming the silence around songs, crossfade and fading on play and pause, repeat, shuffle and an editable queue.
-- **Audio output:** Choose an output device, and switch its sample rate automatically to match each file or a multiple of it. On macOS and Windows, keep other apps off the device with exclusive mode. On macOS, play as DSD up to DSD256 through DoP, with the filter and the modulator adjustable. See [how DSD output works](docs/dsd/implementation.md).
+- **Audio output:** Choose an output device, and switch its sample rate automatically to match each file or a multiple of it. On macOS and Windows, keep other apps off the device with exclusive mode. On macOS, play as DSD up to DSD256 through DoP, with the filter and the modulator adjustable. See [how DSD output works](docs/dsd/implementation.md). Resample with Rubato or with a built-in port of r8brain-free-src. See [how resampling works](docs/resample/implementation.md).
 - **Lyrics:** Synced lyrics, highlighted word by word or line by line.
 - **Mini player:** A small window above all others, with the controls and the lyrics.
 - **Local cache:** Library data, cover art and songs are cached on disk, and library data syncs in the background.
@@ -63,7 +63,17 @@ Change settings in the app under **hiphile > Settings…**. They are saved to
 | `trim_silence` (`true` leaves out the silence around songs and any longer than 10 seconds inside them; PCM only) | `HIPHILE_TRIM_SILENCE` | `false` |
 | `play_pause_fade` (`true` fades the sound in and out when playing, pausing and stopping; PCM only) | `HIPHILE_PLAY_PAUSE_FADE` | `false` |
 | `crossfade_seconds` (from `0` to `12`; PCM only; songs that need the device at another rate play apart, so set a fixed `sample_rate` to crossfade them all) | `HIPHILE_CROSSFADE_SECONDS` | `0` |
-| `resampling` (`medium`, `high`, `max` or `custom`) | `HIPHILE_RESAMPLING` | `medium` |
+| `resampling` (`medium`, `high`, `max`, `custom` or `r8brain`, a built-in port of [r8brain-free-src](https://github.com/avaneev/r8brain-free-src) that takes no FFT size or window) | `HIPHILE_RESAMPLING` | `medium` |
+| `r8brain_quality` (with `r8brain`: `low`, `medium`, `high`, `max` or `custom`) | `HIPHILE_R8BRAIN_QUALITY` | `high` |
+| `r8brain_transition_band` (with `r8brain_quality = "custom"`: percent, from 0.5 to 45) | `HIPHILE_R8BRAIN_TRANSITION_BAND` | `2` |
+| `r8brain_attenuation` (with `r8brain_quality = "custom"`: decibels, from 49 to 218) | `HIPHILE_R8BRAIN_ATTENUATION` | `180.15` |
+| `r8brain_phase` (with `r8brain_quality = "custom"`: `linear` or `minimum`) | `HIPHILE_R8BRAIN_PHASE` | `linear` |
+| `r8brain_max_input_frames` (with `r8brain`: how many go through at a time, from 1 to 1048576) | `HIPHILE_R8BRAIN_MAX_INPUT_FRAMES` | `1024` |
+| `r8brain_extended_fft` (with `r8brain`: doubles the filter's FFT block, usually faster with more delay) | `HIPHILE_R8BRAIN_EXTENDED_FFT` | `false` |
+| `r8brain_whole_stepping` (with `r8brain_quality = "custom"`: whether rates at a ratio of small whole numbers use a filter per position) | `HIPHILE_R8BRAIN_WHOLE_STEPPING` | `true` |
+| `r8brain_filter_fractions` (with `r8brain_quality = "custom"`: positions of the interpolating filters, from 5 to 65536) | `HIPHILE_R8BRAIN_FILTER_FRACTIONS` | chosen from the attenuation |
+| `r8brain_filter_cache_size` (with `r8brain`: filters kept for later songs, from 2 to 4096) | `HIPHILE_R8BRAIN_FILTER_CACHE_SIZE` | `96` |
+| `r8brain_filter_bank_cache_size` (with `r8brain`: filter banks kept for later songs, from 2 to 4096) | `HIPHILE_R8BRAIN_FILTER_BANK_CACHE_SIZE` | `12` |
 | `resampling_fft_size` (with `custom`: a power of two from 256 to 16384) | `HIPHILE_RESAMPLING_FFT_SIZE` | `256` |
 | `resampling_window` (with `custom`: `hann`, `hann-2`, `blackman`, `blackman-2`, `blackman-harris` or `blackman-harris-2`) | `HIPHILE_RESAMPLING_WINDOW` | `blackman-harris-2` |
 | `output_format` (`pcm` or `dsd`; macOS, for the device in `dop_device`) | `HIPHILE_OUTPUT_FORMAT` | `pcm` |
@@ -122,3 +132,6 @@ ImgBB or Discord. It uses third-party services as follows:
 
 [MIT](LICENSE). The dictionaries that `romaji_search` downloads stay under their own terms, listed
 in [script/readings-notices/NOTICE.txt](script/readings-notices/NOTICE.txt).
+
+The `r8brain` resampling is a port of r8brain-free-src, under [its MIT license](crates/r8brain/LICENSE).
+Sample rate converter designed by Aleksey Vaneev of Voxengo.

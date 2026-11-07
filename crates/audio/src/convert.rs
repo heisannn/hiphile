@@ -3,10 +3,11 @@ use std::time::Duration;
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{Fft, FixedSync, Indexing, Resampler as _};
 
+use self::r8brain_converter::R8brainConverter;
 use crate::Error;
-use crate::output::{OutputSettings, Resampling, Spec};
+use crate::output::{OutputSettings, Resampling, ResamplingWindow, Spec};
 
-const RESAMPLE_CHUNK: usize = 1024;
+mod r8brain_converter;
 
 pub(crate) struct Converter {
     source: Spec,
@@ -19,7 +20,7 @@ pub(crate) struct Converter {
 enum Stage {
     Pcm {
         resampling: Resampling,
-        resampler: Option<Box<RateConverter>>,
+        resampler: Option<RateConverter>,
     },
     /// Its samples are DSD words as whole numbers, which `f32` holds exactly.
     Dop(Box<dsd::Encoder>),
@@ -82,7 +83,7 @@ impl Converter {
         source: Spec,
         output: Spec,
         resampling: Resampling,
-    ) -> Result<Option<Box<RateConverter>>, Error> {
+    ) -> Result<Option<RateConverter>, Error> {
         (source.rate != output.rate)
             .then(|| {
                 RateConverter::new(
@@ -91,7 +92,6 @@ impl Converter {
                     usize::from(output.channels),
                     resampling,
                 )
-                .map(Box::new)
             })
             .transpose()
     }
@@ -197,9 +197,55 @@ pub(crate) fn map_channels(input: &[f32], from: usize, to: usize, out: &mut Vec<
     }
 }
 
+enum RateConverter {
+    Fft(Box<FftConverter>),
+    R8brain(R8brainConverter),
+}
+
+impl RateConverter {
+    fn new(from: u32, to: u32, channels: usize, resampling: Resampling) -> Result<Self, Error> {
+        match resampling {
+            Resampling::Fft { fft_size, window } => {
+                FftConverter::new(from, to, channels, fft_size, window)
+                    .map(|converter| Self::Fft(Box::new(converter)))
+            }
+            Resampling::R8brain(settings) => {
+                R8brainConverter::new(from, to, channels, settings).map(Self::R8brain)
+            }
+        }
+    }
+
+    fn push(&mut self, samples: &[f32], out: &mut Vec<f32>) -> Result<(), Error> {
+        match self {
+            Self::Fft(converter) => converter.push(samples, out),
+            Self::R8brain(converter) => {
+                converter.push(samples, out);
+                Ok(())
+            }
+        }
+    }
+
+    fn undelivered_frames(&self) -> u64 {
+        match self {
+            Self::Fft(converter) => converter.undelivered_frames(),
+            Self::R8brain(converter) => converter.undelivered_frames(),
+        }
+    }
+
+    fn finish(&mut self, out: &mut Vec<f32>) -> Result<(), Error> {
+        match self {
+            Self::Fft(converter) => converter.finish(out),
+            Self::R8brain(converter) => {
+                converter.finish(out);
+                Ok(())
+            }
+        }
+    }
+}
+
 /// Fixed-ratio FFT resampler over interleaved samples, with its start-up
 /// delay trimmed and its tail flushed so the output length matches the input.
-struct RateConverter {
+struct FftConverter {
     resampler: Fft<f32>,
     channels: usize,
     ratio: f64,
@@ -210,19 +256,28 @@ struct RateConverter {
     frames_out: u64,
 }
 
-impl RateConverter {
-    fn new(from: u32, to: u32, channels: usize, resampling: Resampling) -> Result<Self, Error> {
-        let fft_size = resampling.fft_size() as usize;
-        // Rubato takes the FFT size from `chunk / sub_chunks`, so a chunk
-        // smaller than the FFT could not ask for it.
-        let chunk = RESAMPLE_CHUNK.max(fft_size);
+impl FftConverter {
+    fn new(
+        from: u32,
+        to: u32,
+        channels: usize,
+        fft_size: u32,
+        window: ResamplingWindow,
+    ) -> Result<Self, Error> {
+        if from == 0 || to == 0 {
+            let error = rubato::ResamplerConstructionError::InvalidSampleRate {
+                input: from as usize,
+                output: to as usize,
+            };
+            return Err(Error::Resample(error.to_string()));
+        }
         let resampler = Fft::<f32>::new_custom(
             from as usize,
             to as usize,
-            chunk,
-            chunk / fft_size,
+            input_block(from, to, fft_size),
+            1,
             channels,
-            resampling.window().into(),
+            window.into(),
             FixedSync::Input,
         )
         .map_err(|error| Error::Resample(error.to_string()))?;
@@ -278,9 +333,7 @@ impl RateConverter {
             self.input.clear();
         }
         // Push silence through until the delayed tail of the real input is
-        // out. A call can return nothing while the resampler collects a whole
-        // FFT block, which at some ratios spans several chunks, so stop on a
-        // bound covering the delay plus one block rather than on empty output.
+        // out, within a bound covering the delay plus one block
         let missing = expected.saturating_sub(self.frames_out) as f64 / self.ratio;
         let silence_frames = missing.ceil() as usize + self.resampler.fft_size_in();
         let max_calls = silence_frames.div_ceil(self.resampler.input_frames_next().max(1)) + 1;
@@ -327,8 +380,26 @@ impl RateConverter {
     }
 }
 
+/// Input frames of one FFT block whose side at the lower rate has at least `fft_size` frames.
+/// Rubato sets the cutoff by the shorter side, so sizing the input side alone would leave a large
+/// fall in rate a short output block and a cutoff well under the Nyquist frequency.
+fn input_block(from: u32, to: u32, fft_size: u32) -> usize {
+    let gcd = gcd(from, to);
+    let blocks = fft_size.max(1).div_ceil(from.min(to) / gcd);
+    blocks as usize * (from / gcd) as usize
+}
+
+fn gcd(mut a: u32, mut b: u32) -> u32 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::output::{R8brainPhase, R8brainSettings};
+
     use super::*;
     use crate::output::ResamplingWindow;
 
@@ -364,6 +435,20 @@ mod tests {
             .collect()
     }
 
+    fn each_resampling() -> [Resampling; 2] {
+        [
+            Resampling::default(),
+            Resampling::R8brain(R8brainSettings::default()),
+        ]
+    }
+
+    fn fft_size_in(converter: &RateConverter) -> usize {
+        match converter {
+            RateConverter::Fft(converter) => converter.resampler.fft_size_in(),
+            RateConverter::R8brain(_) => panic!("expected the FFT resampler"),
+        }
+    }
+
     #[test]
     fn resampled_length_follows_the_ratio() {
         let source = Spec {
@@ -374,15 +459,141 @@ mod tests {
             rate: 48_000,
             channels: 1,
         };
-        let mut converter = Converter::new(source, output, Resampling::default()).unwrap();
-        let input = sine(44_100, 44_100);
+        for resampling in each_resampling() {
+            let mut converter = Converter::new(source, output, resampling).unwrap();
+            let input = sine(44_100, 44_100);
+            let mut out = Vec::new();
+            // Uneven pushes, as packets of different sizes would arrive
+            for chunk in input.chunks(1_000) {
+                converter.process(chunk, &mut out).unwrap();
+            }
+            converter.finish(&mut out).unwrap();
+            assert_eq!(out.len(), 48_000);
+        }
+    }
+
+    /// The first frame out is the first frame in, whatever r8brain holds back,
+    /// and each channel stays its own.
+    #[test]
+    fn r8brain_keeps_the_time_and_the_channels_of_the_input() {
+        let spec = |rate| Spec { rate, channels: 2 };
+        let mut converter = Converter::new(
+            spec(44_100),
+            spec(48_000),
+            Resampling::R8brain(R8brainSettings::default()),
+        )
+        .unwrap();
+        // In `f64`, as the phase of `sine` drifts from rounding, too little to
+        // hear but more than this test allows
+        let wave =
+            |frame: usize, rate: f64| (frame as f64 * 440.0 * std::f64::consts::TAU / rate).sin();
+        let input: Vec<f32> = (0..44_100)
+            .flat_map(|frame| [wave(frame, 44_100.0) as f32, 0.0])
+            .collect();
         let mut out = Vec::new();
-        // Uneven pushes, as packets of different sizes would arrive
-        for chunk in input.chunks(1_000) {
+        for chunk in input.chunks(2 * 333) {
             converter.process(chunk, &mut out).unwrap();
         }
         converter.finish(&mut out).unwrap();
-        assert_eq!(out.len(), 48_000);
+
+        let tail_start = 47_000;
+        let frames = out.as_chunks::<2>().0.iter().enumerate();
+        for (frame, samples) in frames.take(tail_start).skip(2_000) {
+            let error = (f64::from(samples[0]) - wave(frame, 48_000.0)).abs();
+            assert!(error < 1e-5, "frame {frame} off by {error}");
+            assert_eq!(samples[1], 0.0, "frame {frame}");
+        }
+    }
+
+    #[test]
+    fn every_r8brain_option_keeps_the_length_and_the_level() {
+        let spec = |rate| Spec { rate, channels: 2 };
+        let changes: [fn(&mut R8brainSettings); 9] = [
+            |settings| settings.options.phase = R8brainPhase::Minimum,
+            |settings| settings.options.transition_band = 20.0,
+            |settings| settings.options.attenuation = 100.0,
+            |settings| settings.options.extended_fft = true,
+            |settings| settings.options.whole_stepping = false,
+            |settings| {
+                settings.options.whole_stepping = false;
+                settings.options.filter_fractions = Some(64);
+            },
+            |settings| settings.options.max_input_len = 1,
+            |settings| settings.options.max_input_len = 1 << 16,
+            |settings| {
+                settings.cache_limits.filters = 2;
+                settings.cache_limits.filter_banks = 2;
+            },
+        ];
+        for change in changes {
+            let mut settings = R8brainSettings::default();
+            change(&mut settings);
+            let resampling = Resampling::R8brain(settings);
+            let mut converter = Converter::new(spec(44_100), spec(48_000), resampling).unwrap();
+            let input: Vec<f32> = sine(44_100, 44_100)
+                .into_iter()
+                .flat_map(|sample| [sample, -sample])
+                .collect();
+            let mut out = Vec::new();
+            for chunk in input.chunks(2 * 333) {
+                converter.process(chunk, &mut out).unwrap();
+            }
+            converter.finish(&mut out).unwrap();
+
+            assert_eq!(out.len(), 2 * 48_000, "{settings:?}");
+            let middle = &out[2 * 20_000..2 * 28_000];
+            let peak = middle
+                .iter()
+                .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+            assert!((peak - 1.0).abs() < 0.01, "{settings:?}: {peak}");
+        }
+        r8brain::CacheLimits::default().apply().unwrap();
+    }
+
+    #[test]
+    fn a_large_r8brain_input_block_adds_only_the_tail_on_finish() {
+        let spec = |rate| Spec { rate, channels: 2 };
+        let mut settings = R8brainSettings::default();
+        settings.options.max_input_len = 1 << 18;
+        let resampling = Resampling::R8brain(settings);
+        let mut converter = Converter::new(spec(44_100), spec(176_400), resampling).unwrap();
+        let mut out = Vec::new();
+        converter.process(&vec![0.25; 2 * 1_000], &mut out).unwrap();
+        converter.finish(&mut out).unwrap();
+        assert_eq!(out.len(), 2 * 4_000);
+        assert!(
+            out.capacity() < 2 * 40_000,
+            "room for {} samples",
+            out.capacity()
+        );
+    }
+
+    #[test]
+    fn a_setting_outside_the_range_of_r8brain_is_an_error() {
+        let spec = |rate| Spec { rate, channels: 2 };
+        let mut settings = R8brainSettings::default();
+        settings.options.attenuation = 10.0;
+        assert!(Converter::new(spec(44_100), spec(48_000), Resampling::R8brain(settings)).is_err());
+    }
+
+    #[test]
+    fn r8brain_starts_over_on_a_reset() {
+        let spec = |rate| Spec { rate, channels: 1 };
+        let mut converter = Converter::new(
+            spec(44_100),
+            spec(48_000),
+            Resampling::R8brain(R8brainSettings::default()),
+        )
+        .unwrap();
+        let input = sine(44_100, 8_000);
+        let mut first = Vec::new();
+        converter.process(&input, &mut first).unwrap();
+        assert!(converter.undelivered_frames() > 0);
+
+        converter.reset().unwrap();
+        let mut again = Vec::new();
+        converter.process(&input, &mut again).unwrap();
+        assert_eq!(first, again);
     }
 
     /// What has come out plus what is still inside is the length of the input
@@ -397,17 +608,19 @@ mod tests {
             rate: 48_000,
             channels: 1,
         };
-        let mut converter = Converter::new(source, output, Resampling::default()).unwrap();
-        let mut out = Vec::new();
-        for chunk in sine(44_100, 22_050).chunks(1_000) {
-            converter.process(chunk, &mut out).unwrap();
+        for resampling in each_resampling() {
+            let mut converter = Converter::new(source, output, resampling).unwrap();
+            let mut out = Vec::new();
+            for chunk in sine(44_100, 22_050).chunks(1_000) {
+                converter.process(chunk, &mut out).unwrap();
+            }
+            let undelivered = converter.undelivered_frames();
+            assert!(undelivered > 0, "the resampler holds no input back");
+            assert_eq!(out.len() as u64 + undelivered, 24_000);
+            converter.finish(&mut out).unwrap();
+            assert_eq!(out.len(), 24_000);
+            assert_eq!(converter.undelivered_frames(), 0);
         }
-        let undelivered = converter.undelivered_frames();
-        assert!(undelivered > 0, "the resampler holds no input back");
-        assert_eq!(out.len() as u64 + undelivered, 24_000);
-        converter.finish(&mut out).unwrap();
-        assert_eq!(out.len(), 24_000);
-        assert_eq!(converter.undelivered_frames(), 0);
 
         let mut unchanged = Converter::new(source, source, Resampling::default()).unwrap();
         unchanged.process(&[0.5; 100], &mut Vec::new()).unwrap();
@@ -424,20 +637,22 @@ mod tests {
             rate: 48_000,
             channels: 1,
         };
-        let mut converter = Converter::new(source, output, Resampling::default()).unwrap();
-        let mut out = Vec::new();
-        converter.process(&sine(96_000, 96_000), &mut out).unwrap();
-        converter.finish(&mut out).unwrap();
-        // Skip the edges, where the filter ramps in and out
-        let middle = &out[4_800..43_200];
-        let peak = middle
-            .iter()
-            .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
-        assert!((0.95..=1.05).contains(&peak), "peak {peak}");
+        for resampling in each_resampling() {
+            let mut converter = Converter::new(source, output, resampling).unwrap();
+            let mut out = Vec::new();
+            converter.process(&sine(96_000, 96_000), &mut out).unwrap();
+            converter.finish(&mut out).unwrap();
+            // Skip the edges, where the filter ramps in and out
+            let middle = &out[4_800..43_200];
+            let peak = middle
+                .iter()
+                .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+            assert!((0.95..=1.05).contains(&peak), "peak {peak}");
+        }
     }
 
-    /// Ratios whose FFT block is larger than one chunk return nothing for
-    /// several calls; the tail must still come out whole.
+    /// Ratios whose FFT block is larger than what one call pushes return
+    /// nothing for several calls; the tail must still come out whole.
     #[test]
     fn every_ratio_keeps_the_whole_track() {
         let rates = [
@@ -453,28 +668,31 @@ mod tests {
             (44_100, 768_000),
             (768_000, 44_100),
         ];
-        for (from, to) in rates {
-            for frames in [1, 10, 1_000, 4_096, 44_100] {
-                let source = Spec {
-                    rate: from,
-                    channels: 2,
-                };
-                let output = Spec {
-                    rate: to,
-                    channels: 2,
-                };
-                let mut converter = Converter::new(source, output, Resampling::default()).unwrap();
-                let mut out = Vec::new();
-                for chunk in vec![0.25; frames * 2].chunks(2 * 333) {
-                    converter.process(chunk, &mut out).unwrap();
+        for resampling in each_resampling() {
+            for (from, to) in rates {
+                for frames in [1, 10, 1_000, 4_096, 44_100] {
+                    let source = Spec {
+                        rate: from,
+                        channels: 2,
+                    };
+                    let output = Spec {
+                        rate: to,
+                        channels: 2,
+                    };
+                    let mut converter = Converter::new(source, output, resampling).unwrap();
+                    let mut out = Vec::new();
+                    for chunk in vec![0.25; frames * 2].chunks(2 * 333) {
+                        converter.process(chunk, &mut out).unwrap();
+                    }
+                    converter.finish(&mut out).unwrap();
+                    let expected =
+                        (frames as f64 * f64::from(to) / f64::from(from)).round() as usize;
+                    assert_eq!(
+                        out.len() / 2,
+                        expected,
+                        "{resampling:?}: {from} -> {to} Hz, {frames} frames"
+                    );
                 }
-                converter.finish(&mut out).unwrap();
-                let expected = (frames as f64 * f64::from(to) / f64::from(from)).round() as usize;
-                assert_eq!(
-                    out.len() / 2,
-                    expected,
-                    "{from} -> {to} Hz, {frames} frames"
-                );
             }
         }
     }
@@ -483,15 +701,50 @@ mod tests {
     fn the_fft_size_reaches_the_resampler() {
         let fft_size_in = |fft_size| {
             let resampling = Resampling::new(fft_size, ResamplingWindow::default());
-            RateConverter::new(44_100, 48_000, 2, resampling)
-                .unwrap()
-                .resampler
-                .fft_size_in()
+            fft_size_in(&RateConverter::new(44_100, 48_000, 2, resampling).unwrap())
         };
         assert_eq!(
             [256, 1024, 4096, 16_384].map(fft_size_in),
             [294, 1029, 4116, 16_464]
         );
+    }
+
+    #[test]
+    fn a_rate_of_0_is_an_error() {
+        for (from, to) in [(0, 48_000), (44_100, 0)] {
+            assert!(RateConverter::new(from, to, 2, Resampling::default()).is_err());
+        }
+    }
+
+    #[test]
+    fn a_large_fall_in_rate_keeps_the_treble() {
+        let tone = 20_000.0;
+        for (from, to) in [(96_000, 44_100), (192_000, 48_000), (192_000, 44_100)] {
+            let source = Spec {
+                rate: from,
+                channels: 1,
+            };
+            let output = Spec {
+                rate: to,
+                channels: 1,
+            };
+            let input: Vec<f32> = (0..from)
+                .map(|frame| (frame as f64 * tone * std::f64::consts::TAU / f64::from(from)).sin())
+                .map(|sample| sample as f32)
+                .collect();
+            let mut converter = Converter::new(source, output, Resampling::default()).unwrap();
+            let mut out = Vec::new();
+            converter.process(&input, &mut out).unwrap();
+            converter.finish(&mut out).unwrap();
+            let middle = &out[out.len() / 4..out.len() * 3 / 4];
+            let power = middle
+                .iter()
+                .map(|sample| f64::from(*sample).powi(2))
+                .sum::<f64>()
+                / middle.len() as f64;
+            let level = 10.0 * (2.0 * power).log10();
+            assert!(level.abs() < 0.1, "{from} -> {to} Hz: {level:.2} dB");
+        }
     }
 
     #[test]
@@ -578,22 +831,23 @@ mod tests {
         else {
             panic!("expected a resampler");
         };
-        assert_eq!(resampler.resampler.fft_size_in(), 4116);
+        assert_eq!(fft_size_in(resampler), 4116);
     }
 
     #[test]
     fn samples_that_are_no_numbers_do_not_stop_the_resampler() {
         let spec = |rate| Spec { rate, channels: 2 };
-        let mut converter =
-            Converter::new(spec(44_100), spec(48_000), Resampling::default()).unwrap();
-        let mut input = vec![0.25; 2 * 4_410];
-        input[1_000] = f32::NAN;
-        input[1_001] = f32::INFINITY;
-        let mut out = Vec::new();
-        converter.process(&input, &mut out).unwrap();
-        converter.finish(&mut out).unwrap();
-        assert_eq!(out.len() / 2, 4_800);
-        assert!(out.iter().all(|sample| sample.is_finite()));
+        for resampling in each_resampling() {
+            let mut converter = Converter::new(spec(44_100), spec(48_000), resampling).unwrap();
+            let mut input = vec![0.25; 2 * 4_410];
+            input[1_000] = f32::NAN;
+            input[1_001] = f32::INFINITY;
+            let mut out = Vec::new();
+            converter.process(&input, &mut out).unwrap();
+            converter.finish(&mut out).unwrap();
+            assert_eq!(out.len() / 2, 4_800);
+            assert!(out.iter().all(|sample| sample.is_finite()));
+        }
     }
 
     #[test]
@@ -606,10 +860,12 @@ mod tests {
             rate: 44_100,
             channels: 2,
         };
-        let mut converter = Converter::new(source, output, Resampling::default()).unwrap();
-        let mut out = Vec::new();
-        converter.process(&vec![0.25; 2 * 100], &mut out).unwrap();
-        converter.finish(&mut out).unwrap();
-        assert_eq!(out.len() / 2, 92);
+        for resampling in each_resampling() {
+            let mut converter = Converter::new(source, output, resampling).unwrap();
+            let mut out = Vec::new();
+            converter.process(&vec![0.25; 2 * 100], &mut out).unwrap();
+            converter.finish(&mut out).unwrap();
+            assert_eq!(out.len() / 2, 92);
+        }
     }
 }
