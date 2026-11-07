@@ -378,13 +378,32 @@ impl LyricsView {
             .debug_selector(|| "lyrics-details".to_owned())
             .key_context(CONTROL_CONTEXT)
             .child(
-                div()
-                    .text_lg()
-                    .font_semibold()
-                    .truncate()
-                    .child(SharedString::from(song.title().to_owned())),
+                h_flex()
+                    .gap_2()
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .text_lg()
+                                    .font_semibold()
+                                    .truncate()
+                                    .child(SharedString::from(song.title().to_owned())),
+                            )
+                            .child(self.player.read(cx).render_song_status(song, cx)),
+                    )
+                    .child(
+                        div()
+                            .debug_selector(|| "lyrics-favorite".to_owned())
+                            .flex_none()
+                            .child(ui::favorite_button(
+                                "lyrics-favorite",
+                                actions::Favorite::Song(song.clone()),
+                                cx,
+                            )),
+                    ),
             )
-            .child(self.player.read(cx).render_song_status(song, cx))
             .child(
                 div()
                     .mt_4()

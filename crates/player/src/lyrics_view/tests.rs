@@ -368,6 +368,36 @@ fn what_is_under_the_cover_fits_in_the_smallest_window(cx: &mut TestAppContext) 
 }
 
 #[gpui_kit::test]
+fn the_star_ends_the_details_and_asks_for_the_song(cx: &mut TestAppContext) {
+    let (stand, cx) = stand(1200., 760., cx);
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    cx.update(|_, cx| {
+        actions::set_known_favorites(Some(Default::default()), cx);
+        let asked = asked.clone();
+        cx.on_action(move |action: &actions::SetFavorite, _| {
+            asked.lock().unwrap().push(action.clone());
+        });
+    });
+    set_open(&stand, true, cx);
+    advance(OPEN_DURATION, cx);
+
+    let star = cx.debug_bounds("lyrics-favorite").expect("the star");
+    let details = cx.debug_bounds("lyrics-details").expect("the details");
+    assert_eq!(star.right(), details.right());
+    assert!(star.top() >= details.top());
+
+    cx.simulate_click(star.center(), Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(
+        *asked.lock().unwrap(),
+        [actions::SetFavorite::new(
+            actions::Favorite::Song(song("a")),
+            true
+        )]
+    );
+}
+
+#[gpui_kit::test]
 fn the_cover_and_the_bar_toggle_the_view(cx: &mut TestAppContext) {
     let (stand, cx) = stand(1200., 760., cx);
     let view = view(&stand, cx);

@@ -266,6 +266,7 @@ impl Player {
                 .default_value(level)
         });
         let subscriptions = vec![
+            actions::observe_favorites(cx),
             cx.subscribe_in(&position, window, Self::on_position_slider),
             cx.subscribe_in(&mini_position, window, Self::on_position_slider),
             cx.subscribe(&volume, |this, _, event, cx| match event {
@@ -1339,6 +1340,19 @@ impl Player {
                         )
                         .child(self.render_song_status(song, cx)),
                 )
+                .child(
+                    div()
+                        .debug_selector(|| "player-favorite".to_owned())
+                        .flex_none()
+                        .child(
+                            ui::favorite_button(
+                                "player-favorite",
+                                actions::Favorite::Song(song.clone()),
+                                cx,
+                            )
+                            .small(),
+                        ),
+                )
             })
     }
 }
@@ -1527,9 +1541,11 @@ impl Player {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::cell::{Cell, RefCell};
+    use std::collections::{HashMap, HashSet};
     use std::io::{BufRead as _, BufReader, Read as _, Write as _};
     use std::net::{TcpListener, TcpStream};
+    use std::rc::Rc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Instant;
@@ -1583,6 +1599,47 @@ mod tests {
         let bar = cx.debug_bounds("player-bar").unwrap();
         let controls = cx.debug_bounds("player-controls").unwrap();
         bar.center().y + gpui_kit::px(0.5) - controls.center().y
+    }
+
+    #[gpui_kit::test]
+    fn the_bars_star_follows_the_song_and_the_favorites(cx: &mut TestAppContext) {
+        let (player, cx) = idle_player(cx);
+        let song = named_song("a");
+        let asked = Rc::new(RefCell::new(Vec::new()));
+        let notified = Rc::new(Cell::new(0));
+        cx.update(|window, cx| {
+            actions::set_known_favorites(Some(HashSet::new()), cx);
+            let asked = asked.clone();
+            cx.on_action(move |action: &actions::SetFavorite, _| {
+                asked.borrow_mut().push(action.clone());
+            });
+            let notified = notified.clone();
+            cx.observe(&player, move |_, _| notified.set(notified.get() + 1))
+                .detach();
+            player.update(cx, |player, _| {
+                player.fill_queue(std::slice::from_ref(&song), 0);
+            });
+            window.refresh();
+        });
+        cx.run_until_parked();
+
+        let star = cx.debug_bounds("player-favorite").unwrap();
+        let cover = cx.debug_bounds("player-cover").unwrap();
+        assert!(star.left() > cover.right());
+        cx.simulate_click(star.center(), gpui_kit::Modifiers::default());
+        cx.run_until_parked();
+        let favorite = actions::Favorite::Song(song);
+        assert_eq!(
+            asked.take(),
+            [actions::SetFavorite::new(favorite.clone(), true)]
+        );
+
+        let before = notified.get();
+        cx.update(|_, cx| {
+            actions::set_known_favorites(Some(HashSet::from([favorite.target()])), cx);
+        });
+        cx.run_until_parked();
+        assert!(notified.get() > before);
     }
 
     #[gpui_kit::test]
