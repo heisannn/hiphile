@@ -1957,10 +1957,40 @@ mod tests {
         }
     }
 
+    /// A player whose engine ends with the test, also one that fails. The
+    /// harness ends a test with `App::quit`, which on its platform does nothing,
+    /// so the player's own shutdown never runs. An engine left behind goes on
+    /// playing, and reopens and restores rates on the device under later tests,
+    /// until no stream there gets called any more.
+    struct TestPlayer {
+        player: Entity<Player>,
+        app: TestAppContext,
+    }
+
+    impl std::ops::Deref for TestPlayer {
+        type Target = Entity<Player>;
+
+        fn deref(&self) -> &Self::Target {
+            &self.player
+        }
+    }
+
+    impl Drop for TestPlayer {
+        fn drop(&mut self) {
+            // A test that failed while updating the player has it still leased
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.app.update(|cx| {
+                    self.player.update(cx, |player, _| player.engine.shutdown());
+                });
+            }))
+            .ok();
+        }
+    }
+
     fn player<'a>(
         server: &Server,
         cx: &'a mut TestAppContext,
-    ) -> (Entity<Player>, &'a mut VisualTestContext) {
+    ) -> (TestPlayer, &'a mut VisualTestContext) {
         // The engine and the network wake the test from their own threads
         cx.executor().allow_parking();
         cx.update(gpui_kit::init);
@@ -1983,7 +2013,10 @@ mod tests {
             None,
             None,
         );
-        cx.add_window_view(|window, cx| Player::new(session, output, window, cx))
+        let app = cx.clone();
+        let (player, cx) =
+            cx.add_window_view(|window, cx| Player::new(session, output, window, cx));
+        (TestPlayer { player, app }, cx)
     }
 
     fn wait_until(
@@ -2149,8 +2182,6 @@ mod tests {
         wait_until(&player, cx, "a to play", |player| {
             is_playing_song(player, "a")
         });
-        // Lets go of the device for the tests after this one
-        player.update(cx, |player, cx| player.stop(cx));
     }
 
     #[gpui_kit::test]
@@ -2166,8 +2197,6 @@ mod tests {
         wait_until(&player, cx, "a to wait", |player| {
             current(player) == Some("a") && player.state == State::Paused
         });
-        // Lets go of the device for the tests after this one
-        player.update(cx, |player, cx| player.stop(cx));
     }
 
     #[gpui_kit::test]
@@ -2188,8 +2217,6 @@ mod tests {
             player.read_with(cx, |player, _| player.dop_start),
             DopStart::Settled
         );
-        // Lets go of the device for the tests after this one
-        player.update(cx, |player, cx| player.stop(cx));
     }
 
     #[test]

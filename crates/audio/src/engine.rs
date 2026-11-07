@@ -147,7 +147,9 @@ pub struct Transitions {
     /// inside it. Positions stay those of the file.
     pub trim_silence: bool,
     /// How long tracks overlap, for those that play at the same device rate
-    /// with this much of them ready to go. Zero joins them without a gap.
+    /// with this much of them ready to go. The track going out is heard on its
+    /// own for at least as long, from its start or a seek. Zero joins them
+    /// without a gap.
     pub crossfade: Duration,
 }
 
@@ -370,8 +372,9 @@ impl Engine {
     /// The track starts opening right away on a thread of its own, so waiting
     /// for its data does not hold up the current one. If the device can stay
     /// as it is, the track's first sample follows the current one's last on
-    /// the same stream; otherwise the stream reopens in between. Failing to
-    /// open is reported when the track's turn comes.
+    /// the same stream, or with [`Transitions::crossfade`] fades in over its
+    /// end; otherwise the stream reopens in between. Failing to open is reported
+    /// when the track's turn comes.
     ///
     /// With no current track, as right after one ended, nothing follows and
     /// the track is dropped.
@@ -643,8 +646,17 @@ fn serve(
                 {
                     pending.start.fades_in = true;
                 }
+                let is_trim_changing = settings.dop().is_some() != output.dop().is_some()
+                    && shared.wants_trim_silence.load(Ordering::Relaxed);
                 output = settings;
                 return_to_sounding(&mut current, &mut next, shared, &emit);
+                // What they have decoded ahead went by the last output
+                if is_trim_changing {
+                    next = next.map(Next::rewound);
+                    if let Some(pending) = &mut pending {
+                        pending.seek(pending.start.position);
+                    }
+                }
                 current.take().map_or(Ok(()), |playback| {
                     let moved = playback.move_to(&output, shared, command_sender, restore)?;
                     current = moved.inspect(|playback| {
@@ -840,6 +852,7 @@ fn report_crossing(
         return;
     };
     let ended = std::mem::replace(&mut playback.generation, joined.generation);
+    playback.drop_finished_crossfade();
     // How long the last track had to wait is no reason for this one to
     playback.hold = FIRST_HOLD;
     if shared.promote(ended, joined.generation) {
@@ -953,8 +966,10 @@ impl Next {
 
     /// Back at its first sample, after decoding some.
     fn rewound(self) -> Self {
-        if let NextState::Ready(feed) = &self.state {
-            feed.seek(Duration::ZERO);
+        match &self.state {
+            NextState::Opening(opening) => opening.seek(Duration::ZERO),
+            NextState::Ready(feed) => feed.seek(Duration::ZERO),
+            NextState::Failed(_) => {}
         }
         self
     }
@@ -1656,10 +1671,11 @@ impl Playback {
     /// than the length of the fade left. Otherwise gives `next` back, which
     /// may then join or get its turn in another way.
     ///
-    /// A fade takes up at most half of a track, or a short one would hardly be
-    /// heard. All that goes into the fade is decoded before it starts, so it
-    /// can begin only when the next track has its share ready, and it is that
-    /// much shorter for coming late.
+    /// A fade lasts no longer than what has been taken of the track since it
+    /// started or was sought, or a short one, or the end of one sought to, would
+    /// hardly be heard. All that goes into the fade is decoded before it starts,
+    /// so it can begin only when the next track has its share ready, and it is
+    /// that much shorter for coming late.
     fn crossfade_into(
         &mut self,
         next: Next,
@@ -1679,10 +1695,7 @@ impl Playback {
         if let NextState::Ready(feed) = &next.state {
             feed.has_ahead(length + FIRST_HOLD);
         }
-        let longest = self
-            .format
-            .duration
-            .map_or(length, |duration| length.min(duration / 2));
+        let longest = length.min(self.feed.taken());
         let Some(left) = self
             .feed
             .time_left()
@@ -1768,8 +1781,8 @@ impl Playback {
 
     /// Goes back to writing the sounding track, and returns the track that
     /// joined it, unless the device has reached that one. Follow with a seek:
-    /// the sounding track's feed is at its end, and its next samples are
-    /// the ones to play after what the ring buffer holds is flushed.
+    /// the sounding track's feed is past where the device is, and what the ring
+    /// buffer holds is to be flushed.
     fn take_back(&mut self) -> Option<Next> {
         self.joined.as_ref()?;
         // Whichever of this and the audio callback sets it to zero first
@@ -1962,21 +1975,28 @@ impl Playback {
         }
     }
 
-    /// Passes on all the crossfade can mix so far, and ends it once it is over.
     fn deliver_mix(&mut self) {
         if let Some(crossfade) = &mut self.crossfade {
             crossfade.blend.mix_into(&mut self.pending);
-            if crossfade.blend.is_done() {
-                self.crossfade = None;
-            }
         }
+        self.drop_finished_crossfade();
     }
 
     /// A track that has less in it than was ready when the fade started, such
     /// as one cut short while decoding, cannot take it to its end.
     fn cut_crossfade(&mut self) {
-        if let Some(mut crossfade) = self.crossfade.take() {
+        if let Some(crossfade) = &mut self.crossfade {
             crossfade.blend.cut_into(&mut self.pending);
+        }
+        self.drop_finished_crossfade();
+    }
+
+    /// A fade written to its end stays until the device has reached the next
+    /// track, as a take-back goes back to the track fading out.
+    fn drop_finished_crossfade(&mut self) {
+        if self.joined.is_none() {
+            self.crossfade
+                .take_if(|crossfade| crossfade.blend.is_done());
         }
     }
 }
@@ -2324,14 +2344,18 @@ mod tests {
     /// such as a virtual device, or else the default one.
     fn device_to_open_by_id() -> crate::OutputDevice {
         let name = std::env::var("HIPHILE_TEST_DEVICE").ok();
-        crate::output_devices()
+        let device = crate::output_devices()
             .unwrap()
             .into_iter()
             .find(|device| match &name {
                 Some(name) => device.name().trim() == name,
                 None => device.is_default(),
             })
-            .expect("no such device")
+            .expect("no such device");
+        if name.is_some() {
+            set_rate_from_outside(device.id().unwrap(), LOOPBACK_RATE);
+        }
+        device
     }
 
     /// Sets the device's rate from outside the engine, as another app or
@@ -2450,7 +2474,12 @@ mod tests {
         engine.shutdown();
     }
 
-    /// A loopback device, such as BlackHole, whose input hears its output.
+    const LOOPBACK_RATE: u32 = 48_000;
+
+    /// A loopback device, such as BlackHole, whose input hears its output. Runs
+    /// at one rate to start with, whatever tests before this one left it at:
+    /// recording DoP sets a rate the engine has no reason to restore, and a debug
+    /// build cannot keep up with the highest.
     fn loopback_device() -> (cpal::Device, String) {
         let name = std::env::var("HIPHILE_TEST_DEVICE")
             .expect("name a loopback device in HIPHILE_TEST_DEVICE");
@@ -2462,6 +2491,7 @@ mod tests {
             .id()
             .unwrap()
             .to_owned();
+        set_rate_from_outside(&id, LOOPBACK_RATE);
         let device = cpal::default_host()
             .device_by_id(&id.parse().unwrap())
             .unwrap();
@@ -2515,6 +2545,20 @@ mod tests {
         let start = heard.iter().position(|sample| sample.abs() > 0.1).unwrap();
         let end = heard.iter().rposition(|sample| sample.abs() > 0.1).unwrap();
         &heard[start..=end]
+    }
+
+    /// The sounding part of `heard` up to its first silence, for a track that
+    /// plays without a gap. A loopback device can sound old data after a stream
+    /// ends, and a gap in the sound leaves less than the length expected.
+    fn up_to_first_gap(heard: &[f32], rate: u32) -> &[f32] {
+        let start = heard.iter().position(|sample| sample.abs() > 0.1).unwrap();
+        let sound = &heard[start..];
+        let gap = (rate / 1_000) as usize;
+        let len = sound
+            .windows(gap)
+            .position(|window| window.iter().all(|sample| sample.abs() < 1e-3))
+            .unwrap_or(sound.len());
+        sounding_part(&sound[..len])
     }
 
     /// How far `heard` strays from one 997 Hz sine wave, of whatever level
@@ -2825,7 +2869,7 @@ mod tests {
         engine.shutdown();
 
         let heard = heard.lock().unwrap();
-        let wave = sounding_part(&heard);
+        let wave = up_to_first_gap(&heard, rate);
         let departure = departure_from_one_wave(wave, rate);
         assert!(departure < 0.002, "strays from the wave by {departure}");
         let missing = (third as usize).abs_diff(wave.len());
@@ -2938,7 +2982,7 @@ mod tests {
         engine.shutdown();
 
         let heard = heard.lock().unwrap();
-        let wave = sounding_part(&heard);
+        let wave = up_to_first_gap(&heard, rate);
         let missing = (rate as usize * 2).abs_diff(wave.len());
         assert!(missing < 128, "{} frames against {}", wave.len(), rate * 2);
         // Away from the far ends, where the resampler ramps in and out
@@ -3079,7 +3123,7 @@ mod tests {
         engine.shutdown();
 
         let heard = heard.lock().unwrap();
-        let frames = sounding_part(&heard).len();
+        let frames = up_to_first_gap(&heard, rate).len();
         assert!(
             (rate as usize).abs_diff(frames) < 128,
             "{frames} frames against {rate}"
@@ -3920,7 +3964,7 @@ mod tests {
         engine.shutdown();
 
         let heard = heard.lock().unwrap();
-        let wave = sounding_part(&heard);
+        let wave = up_to_first_gap(&heard, rate);
         let departure = departure_from_one_wave(wave, rate);
         assert!(departure < 0.002, "strays from the wave by {departure}");
         let missing = (rate as usize * 2).abs_diff(wave.len());
@@ -4343,30 +4387,6 @@ mod tests {
         })
     }
 
-    /// A loopback device at a rate these tests can keep up with in a debug
-    /// build, whatever tests before them have left it at. Recording DoP sets a
-    /// rate the engine then has no reason to restore.
-    fn loopback_at_a_low_rate() -> (cpal::Device, String, u32) {
-        const RATE: u32 = 48_000;
-        let (device, id) = loopback_device();
-        set_rate_from_outside(&id, RATE);
-        (device, id, RATE)
-    }
-
-    /// `heard` up to its first silence, which is its end for a track that plays
-    /// without a gap. A loopback device can sound old data after a stream ends,
-    /// and a gap in the sound leaves less than the length expected.
-    fn up_to_first_gap(heard: &[f32], rate: u32) -> &[f32] {
-        let start = heard.iter().position(|sample| sample.abs() > 0.1).unwrap();
-        let sound = &heard[start..];
-        let gap = (rate / 1_000) as usize;
-        let len = sound
-            .windows(gap)
-            .position(|window| window.iter().all(|sample| sample.abs() < 1e-3))
-            .unwrap_or(sound.len());
-        &sound[..len]
-    }
-
     /// The next event that is not about waiting for data, which a track may do
     /// on a slow machine.
     fn next_outcome(events: &async_channel::Receiver<Event>) -> Event {
@@ -4461,7 +4481,8 @@ mod tests {
     #[test]
     #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
     fn a_next_track_fades_in_over_the_end_of_the_current_one() {
-        let (device, id, rate) = loopback_at_a_low_rate();
+        let (device, id) = loopback_device();
+        let rate = current_rate(&id);
         let heard = heard_of_two_tracks(
             crossfading(Duration::from_secs(1)),
             levels_wav(rate, &[(4, HALF)]),
@@ -4479,7 +4500,8 @@ mod tests {
     #[test]
     #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
     fn a_fade_takes_up_at_most_half_of_a_track() {
-        let (device, id, rate) = loopback_at_a_low_rate();
+        let (device, id) = loopback_device();
+        let rate = current_rate(&id);
         let heard = heard_of_two_tracks(
             crossfading(Duration::from_secs(5)),
             levels_wav(rate, &[(2, HALF)]),
@@ -4494,7 +4516,8 @@ mod tests {
     #[test]
     #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
     fn a_next_track_too_short_for_the_fade_fades_for_what_it_has() {
-        let (device, id, rate) = loopback_at_a_low_rate();
+        let (device, id) = loopback_device();
+        let rate = current_rate(&id);
         let heard = heard_of_two_tracks(
             crossfading(Duration::from_secs(4)),
             levels_wav(rate, &[(10, HALF)]),
@@ -4510,7 +4533,8 @@ mod tests {
     #[test]
     #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
     fn silence_around_tracks_goes_and_they_join_where_the_sound_ends() {
-        let (device, id, rate) = loopback_at_a_low_rate();
+        let (device, id) = loopback_device();
+        let rate = current_rate(&id);
         let (mut engine, events) = Engine::spawn();
         engine.set_output(OutputSettings::new(Some(id), None));
         engine.set_transitions(Transitions {
@@ -4552,7 +4576,8 @@ mod tests {
     #[test]
     #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
     fn a_long_silence_inside_a_track_goes_and_the_position_stays_that_of_the_file() {
-        let (device, id, rate) = loopback_at_a_low_rate();
+        let (device, id) = loopback_device();
+        let rate = current_rate(&id);
         let (mut engine, events) = Engine::spawn();
         engine.set_output(OutputSettings::new(Some(id), None));
         engine.set_transitions(Transitions {
@@ -4581,7 +4606,8 @@ mod tests {
     #[test]
     #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
     fn a_fade_starts_where_the_sound_ends_and_comes_in_where_it_starts() {
-        let (device, id, rate) = loopback_at_a_low_rate();
+        let (device, id) = loopback_device();
+        let rate = current_rate(&id);
         let heard = heard_of_two_tracks(
             Transitions {
                 trim_silence: true,
@@ -4599,7 +4625,8 @@ mod tests {
     #[test]
     #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
     fn a_next_track_at_another_rate_comes_on_after_the_current_one_ends() {
-        let (_, id, rate) = loopback_at_a_low_rate();
+        let (_, id) = loopback_device();
+        let rate = current_rate(&id);
         let other = *device_to_open_by_id()
             .sample_rates()
             .iter()
@@ -4627,7 +4654,8 @@ mod tests {
     #[test]
     #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
     fn taking_the_next_track_back_before_the_device_reaches_its_fade() {
-        let (device, id, rate) = loopback_at_a_low_rate();
+        let (device, id) = loopback_device();
+        let rate = current_rate(&id);
         let (mut engine, events) = Engine::spawn();
         engine.set_output(OutputSettings::new(Some(id), None));
         engine.set_transitions(crossfading(Duration::from_secs(1)));
@@ -4660,8 +4688,185 @@ mod tests {
 
     #[test]
     #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn taking_the_next_track_back_after_its_whole_fade_is_written() {
+        let (device, id) = loopback_device();
+        let rate = current_rate(&id);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id), None));
+        engine.set_transitions(crossfading(Duration::from_millis(200)));
+        let (stream, heard) = record(&device, rate);
+        engine.load(track_of(levels_wav(rate, &[(3, HALF)])));
+        engine.set_next(track_of(levels_wav(rate, &[(3, QUARTER)])));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        // Half a second ahead, the fade is all written by 2.5 seconds, and the
+        // device reaches it at 2.8
+        while engine.position() < Duration::from_millis(2_650) {
+            thread::sleep(Duration::from_millis(1));
+        }
+        engine.clear_next();
+        let ended = next_outcome(&events);
+        assert!(
+            matches!(ended.kind, EventKind::Ended { next: None }),
+            "{ended:?}"
+        );
+        let position = engine.position();
+        assert!(position > Duration::from_millis(2_900), "{position:?}");
+        assert!(position < Duration::from_millis(3_100), "{position:?}");
+        thread::sleep(Duration::from_millis(200));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let sound = sounding_part(&heard);
+        let wrong = sound
+            .iter()
+            .filter(|s| s.abs() > 1e-3 && (**s - 0.5).abs() > 1e-3);
+        assert_eq!(wrong.count(), 0, "the next track was heard");
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_seek_near_the_end_is_heard_before_the_fade() {
+        let (_, id) = loopback_device();
+        let rate = current_rate(&id);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id), None));
+        engine.set_transitions(crossfading(Duration::from_secs(5)));
+        engine.load(track_of(levels_wav(rate, &[(20, HALF)])));
+        engine.set_next(track_of(levels_wav(rate, &[(10, QUARTER)])));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        thread::sleep(Duration::from_millis(100));
+        engine.seek(Duration::from_secs(17));
+        let sought = Instant::now();
+        let ended = next_outcome(&events);
+        assert!(
+            matches!(ended.kind, EventKind::Ended { next: Some(_) }),
+            "{ended:?}"
+        );
+        let heard_for = sought.elapsed();
+        assert!(heard_for > Duration::from_millis(1_200), "{heard_for:?}");
+        assert!(heard_for < Duration::from_millis(2_500), "{heard_for:?}");
+        engine.shutdown();
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_next_track_decoded_on_pcm_plays_whole_after_turning_dop_on() {
+        let (_, id) = loopback_device();
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id.clone()), None));
+        engine.set_transitions(Transitions {
+            trim_silence: true,
+            crossfade: Duration::ZERO,
+        });
+        engine.load(track_of(levels_wav(44_100, &[(4, HALF)])));
+        engine.set_next(track_of(levels_wav(44_100, &[(5, 0), (1, HALF)])));
+        assert!(matches!(next_outcome(&events).kind, EventKind::Started(_)));
+        thread::sleep(Duration::from_millis(500));
+        engine.set_output(dop_settings(id, dsd::DopRate::Dsd64));
+        assert!(matches!(
+            next_outcome(&events).kind,
+            EventKind::OutputChanged(_)
+        ));
+        let ended = next_outcome(&events);
+        assert!(
+            matches!(ended.kind, EventKind::Ended { next: Some(_) }),
+            "{ended:?}"
+        );
+        assert!(matches!(next_outcome(&events).kind, EventKind::Started(_)));
+        thread::sleep(Duration::from_millis(500));
+        let position = engine.position();
+        assert!(position < Duration::from_secs(3), "{position:?}");
+        engine.shutdown();
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_fade_can_pause_and_its_position_is_that_of_the_new_track() {
+        let (device, id) = loopback_device();
+        let rate = current_rate(&id);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id), None));
+        engine.set_transitions(Transitions {
+            trim_silence: true,
+            crossfade: Duration::from_secs(2),
+        });
+        let (stream, heard) = record(&device, rate);
+        engine.load(track_of(levels_wav(rate, &[(4, HALF)])));
+        engine.set_next(track_of(levels_wav(rate, &[(3, 0), (4, QUARTER)])));
+        assert!(matches!(next_outcome(&events).kind, EventKind::Started(_)));
+        assert!(matches!(
+            next_outcome(&events).kind,
+            EventKind::Ended { next: Some(_) }
+        ));
+        assert!(matches!(next_outcome(&events).kind, EventKind::Started(_)));
+        thread::sleep(Duration::from_millis(500));
+        engine.pause();
+        thread::sleep(Duration::from_millis(100));
+        let paused_at = engine.position();
+        assert!(paused_at >= Duration::from_secs(3), "{paused_at:?}");
+        assert!(paused_at < Duration::from_millis(3_900), "{paused_at:?}");
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(engine.position(), paused_at);
+        engine.resume();
+        assert!(matches!(
+            next_outcome(&events).kind,
+            EventKind::Ended { next: None }
+        ));
+        thread::sleep(Duration::from_millis(200));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let start = heard.iter().position(|sample| sample.abs() > 0.1).unwrap();
+        let sound: Vec<f32> = heard[start..]
+            .iter()
+            .copied()
+            .filter(|sample| sample.abs() > 1e-3)
+            .collect();
+        let seconds = sound.len() as f32 / rate as f32;
+        assert!((seconds - 6.0).abs() < 0.2, "{seconds}");
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn new_settings_during_a_fade_move_the_new_track_alone() {
+        let (_, id) = loopback_device();
+        let rate = current_rate(&id);
+        let other = *device_to_open_by_id()
+            .sample_rates()
+            .iter()
+            .find(|other| **other != rate)
+            .unwrap();
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id.clone()), None));
+        engine.set_transitions(crossfading(Duration::from_secs(2)));
+        engine.load(track_of(levels_wav(rate, &[(4, HALF)])));
+        engine.set_next(track_of(levels_wav(rate, &[(8, QUARTER)])));
+        assert!(matches!(next_outcome(&events).kind, EventKind::Started(_)));
+        assert!(matches!(
+            next_outcome(&events).kind,
+            EventKind::Ended { next: Some(_) }
+        ));
+        assert!(matches!(next_outcome(&events).kind, EventKind::Started(_)));
+        thread::sleep(Duration::from_millis(500));
+        engine.set_output(OutputSettings::new(Some(id), Some(other)));
+        let moved = next_outcome(&events);
+        assert!(
+            matches!(moved.kind, EventKind::OutputChanged(_)),
+            "{moved:?}"
+        );
+        let position = engine.position();
+        assert!(position >= Duration::from_millis(500), "{position:?}");
+        assert!(position < Duration::from_millis(1_500), "{position:?}");
+        engine.shutdown();
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
     fn a_seek_ends_the_fade() {
-        let (device, id, rate) = loopback_at_a_low_rate();
+        let (device, id) = loopback_device();
+        let rate = current_rate(&id);
         let (mut engine, events) = Engine::spawn();
         engine.set_output(OutputSettings::new(Some(id), None));
         engine.set_transitions(crossfading(Duration::from_secs(2)));

@@ -610,7 +610,6 @@ impl Store {
         Ok(settings.exclusive_mode.unwrap_or(false))
     }
 
-    /// Whether to leave out the silence around songs.
     pub fn trim_silence(&self) -> Result<bool, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         Ok(settings.trim_silence.unwrap_or(false))

@@ -317,3 +317,36 @@ fn the_time_left_is_known_only_once_the_end_has_been_decoded() {
     wait_for(|| feed.has_ahead(Duration::from_secs(2)).then_some(()));
     assert_eq!(feed.time_left(), Some(Duration::from_secs(1)));
 }
+
+#[test]
+fn a_long_silence_ahead_does_not_change_where_the_track_resumes() {
+    let track = wav_with(8_000, 1, 8_000 * 13, |frame| {
+        if (8_000..8_000 * 12).contains(&frame) {
+            0
+        } else {
+            1_000
+        }
+    });
+    let feed = trimmed(track, Duration::from_secs(30));
+    wait_for(|| feed.has_ahead(Duration::from_secs(30)).then_some(()));
+    assert_eq!(feed.resumes_at(), Duration::ZERO);
+}
+
+#[test]
+fn what_was_taken_counts_from_the_start_or_the_last_seek() {
+    let feed = opened(Track::new(Cursor::new(second())), Duration::from_secs(2));
+    assert_eq!(feed.taken(), Duration::ZERO);
+    let mut samples = 0;
+    while let Item::Samples(taken) = wait_for(|| feed.take()) {
+        samples += taken.len();
+        if samples >= 4_000 {
+            break;
+        }
+    }
+    assert_eq!(
+        feed.taken(),
+        Duration::from_secs_f64(samples as f64 / 8_000.0)
+    );
+    feed.seek(Duration::from_millis(100));
+    assert_eq!(feed.taken(), Duration::ZERO);
+}

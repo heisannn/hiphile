@@ -46,6 +46,9 @@ struct State {
     ended: bool,
     /// Where the first sample after opening or the last seek comes from.
     resumes_at: Duration,
+    has_sound: bool,
+    /// Samples taken since opening or the last seek.
+    taken: usize,
     closed: bool,
 }
 
@@ -97,8 +100,13 @@ impl Channel {
             return;
         }
         match &item {
-            Item::Samples(samples) => state.samples += samples.len(),
-            Item::Seeked(Some(at)) | Item::Skipped(at) => state.resumes_at = *at,
+            Item::Samples(samples) => {
+                state.samples += samples.len();
+                state.has_sound = true;
+            }
+            Item::Seeked(Some(at)) => state.resumes_at = *at,
+            Item::Skipped(at) if !state.has_sound => state.resumes_at = *at,
+            Item::Skipped(_) => {}
             Item::Seeked(None) | Item::End | Item::Failed(_) => state.ended = true,
         }
         state.items.push_back(item);
@@ -111,6 +119,8 @@ impl Channel {
         state.samples = 0;
         state.ended = false;
         state.resumes_at = to;
+        state.has_sound = false;
+        state.taken = 0;
         drop(state);
         self.changed.notify_all();
     }
@@ -219,6 +229,8 @@ impl Opening {
                 seek: None,
                 ended: false,
                 resumes_at: Duration::ZERO,
+                has_sound: false,
+                taken: 0,
                 closed: false,
             }),
             changed: Condvar::new(),
@@ -278,6 +290,7 @@ impl Feed {
         let item = state.items.pop_front()?;
         if let Item::Samples(samples) = &item {
             state.samples -= samples.len();
+            state.taken += samples.len();
         }
         drop(state);
         self.link.0.changed.notify_all();
@@ -299,7 +312,11 @@ impl Feed {
         false
     }
 
-    /// How much audio is ready to take.
+    /// Silence left out does not count.
+    pub(crate) fn taken(&self) -> Duration {
+        time_of(self.link.0.lock().taken, self.spec)
+    }
+
     pub(crate) fn ready(&self) -> Duration {
         time_of(self.link.0.lock().samples, self.spec)
     }
