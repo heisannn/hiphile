@@ -93,7 +93,7 @@ impl Blend {
 }
 
 /// A smoothstep, as it leaves and arrives without a corner that could be heard.
-fn rising_gain(frame: u64, frames: u64) -> f32 {
+pub(crate) fn rising_gain(frame: u64, frames: u64) -> f32 {
     let at = (frame as f64 / frames as f64) as f32;
     at * at * (3.0 - 2.0 * at)
 }

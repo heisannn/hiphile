@@ -12,6 +12,7 @@ use crate::exclusive_device::{Exclusive, OriginalFormat};
 use crate::feed::{Feed, Item, Opening, Polled};
 use crate::mix::Blend;
 use crate::output::{self, ConfigRange, OutputSettings, Spec};
+use crate::play_fade::PlayFade;
 use crate::stream::Stream;
 use crate::track::Cancel;
 use crate::{Error, Track};
@@ -35,6 +36,9 @@ const RESTORE_DELAY: Duration = Duration::from_secs(5);
 /// The longest a finished track waits for the device to play its last
 /// samples, in case the device stops reporting its progress.
 const TAIL_TIMEOUT: Duration = Duration::from_secs(2);
+/// The longest a stream waits to fall silent before it stops anyway, in case
+/// the device stops calling for samples.
+const FALL_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// How long opening a stream waits for the device to reach a new sample rate.
 /// External DACs can take well over cpal's default of a second, and a stream
@@ -139,8 +143,8 @@ impl PlaybackFormat {
     }
 }
 
-/// How one track goes over to the next on PCM. DoP plays tracks whole and joins
-/// them.
+/// How the sound starts, stops and goes over to the next track on PCM. DoP plays
+/// tracks whole and joins them, and cuts in and out at once.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Transitions {
     /// Leaves out the silence around a track and any longer than a pause
@@ -151,6 +155,9 @@ pub struct Transitions {
     /// own for at least as long, from its start or a seek. Zero joins them
     /// without a gap.
     pub crossfade: Duration,
+    /// Falls to silence on a pause or a [`Engine::stop_fading`], and rises from
+    /// it on a resume or a track with [`Track::rise_in`].
+    pub fades_play_and_pause: bool,
 }
 
 /// Identifies one `load`, `set_next` or `stop` request. Work and errors from
@@ -167,7 +174,9 @@ enum Command {
     Resume,
     Seek(Duration),
     SetOutput(OutputSettings),
-    Stop,
+    Stop {
+        fades: bool,
+    },
     /// The stream stopped because the device changed under it, such as its
     /// rate being set from outside the engine. Names the generation the
     /// stream was opened for, which later tracks may have joined.
@@ -187,6 +196,8 @@ struct Shared {
     next_position: AtomicU64,
     crossfade_millis: AtomicU64,
     wants_trim_silence: AtomicBool,
+    fades_play_and_pause: AtomicBool,
+    play_fade: PlayFade,
     is_dop: AtomicBool,
     /// What decoding threads go by: [`Self::wants_trim_silence`], except on DoP.
     trim_silence: Arc<AtomicBool>,
@@ -211,6 +222,8 @@ impl Shared {
             next_position: AtomicU64::new(0),
             crossfade_millis: AtomicU64::new(0),
             wants_trim_silence: AtomicBool::new(false),
+            fades_play_and_pause: AtomicBool::new(false),
+            play_fade: PlayFade::new(),
             is_dop: AtomicBool::new(false),
             trim_silence: Arc::new(AtomicBool::new(false)),
             issued: AtomicU64::new(0),
@@ -423,7 +436,14 @@ impl Engine {
 
     pub fn stop(&self) {
         self.shared.supersede(None);
-        self.send(Command::Stop);
+        self.send(Command::Stop { fades: false });
+    }
+
+    /// [`Self::stop`], falling to silence first if
+    /// [`Transitions::fades_play_and_pause`] is on.
+    pub fn stop_fading(&self) {
+        self.shared.supersede(None);
+        self.send(Command::Stop { fades: true });
     }
 
     /// Linear gain from `0.0` to `1.0`, applied immediately. At `1.0`
@@ -448,6 +468,9 @@ impl Engine {
         self.shared
             .wants_trim_silence
             .store(transitions.trim_silence, Ordering::Relaxed);
+        self.shared
+            .fades_play_and_pause
+            .store(transitions.fades_play_and_pause, Ordering::Relaxed);
         self.shared.update_trim_silence();
     }
 
@@ -522,12 +545,15 @@ fn serve(
     };
     let mut output = OutputSettings::default();
     let mut current: Option<Playback> = None;
+    // A stream stopped while sounding, kept until it has fallen silent
+    let mut leaving: Option<Playback> = None;
     // The track to play once it has opened, before which there is no current
     let mut pending: Option<Pending> = None;
     let mut next: Option<Next> = None;
     let mut buffering = BufferingReport::default();
     let mut idle_since: Option<Instant> = None;
     loop {
+        leaving = leaving.filter(|playback| !playback.has_fallen(shared));
         if current.is_some() || pending.is_some() {
             idle_since = None;
         } else {
@@ -544,7 +570,11 @@ fn serve(
         let playing = current.as_ref().is_some_and(|playback| !playback.paused);
         let timeout = if current.as_ref().is_some_and(Playback::has_more_to_fill) {
             Some(Duration::ZERO)
-        } else if playing || pending.is_some() {
+        } else if playing
+            || pending.is_some()
+            || leaving.is_some()
+            || current.as_ref().is_some_and(Playback::is_falling)
+        {
             Some(FILL_INTERVAL)
         } else {
             idle_since
@@ -562,7 +592,7 @@ fn serve(
                 Err(_) => return,
             },
         };
-        if command.is_none() && current.is_none() && pending.is_none() {
+        if command.is_none() && current.is_none() && pending.is_none() && leaving.is_none() {
             // Nothing has played for `RESTORE_DELAY`, so no next track is coming
             if let Some(restore) = restore.take() {
                 restore.apply();
@@ -576,6 +606,7 @@ fn serve(
             Some(Command::Load(generation, track)) => {
                 // Release the device before opening it again
                 current = None;
+                leaving = None;
                 pending = None;
                 next = None;
                 buffering = BufferingReport::default();
@@ -605,17 +636,18 @@ fn serve(
                 }
                 current.as_mut().map_or(Ok(()), |playback| {
                     playback
-                        .pause()
+                        .pause(shared)
                         .map_err(|error| (playback.generation, error))
                 })
             }
             Some(Command::Resume) => {
                 if let Some(pending) = &mut pending {
                     pending.start.paused = false;
+                    pending.start.rises = true;
                 }
                 current.as_mut().map_or(Ok(()), |playback| {
                     playback
-                        .resume()
+                        .resume(shared)
                         .map_err(|error| (playback.generation, error))
                 })
             }
@@ -690,8 +722,11 @@ fn serve(
                         Ok(())
                     })
             }
-            Some(Command::Stop) => {
-                current = None;
+            Some(Command::Stop { fades }) => {
+                leaving = current
+                    .take()
+                    .filter(|_| fades)
+                    .and_then(|playback| playback.falling_away(shared));
                 pending = None;
                 next = None;
                 buffering = BufferingReport::default();
@@ -705,6 +740,13 @@ fn serve(
                 }),
             Some(Command::Shutdown) => return,
         };
+        let result = result.and_then(|()| {
+            current.as_mut().map_or(Ok(()), |playback| {
+                playback
+                    .finish_falling(shared)
+                    .map_err(|error| (playback.generation, error))
+            })
+        });
         if let Err((generation, error)) = result {
             if let Some(playback) = current.take() {
                 shared.release(playback.generation);
@@ -987,11 +1029,13 @@ impl Pending {
         let position = track.start_at;
         let paused = track.start_paused;
         let fades_in = track.fades_in;
+        let rises = track.rises_in;
         let mut pending = Self {
             track: Next::open(generation, track, shared),
             start: Start {
                 paused,
                 fades_in,
+                rises,
                 ..Start::BEGINNING
             },
         };
@@ -1236,7 +1280,10 @@ fn keep_device_rate(
 struct Start {
     position: Duration,
     paused: bool,
+    /// Of DoP, on [`DOP_FADE_IN`]
     fades_in: bool,
+    /// Of PCM, on [`PlayFade`]
+    rises: bool,
 }
 
 impl Start {
@@ -1244,6 +1291,7 @@ impl Start {
         position: Duration::ZERO,
         paused: false,
         fades_in: false,
+        rises: false,
     };
 }
 
@@ -1266,6 +1314,9 @@ struct Playback {
     /// The converter has given up its last samples too.
     finished: bool,
     paused: bool,
+    /// While the stream runs on until [`Shared::play_fade`] has fallen, it stops
+    /// at this time if that has not happened.
+    falls_by: Option<Instant>,
     /// Nothing goes to the device, which plays silence and whose position
     /// stands still, until the feed has [`Self::hold`] ready.
     holding: bool,
@@ -1324,6 +1375,7 @@ impl Playback {
             position: shared.position(),
             paused: self.paused,
             fades_in: settings.dop().is_some(),
+            rises: false,
         };
         let Self {
             feed,
@@ -1382,6 +1434,9 @@ impl Playback {
         if start.fades_in && settings.dop_fades_in() {
             playback.converter.fade_in(DOP_FADE_IN);
         }
+        if start.rises && shared.fades_play_and_pause.load(Ordering::Relaxed) {
+            shared.play_fade.silence();
+        }
         // Whatever is ready by now, so the first callbacks need not be silent.
         // Nothing takes from the ring buffer yet, so this ends when it is full.
         playback.fill(shared)?;
@@ -1389,7 +1444,7 @@ impl Playback {
             playback.fill(shared)?;
         }
         if start.paused {
-            playback.pause()?;
+            playback.pause_at_once(shared)?;
         } else {
             playback.stream.play()?;
         }
@@ -1459,6 +1514,7 @@ impl Playback {
         let frames = (position.as_secs_f64() * f64::from(output.rate)) as u64;
         shared.frames_played.store(frames, Ordering::Relaxed);
         shared.output_rate.store(output.rate, Ordering::Relaxed);
+        shared.play_fade.start(output.rate);
         let sounding = Arc::new(AtomicBool::new(false));
         let flush_until = Arc::new(AtomicU64::new(0));
         let reader = RingReader::new(
@@ -1527,6 +1583,7 @@ impl Playback {
             decoded_all: false,
             finished: false,
             paused: false,
+            falls_by: None,
             holding: true,
             hold: FIRST_HOLD,
             generation,
@@ -1547,7 +1604,59 @@ impl Playback {
         })
     }
 
-    fn pause(&mut self) -> Result<(), Error> {
+    fn pause(&mut self, shared: &Shared) -> Result<(), Error> {
+        if self.is_falling() {
+            return Ok(());
+        }
+        if self.paused
+            || self.dop_paused.is_some()
+            || !shared.fades_play_and_pause.load(Ordering::Relaxed)
+        {
+            return self.pause_at_once(shared);
+        }
+        self.start_falling(shared);
+        self.paused = true;
+        Ok(())
+    }
+
+    fn start_falling(&mut self, shared: &Shared) {
+        shared.play_fade.fall();
+        self.falls_by = Some(Instant::now() + FALL_TIMEOUT);
+    }
+
+    fn is_falling(&self) -> bool {
+        self.falls_by.is_some()
+    }
+
+    /// Whether nothing is left to fall, or it is no use waiting for that
+    fn has_fallen(&self, shared: &Shared) -> bool {
+        shared.play_fade.has_fallen()
+            || self
+                .falls_by
+                .is_none_or(|falls_by| Instant::now() >= falls_by)
+    }
+
+    fn finish_falling(&mut self, shared: &Shared) -> Result<(), Error> {
+        if self.is_falling() && self.has_fallen(shared) {
+            self.pause_at_once(shared)?;
+        }
+        Ok(())
+    }
+
+    /// This stopped for good, falling to silence on the way if it can be heard.
+    /// `None` if there is no need to wait for that.
+    fn falling_away(mut self, shared: &Shared) -> Option<Self> {
+        let is_heard = !self.paused || self.is_falling();
+        let fades = shared.fades_play_and_pause.load(Ordering::Relaxed);
+        if !is_heard || !fades || self.dop_paused.is_some() {
+            return None;
+        }
+        self.start_falling(shared);
+        Some(self)
+    }
+
+    fn pause_at_once(&mut self, shared: &Shared) -> Result<(), Error> {
+        self.falls_by = None;
         match &self.dop_paused {
             None => self.stream.pause()?,
             Some(dop_paused) => {
@@ -1556,12 +1665,19 @@ impl Playback {
             }
         }
         self.paused = true;
+        shared.play_fade.silence();
         Ok(())
     }
 
-    fn resume(&mut self) -> Result<(), Error> {
+    fn resume(&mut self, shared: &Shared) -> Result<(), Error> {
         if let Some(dop_paused) = &self.dop_paused {
             dop_paused.store(false, Ordering::Release);
+        }
+        self.falls_by = None;
+        if shared.fades_play_and_pause.load(Ordering::Relaxed) {
+            shared.play_fade.rise();
+        } else {
+            shared.play_fade.skip_to_full();
         }
         self.stream.play()?;
         self.paused = false;
@@ -2006,8 +2122,10 @@ impl Playback {
 ///
 /// `sounding` is true from the moment samples go to the device until a later
 /// callback starts after the device's predicted time for playing the last of
-/// them. Samples numbered below `flush_until` are dropped unplayed. Reaching
-/// `next_at` restarts the position counter, as that sample starts a track.
+/// them. Samples numbered below `flush_until` are dropped unplayed, unless the
+/// sound is falling, which it goes on doing over them without moving the
+/// position. Reaching `next_at` restarts the position counter, as that sample
+/// starts a track.
 struct RingReader {
     consumer: rtrb::Consumer<f32>,
     channels: usize,
@@ -2057,7 +2175,7 @@ impl RingReader {
             .flush_until
             .load(Ordering::Acquire)
             .saturating_sub(self.read);
-        if stale > 0 {
+        if stale > 0 && !self.shared.play_fade.is_falling() {
             let len = usize::try_from(stale)
                 .unwrap_or(usize::MAX)
                 .min(self.consumer.slots());
@@ -2100,6 +2218,9 @@ impl RingReader {
 
     /// Moves the position on by the `written` samples just handed over.
     fn count(&mut self, written: usize) {
+        let flush_until = self.flush_until.load(Ordering::Acquire);
+        let taken_from = self.read.saturating_sub(written as u64);
+        let current = self.read.saturating_sub(flush_until.max(taken_from));
         let next_starts = self.next_at.load(Ordering::Acquire);
         let crossed = next_starts != 0
             && self.read >= next_starts
@@ -2114,7 +2235,7 @@ impl RingReader {
         } else {
             self.shared
                 .frames_played
-                .fetch_add((written / self.channels) as u64, Ordering::Relaxed);
+                .fetch_add(current / self.channels as u64, Ordering::Relaxed);
         }
     }
 }
@@ -2126,7 +2247,12 @@ fn output_callback(
     shared: Arc<Shared>,
 ) -> impl FnMut(&mut [f32], &cpal::OutputCallbackInfo) + Send + 'static {
     move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
-        let written = reader.take(data.len(), info, |first, second| {
+        let room = if shared.play_fade.has_fallen() {
+            0
+        } else {
+            data.len()
+        };
+        let written = reader.take(room, info, |first, second| {
             data[..first.len()].copy_from_slice(first);
             data[first.len()..first.len() + second.len()].copy_from_slice(second);
         });
@@ -2135,6 +2261,12 @@ fn output_callback(
             for sample in &mut data[..written] {
                 *sample *= volume;
             }
+        }
+        shared
+            .play_fade
+            .apply(&mut data[..written], reader.channels);
+        if written < data.len() {
+            shared.play_fade.ran_out();
         }
         data[written..].fill(0.0);
         reader.count(written);
@@ -2539,6 +2671,174 @@ mod tests {
             chunk[2..].copy_from_slice(&sample.to_le_bytes());
         }
         bytes
+    }
+
+    /// The loudest sample of each 50 ms of `heard` at the loopback rate
+    fn loudness(heard: &[f32]) -> Vec<f32> {
+        heard
+            .chunks(LOOPBACK_RATE as usize / 20)
+            .map(|part| {
+                part.iter()
+                    .fold(0.0, |loudest: f32, s| loudest.max(s.abs()))
+            })
+            .collect()
+    }
+
+    /// How many parts of `levels` are clearly between silence and `full`
+    fn parts_on_the_way(levels: &[f32], full: f32) -> usize {
+        levels
+            .iter()
+            .filter(|level| (0.1 * full..0.85 * full).contains(*level))
+            .count()
+    }
+
+    fn play_pause_fade_engine(fades: bool) -> (Engine, async_channel::Receiver<Event>) {
+        let (engine, events) = Engine::spawn();
+        engine.set_transitions(Transitions {
+            fades_play_and_pause: fades,
+            ..Transitions::default()
+        });
+        (engine, events)
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_pause_falls_and_a_resume_rises() {
+        let (device, id) = loopback_device();
+        let (stream, heard) = record(&device, LOOPBACK_RATE);
+        let (mut engine, events) = play_pause_fade_engine(true);
+        engine.set_output(OutputSettings::new(Some(id), None));
+        let track = sine_wav(LOOPBACK_RATE, 0, LOOPBACK_RATE * 8);
+        engine.load(Track::new(Cursor::new(track)));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        thread::sleep(Duration::from_millis(1_000));
+
+        engine.pause();
+        thread::sleep(Duration::from_millis(600));
+        let paused_at = engine.position();
+        thread::sleep(Duration::from_millis(200));
+        assert_eq!(engine.position(), paused_at);
+        let fell = heard.lock().unwrap().len();
+        thread::sleep(Duration::from_millis(100));
+
+        engine.resume();
+        thread::sleep(Duration::from_millis(1_000));
+        let played_on = engine.position().saturating_sub(paused_at);
+        assert!(played_on > Duration::from_millis(800), "{played_on:?}");
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let levels = loudness(sounding_part(&heard[..fell]));
+        let full = levels[levels.len() / 2];
+        assert!(parts_on_the_way(&levels, full) >= 2, "{levels:?}");
+        let levels = loudness(sounding_part(&heard[fell..]));
+        assert!(parts_on_the_way(&levels, full) >= 2, "{levels:?}");
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_seek_right_after_a_pause_lets_the_sound_fall_and_goes_on_from_there() {
+        let (device, id) = loopback_device();
+        let (stream, heard) = record(&device, LOOPBACK_RATE);
+        let (mut engine, events) = play_pause_fade_engine(true);
+        engine.set_output(OutputSettings::new(Some(id), None));
+        let track = sine_wav(LOOPBACK_RATE, 0, LOOPBACK_RATE * 8);
+        engine.load(Track::new(Cursor::new(track)));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        thread::sleep(Duration::from_millis(1_000));
+
+        engine.pause();
+        engine.seek(Duration::ZERO);
+        thread::sleep(Duration::from_millis(600));
+        assert_eq!(engine.position(), Duration::ZERO);
+        let fell = heard.lock().unwrap().len();
+
+        engine.resume();
+        thread::sleep(Duration::from_millis(500));
+        let position = engine.position();
+        assert!(position > Duration::from_millis(100), "{position:?}");
+        assert!(position < Duration::from_millis(600), "{position:?}");
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let levels = loudness(sounding_part(&heard[..fell]));
+        let full = levels[levels.len() / 2];
+        assert!(parts_on_the_way(&levels, full) >= 2, "{levels:?}");
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_pause_without_the_fade_cuts_out() {
+        let (device, id) = loopback_device();
+        let (stream, heard) = record(&device, LOOPBACK_RATE);
+        let (mut engine, events) = play_pause_fade_engine(false);
+        engine.set_output(OutputSettings::new(Some(id), None));
+        let track = sine_wav(LOOPBACK_RATE, 0, LOOPBACK_RATE * 8);
+        engine.load(Track::new(Cursor::new(track)));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        thread::sleep(Duration::from_millis(1_000));
+        engine.pause();
+        thread::sleep(Duration::from_millis(500));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let levels = loudness(sounding_part(&heard));
+        let full = levels[levels.len() / 2];
+        assert!(parts_on_the_way(&levels, full) <= 1, "{levels:?}");
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_stop_falls_and_a_new_track_can_follow_while_it_does() {
+        let (device, id) = loopback_device();
+        let (stream, heard) = record(&device, LOOPBACK_RATE);
+        let (mut engine, events) = play_pause_fade_engine(true);
+        engine.set_output(OutputSettings::new(Some(id), None));
+        let track = || sine_wav(LOOPBACK_RATE, 0, LOOPBACK_RATE * 8);
+        engine.load(Track::new(Cursor::new(track())));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        thread::sleep(Duration::from_millis(1_000));
+        engine.stop_fading();
+        thread::sleep(Duration::from_millis(600));
+        let fell = heard.lock().unwrap().len();
+
+        engine.load(Track::new(Cursor::new(track())));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        engine.stop_fading();
+        engine.load(Track::new(Cursor::new(track())));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        thread::sleep(Duration::from_millis(500));
+        assert!(engine.position() > Duration::from_millis(200));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let levels = loudness(sounding_part(&heard[..fell]));
+        let full = levels[levels.len() / 2];
+        assert!(parts_on_the_way(&levels, full) >= 2, "{levels:?}");
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn a_track_told_to_rise_comes_up_from_silence() {
+        let (device, id) = loopback_device();
+        let (stream, heard) = record(&device, LOOPBACK_RATE);
+        let (mut engine, events) = play_pause_fade_engine(true);
+        engine.set_output(OutputSettings::new(Some(id), None));
+        let track = sine_wav(LOOPBACK_RATE, 0, LOOPBACK_RATE * 8);
+        engine.load(Track::new(Cursor::new(track)).rise_in(true));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        thread::sleep(Duration::from_millis(1_000));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let levels = loudness(sounding_part(&heard));
+        let full = levels[levels.len() / 2];
+        assert!(parts_on_the_way(&levels[..8], full) >= 2, "{levels:?}");
     }
 
     fn sounding_part(heard: &[f32]) -> &[f32] {
@@ -3391,6 +3691,146 @@ mod tests {
     }
 
     #[test]
+    fn a_fall_leaves_what_it_does_not_reach_for_the_rise() {
+        let (mut producer, consumer) = rtrb::RingBuffer::new(4_096);
+        let shared = Arc::new(Shared::new());
+        shared.play_fade.start(1_000);
+        let mut callback = output_callback(
+            RingReader::new(
+                consumer,
+                2,
+                1_000,
+                shared.clone(),
+                Arc::default(),
+                Arc::default(),
+                Arc::default(),
+            ),
+            shared.clone(),
+        );
+        for _ in 0..4_096 {
+            producer.push(0.5).unwrap();
+        }
+
+        shared.play_fade.fall();
+        // At 1 kHz the fall is 250 frames, of two samples each
+        let mut falling = [1.0; 500];
+        callback(&mut falling, &callback_info(0, 0));
+        assert!(falling[0] > 0.49);
+        assert_eq!(falling[498..], [0.0, 0.0]);
+        assert!(shared.play_fade.has_fallen());
+        assert_eq!(shared.frames_played.load(Ordering::Relaxed), 250);
+
+        let mut silent = [1.0; 100];
+        callback(&mut silent, &callback_info(300, 0));
+        assert_eq!(silent, [0.0; 100]);
+        assert_eq!(producer.slots(), 500);
+        assert_eq!(shared.frames_played.load(Ordering::Relaxed), 250);
+
+        shared.play_fade.rise();
+        let mut rising = [1.0; 500];
+        callback(&mut rising, &callback_info(400, 0));
+        assert!(rising[0] < 0.01);
+        assert_eq!(rising[498..], [0.5, 0.5]);
+        assert_eq!(producer.slots(), 1_000);
+    }
+
+    #[test]
+    fn a_seek_lets_a_fall_finish_over_what_it_flushes() {
+        let (mut producer, consumer) = rtrb::RingBuffer::new(4_096);
+        let shared = Arc::new(Shared::new());
+        shared.play_fade.start(1_000);
+        let flush_until = Arc::new(AtomicU64::new(0));
+        let mut callback = output_callback(
+            RingReader::new(
+                consumer,
+                2,
+                1_000,
+                shared.clone(),
+                Arc::default(),
+                flush_until.clone(),
+                Arc::default(),
+            ),
+            shared.clone(),
+        );
+        for _ in 0..1_000 {
+            producer.push(0.5).unwrap();
+        }
+        shared.play_fade.fall();
+        flush_until.store(1_000, Ordering::Release);
+
+        // Half of the fall, which is 250 frames of two samples each
+        let mut falling = [1.0; 250];
+        callback(&mut falling, &callback_info(0, 0));
+        assert!(falling[248] > 0.1);
+        assert_eq!(shared.frames_played.load(Ordering::Relaxed), 0);
+
+        let mut rest = [1.0; 250];
+        callback(&mut rest, &callback_info(125, 0));
+        assert_eq!(rest[248..], [0.0, 0.0]);
+        assert!(shared.play_fade.has_fallen());
+
+        let mut silent = [1.0; 4];
+        callback(&mut silent, &callback_info(250, 0));
+        assert_eq!(producer.slots(), 4_096);
+        assert_eq!(shared.frames_played.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_seek_flushes_at_once_when_nothing_is_falling() {
+        let (mut producer, consumer) = rtrb::RingBuffer::new(64);
+        let shared = Arc::new(Shared::new());
+        shared.play_fade.start(1_000);
+        let flush_until = Arc::new(AtomicU64::new(0));
+        let mut callback = output_callback(
+            RingReader::new(
+                consumer,
+                2,
+                1_000,
+                shared.clone(),
+                Arc::default(),
+                flush_until.clone(),
+                Arc::default(),
+            ),
+            shared.clone(),
+        );
+        for _ in 0..8 {
+            producer.push(0.5).unwrap();
+        }
+        flush_until.store(8, Ordering::Release);
+        let mut data = [1.0; 8];
+        callback(&mut data, &callback_info(0, 0));
+        assert_eq!(data, [0.0; 8]);
+        assert_eq!(shared.frames_played.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_fall_ends_when_the_samples_do() {
+        let (mut producer, consumer) = rtrb::RingBuffer::new(64);
+        let shared = Arc::new(Shared::new());
+        shared.play_fade.start(1_000);
+        let mut callback = output_callback(
+            RingReader::new(
+                consumer,
+                2,
+                1_000,
+                shared.clone(),
+                Arc::default(),
+                Arc::default(),
+                Arc::default(),
+            ),
+            shared.clone(),
+        );
+        for _ in 0..8 {
+            producer.push(0.5).unwrap();
+        }
+        shared.play_fade.fall();
+        let mut data = [1.0; 16];
+        callback(&mut data, &callback_info(0, 0));
+        assert!(shared.play_fade.has_fallen());
+        assert_eq!(data[8..], [0.0; 8]);
+    }
+
+    #[test]
     fn samples_before_a_seek_are_dropped() {
         let (mut producer, consumer) = rtrb::RingBuffer::new(64);
         let shared = Arc::new(Shared::new());
@@ -3889,6 +4329,36 @@ mod tests {
             .filter(|word| **word == dsd::SILENCE_WORD)
             .count();
         assert!(silent_words > frame_rate as usize / 4, "{silent_words}");
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn dop_goes_silent_at_once_with_the_play_and_pause_fade_on() {
+        let (device, id) = loopback_device();
+        let frame_rate = 176_400;
+        let (stream, heard) = record_dop(&device, frame_rate);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_transitions(Transitions {
+            fades_play_and_pause: true,
+            ..Transitions::default()
+        });
+        engine.set_output(dop_settings(id, dsd::DopRate::Dsd64));
+        engine.load(Track::new(Cursor::new(sine_wav(44_100, 0, 44_100 * 6))));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        thread::sleep(Duration::from_millis(1_500));
+        engine.pause();
+        thread::sleep(Duration::from_millis(100));
+        let position = engine.position();
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(engine.position(), position);
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        assert_eq!(
+            dop_words(stream_run(&heard)).last(),
+            Some(&dsd::SILENCE_WORD)
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -4406,6 +4876,7 @@ mod tests {
         Transitions {
             trim_silence: false,
             crossfade: length,
+            fades_play_and_pause: false,
         }
     }
 
@@ -4540,6 +5011,7 @@ mod tests {
         engine.set_transitions(Transitions {
             trim_silence: true,
             crossfade: Duration::ZERO,
+            ..Transitions::default()
         });
         let (stream, heard) = record(&device, rate);
         let a = levels_wav(rate, &[(2, 0), (1, HALF), (2, 0)]);
@@ -4583,6 +5055,7 @@ mod tests {
         engine.set_transitions(Transitions {
             trim_silence: true,
             crossfade: Duration::ZERO,
+            ..Transitions::default()
         });
         let (stream, heard) = record(&device, rate);
         engine.load(track_of(levels_wav(rate, &[(1, HALF), (11, 0), (1, HALF)])));
@@ -4612,6 +5085,7 @@ mod tests {
             Transitions {
                 trim_silence: true,
                 crossfade: Duration::from_secs(1),
+                fades_play_and_pause: false,
             },
             levels_wav(rate, &[(1, 0), (4, HALF), (6, 0)]),
             levels_wav(rate, &[(3, 0), (4, QUARTER), (1, 0)]),
@@ -4758,6 +5232,7 @@ mod tests {
         engine.set_transitions(Transitions {
             trim_silence: true,
             crossfade: Duration::ZERO,
+            ..Transitions::default()
         });
         engine.load(track_of(levels_wav(44_100, &[(4, HALF)])));
         engine.set_next(track_of(levels_wav(44_100, &[(5, 0), (1, HALF)])));
@@ -4790,6 +5265,7 @@ mod tests {
         engine.set_transitions(Transitions {
             trim_silence: true,
             crossfade: Duration::from_secs(2),
+            ..Transitions::default()
         });
         let (stream, heard) = record(&device, rate);
         engine.load(track_of(levels_wav(rate, &[(4, HALF)])));
@@ -4913,6 +5389,7 @@ mod tests {
         engine.set_transitions(Transitions {
             trim_silence: true,
             crossfade: Duration::from_secs(1),
+            ..Transitions::default()
         });
         engine.set_output(dop_settings(id, dsd::DopRate::Dsd64));
         engine.load(track_of(sine_wav(44_100, 0, 88_200)));
@@ -4952,6 +5429,7 @@ mod tests {
         engine.set_transitions(Transitions {
             trim_silence: true,
             crossfade: Duration::ZERO,
+            ..Transitions::default()
         });
         engine.set_output(dop_settings(id, dsd::DopRate::Dsd64));
         engine.load(track_of(levels_wav(44_100, &[(5, 0), (1, HALF)])));

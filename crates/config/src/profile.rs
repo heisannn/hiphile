@@ -335,6 +335,7 @@ struct Settings {
     exclusive_mode: Option<bool>,
     trim_silence: Option<bool>,
     crossfade_seconds: Option<u32>,
+    play_pause_fade: Option<bool>,
     skip_instrumentals: Option<bool>,
     resampling: Option<String>,
     resampling_fft_size: Option<u32>,
@@ -470,6 +471,7 @@ fn save_dsd_parameters(
 /// exclusive_mode = true
 /// trim_silence = true
 /// crossfade_seconds = 5
+/// play_pause_fade = true
 /// skip_instrumentals = true
 /// resampling = "custom"
 /// resampling_fft_size = 2048
@@ -615,6 +617,11 @@ impl Store {
     pub fn trim_silence(&self) -> Result<bool, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         Ok(settings.trim_silence.unwrap_or(false))
+    }
+
+    pub fn play_pause_fade(&self) -> Result<bool, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        Ok(settings.play_pause_fade.unwrap_or(false))
     }
 
     /// How long songs overlap, up to [`LONGEST_CROSSFADE_SECONDS`]; `0` joins them.
@@ -981,6 +988,16 @@ impl Store {
                 document["trim_silence"] = toml_edit::value(true);
             } else {
                 document.remove("trim_silence");
+            }
+        })
+    }
+
+    pub fn save_play_pause_fade(&self, is_on: bool) -> Result<(), Error> {
+        self.edit(|document| {
+            if is_on {
+                document["play_pause_fade"] = toml_edit::value(true);
+            } else {
+                document.remove("play_pause_fade");
             }
         })
     }
@@ -1400,6 +1417,20 @@ mod tests {
         let store = temporary_store("skip-instrumentals-environment");
         let settings = read(&store, &[("HIPHILE_SKIP_INSTRUMENTALS", "true")]);
         assert_eq!(settings.skip_instrumentals, Some(true));
+    }
+
+    #[test]
+    fn play_pause_fade_round_trips_and_is_off_unless_told_otherwise() {
+        let store = temporary_store("play-pause-fade");
+        assert!(!store.play_pause_fade().unwrap());
+
+        store.save_play_pause_fade(true).unwrap();
+        assert!(store.play_pause_fade().unwrap());
+
+        store.save_play_pause_fade(false).unwrap();
+        assert!(!store.play_pause_fade().unwrap());
+        let text = std::fs::read_to_string(store.config_path()).unwrap();
+        assert!(!text.contains("play_pause_fade"), "{text}");
     }
 
     #[test]

@@ -301,9 +301,31 @@ impl SettingsView {
         SettingPage::new("Audio")
             .icon(IconName::AudioLines)
             .group(output)
+            .group(self.play_and_pause_group(cx))
             .group(self.between_songs_group(cx))
             .group(self.resampling_group(cx))
             .groups(dsd_groups(&self.audio, cx))
+    }
+
+    fn play_and_pause_group(&self, cx: &mut Context<Self>) -> SettingGroup {
+        let fade = SettingField::switch(
+            {
+                let audio = self.audio.clone();
+                move |cx| audio.read(cx).is_play_pause_fade_on()
+            },
+            {
+                let audio = self.audio.clone();
+                move |is_on, cx| {
+                    audio.update(cx, |audio, cx| audio.set_play_pause_fade(is_on, cx));
+                }
+            },
+        );
+        let is_dsd_on = self.audio.read(cx).is_dsd_on();
+        let mut fade = SettingItem::new("Fade", fade).disabled(is_dsd_on);
+        if is_dsd_on {
+            fade = fade.description("DSD cuts in and out at once while it's on.");
+        }
+        SettingGroup::new().title("Play and pause").items([fade])
     }
 
     fn between_songs_group(&self, cx: &mut Context<Self>) -> SettingGroup {

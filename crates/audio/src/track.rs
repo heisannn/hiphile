@@ -15,6 +15,7 @@ pub struct Track {
     pub(crate) start_at: Duration,
     pub(crate) start_paused: bool,
     pub(crate) fades_in: bool,
+    pub(crate) rises_in: bool,
 }
 
 impl Track {
@@ -34,6 +35,7 @@ impl Track {
             start_at: Duration::ZERO,
             start_paused: false,
             fades_in: false,
+            rises_in: false,
         }
     }
 
@@ -49,6 +51,7 @@ impl Track {
             start_at: Duration::ZERO,
             start_paused: false,
             fades_in: false,
+            rises_in: false,
         }
     }
 
@@ -66,6 +69,13 @@ impl Track {
     /// otherwise be turned down.
     pub fn fade_in(mut self, fades_in: bool) -> Self {
         self.fades_in = fades_in;
+        self
+    }
+
+    /// Rises from silence as a resume does, if
+    /// [`crate::Transitions::fades_play_and_pause`] is on.
+    pub fn rise_in(mut self, rises_in: bool) -> Self {
+        self.rises_in = rises_in;
         self
     }
 

@@ -48,6 +48,7 @@ struct Unsaved {
     exclusive: bool,
     trim_silence: bool,
     crossfade: bool,
+    play_pause_fade: bool,
     quality: bool,
     dsd: bool,
 }
@@ -107,6 +108,18 @@ impl AudioSettings {
         if self.transitions.trim_silence != is_on {
             self.transitions.trim_silence = is_on;
             self.unsaved.trim_silence = true;
+            self.transitions_changed(cx);
+        }
+    }
+
+    pub(crate) fn is_play_pause_fade_on(&self) -> bool {
+        self.transitions.fades_play_and_pause
+    }
+
+    pub(crate) fn set_play_pause_fade(&mut self, is_on: bool, cx: &mut Context<Self>) {
+        if self.transitions.fades_play_and_pause != is_on {
+            self.transitions.fades_play_and_pause = is_on;
+            self.unsaved.play_pause_fade = true;
             self.transitions_changed(cx);
         }
     }
@@ -412,6 +425,7 @@ impl AudioSettings {
                         || unsaved.exclusive
                         || unsaved.trim_silence
                         || unsaved.crossfade
+                        || unsaved.play_pause_fade
                         || unsaved.quality
                         || unsaved.dsd;
                     let saved_dsd = std::mem::replace(&mut this.saved_dsd, this.dsd.clone());
@@ -447,6 +461,9 @@ impl AudioSettings {
                             store.save_crossfade_seconds(
                                 u32::try_from(transitions.crossfade.as_secs()).unwrap_or(0),
                             )?;
+                        }
+                        if unsaved.play_pause_fade {
+                            store.save_play_pause_fade(transitions.fades_play_and_pause)?;
                         }
                         if unsaved.quality {
                             store.save_resampling_quality(quality)?;
@@ -515,21 +532,27 @@ fn read_saved_output() -> (
     }
 }
 
-/// What the file says about moving between songs, and why that could not be
-/// read. No store means the output's own error has said so already.
+/// What the file says about how the sound starts, stops and moves between
+/// songs, and why that could not be read. No store means the output's own
+/// error has said so already.
 fn read_saved_transitions(store: Option<&config::Store>) -> (Transitions, Option<SharedString>) {
     let Some(store) = store else {
         return (Transitions::default(), None);
     };
-    match (store.trim_silence(), store.crossfade_seconds()) {
-        (Ok(trim_silence), Ok(seconds)) => (
+    match (
+        store.trim_silence(),
+        store.crossfade_seconds(),
+        store.play_pause_fade(),
+    ) {
+        (Ok(trim_silence), Ok(seconds), Ok(fades_play_and_pause)) => (
             Transitions {
                 trim_silence,
                 crossfade: Duration::from_secs(u64::from(seconds)),
+                fades_play_and_pause,
             },
             None,
         ),
-        (Err(error), _) | (_, Err(error)) => (
+        (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => (
             Transitions::default(),
             Some(format!("Couldn't read the audio settings: {error}.").into()),
         ),
@@ -797,12 +820,15 @@ pub(crate) mod tests {
             settings.set_trim_silence(true, cx);
             settings.set_crossfade("5", cx);
             settings.set_crossfade("5", cx);
+            settings.set_play_pause_fade(true, cx);
+            settings.set_play_pause_fade(true, cx);
         });
         cx.run_until_parked();
-        assert_eq!(told.get(), 2);
+        assert_eq!(told.get(), 3);
         assert_eq!(told_output.get(), 0);
         assert!(store.trim_silence().unwrap());
         assert_eq!(store.crossfade_seconds().unwrap(), 5);
+        assert!(store.play_pause_fade().unwrap());
         settings.read_with(cx, |settings, _| {
             assert_eq!(settings.crossfade_value().as_ref(), "5");
             assert!(settings.is_trim_silence_on());
@@ -812,10 +838,12 @@ pub(crate) mod tests {
         settings.update(cx, |settings, cx| {
             settings.set_trim_silence(false, cx);
             settings.set_crossfade("0", cx);
+            settings.set_play_pause_fade(false, cx);
         });
         cx.run_until_parked();
         assert!(!store.trim_silence().unwrap());
         assert_eq!(store.crossfade_seconds().unwrap(), 0);
+        assert!(!store.play_pause_fade().unwrap());
     }
 
     #[test]
@@ -824,9 +852,11 @@ pub(crate) mod tests {
         let store = config::Store::at(dir.path());
         store.save_trim_silence(true).unwrap();
         store.save_crossfade_seconds(3).unwrap();
+        store.save_play_pause_fade(true).unwrap();
         let (transitions, error) = read_saved_transitions(Some(&store));
         assert!(transitions.trim_silence);
         assert_eq!(transitions.crossfade, Duration::from_secs(3));
+        assert!(transitions.fades_play_and_pause);
         assert!(error.is_none());
 
         store

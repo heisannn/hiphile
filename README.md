@@ -15,7 +15,7 @@ Hiphile is developed on macOS. Windows and Linux are not regularly tested.
 ## Features
 
 - **Library:** Browse albums, artists and songs, get daily recommendations on the home screen, edit playlists, and keep favorites.
-- **Playback:** Gapless playback, on PCM trimming the silence around songs and crossfade, repeat, shuffle and an editable queue.
+- **Playback:** Gapless playback, on PCM trimming the silence around songs, crossfade and fading on play and pause, repeat, shuffle and an editable queue.
 - **Audio output:** Choose an output device, and switch its sample rate automatically to match each file or a multiple of it. On macOS and Windows, keep other apps off the device with exclusive mode. On macOS, play as DSD up to DSD256 through DoP, with the filter and the modulator adjustable. See [how DSD output works](docs/dsd/implementation.md).
 - **Lyrics:** Synced lyrics, highlighted word by word or line by line.
 - **Mini player:** A small window above all others, with the controls and the lyrics.
@@ -61,6 +61,7 @@ Change settings in the app under **hiphile > Settings…**. They are saved to
 | `sample_rate` (Hz, or `x2`, `x4`, `x8` or `x16` for that multiple of each file's rate, or the next lower one the device supports; on Windows, multiples need `exclusive_mode`) | `HIPHILE_SAMPLE_RATE` | Each file's rate |
 | `exclusive_mode` (`true` keeps other apps off the output device while playing or paused; macOS uses hog mode and Windows WASAPI exclusive mode) | `HIPHILE_EXCLUSIVE_MODE` | `false` |
 | `trim_silence` (`true` leaves out the silence around songs and any longer than 10 seconds inside them; PCM only) | `HIPHILE_TRIM_SILENCE` | `false` |
+| `play_pause_fade` (`true` fades the sound in and out when playing, pausing and stopping; PCM only) | `HIPHILE_PLAY_PAUSE_FADE` | `false` |
 | `crossfade_seconds` (from `0` to `12`; PCM only; songs that need the device at another rate play apart, so set a fixed `sample_rate` to crossfade them all) | `HIPHILE_CROSSFADE_SECONDS` | `0` |
 | `resampling` (`medium`, `high`, `max` or `custom`) | `HIPHILE_RESAMPLING` | `medium` |
 | `resampling_fft_size` (with `custom`: a power of two from 256 to 16384) | `HIPHILE_RESAMPLING_FFT_SIZE` | `256` |

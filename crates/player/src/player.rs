@@ -138,6 +138,8 @@ pub struct Player {
     muted: bool,
     is_volume_locked: bool,
     dop_start: DopStart,
+    /// Play was asked for with nothing loaded, so the next load rises from silence
+    rises_at_load: bool,
     _open: Task<()>,
     _now_playing: Task<()>,
     _media_cover: Task<()>,
@@ -321,6 +323,7 @@ impl Player {
             muted: false,
             is_volume_locked,
             dop_start: DopStart::default(),
+            rises_at_load: false,
             _open: Task::ready(()),
             _now_playing: Task::ready(()),
             _media_cover: Task::ready(()),
@@ -637,6 +640,7 @@ impl Player {
             }
             State::Stopped if self.resume.is_some() => {
                 self.release_dop_start();
+                self.rises_at_load = true;
                 // Asked to play, whatever it was when it stopped
                 if let Some(resume) = &mut self.resume {
                     resume.paused = false;
@@ -645,6 +649,7 @@ impl Player {
             }
             State::Stopped if self.has_song() => {
                 self.release_dop_start();
+                self.rises_at_load = true;
                 self.play_current(cx);
             }
             State::Opening => {
@@ -1093,7 +1098,7 @@ impl Player {
 
     fn stop(&mut self, cx: &mut Context<Self>) {
         self._open = Task::ready(());
-        self.engine.stop();
+        self.engine.stop_fading();
         self.load = None;
         self.arrival = None;
         self.following = None;
@@ -1123,6 +1128,7 @@ impl Player {
         if self.dop_start == DopStart::Held {
             self.resume.get_or_insert_default().paused = true;
         }
+        let rises = std::mem::take(&mut self.rises_at_load);
         // Silence the previous song first, and ignore what is still on its
         // way about it, so its end cannot advance the queue a second time.
         self.engine.stop();
@@ -1159,7 +1165,8 @@ impl Player {
                         .into_track()
                         .start_at(resume.position)
                         .start_paused(resume.paused)
-                        .fade_in(this.dop_start != DopStart::Settled);
+                        .fade_in(this.dop_start != DopStart::Settled)
+                        .rise_in(rises);
                     this.load = Some(this.engine.load(track));
                 }
                 Err(error) => this.fail(&song, &session::describe(&error), cx),
@@ -2451,6 +2458,7 @@ mod tests {
             player.set_transitions(Transitions {
                 trim_silence: false,
                 crossfade: Duration::from_secs(1),
+                fades_play_and_pause: false,
             });
             player.play(&songs, 0, cx);
         });

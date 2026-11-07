@@ -19,6 +19,10 @@
 //! buffer too, mixed after each one's rate conversion, from the moment the first
 //! has only the length of the fade left.
 //!
+//! Also on PCM, a pause or stop can fall to silence and playing again rise from
+//! it. The callback does this to what it takes from the ring buffer, and the
+//! stream stops once it hears nothing.
+//!
 //! With DoP settings, the converter turns the track into DSD words on the
 //! engine thread, the same ring buffer carries those, and the callback makes
 //! them DoP frames at full level. The engine then holds the device for itself,
@@ -35,6 +39,7 @@ mod feed;
 mod from_config;
 mod mix;
 mod output;
+mod play_fade;
 mod stream;
 #[cfg(test)]
 mod test_wav;

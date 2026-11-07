@@ -298,7 +298,7 @@ fn play(args: ServerArgs, ids: Vec<String>, query: Option<String>) -> anyhow::Re
     Ok(())
 }
 
-/// Songs play one by one here, so a crossfade never comes into it.
+/// Songs play one by one here and nothing pauses them, so no fade comes into it
 fn transitions() -> audio::Transitions {
     let trim_silence = config::Store::user()
         .ok()
@@ -306,6 +306,7 @@ fn transitions() -> audio::Transitions {
     audio::Transitions {
         trim_silence: trim_silence.unwrap_or(false),
         crossfade: Duration::ZERO,
+        fades_play_and_pause: false,
     }
 }
 
