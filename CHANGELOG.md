@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/heisannn/hiphile/compare/v0.2.0...v0.3.0) - 2026-11-07
+
+### Added
+
+- *(player)* add a mini player window
+- *(updater)* install new versions from GitHub releases
+- *(app)* give the app an icon on macOS and Windows
+- *(audio)* run the device at a multiple of each song's rate
+- *(audio)* add an exclusive mode for PCM
+- *(audio)* play as DSD over DoP
+- *(audio)* choose the resampling quality in settings
+- *(player)* add a favorite star for the current song
+
+### Fixed
+
+- *(app)* quit when the main window closes
+
+### Other
+
+- keep only the comments the code cannot say itself
+
 ## [0.2.0](https://github.com/heisannn/hiphile/compare/v0.1.0...v0.2.0) - 2026-11-05
 
 ### Added
