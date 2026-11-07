@@ -1,7 +1,7 @@
 use cpal::traits::{DeviceTrait, HostTrait};
 
 use crate::output;
-use crate::{Error, dop_device};
+use crate::{Error, exclusive_device};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutputDevice {
@@ -9,6 +9,7 @@ pub struct OutputDevice {
     name: String,
     sample_rate: Option<u32>,
     sample_rates: Vec<u32>,
+    exclusive_sample_rates: Vec<u32>,
     dop_rates: Vec<u32>,
     is_default: bool,
 }
@@ -32,6 +33,11 @@ impl OutputDevice {
     /// The standard rates the device can run at, lowest first.
     pub fn sample_rates(&self) -> &[u32] {
         &self.sample_rates
+    }
+
+    /// [`Self::sample_rates`] while the device is held in exclusive mode.
+    pub fn exclusive_sample_rates(&self) -> &[u32] {
+        &self.exclusive_sample_rates
     }
 
     /// The DoP rates at which frames would reach the device intact. Says
@@ -62,12 +68,14 @@ pub fn output_devices() -> Result<Vec<OutputDevice>, Error> {
             let sample_rates = output::config_ranges(&device)
                 .map(|ranges| output::standard_rates(&ranges))
                 .unwrap_or_default();
+            let exclusive_sample_rates = exclusive_device::listed_rates(&device, &sample_rates);
             OutputDevice {
                 id: id.map(|id| id.to_string()),
                 name: device_name(&device),
                 sample_rate,
                 sample_rates,
-                dop_rates: dop_device::frame_rates(&device),
+                exclusive_sample_rates,
+                dop_rates: exclusive_device::frame_rates(&device),
                 is_default,
             }
         })

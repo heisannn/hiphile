@@ -1423,12 +1423,16 @@ fn describe(error: &audio::Error) -> String {
         audio::Error::UnsupportedDopRate => {
             "The output device can't run at this DSD rate. Choose another in Settings.".to_owned()
         }
-        audio::Error::DeviceHeld(_) => {
-            "DSD needs the output device for itself, and another app is holding it. Close that app and press Play."
+        audio::Error::DeviceHeld => {
+            "Another app is holding the output device. Close that app and press Play.".to_owned()
+        }
+        audio::Error::ExclusiveNotAllowed => {
+            "Windows doesn't allow exclusive control of the output device. Turn it on in the device's advanced Sound settings, or turn off Exclusive mode."
                 .to_owned()
         }
         audio::Error::ExclusiveOutput(_) => {
-            "DSD couldn't take the output device for itself. Press Play to try again.".to_owned()
+            "hiphile couldn't take the output device for itself. Press Play to try again."
+                .to_owned()
         }
         audio::Error::DsdUnstable => {
             "DSD output stopped because the modulator became unstable. Lower Noise gain or Input level in Settings, then press Play."
@@ -2129,8 +2133,9 @@ mod tests {
 
     #[test]
     fn a_held_device_is_told_apart_from_another_failure() {
-        assert!(describe(&audio::Error::DeviceHeld(1)).contains("another app"));
-        assert!(!describe(&audio::Error::ExclusiveOutput(String::new())).contains("another app"));
+        assert!(describe(&audio::Error::DeviceHeld).contains("Another app"));
+        assert!(!describe(&audio::Error::ExclusiveOutput(String::new())).contains("Another app"));
+        assert!(describe(&audio::Error::ExclusiveNotAllowed).contains("Exclusive mode"));
     }
 
     #[gpui_kit::test]

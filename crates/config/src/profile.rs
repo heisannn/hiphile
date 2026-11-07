@@ -291,6 +291,7 @@ struct Settings {
     cover_cache_gib: Option<f64>,
     output_device: Option<String>,
     sample_rate: Option<u32>,
+    exclusive_mode: Option<bool>,
     resampling: Option<String>,
     resampling_fft_size: Option<u32>,
     resampling_window: Option<String>,
@@ -422,6 +423,7 @@ fn save_dsd_parameters(
 /// cover_cache_gib = 8
 /// output_device = "coreaudio:BuiltInSpeakerDevice"
 /// sample_rate = 48000
+/// exclusive_mode = true
 /// resampling = "custom"
 /// resampling_fft_size = 2048
 /// resampling_window = "hann-2"
@@ -546,6 +548,12 @@ impl Store {
     pub fn sample_rate(&self) -> Result<Option<u32>, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         Ok(settings.sample_rate.filter(|rate| *rate > 0))
+    }
+
+    /// Whether to keep other apps off the output device while playing.
+    pub fn exclusive_mode(&self) -> Result<bool, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        Ok(settings.exclusive_mode.unwrap_or(false))
     }
 
     /// Medium unless the file says otherwise. The FFT size and window are only read for
@@ -879,6 +887,16 @@ impl Store {
         })
     }
 
+    pub fn save_exclusive_mode(&self, is_on: bool) -> Result<(), Error> {
+        self.edit(|document| {
+            if is_on {
+                document["exclusive_mode"] = toml_edit::value(true);
+            } else {
+                document.remove("exclusive_mode");
+            }
+        })
+    }
+
     pub fn save_resampling_quality(&self, quality: ResamplingQuality) -> Result<(), Error> {
         self.edit(|document| {
             document["resampling"] = toml_edit::value(quality.name());
@@ -1196,6 +1214,20 @@ mod tests {
         assert_eq!(settings.output_device, None);
         assert_eq!(settings.sample_rate, None);
         assert_eq!(load(&store, &[]), Some(profile));
+    }
+
+    #[test]
+    fn exclusive_mode_round_trips_and_is_off_unless_told_otherwise() {
+        let store = temporary_store("exclusive-mode");
+        assert!(!store.exclusive_mode().unwrap());
+
+        store.save_exclusive_mode(true).unwrap();
+        assert!(store.exclusive_mode().unwrap());
+
+        store.save_exclusive_mode(false).unwrap();
+        assert!(!store.exclusive_mode().unwrap());
+        let text = std::fs::read_to_string(store.config_path()).unwrap();
+        assert!(!text.contains("exclusive_mode"), "{text}");
     }
 
     #[test]

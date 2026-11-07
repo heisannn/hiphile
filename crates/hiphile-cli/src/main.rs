@@ -306,7 +306,8 @@ fn output_settings() -> audio::OutputSettings {
             store.sample_rate()?,
             store.resampling_quality()?,
             &store.dsd_output()?,
-        ))
+        )
+        .with_exclusive(store.exclusive_mode()?))
     };
     saved().unwrap_or_else(|error| {
         eprintln!("warning: using the default audio output: {error:#}");

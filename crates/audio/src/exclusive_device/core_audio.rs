@@ -42,11 +42,39 @@ type Pid = i32;
 pub(crate) struct Exclusive {
     device: AudioDeviceID,
     stream: AudioStreamID,
+    replaced: Option<OriginalFormat>,
+}
+
+/// The format a device had before being held, which nothing else would bring
+/// back, as cpal and macOS both leave a device at the format it was last set to.
+#[derive(Clone, Copy)]
+pub(crate) struct OriginalFormat {
+    stream: AudioStreamID,
+    format: AudioStreamBasicDescription,
+}
+
+impl OriginalFormat {
+    /// At the rate the device runs at now, which is another matter. Best
+    /// effort: a device that is gone or refuses keeps its format.
+    pub(crate) fn restore(self) {
+        let address = global_address(kAudioStreamPropertyPhysicalFormat);
+        let Some(now) = read::<AudioStreamBasicDescription>(self.stream, &address) else {
+            return;
+        };
+        let target = format_at_rate(
+            &self.format,
+            now.mSampleRate,
+            &physical_formats(self.stream),
+        );
+        if let Some(target) = target {
+            set_physical_format(self.stream, target).ok();
+        }
+    }
 }
 
 impl Exclusive {
     /// Holds `device` and sets it to the widest format for DoP at `rate`.
-    pub(crate) fn take(device: &cpal::Device, rate: u32) -> Result<Self, Error> {
+    pub(crate) fn for_dop(device: &cpal::Device, rate: u32) -> Result<Self, Error> {
         let id = audio_device_of(device).ok_or(Error::OutputDeviceUnavailable)?;
         let stream = output_stream(id).ok_or(Error::UnsupportedDopRate)?;
         let format = physical_formats(stream)
@@ -54,11 +82,46 @@ impl Exclusive {
             .filter(|format| is_for_dop(&format.mFormat) && covers(format, rate))
             .max_by_key(preference)
             .ok_or(Error::UnsupportedDopRate)?;
-        let exclusive = Self::hog(id, stream)?;
+        let mut exclusive = Self::hog(id, stream)?;
         let mut format = format.mFormat;
         format.mSampleRate = f64::from(rate);
-        set_physical_format(stream, format)?;
+        exclusive.set_format(format)?;
         Ok(exclusive)
+    }
+
+    /// Holds `device` and sets it to its widest format at `rate`, which keeps
+    /// the bits of audio that cpal would otherwise leave at whatever depth the
+    /// device was at.
+    pub(crate) fn for_pcm(device: &cpal::Device, rate: u32) -> Result<Self, Error> {
+        let id = audio_device_of(device).ok_or(Error::OutputDeviceUnavailable)?;
+        let stream = output_stream(id).ok_or(Error::OutputDeviceUnavailable)?;
+        let mut exclusive = Self::hog(id, stream)?;
+        if let Some(format) = widest_pcm_format(stream, rate) {
+            // The stream converts to any format, so a refusal costs only bits
+            exclusive.set_format(format).ok();
+        }
+        Ok(exclusive)
+    }
+
+    /// The format that holding the device replaced, if it did. A change of
+    /// rate alone does not count, as that is restored apart from the format.
+    pub(crate) fn replaced_format(&self) -> Option<OriginalFormat> {
+        self.replaced
+    }
+
+    fn set_format(&mut self, format: AudioStreamBasicDescription) -> Result<(), Error> {
+        let before = read::<AudioStreamBasicDescription>(
+            self.stream,
+            &global_address(kAudioStreamPropertyPhysicalFormat),
+        );
+        set_physical_format(self.stream, format)?;
+        self.replaced = before
+            .filter(|before| !has_same_layout(before, &format))
+            .map(|format| OriginalFormat {
+                stream: self.stream,
+                format,
+            });
+        Ok(())
     }
 
     /// Checks that the stream just opened left the device as DoP needs it. At
@@ -87,15 +150,20 @@ impl Exclusive {
         let own = std::process::id() as Pid;
         let holder = read::<Pid>(device, &address)
             .ok_or_else(|| Error::ExclusiveOutput("it does not report who holds it".to_owned()))?;
+        let exclusive = Self {
+            device,
+            stream,
+            replaced: None,
+        };
         if holder == own {
-            return Ok(Self { device, stream });
+            return Ok(exclusive);
         }
         if holder != NO_HOG {
-            return Err(Error::DeviceHeld(holder));
+            return Err(Error::DeviceHeld);
         }
         write(device, &address, &own)
             .map_err(|status| Error::ExclusiveOutput(format!("CoreAudio error {status}")))?;
-        Ok(Self { device, stream })
+        Ok(exclusive)
     }
 }
 
@@ -163,6 +231,57 @@ fn preference(format: &AudioStreamRangedDescription) -> (bool, bool, u32) {
     )
 }
 
+/// Keeps the channels the device has now: a stream's channels are chosen from
+/// those, and it may be wired for them.
+fn widest_pcm_format(stream: AudioStreamID, rate: u32) -> Option<AudioStreamBasicDescription> {
+    let now = read::<AudioStreamBasicDescription>(
+        stream,
+        &global_address(kAudioStreamPropertyPhysicalFormat),
+    )?;
+    let mut format = physical_formats(stream)
+        .into_iter()
+        .filter(|format| is_for_pcm(&format.mFormat, now.mChannelsPerFrame) && covers(format, rate))
+        .max_by_key(|format| {
+            let format = &format.mFormat;
+            (
+                format.mFormatFlags & kAudioFormatFlagIsSignedInteger != 0,
+                format.mBitsPerChannel,
+            )
+        })?
+        .mFormat;
+    format.mSampleRate = f64::from(rate);
+    Some(format)
+}
+
+fn has_same_layout(one: &AudioStreamBasicDescription, other: &AudioStreamBasicDescription) -> bool {
+    one.mFormatID == other.mFormatID
+        && one.mFormatFlags == other.mFormatFlags
+        && one.mBitsPerChannel == other.mBitsPerChannel
+        && one.mChannelsPerFrame == other.mChannelsPerFrame
+}
+
+/// `format` at `rate`, if the device has that.
+fn format_at_rate(
+    format: &AudioStreamBasicDescription,
+    rate: f64,
+    available: &[AudioStreamRangedDescription],
+) -> Option<AudioStreamBasicDescription> {
+    available
+        .iter()
+        .any(|ranged| has_same_layout(&ranged.mFormat, format) && covers(ranged, rate as u32))
+        .then_some(AudioStreamBasicDescription {
+            mSampleRate: rate,
+            ..*format
+        })
+}
+
+/// Non-mixable for the same reason as in [`is_for_dop`].
+fn is_for_pcm(format: &AudioStreamBasicDescription, channels: u32) -> bool {
+    format.mFormatID == kAudioFormatLinearPCM
+        && format.mFormatFlags & kAudioFormatFlagIsNonMixable == 0
+        && format.mChannelsPerFrame == channels
+}
+
 /// The switch happens in the background; a stream opened before it is done
 /// would run on the old format.
 fn set_physical_format(
@@ -189,7 +308,7 @@ fn set_physical_format(
         thread::sleep(FORMAT_SWITCH_POLL);
     }
     Err(Error::Output(
-        "the device did not reach the DoP format in time".to_owned(),
+        "the device did not reach the format in time".to_owned(),
     ))
 }
 
@@ -354,5 +473,38 @@ mod tests {
             32,
             2
         )));
+    }
+
+    #[test]
+    fn a_format_comes_back_at_the_rate_of_now_if_the_device_has_it() {
+        let integer = kAudioFormatFlagIsSignedInteger;
+        let ranged = |flags, bits, min, max| AudioStreamRangedDescription {
+            mFormat: format(flags, bits, 2),
+            mSampleRateRange: objc2_core_audio_types::AudioValueRange {
+                mMinimum: min,
+                mMaximum: max,
+            },
+        };
+        let available = [
+            ranged(integer, 16, 44_100.0, 48_000.0),
+            ranged(integer, 24, 44_100.0, 192_000.0),
+        ];
+        let back = format_at_rate(&format(integer, 24, 2), 96_000.0, &available).unwrap();
+        assert_eq!(back.mSampleRate, 96_000.0);
+        assert_eq!(back.mBitsPerChannel, 24);
+        assert!(format_at_rate(&format(integer, 16, 2), 96_000.0, &available).is_none());
+        assert!(format_at_rate(&format(integer, 32, 2), 48_000.0, &available).is_none());
+    }
+
+    #[test]
+    fn pcm_keeps_the_channels_of_the_device_and_takes_what_can_be_mixed() {
+        let integer = kAudioFormatFlagIsSignedInteger;
+        assert!(is_for_pcm(&format(integer, 16, 2), 2));
+        assert!(is_for_pcm(&format(kAudioFormatFlagIsFloat, 32, 8), 8));
+        assert!(!is_for_pcm(&format(integer, 32, 2), 8));
+        assert!(!is_for_pcm(
+            &format(integer | kAudioFormatFlagIsNonMixable, 32, 2),
+            2
+        ));
     }
 }

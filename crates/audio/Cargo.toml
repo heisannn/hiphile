@@ -21,5 +21,9 @@ objc2-core-audio.workspace = true
 objc2-core-audio-types.workspace = true
 objc2-core-foundation.workspace = true
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows.workspace = true
+windows-core.workspace = true
+
 [lints]
 workspace = true

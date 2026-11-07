@@ -194,7 +194,7 @@ it. See [findings.md](findings.md#stability).
 ## Device control on macOS
 
 cpal alone is not enough for DoP, which needs bit-exact samples at the DoP rate with nothing mixed
-in. `crates/audio/src/dop_device/core_audio.rs` adds what is missing through `objc2-core-audio`.
+in. `crates/audio/src/exclusive_device/core_audio.rs` adds what is missing through `objc2-core-audio`.
 This is the only unsafe code in this feature.
 
 `Playback::open` does the following while holding a process-wide lock on device setup:
@@ -203,7 +203,7 @@ This is the only unsafe code in this feature.
    physical format. Settings uses the same list.
 2. **Plan.** `plan_dop` picks the frame rate. The device's prior rate is noted, to be restored the
    same way as for PCM playback.
-3. **Take the device.** `Exclusive::take` picks the best physical format, enters hog mode so no
+3. **Take the device.** `Exclusive::for_dop` picks the best physical format, enters hog mode so no
    other app can play or change the format, then sets the format and waits up to 5 seconds for the
    background switch to finish.
 4. **Open the stream.** The stream is opened as `i32`, because that gets cpal to set an integer-only
@@ -217,9 +217,10 @@ in it exactly. Non-mixable formats are excluded because they turn the device's v
 integers too, and cpal cannot read that configuration, which every later stream starts from. Among
 usable formats, exactly two channels come first, then integers, then more bits.
 
-Hog mode is released when `Exclusive` is dropped.
+Hog mode is released when `Exclusive` is dropped. The physical format it replaced comes back with
+the device's rate, once nothing has played for a few seconds.
 
-Other platforms get a stub in `crates/audio/src/dop_device.rs` that reports no rates, and
+Other platforms get a stub in `crates/audio/src/exclusive_device.rs` that reports no rates, and
 `CAN_PLAY_DOP` hides the option from Settings. Their shared audio modes resample and mix, which would
 turn DoP into noise.
 

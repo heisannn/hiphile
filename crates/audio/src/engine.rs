@@ -4,13 +4,14 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, HostTrait};
 
 use crate::convert::Converter;
 use crate::device::device_name;
-use crate::dop_device::Exclusive;
+use crate::exclusive_device::{Exclusive, OriginalFormat};
 use crate::feed::{Feed, Item, Opening, Polled};
 use crate::output::{self, ConfigRange, OutputSettings, Spec};
+use crate::stream::Stream;
 use crate::track::Cancel;
 use crate::{Error, Track};
 
@@ -846,6 +847,17 @@ fn is_fatal(kind: cpal::ErrorKind) -> bool {
     !matches!(kind, Xrun | DeviceChanged | RealtimeDenied)
 }
 
+/// A stream on the system's default device follows it by itself. What holds a
+/// device does not, and would keep other apps off the old one while the sound
+/// comes from the new one, in reach of them.
+fn must_reopen(kind: cpal::ErrorKind, holds_device: bool) -> bool {
+    match kind {
+        cpal::ErrorKind::StreamInvalidated => true,
+        cpal::ErrorKind::DeviceChanged => holds_device,
+        _ => false,
+    }
+}
+
 enum Fill {
     Playing,
     /// The device has played every sample of the track.
@@ -961,9 +973,9 @@ struct Joined {
 /// per stream or release the rate with the stream, so nothing is recorded
 /// there.
 ///
-/// Only the rate comes back. cpal may also change the device's physical
-/// format, such as 24-bit integer to 32-bit float, and has no way to restore
-/// that.
+/// The rate comes back, and the physical format if holding the device replaced
+/// it. cpal may also change that format on its own, such as 24-bit integer to
+/// 32-bit float, and has no way to restore it.
 struct RateRecord<D> {
     device: D,
     /// The device's configuration before the first switch.
@@ -971,6 +983,7 @@ struct RateRecord<D> {
     /// The rate the engine last set. A different rate means someone else has
     /// changed it since, and theirs is kept.
     switched_to: u32,
+    format: Option<OriginalFormat>,
 }
 
 type RateRestore = RateRecord<cpal::DeviceId>;
@@ -997,9 +1010,34 @@ impl<D: PartialEq> RateRecord<D> {
                     device,
                     original: current,
                     switched_to: rate,
+                    format: None,
                 });
             }
             _ => {}
+        }
+    }
+
+    /// Notes that holding `device` replaced its physical format, keeping the
+    /// first one replaced since nothing played.
+    fn note_format(
+        slot: &mut Option<Self>,
+        device: D,
+        current: cpal::SupportedStreamConfig,
+        rate: u32,
+        format: OriginalFormat,
+    ) {
+        match slot {
+            Some(record) if record.device == device => {
+                record.format.get_or_insert(format);
+            }
+            _ => {
+                *slot = Some(Self {
+                    device,
+                    original: current,
+                    switched_to: rate,
+                    format: Some(format),
+                });
+            }
         }
     }
 
@@ -1020,9 +1058,15 @@ impl RateRestore {
         let Ok(current) = device.default_output_config() else {
             return;
         };
-        if !self.needs_restore(current.sample_rate()) {
-            return;
+        if self.needs_restore(current.sample_rate()) {
+            self.restore_rate(&device);
         }
+        if let Some(format) = self.format {
+            format.restore();
+        }
+    }
+
+    fn restore_rate(&self, device: &cpal::Device) {
         // cpal sets a device to a stream's rate when it builds the stream, so
         // building one at the old rate switches the device back. The stream
         // never starts and closes right away.
@@ -1054,15 +1098,22 @@ fn find_device(output: &OutputSettings) -> Result<cpal::Device, Error> {
 /// changed under it. Whoever changed the rate keeps it: asking for the old one
 /// again could fight them, and it stays when playback ends, so nothing is left
 /// to restore. The next track follows `output` again.
+///
+/// A held device has no one else to have changed it, and on Windows what it
+/// reports is the rate of a shared mode it is not in.
 fn keep_device_rate(
     output: &OutputSettings,
     playback: &Playback,
     restore: &mut Option<RateRestore>,
 ) -> OutputSettings {
     let stream_rate = playback.format.output_rate;
-    let device_rate = find_device(output)
-        .and_then(|device| Ok(device.default_output_config()?.sample_rate()))
-        .unwrap_or(stream_rate);
+    let device_rate = if output.is_exclusive() {
+        stream_rate
+    } else {
+        find_device(output)
+            .and_then(|device| Ok(device.default_output_config()?.sample_rate()))
+            .unwrap_or(stream_rate)
+    };
     if device_rate != stream_rate {
         *restore = None;
     }
@@ -1070,6 +1121,7 @@ fn keep_device_rate(
         .with_resampling(output.resampling())
         .with_dop(output.dop().copied())
         .with_dop_fade_in(output.dop_fades_in())
+        .with_exclusive(output.is_exclusive())
 }
 
 #[derive(Clone, Copy)]
@@ -1139,7 +1191,7 @@ struct Playback {
     /// The audio callback drops samples numbered below this instead of
     /// playing them: what was buffered before a seek.
     flush_until: Arc<AtomicU64>,
-    stream: cpal::Stream,
+    stream: Stream,
     /// Dropped after the stream, which is playing on what it holds.
     exclusive: Option<Exclusive>,
 }
@@ -1267,12 +1319,22 @@ impl Playback {
             } else {
                 Error::UnsupportedOutputFormat
             })?;
-        if let Some(device_id) = device_id {
-            RateRestore::note(restore, device_id, device_config, output.rate);
+        if let Some(device_id) = &device_id {
+            RateRestore::note(restore, device_id.clone(), device_config, output.rate);
         }
-        let exclusive = dop
-            .map(|_| Exclusive::take(&device, output.rate))
-            .transpose()?;
+        let exclusive = if dop.is_some() {
+            Some(Exclusive::for_dop(&device, output.rate)?)
+        } else if settings.is_exclusive() {
+            Some(Exclusive::for_pcm(&device, output.rate)?)
+        } else {
+            None
+        };
+        if let (Some(device_id), Some(format)) = (
+            device_id,
+            exclusive.as_ref().and_then(Exclusive::replaced_format),
+        ) {
+            RateRestore::note_format(restore, device_id, device_config, output.rate, format);
+        }
         let config = cpal::StreamConfig {
             channels: output.channels,
             sample_rate: output.rate,
@@ -1299,10 +1361,11 @@ impl Playback {
             Arc::clone(&flush_until),
             Arc::clone(&next_at),
         );
+        let holds_device = exclusive.is_some();
         let on_error = {
             let commands = commands.clone();
             move |error: cpal::Error| {
-                if matches!(error.kind(), cpal::ErrorKind::StreamInvalidated) {
+                if must_reopen(error.kind(), holds_device) {
                     commands.send(Command::StreamInvalidated(generation)).ok();
                 } else if is_fatal(error.kind()) {
                     commands
@@ -1313,22 +1376,25 @@ impl Playback {
         };
         let dop_paused = dop.map(|_| Arc::new(AtomicBool::new(false)));
         let stream = match &dop_paused {
-            None => device.build_output_stream(
+            None => Stream::open_pcm(
+                &device,
                 config,
+                settings,
                 output_callback(reader, Arc::clone(shared)),
                 on_error,
-                Some(RATE_SWITCH_TIMEOUT),
+                RATE_SWITCH_TIMEOUT,
             )?,
             // Integers, as asking for them is what gets cpal to set an
             // integer-only device to more than 16 bits
-            Some(paused) => device.build_output_stream(
+            Some(paused) => Stream::Shared(device.build_output_stream(
                 config,
                 dop_callback(reader, output.rate, Arc::clone(paused)),
                 on_error,
                 Some(RATE_SWITCH_TIMEOUT),
-            )?,
+            )?),
         };
-        if let Some(exclusive) = &exclusive {
+        // PCM takes whatever format the device has, which the stream converts to
+        if let Some(exclusive) = exclusive.as_ref().filter(|_| dop.is_some()) {
             exclusive.confirm(output.rate)?;
         }
         drop(setup);
@@ -1853,6 +1919,8 @@ fn dop_callback(
 
 #[cfg(test)]
 mod tests {
+    use cpal::traits::StreamTrait as _;
+
     use std::io::Cursor;
     use std::time::Instant;
 
@@ -2964,6 +3032,15 @@ mod tests {
     /// The last samples count as sounding until the device's predicted
     /// playback time for them has passed, not just until they leave the ring.
     #[test]
+    fn only_a_stream_that_holds_its_device_reopens_when_the_default_changes() {
+        use cpal::ErrorKind::{DeviceChanged, StreamInvalidated, Xrun};
+        assert!(must_reopen(DeviceChanged, true));
+        assert!(!must_reopen(DeviceChanged, false));
+        assert!(must_reopen(StreamInvalidated, false));
+        assert!(!must_reopen(Xrun, true));
+    }
+
+    #[test]
     fn samples_sound_until_the_device_has_played_them() {
         let (mut producer, consumer) = rtrb::RingBuffer::new(64);
         let shared = Arc::new(Shared::new());
@@ -3512,16 +3589,104 @@ mod tests {
         engine.load(Track::new(Cursor::new(sine_wav(44_100, 0, 44_100 * 3))));
         assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
         assert_eq!(
-            crate::dop_device::holder(&device),
+            crate::exclusive_device::holder(&device),
             Some(std::process::id() as i32)
         );
 
         engine.stop();
         let deadline = Instant::now() + Duration::from_secs(2);
-        while crate::dop_device::holder(&device) != Some(-1) {
+        while crate::exclusive_device::holder(&device) != Some(-1) {
             assert!(Instant::now() < deadline, "still held");
             thread::sleep(Duration::from_millis(10));
         }
+        engine.shutdown();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn exclusive_pcm_holds_the_device_paused_too_and_lets_go_of_it() {
+        let (device, id) = loopback_device();
+        let own = Some(std::process::id() as i32);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id), None).with_exclusive(true));
+        engine.load(Track::new(Cursor::new(sine_wav(96_000, 0, 96_000 * 6))));
+        let EventKind::Started(format) = next_event(&events).kind else {
+            panic!("expected Started");
+        };
+        assert_eq!(format.output_rate(), 96_000);
+        assert_eq!(format.dop_rate(), None);
+        assert_eq!(crate::exclusive_device::holder(&device), own);
+
+        engine.pause();
+        thread::sleep(Duration::from_millis(100));
+        assert_eq!(crate::exclusive_device::holder(&device), own);
+        engine.resume();
+
+        engine.stop();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while crate::exclusive_device::holder(&device) != Some(-1) {
+            assert!(Instant::now() < deadline, "still held");
+            thread::sleep(Duration::from_millis(10));
+        }
+        engine.shutdown();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn exclusive_pcm_reaches_the_device_as_one_unbroken_wave() {
+        let (device, id) = loopback_device();
+        let rate = 48_000;
+        let (stream, heard) = record(&device, rate);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id), Some(rate)).with_exclusive(true));
+        engine.load(Track::new(Cursor::new(sine_wav(rate, 0, rate * 2))));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::Ended { next: None }
+        ));
+        thread::sleep(Duration::from_millis(200));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let wave = sounding_part(&heard);
+        let departure = departure_from_one_wave(wave, rate);
+        assert!(departure < 0.002, "strays from the wave by {departure}");
+        let missing = (rate as usize * 2).abs_diff(wave.len());
+        assert!(missing < 16, "{} frames against {}", wave.len(), rate * 2);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn turning_exclusive_mode_on_and_off_moves_a_track_where_it_was() {
+        let (device, id) = loopback_device();
+        let own = Some(std::process::id() as i32);
+        let settings = OutputSettings::new(Some(id), None);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(settings.clone());
+        engine.load(Track::new(Cursor::new(sine_wav(44_100, 0, 44_100 * 8))));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        assert_ne!(crate::exclusive_device::holder(&device), own);
+        thread::sleep(Duration::from_millis(500));
+
+        engine.set_output(settings.clone().with_exclusive(true));
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::OutputChanged(_)
+        ));
+        assert_eq!(crate::exclusive_device::holder(&device), own);
+        assert!(engine.position() >= Duration::from_millis(400));
+
+        engine.set_output(settings);
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::OutputChanged(_)
+        ));
+        assert_eq!(crate::exclusive_device::holder(&device), Some(-1));
         engine.shutdown();
     }
 

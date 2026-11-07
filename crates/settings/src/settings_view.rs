@@ -63,6 +63,28 @@ pub(crate) struct SettingsView {
     _refresh: Task<()>,
 }
 
+fn exclusive_item(audio: &Entity<AudioSettings>, is_dsd_on: bool) -> SettingItem {
+    let field = SettingField::switch(
+        {
+            let audio = audio.clone();
+            move |cx| audio.read(cx).is_exclusive_on()
+        },
+        {
+            let audio = audio.clone();
+            move |is_on, cx| {
+                audio.update(cx, |audio, cx| audio.set_exclusive(is_on, cx));
+            }
+        },
+    );
+    SettingItem::new("Exclusive mode", field)
+        .disabled(is_dsd_on)
+        .description(if is_dsd_on {
+            "DSD needs it while it's on."
+        } else {
+            "While a song is playing or paused, other apps can't use the output device."
+        })
+}
+
 impl SettingsView {
     pub(crate) fn new(
         appearance: Entity<AppearanceSettings>,
@@ -229,10 +251,14 @@ impl SettingsView {
         if audio.is_dsd_on() {
             rate = rate.description("DSD sets the rate while it's on.");
         }
-        let mut output = SettingGroup::new().items([
+        let mut items = vec![
             SettingItem::new("Output device", device).disabled(!audio.has_devices()),
             rate,
-        ]);
+        ];
+        if AudioSettings::is_exclusive_offered() {
+            items.push(exclusive_item(&self.audio, audio.is_dsd_on()));
+        }
+        let mut output = SettingGroup::new().items(items);
         if !errors.is_empty() {
             output = output.footer(move |_, cx| {
                 v_flex()

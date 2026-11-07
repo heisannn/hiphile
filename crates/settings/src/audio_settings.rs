@@ -36,6 +36,7 @@ pub struct AudioSettings {
 struct Unsaved {
     device: bool,
     rate: bool,
+    exclusive: bool,
     quality: bool,
     dsd: bool,
 }
@@ -163,6 +164,23 @@ impl AudioSettings {
         }
     }
 
+    pub(crate) fn is_exclusive_offered() -> bool {
+        audio::CAN_PLAY_EXCLUSIVE
+    }
+
+    /// DSD holds the device whatever the setting.
+    pub(crate) fn is_exclusive_on(&self) -> bool {
+        self.output.is_exclusive() || self.output.dop().is_some()
+    }
+
+    pub(crate) fn set_exclusive(&mut self, is_on: bool, cx: &mut Context<Self>) {
+        let output = self.output.clone().with_exclusive(is_on);
+        if self.output != output {
+            self.unsaved.exclusive = true;
+            self.set_output(output, cx);
+        }
+    }
+
     pub(crate) fn quality_ix(&self) -> usize {
         match self.quality {
             ResamplingQuality::Medium => 0,
@@ -251,7 +269,13 @@ impl AudioSettings {
     }
 
     fn selected_device_rates(&self) -> Option<&[u32]> {
-        self.selected_device().map(OutputDevice::sample_rates)
+        self.selected_device().map(|device| {
+            if self.output.is_exclusive() {
+                device.exclusive_sample_rates()
+            } else {
+                device.sample_rates()
+            }
+        })
     }
 
     pub(crate) fn selected_device(&self) -> Option<&OutputDevice> {
@@ -264,6 +288,7 @@ impl AudioSettings {
 
     fn output_on(&self, device: Option<String>, rate: Option<u32>) -> OutputSettings {
         OutputSettings::from_config(device, rate, self.quality, &self.dsd)
+            .with_exclusive(self.output.is_exclusive())
     }
 
     pub(crate) fn dsd(&self) -> &DsdOutput {
@@ -307,7 +332,11 @@ impl AudioSettings {
             while let Ok(Some((output, quality, saved_dsd, dsd, unsaved))) =
                 this.update(cx, |this, _| {
                     let unsaved = std::mem::take(&mut this.unsaved);
-                    this.saving = unsaved.device || unsaved.rate || unsaved.quality || unsaved.dsd;
+                    this.saving = unsaved.device
+                        || unsaved.rate
+                        || unsaved.exclusive
+                        || unsaved.quality
+                        || unsaved.dsd;
                     let saved_dsd = std::mem::replace(&mut this.saved_dsd, this.dsd.clone());
                     this.saving.then(|| {
                         let dsd = this.dsd.clone();
@@ -323,6 +352,9 @@ impl AudioSettings {
                         }
                         if unsaved.rate {
                             store.save_sample_rate(output.fixed_rate())?;
+                        }
+                        if unsaved.exclusive {
+                            store.save_exclusive_mode(output.is_exclusive())?;
                         }
                         if unsaved.quality {
                             store.save_resampling_quality(quality)?;
@@ -371,17 +403,20 @@ fn read_saved_output() -> (
     match (
         store.output_device(),
         store.sample_rate(),
+        store.exclusive_mode(),
         store.resampling_quality(),
         store.dsd_output(),
     ) {
-        (Ok(device), Ok(rate), Ok(quality), Ok(dsd)) => {
-            let output = OutputSettings::from_config(device, rate, quality, &dsd);
+        (Ok(device), Ok(rate), Ok(exclusive), Ok(quality), Ok(dsd)) => {
+            let output =
+                OutputSettings::from_config(device, rate, quality, &dsd).with_exclusive(exclusive);
             (Some(store), output, quality, dsd, None)
         }
-        (Err(error), _, _, _)
-        | (_, Err(error), _, _)
-        | (_, _, Err(error), _)
-        | (_, _, _, Err(error)) => {
+        (Err(error), _, _, _, _)
+        | (_, Err(error), _, _, _)
+        | (_, _, Err(error), _, _)
+        | (_, _, _, Err(error), _)
+        | (_, _, _, _, Err(error)) => {
             let error = format!("Couldn't read the audio settings: {error}.").into();
             unread(Some(store), error)
         }
@@ -600,6 +635,53 @@ pub(crate) mod tests {
         settings.read_with(cx, |settings, _| {
             assert_eq!(settings.output().resampling().fft_size(), 1024);
         });
+    }
+
+    #[gpui_kit::test]
+    fn exclusive_mode_is_told_saved_and_survives_other_changes(cx: &mut TestAppContext) {
+        if !audio::CAN_PLAY_EXCLUSIVE {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let store = config::Store::at(dir.path());
+        let (settings, told, _subscription) = settings_saving_to(&store, cx);
+
+        settings.update(cx, |settings, cx| settings.set_exclusive(true, cx));
+        settings.update(cx, |settings, cx| settings.set_exclusive(true, cx));
+        cx.run_until_parked();
+        assert_eq!(told.get(), 1);
+        assert!(store.exclusive_mode().unwrap());
+
+        settings.update(cx, |settings, cx| {
+            settings.set_device("a:1", cx);
+            settings.set_rate("48000", cx);
+            settings.select_quality(2, cx);
+        });
+        cx.run_until_parked();
+        settings.read_with(cx, |settings, _| {
+            assert!(settings.output().is_exclusive());
+        });
+
+        settings.update(cx, |settings, cx| {
+            let mut dsd = settings.dsd().clone();
+            dsd.is_on = true;
+            dsd.device = Some("a:1".to_owned());
+            settings.set_dsd(dsd, cx);
+        });
+        cx.run_until_parked();
+        settings.read_with(cx, |settings, _| {
+            assert!(settings.output().is_exclusive());
+        });
+        settings.update(cx, |settings, cx| {
+            let mut dsd = settings.dsd().clone();
+            dsd.is_on = false;
+            settings.set_dsd(dsd, cx);
+        });
+
+        settings.update(cx, |settings, cx| settings.set_exclusive(false, cx));
+        cx.run_until_parked();
+        assert!(!store.exclusive_mode().unwrap());
+        settings.read_with(cx, |settings, _| assert!(!settings.is_exclusive_on()));
     }
 
     fn labels(options: &[(SharedString, SharedString)]) -> Vec<&str> {

@@ -8,9 +8,11 @@ pub enum Error {
     UnsupportedOutputFormat,
     #[error("the output device cannot run at the rate this DSD rate needs")]
     UnsupportedDopRate,
-    #[error("DSD needs the output device for itself, and process {0} is holding it")]
-    DeviceHeld(i32),
-    #[error("could not take the output device for DSD: {0}")]
+    #[error("another app is holding the output device for itself")]
+    DeviceHeld,
+    #[error("the system does not let apps take the output device for themselves")]
+    ExclusiveNotAllowed,
+    #[error("could not take the output device for this app alone: {0}")]
     ExclusiveOutput(String),
     #[error("the DSD modulator became unstable: lower Noise gain or Input level")]
     DsdUnstable,

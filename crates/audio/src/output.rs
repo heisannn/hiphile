@@ -1,11 +1,11 @@
 use cpal::traits::DeviceTrait;
 
-use crate::{Error, dop_device};
+use crate::{Error, exclusive_device};
 
 const DOP_CHANNELS: u16 = 2;
 
 /// Rates a device can be fixed at, among those it supports.
-const STANDARD_RATES: [u32; 10] = [
+pub(crate) const STANDARD_RATES: [u32; 10] = [
     44_100, 48_000, 88_200, 96_000, 176_400, 192_000, 352_800, 384_000, 705_600, 768_000,
 ];
 
@@ -49,6 +49,7 @@ pub struct OutputSettings {
     resampling: Resampling,
     dop: Option<dsd::Settings>,
     dop_fades_in: bool,
+    exclusive: bool,
 }
 
 impl Default for OutputSettings {
@@ -68,6 +69,7 @@ impl OutputSettings {
             resampling: Resampling::default(),
             dop: None,
             dop_fades_in: true,
+            exclusive: false,
         }
     }
 
@@ -88,6 +90,17 @@ impl OutputSettings {
     pub fn with_dop_fade_in(mut self, fades_in: bool) -> Self {
         self.dop_fades_in = fades_in;
         self
+    }
+
+    /// Keeps other apps off the device while PCM plays or is paused, on a
+    /// platform that can. DoP always does.
+    pub fn with_exclusive(mut self, exclusive: bool) -> Self {
+        self.exclusive = exclusive && crate::CAN_PLAY_EXCLUSIVE;
+        self
+    }
+
+    pub fn is_exclusive(&self) -> bool {
+        self.exclusive
     }
 
     pub fn dop_fades_in(&self) -> bool {
@@ -114,7 +127,8 @@ impl OutputSettings {
     pub(crate) fn has_same_device_and_rate(&self, other: &Self) -> bool {
         self.device == other.device
             && self.dop == other.dop
-            && (self.dop.is_some() || self.fixed_rate == other.fixed_rate)
+            && (self.dop.is_some()
+                || (self.fixed_rate == other.fixed_rate && self.exclusive == other.exclusive))
     }
 }
 
@@ -157,9 +171,13 @@ pub(crate) fn ranges_for(
     settings: &OutputSettings,
 ) -> Result<Vec<ConfigRange>, Error> {
     if settings.dop().is_none() {
-        return config_ranges(device);
+        return if settings.is_exclusive() {
+            exclusive_device::pcm_ranges(device)
+        } else {
+            config_ranges(device)
+        };
     }
-    Ok(dop_device::frame_rates(device)
+    Ok(exclusive_device::frame_rates(device)
         .into_iter()
         .map(|rate| ConfigRange {
             channels: DOP_CHANNELS,
@@ -404,6 +422,18 @@ mod tests {
         assert!(on(None).has_same_device_and_rate(&on(Some(48_000))));
         let pcm = |rate| OutputSettings::new(Some("dac".to_owned()), rate);
         assert!(!pcm(None).has_same_device_and_rate(&pcm(Some(48_000))));
+    }
+
+    #[test]
+    fn holding_the_device_moves_pcm_but_makes_no_difference_to_dop() {
+        let pcm =
+            |exclusive| OutputSettings::new(Some("dac".to_owned()), None).with_exclusive(exclusive);
+        assert_eq!(pcm(true).is_exclusive(), crate::CAN_PLAY_EXCLUSIVE);
+        if crate::CAN_PLAY_EXCLUSIVE {
+            assert!(!pcm(true).has_same_device_and_rate(&pcm(false)));
+        }
+        let dop = |exclusive| pcm(exclusive).with_dop(Some(dsd::Settings::default()));
+        assert!(dop(true).has_same_device_and_rate(&dop(false)));
     }
 
     #[test]
