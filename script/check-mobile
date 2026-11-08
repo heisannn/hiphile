@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# What a mobile app takes through UniFFI: the core and everything under it, without its desktop feature
+crates=(hiphile-core)
+desktop_only=(gpui-kit presence media-controls souvlaki discord-rich-presence updater self_update)
+target=aarch64-apple-ios
+root="$(cd "$(dirname "$0")/.." && pwd)"
+
+if ! rustup target list --installed | grep -qx "$target"; then
+  echo "error: run \`rustup target add $target\` first" >&2
+  exit 1
+fi
+# A nix-wrapped clang adds macOS flags to every target, so the C code (SQLite, aws-lc) is built with Xcode's
+export CC_aarch64_apple_ios="$(xcrun --sdk iphoneos -f clang)"
+export CXX_aarch64_apple_ios="$(xcrun --sdk iphoneos -f clang++)"
+export AR_aarch64_apple_ios="$(xcrun --sdk iphoneos -f ar)"
+
+status=0
+for crate in "${crates[@]}"; do
+  spec="path+file://$root/crates/$crate"
+  tree="$(cargo tree -p "$spec" --target "$target" -e normal --prefix none)"
+  for dependency in "${desktop_only[@]}"; do
+    if grep -q "^$dependency v" <<<"$tree"; then
+      echo "error: $crate depends on $dependency, which only the desktop app has" >&2
+      cargo tree -p "$spec" --target "$target" -e normal -i "$dependency" | head -20 >&2 || true
+      status=1
+    fi
+  done
+  cargo check --quiet -p "$spec" --target "$target" || status=1
+done
+exit "$status"

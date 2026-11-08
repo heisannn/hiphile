@@ -1,16 +1,16 @@
 # Extracting the core
 
 Planned on 2026-11-09. The aim is to move every piece of state and logic that does not draw into crates
-without GPUI, whatever UI the app ends up with. It is a prerequisite of a move to Native Shell (see the
-[NSH evaluation](../nsh/evaluation.md)), but it is worth doing on its own: the logic can then be tested
-without a window, and the CLI can share it.
+without GPUI, so that a mobile app made later can reuse the core through [UniFFI](https://mozilla.github.io/uniffi-rs/),
+from Swift and Kotlin. The same core serves the desktop app, the CLI and a move to Native Shell, should
+it happen (see the [NSH evaluation](../nsh/evaluation.md)), and the logic can be tested without a window.
 
 | | |
 | --- | --- |
 | Goal | Only views depend on GPUI, and they hold only view state: focus, selection, scroll, slider drags, animation |
 | Size | The 15 crates that depend on gpui-kit hold about 41,000 lines, 10,000 of them tests: about 420 `#[gpui_kit::test]` and 170 `#[test]` |
 | Order | Pure files first, then one service at a time, the player last (see [Steps](#steps)) |
-| Check | `script/check-gpui-free` lists every crate that must stay free of GPUI |
+| Check | `script/check-gpui-free` lists every crate that must stay free of GPUI; `script/check-mobile` builds `hiphile-core` for iOS and fails on a desktop-only dependency |
 
 ## Progress
 
@@ -156,7 +156,8 @@ Everything else goes into one new crate, apart from the executor.
 | Logic | From | To |
 | --- | --- | --- |
 | The executor trait, `Task`, the tokio implementation, the serial saver | New | New `executor`, under every core crate. Not `hiphile-core`: `updater`, `session` and `playback` need it and `hiphile-core` depends on them, a cycle cargo rejects |
-| The player's state machine, queue operations, preparing the next song, scrobbling, Discord and media controls, the volume | `player/src/player.rs` | `playback`, whose description is already "Play queue and playback orchestration. No GPUI." |
+| The player's state machine, queue operations, preparing the next song, scrobbling, the volume | `player/src/player.rs` | `playback`, whose description is already "Play queue and playback orchestration. No GPUI." |
+| Showing what plays on Discord and in the system's media controls, and taking their commands | `player/src/player.rs` | `hiphile_core::desktop`, behind `hiphile-core`'s `desktop` feature, which only the desktop app turns on. They follow the player as any other host would (see [Decided before steps 7 and 8](#decided-before-steps-7-and-8)) |
 | The format text, `is_instrumental` and the skip setting | `player/src/format.rs`, `actions/src/instrumentals.rs` | `playback` |
 | Fetching the current song's lyrics, their cache, the line and word timing | `player/src/lyrics_view/current.rs`, `lyrics_view/lines.rs` | `lyrics` |
 | `Session`, cover URLs, `describe`, `Readings` | `session` | `session`, made free of GPUI (done in step 3). `NetHttpClient` and the `Global`s are in `ui` |
@@ -167,8 +168,9 @@ Everything else goes into one new crate, apart from the executor.
 `hiphile-core` depends on `playback`, `session`, `updater`, `lyrics` and the crates under them, `executor`
 among them; the view crates depend on `hiphile-core`, and so does `actions` (and through it `ui`) for
 `Favorite` and `PlaylistChoice`, and on `playback` for what is skipped. No core crate may depend on
-`actions` or `ui`. `playback` gains `session`, `presence` and `media-controls`; `session`
-does not depend on `playback`, so no cycle appears.
+`actions` or `ui`. `playback` gains `session` but not `presence` or `media-controls`; `session`
+does not depend on `playback`, so no cycle appears. `updater` stays with the desktop app: `hiphile-core`
+does not depend on it.
 
 ## Steps
 
@@ -185,7 +187,7 @@ stay with the views.
 | 4 | The settings models | |
 | 5 | Favorites, playlists, skipping instrumentals | 5 and 6 in parallel after 3: their logic needs `Session` and `Readings`, which only step 3 frees of GPUI. All four also meet in `app_shell.rs` and in the views that follow `Readings` |
 | 6 | The library sync and its activity, the search index, home recommendations | |
-| 7 | The player into `playback`, in four parts: states and queue operations; engine events and preparing the next song; scrobbling, Discord and media controls; the volume, the window handle and `shutdown()` | One part at a time |
+| 7 | The player into `playback`, in parts: states and queue operations; engine events and preparing the next song; scrobbling; Discord and media controls as followers in `hiphile_core::desktop`; the volume, the window handle and `shutdown()`; the current song's lyrics into `lyrics` | One part at a time |
 | 8 | The routing and the session's lifetime from `app_shell.rs` into `hiphile-core` | Last |
 
 ## The updater pilot
@@ -286,6 +288,36 @@ Step 2 tried the design rules on `updater`. They held, with these details settle
   `AddToPlaylist` routed through the playlists view for them; `actions::toggle_favorite` deciding the
   direction from its copy. The routing in `app_shell.rs` is step 8.
 
+## Decided before steps 7 and 8
+
+- **The purpose is a mobile app on UniFFI.** A later binding crate (say `hiphile-ffi`) wraps the core's
+  handles: a handle becomes a UniFFI object (it is already an `Arc` that is `Send + Sync`), a snapshot or
+  a notice a record or an enum of plain data, following a `watch` or a `broadcast` a callback interface
+  the app implements, and the executor a tokio one the binding crate owns (`Executor::tokio`). The core
+  does not depend on `uniffi`. So a handle's methods take and return plain data, and what only one host
+  has comes in through a value, a trait or a feature.
+- **`script/check-mobile`** builds `hiphile-core` for `aarch64-apple-ios` with Xcode's compiler (a
+  nix-wrapped clang adds macOS flags to every target, so SQLite and aws-lc fail to build otherwise) and
+  fails if it reaches GPUI, `presence`, `media-controls`, `updater` or their libraries. It passed at
+  f460b76. Android is not checked: this machine has no NDK.
+- **Desktop integrations follow the player.** Discord and the system's media controls (souvlaki) exist
+  only on the desktop; a mobile app has its own (`MPNowPlayingInfoCenter`, `MediaSession`). So `playback`
+  does not depend on `presence` or `media-controls`. The player publishes what they need (the song, its
+  cover URL, playing or paused, the duration) and takes their commands (play, pause, next, previous,
+  seek), and `hiphile_core::desktop`, behind the `desktop` feature, connects them, as a mobile app will
+  in Swift or Kotlin. The window handle the media controls need comes from the app when it starts them
+  (rule 8); uploading covers for Discord (ImgBB) goes with the Discord follower.
+- **The engine stays `audio`.** It builds for iOS (cpal), and its desktop parts (hog mode, switching the
+  device's rate) are already per operating system. Whether a mobile app plays through it or through the
+  platform's player is decided with the mobile app; the player is not put behind an engine trait now.
+- **The position is read, not published.** A `watch` that changed ten times a second would wake every
+  follower; the player's snapshot changes with the song and the state, and `position()` reads the
+  engine's frame count, as views and bindings poll it while they show it.
+- **Still to do for mobile, outside these steps.** `config` picks the Linux secret service as the
+  keychain on iOS (any Unix but macOS); a mobile app keeps the password in its own keychain or the core
+  takes the store from the host. The dictionaries' and caches' folders come from `dirs`, which a mobile
+  app should give instead.
+
 ## Done when
 
 - Only view crates depend on gpui-kit, and they hold only view state.
@@ -293,6 +325,7 @@ Step 2 tried the design rules on `updater`. They held, with these details settle
   `hiphile-core` and the crates that are free of GPUI today.
 - The core alone can sign in, sync, browse and play, without a window. `hiphile-cli` on the core is the
   smoke test.
+- `script/check-mobile` passes: `hiphile-core` builds for iOS without a desktop-only dependency.
 
 ## Open questions
 
@@ -300,3 +333,5 @@ Step 2 tried the design rules on `updater`. They held, with these details settle
   times.
 - Whether a service with many writers (the player) is better as one task that owns the state and takes
   commands than as a lock. The lock is the default because it keeps today's synchronous semantics.
+- A UniFFI pilot after step 8: a binding crate that wraps signing in, the library and playing, with
+  Swift bindings generated in a test, to find what the handles' shapes still lack.
