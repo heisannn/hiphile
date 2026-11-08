@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui_kit::{FocusHandle, InteractiveElement as _, TestAppContext, VisualTestContext};
+use hiphile_core::search::IndexState;
 use serde_json::{Value, json};
 use subsonic::{Album, Credentials, ScanStatus};
 
@@ -90,7 +91,8 @@ fn palette(
         })
         .unwrap();
     let cx = VisualTestContext::from_window(handle, cx).into_mut();
-    let search = cx.update(|window, cx| cx.new(|cx| Search::new(session, window, cx)));
+    let index = SearchIndex::new(cx.update(|_, cx| gpui_host::executor(cx)), session.clone());
+    let search = cx.update(|window, cx| cx.new(|cx| Search::new(session, index, window, cx)));
     let events = Rc::new(RefCell::new(Vec::new()));
     cx.update(|_, cx| {
         let events = events.clone();
@@ -130,8 +132,9 @@ fn is_open(cx: &mut VisualTestContext) -> bool {
 
 fn sections(search: &Entity<Search>, cx: &mut VisualTestContext) -> Vec<&'static str> {
     cx.update(|_, cx| {
-        let results = search.read(cx).results.clone();
-        results.sections.iter().map(|(label, _)| *label).collect()
+        let status = search.read(cx).status.clone();
+        let sections = status.results().sections.iter();
+        sections.map(|(label, _)| *label).collect()
     })
 }
 
@@ -255,8 +258,9 @@ fn resync(catalog: &catalog::Catalog, title: &str) {
 
 fn found_songs(search: &Entity<Search>, cx: &mut VisualTestContext) -> Vec<String> {
     cx.update(|_, cx| {
-        let results = search.read(cx).results.clone();
-        results
+        let status = search.read(cx).status.clone();
+        status
+            .results()
             .sections
             .iter()
             .flat_map(|(_, hits)| hits)
@@ -278,10 +282,14 @@ fn a_library_that_changed_while_open_shows_without_opening_it_again(cx: &mut Tes
     assert!(found_songs(&search, cx).contains(&"Naima".to_owned()));
 
     resync(&catalog, "A Love Supreme");
-    cx.update(|_, cx| search.update(cx, |search, cx| search.library_changed(cx)));
+    library_changed(&search, cx);
     settle(cx);
 
     assert_eq!(found_songs(&search, cx), ["A Love Supreme"]);
+}
+
+fn library_changed(search: &Entity<Search>, cx: &mut VisualTestContext) {
+    cx.update(|_, cx| search.read(cx).index.library_changed());
 }
 
 #[gpui_kit::test]
@@ -290,12 +298,13 @@ fn what_was_read_stays_searchable_during_a_new_reading(cx: &mut TestAppContext) 
     let (search, _, cx) = palette(Some(saved_library(&dir)), cx);
     open(&search, cx);
 
-    cx.update(|_, cx| search.update(cx, |search, cx| search.library_changed(cx)));
+    library_changed(&search, cx);
 
     cx.update(|_, cx| {
         let search = search.read(cx);
-        assert!(search.is_reading);
-        assert!(matches!(search.library, SavedLibrary::Read(_)));
+        let status = search.index.status();
+        assert!(status.is_reading());
+        assert_eq!(*status.library(), IndexState::Read);
         assert!(!search.state.read(cx).is_loading());
     });
     settle(cx);
@@ -309,36 +318,26 @@ fn a_change_during_a_reading_is_read_too_and_the_spinner_stops(cx: &mut TestAppC
 
     cx.update(|window, cx| search.update(cx, |search, cx| search.open(window, cx)));
     resync(&catalog, "A Love Supreme");
-    cx.update(|_, cx| search.update(cx, |search, cx| search.library_changed(cx)));
+    library_changed(&search, cx);
     settle(cx);
     settle(cx);
     ask(&search, "a", cx);
 
     cx.update(|_, cx| {
         let search = search.read(cx);
-        assert!(!search.is_reading);
+        assert!(!search.index.status().is_reading());
         assert!(!search.state.read(cx).is_loading());
     });
     assert_eq!(found_songs(&search, cx), ["A Love Supreme"]);
 }
 
 #[gpui_kit::test]
-fn a_library_that_changed_while_never_opened_waits_to_be(cx: &mut TestAppContext) {
-    let dir = tempfile::tempdir().unwrap();
-    let (search, _, cx) = palette(Some(saved_library(&dir)), cx);
-
-    cx.update(|_, cx| search.update(cx, |search, cx| search.library_changed(cx)));
-
-    cx.update(|_, cx| {
-        let search = search.read(cx);
-        assert!(!search.is_reading);
-        assert!(matches!(search.library, SavedLibrary::Unread));
-    });
-}
-
-#[gpui_kit::test]
 fn without_a_saved_library_it_says_so(cx: &mut TestAppContext) {
     let (search, _, cx) = palette(None, cx);
     open(&search, cx);
-    cx.update(|_, cx| assert!(matches!(search.read(cx).library, SavedLibrary::Failed(_))));
+    cx.update(|_, cx| {
+        let search = search.read(cx);
+        assert!(search.status.failure().is_some());
+        assert!(!search.state.read(cx).is_loading());
+    });
 }

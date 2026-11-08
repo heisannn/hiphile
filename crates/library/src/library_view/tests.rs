@@ -20,15 +20,8 @@ fn library(cx: &mut TestAppContext) -> (Entity<Library>, &mut VisualTestContext)
     library_on("http://127.0.0.1:9", cx)
 }
 
+/// A library with two albums once the first sync, which finds no albums at `url`, is over.
 fn library_on<'a>(
-    url: &str,
-    cx: &'a mut TestAppContext,
-) -> (Entity<Library>, &'a mut VisualTestContext) {
-    library_saving_in(None, url, cx)
-}
-
-fn library_saving_in<'a>(
-    catalog: Option<catalog::Catalog>,
     url: &str,
     cx: &'a mut TestAppContext,
 ) -> (Entity<Library>, &'a mut VisualTestContext) {
@@ -42,15 +35,13 @@ fn library_saving_in<'a>(
         client::Client::new(net, server),
         "alice".to_owned(),
         info,
-        catalog,
+        None,
         None,
     );
-    let (library, cx) = cx.add_window_view(|window, cx| Library::new(session, window, cx));
-    cx.update(|_, cx| {
-        library.update(cx, |library, cx| {
-            library.set_albums(vec![album("a", "Alpha"), album("b", "Beta")], cx);
-        });
-    });
+    let sync = LibrarySync::new(cx.update(|cx| gpui_host::executor(cx)), session.clone());
+    let (library, cx) = cx.add_window_view(|window, cx| Library::new(session, sync, window, cx));
+    wait_for_the_sync(&library, cx);
+    set_albums(&library, vec![album("a", "Alpha"), album("b", "Beta")], cx);
     (library, cx)
 }
 
@@ -144,12 +135,10 @@ fn key_presses_retry(key: &str, cx: &mut TestAppContext) -> bool {
         )]);
         cx.on_action(|_: &TakenByTheWorkspace, _| {});
     });
-    wait_for_the_sync(&library, cx);
     cx.update(|_, cx| {
         library.update(cx, |library, cx| {
             library.albums = Albums::Failed("before".into());
             library.visible = Arc::default();
-            library.sync = SyncState::Idle;
             cx.notify();
         });
     });
@@ -168,11 +157,11 @@ fn init_keys(cx: &mut VisualTestContext) {
     });
 }
 
-/// Lets the sync a new library starts fail, which leaves the state alone.
+/// Lets a sync of the library end, as one the server cannot answer fails.
 fn wait_for_the_sync(library: &Entity<Library>, cx: &mut VisualTestContext) {
     for _ in 0..500 {
         cx.run_until_parked();
-        let running = cx.update(|_, cx| matches!(library.read(cx).sync, SyncState::Running { .. }));
+        let running = cx.update(|_, cx| library.read(cx).sync.status().is_running());
         if !running {
             return;
         }
@@ -195,7 +184,6 @@ fn space_presses_a_focused_retry(cx: &mut TestAppContext) {
 fn enter_on_the_play_button_plays_the_whole_album(cx: &mut TestAppContext) {
     let (library, cx) = library(cx);
     init_keys(cx);
-    wait_for_the_sync(&library, cx);
     show_album_a(&library, cx);
     cx.update(|_, cx| {
         library.update(cx, |library, cx| library.select_song(1, cx));
@@ -259,7 +247,7 @@ fn revealing_an_album_moves_focus_to_the_album_list(cx: &mut TestAppContext) {
 
 fn set_albums(library: &Entity<Library>, albums: Vec<Album>, cx: &mut VisualTestContext) {
     cx.update(|_, cx| {
-        library.update(cx, |library, cx| library.set_albums(albums, cx));
+        library.update(cx, |library, cx| library.set_albums(albums.into(), cx));
     });
 }
 
@@ -313,8 +301,9 @@ fn the_end_of_a_sync_gives_up_on_an_album_being_revealed(cx: &mut TestAppContext
     reveal(&library, "c", cx);
 
     cx.update(|_, cx| {
-        library.update(cx, |library, cx| library.finish_sync(Ok(()), cx));
+        library.read(cx).refresh_library();
     });
+    wait_for_the_sync(&library, cx);
     cx.update(|_, cx| assert_eq!(library.read(cx).revealing, None));
 
     set_albums(&library, vec![album("a", "Alpha"), album("b", "Beta")], cx);
@@ -447,119 +436,6 @@ fn server_answering(fields: serde_json::Value) -> String {
     url
 }
 
-/// How many of each event `library` emits from here on: the albums and songs
-/// synced, and the syncs that failed.
-fn count_events(library: &Entity<Library>, cx: &mut VisualTestContext) -> Rc<RefCell<[usize; 3]>> {
-    let counts = Rc::new(RefCell::new([0; 3]));
-    let seen = counts.clone();
-    cx.update(|_, cx| {
-        cx.subscribe(library, move |_, event, _| {
-            let ix = match event {
-                LibraryEvent::AlbumsSynced => 0,
-                LibraryEvent::SongsSynced => 1,
-                LibraryEvent::SyncFailed(_) => 2,
-                LibraryEvent::ArtistsSynced
-                | LibraryEvent::SyncProgress { .. }
-                | LibraryEvent::SyncFinished
-                | LibraryEvent::LeftAlbum(_) => return,
-            };
-            seen.borrow_mut()[ix] += 1;
-        })
-        .detach();
-    });
-    counts
-}
-
-fn wait_for(cx: &mut VisualTestContext, done: impl Fn(&mut VisualTestContext) -> bool) {
-    for _ in 0..500 {
-        cx.run_until_parked();
-        if done(cx) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    panic!("what was waited for never happened");
-}
-
-#[gpui_kit::test]
-fn a_sync_saves_the_artists_and_says_so(cx: &mut TestAppContext) {
-    let dir = tempfile::tempdir().unwrap();
-    let catalog = catalog::Catalog::open(dir.path()).unwrap();
-    let url = server_answering(json!({
-        "albumList2": { "album": [] },
-        "artists": { "index": [
-            { "name": "M", "artist": [{ "id": "m", "name": "Miles Davis" }] },
-        ]},
-        "searchResult3": { "song": [] },
-        "scanStatus": { "scanning": false },
-    }));
-    let (library, cx) = library_saving_in(Some(catalog.clone()), &url, cx);
-    let told = Rc::new(RefCell::new(false));
-    cx.update(|_, cx| {
-        let told = told.clone();
-        cx.subscribe(&library, move |_, event, _| {
-            if matches!(event, LibraryEvent::ArtistsSynced) {
-                *told.borrow_mut() = true;
-            }
-        })
-        .detach();
-    });
-
-    wait_for(cx, |_| *told.borrow());
-
-    let saved = catalog.artists().unwrap();
-    assert_eq!(saved.len(), 1);
-    assert_eq!(saved[0].name(), "Miles Davis");
-}
-
-#[gpui_kit::test]
-fn artists_that_fail_to_sync_do_not_stop_the_songs(cx: &mut TestAppContext) {
-    let dir = tempfile::tempdir().unwrap();
-    let catalog = catalog::Catalog::open(dir.path()).unwrap();
-    let url = server_answering(json!({
-        "albumList2": { "album": [] },
-        "artists": "not a list of artists",
-        "searchResult3": { "song": [{ "id": "s", "title": "So What" }] },
-        "scanStatus": { "scanning": false },
-    }));
-    let (library, cx) = library_saving_in(Some(catalog.clone()), &url, cx);
-    let counts = count_events(&library, cx);
-    cx.update(|_, cx| {
-        library.update(cx, |library, cx| library.refresh_library(cx));
-    });
-
-    wait_for(cx, |_| counts.borrow()[1] > 0 && counts.borrow()[2] > 0);
-
-    assert_eq!(catalog.songs().unwrap().len(), 1);
-}
-
-#[gpui_kit::test]
-fn a_sync_without_a_saved_copy_says_the_songs_may_have_changed(cx: &mut TestAppContext) {
-    let url = server_answering(json!({ "albumList2": { "album": [] } }));
-    let (library, cx) = library_on(&url, cx);
-    let counts = count_events(&library, cx);
-
-    wait_for(cx, |_| counts.borrow()[0] > 0);
-
-    assert_eq!(counts.borrow()[1], counts.borrow()[0]);
-}
-
-#[gpui_kit::test]
-fn only_a_sync_the_user_asked_for_says_when_it_fails(cx: &mut TestAppContext) {
-    let (library, cx) = library(cx);
-    let counts = count_events(&library, cx);
-    let has_failed = |cx: &mut VisualTestContext| {
-        cx.update(|_, cx| matches!(library.read(cx).sync, SyncState::Failed(_)))
-    };
-
-    wait_for(cx, has_failed);
-    assert_eq!(counts.borrow()[2], 0);
-
-    cx.update(|_, cx| library.update(cx, |library, cx| library.refresh_library(cx)));
-    wait_for(cx, |_| counts.borrow()[2] > 0);
-    assert_eq!(counts.borrow()[2], 1);
-}
-
 #[gpui_kit::test]
 fn an_action_on_an_album_still_loading_waits_for_its_songs(cx: &mut TestAppContext) {
     let url = server_of_album_a();
@@ -608,7 +484,6 @@ fn an_album_without_songs_is_not_played(cx: &mut TestAppContext) {
 fn the_page_keys_move_by_the_albums_in_view(cx: &mut TestAppContext) {
     let (library, cx) = library(cx);
     init_keys(cx);
-    wait_for_the_sync(&library, cx);
     let albums: Vec<Album> = (0..100)
         .map(|ix| album(&ix.to_string(), &ix.to_string()))
         .collect();
@@ -637,9 +512,8 @@ fn left_albums(library: &Entity<Library>, cx: &mut VisualTestContext) -> Rc<RefC
     cx.update(|_, cx| {
         let left = left.clone();
         cx.subscribe(library, move |_, event, _| {
-            if let LibraryEvent::LeftAlbum(album) = event {
-                left.borrow_mut().push(album.clone());
-            }
+            let LibraryEvent::LeftAlbum(album) = event;
+            left.borrow_mut().push(album.clone());
         })
         .detach();
     });

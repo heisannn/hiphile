@@ -1,16 +1,13 @@
-use std::sync::Arc;
-
 use gpui_kit::component::{
     ActiveTheme as _, IndexPath, StyledExt as _, WindowExt as _,
     command::{Command, CommandGroup, CommandItem, CommandState},
     h_flex, v_flex,
 };
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext as _, AsyncApp, Context, Entity, EventEmitter, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Task, Window, div,
-    prelude::FluentBuilder as _, rems,
+    App, AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render,
+    SharedString, Styled as _, Task, Window, div, prelude::FluentBuilder as _, rems,
 };
-use hiphile_core::search::{Hit, Results, SearchLibrary};
+use hiphile_core::search::{Hit, SearchIndex, SearchStatus};
 use subsonic::{AlbumId, ArtistId, Song};
 use ui::no_matches;
 
@@ -31,62 +28,46 @@ pub enum SearchEvent {
     PlaySong(Song),
 }
 
-enum SavedLibrary {
-    /// Read on the palette's first opening, since a library that may never be
-    /// searched is not worth reading.
-    Unread,
-    Read(Arc<SearchLibrary>),
-    Failed(SharedString),
-}
-
 pub struct Search {
     session: session::Session,
+    index: SearchIndex,
+    /// What the index showed last.
+    status: SearchStatus,
     state: Entity<CommandState>,
-    /// Stays in use while a newer reading is under way.
-    library: SavedLibrary,
-    is_reading: bool,
-    is_reading_out_of_date: bool,
-    /// The window it opened in, to show a first reading in. `None` until then.
-    window: Option<AnyWindowHandle>,
-    results: Arc<Results>,
     /// So an empty palette does not say that nothing matched.
     has_query: bool,
-    _load_task: Task<()>,
-    _search_task: Task<()>,
-    _readings_changes: Option<Task<()>>,
+    _index_changes: Task<()>,
 }
 
 impl EventEmitter<SearchEvent> for Search {}
 
 impl Search {
-    pub fn new(session: session::Session, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let readings_changes = session.readings().map(|readings| {
-            ui::on_readings_changed(readings, cx, |this: &mut Self, cx| this.library_changed(cx))
-        });
+    /// `window` is where the palette opens.
+    pub fn new(
+        session: session::Session,
+        index: SearchIndex,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let index_changes =
+            gpui_host::observe_in(index.subscribe(), window, cx, Self::follow_index);
         Self {
             session,
+            status: index.status(),
+            index,
             state: cx.new(|cx| CommandState::new(window, cx)),
-            library: SavedLibrary::Unread,
-            is_reading: false,
-            is_reading_out_of_date: false,
-            window: None,
-            results: Arc::default(),
             has_query: false,
-            _load_task: Task::ready(()),
-            _search_task: Task::ready(()),
-            _readings_changes: readings_changes,
+            _index_changes: index_changes,
         }
     }
 
     pub fn open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.window = Some(window.window_handle());
-        if matches!(self.library, SavedLibrary::Unread | SavedLibrary::Failed(_)) {
-            self.read_library(cx);
-        }
+        self.index.open();
         self.state
             .update(cx, |state, cx| state.set_query("", window, cx));
-        self.results = Arc::default();
-        self.has_query = false;
+        self.search("", cx);
+        // At once, so that it does not open on what it found when last open
+        self.follow_index(self.index.status(), window, cx);
         let this = cx.entity();
         window.open_dialog(cx, move |dialog, window, _| {
             dialog
@@ -99,97 +80,25 @@ impl Search {
         cx.notify();
     }
 
-    /// Reads the library again, unless it was never read. What is found in the meantime comes from
-    /// what was read before, and the palette may be open on it, so that stays until the new reading
-    /// is done.
-    pub fn library_changed(&mut self, cx: &mut Context<Self>) {
-        if !matches!(self.library, SavedLibrary::Unread) {
-            self.read_library(cx);
+    /// A first reading shows in the palette as a spinner: there is nothing to search meanwhile.
+    fn follow_index(&mut self, status: SearchStatus, window: &mut Window, cx: &mut Context<Self>) {
+        if status.is_waiting() != self.state.read(cx).is_loading() {
+            self.state.update(cx, |state, cx| {
+                state.set_loading(status.is_waiting(), window, cx);
+            });
         }
-    }
-
-    fn read_library(&mut self, cx: &mut Context<Self>) {
-        if self.is_reading {
-            self.is_reading_out_of_date = true;
-            return;
-        }
-        let Some(catalog) = self.session.catalog().cloned() else {
-            self.library = SavedLibrary::Failed("There's no saved library to search.".into());
-            return;
-        };
-        self.is_reading = true;
-        let book = self.session.reading_book();
-        let state = self.state.clone();
-        let window = self.window;
-        let shows_spinner = !matches!(self.library, SavedLibrary::Read(_));
-        self._load_task = cx.spawn(async move |this, cx| {
-            if shows_spinner {
-                show_spinner(&state, window, true, cx);
-            }
-            let read = cx
-                .background_spawn(async move {
-                    let albums = catalog.albums()?;
-                    let songs = catalog.songs()?;
-                    Ok::<_, catalog::Error>(match book {
-                        Some(book) => {
-                            book.read(|speller| SearchLibrary::new(albums, songs, Some(speller)))
-                        }
-                        None => SearchLibrary::new(albums, songs, None),
-                    })
-                })
-                .await;
-            if shows_spinner {
-                show_spinner(&state, window, false, cx);
-            }
-            this.update(cx, |this, cx| this.finish_reading(read, cx))
-                .ok();
-        });
-        cx.notify();
-    }
-
-    fn finish_reading(
-        &mut self,
-        read: Result<SearchLibrary, catalog::Error>,
-        cx: &mut Context<Self>,
-    ) {
-        self.is_reading = false;
-        self.library = match read {
-            Ok(library) => SavedLibrary::Read(Arc::new(library)),
-            Err(error) => {
-                self.results = Arc::default();
-                SavedLibrary::Failed(session::describe_catalog(&error).into())
-            }
-        };
-        if std::mem::take(&mut self.is_reading_out_of_date) {
-            self.read_library(cx);
-        }
-        let query = self.state.read(cx).query(cx);
-        self.search(&query, cx);
+        self.status = status;
         cx.notify();
     }
 
     fn search(&mut self, query: &str, cx: &mut Context<Self>) {
         self.has_query = !query.trim().is_empty();
-        let SavedLibrary::Read(library) = &self.library else {
-            cx.notify();
-            return;
-        };
-        let library = library.clone();
-        let query = query.to_owned();
-        self._search_task = cx.spawn(async move |this, cx| {
-            let results = cx
-                .background_spawn(async move { library.search(&query) })
-                .await;
-            this.update(cx, |this, cx| {
-                this.results = Arc::new(results);
-                cx.notify();
-            })
-            .ok();
-        });
+        self.index.search(query);
+        cx.notify();
     }
 
     fn confirm(&mut self, path: IndexPath, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(hit) = self.results.hit(path.section, path.row).cloned() else {
+        let Some(hit) = self.status.results().hit(path.section, path.row).cloned() else {
             return;
         };
         window.close_dialog(cx);
@@ -201,16 +110,15 @@ impl Search {
     }
 
     fn render_empty(&self, cx: &App) -> gpui_kit::AnyElement {
-        let is_waiting = self.is_reading && !matches!(self.library, SavedLibrary::Read(_));
-        if let (SavedLibrary::Failed(error), false) = (&self.library, is_waiting) {
+        if let Some(error) = self.status.failure() {
             return div()
                 .p_4()
                 .text_sm()
                 .text_color(cx.theme().danger)
-                .child(error.clone())
+                .child(SharedString::from(error.to_owned()))
                 .into_any_element();
         }
-        if !self.has_query || is_waiting {
+        if !self.has_query || self.status.is_waiting() {
             return div().into_any_element();
         }
         div()
@@ -221,21 +129,6 @@ impl Search {
                 cx,
             ))
             .into_any_element()
-    }
-}
-
-fn show_spinner(
-    state: &Entity<CommandState>,
-    window: Option<AnyWindowHandle>,
-    is_loading: bool,
-    cx: &mut AsyncApp,
-) {
-    if let Some(window) = window {
-        window
-            .update(cx, |_, window, cx| {
-                state.update(cx, |state, cx| state.set_loading(is_loading, window, cx));
-            })
-            .ok();
     }
 }
 
@@ -301,7 +194,7 @@ impl Render for Search {
         let on_query = cx.entity().downgrade();
         let on_confirm = cx.entity().downgrade();
         let empty = cx.entity().downgrade();
-        let groups = self.results.sections.iter().map(|(label, hits)| {
+        let groups = self.status.results().sections.iter().map(|(label, hits)| {
             CommandGroup::new()
                 .label(*label)
                 .items(hits.iter().map(|hit| item_of(hit, cx)))

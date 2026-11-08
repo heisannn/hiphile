@@ -3,9 +3,6 @@ use std::sync::Arc;
 use actions::{
     AlbumAction, EnqueueSongs, GoToArtist, Placement, PlaySongs, ShowArtist, ToggleFavorite,
 };
-use catalog::{Mode, Outcome};
-use futures::StreamExt as _;
-use futures::channel::mpsc;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _,
@@ -17,13 +14,15 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, AppContext as _, AsyncApp, Context, Entity, EventEmitter, FocusHandle, Focusable,
+    AnyElement, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollStrategy, SharedString,
-    Styled as _, Subscription, Task, UniformListScrollHandle, WeakEntity, Window, div,
+    Styled as _, Subscription, Task, UniformListScrollHandle, Window, div,
     prelude::FluentBuilder as _,
 };
 use hiphile_core::favorites::Favorite;
-use hiphile_core::library::{AlbumOrder, AlbumSort, album_index, arrange};
+use hiphile_core::library::{
+    AlbumOrder, AlbumSort, Albums, LibraryNotice, LibrarySync, SyncStatus, album_index, arrange,
+};
 use subsonic::{Album, AlbumId, AlbumWithSongs, PlaylistId, Song, SongId};
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
 use ui::{
@@ -47,39 +46,18 @@ use crate::{
 /// close to the on-screen size.
 const COVER_PIXELS: u32 = 256;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SyncStage {
-    Albums,
-    Artists,
-    Songs,
-}
-
 pub enum LibraryEvent {
-    AlbumsSynced,
-    ArtistsSynced,
-    SongsSynced,
-    /// A sync that is fetching has saved this many items of `stage`, out of about
-    /// `total` when that can be told.
-    SyncProgress {
-        stage: SyncStage,
-        saved: usize,
-        total: Option<usize>,
-    },
-    /// A sync ended, however that went, with no other to follow.
-    SyncFinished,
-    /// A sync the user asked for failed, for why.
-    SyncFailed(SharedString),
     /// The user chose another album over this one.
     LeftAlbum(AlbumId),
 }
 
 pub struct Library {
     session: session::Session,
+    sync: LibrarySync,
+    /// What the sync showed last.
+    status: SyncStatus,
+    /// The albums the list shows, which follow the sync's.
     albums: Albums,
-    sync: SyncState,
-    /// Whether the sync under way or last run is one the user asked for, whose
-    /// failure they should hear of wherever they are.
-    is_sync_requested: bool,
     index: Arc<fuzzy::Index>,
     /// Positions in the loaded albums that match the filter, in the order they show.
     visible: Arc<Vec<usize>>,
@@ -97,30 +75,13 @@ pub struct Library {
     albums_scroll: UniformListScrollHandle,
     songs_scroll: UniformListScrollHandle,
     panes: Entity<ResizableState>,
-    _albums_task: Task<()>,
     _album_task: Task<()>,
     _album_action_task: Task<()>,
     _index_task: Task<()>,
     _subscriptions: Vec<Subscription>,
+    _sync_changes: Task<()>,
+    _sync_notices: Task<()>,
     _readings_changes: Option<Task<()>>,
-}
-
-enum Albums {
-    Loading,
-    Loaded(Arc<Vec<Album>>),
-    Failed(SharedString),
-}
-
-enum SyncState {
-    Idle,
-    /// `again`: a refresh was asked for meanwhile, to run once this ends
-    /// rather than cut it short.
-    Running {
-        again: bool,
-    },
-    /// Updating albums already on show failed, for this reason. Albums that
-    /// never showed fail as [`Albums::Failed`] instead.
-    Failed(SharedString),
 }
 
 enum Detail {
@@ -139,7 +100,12 @@ struct LoadedAlbum {
 impl EventEmitter<LibraryEvent> for Library {}
 
 impl Library {
-    pub fn new(session: session::Session, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        session: session::Session,
+        sync: LibrarySync,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter albums"));
         let albums_focus = cx.focus_handle().tab_stop(true);
         let songs_focus = cx.focus_handle().tab_stop(true);
@@ -157,11 +123,19 @@ impl Library {
             cx.on_focus(&songs_focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&songs_focus, window, |_, _, cx| cx.notify()),
         ];
+        let status = sync.status();
+        let sync_changes = gpui_host::observe(sync.subscribe(), cx, Self::follow_sync);
+        let sync_notices =
+            gpui_host::subscribe(sync.notices(), cx, |this: &mut Self, notice, cx| {
+                if notice == LibraryNotice::SyncFinished {
+                    this.sync_finished(cx);
+                }
+            });
         let mut this = Self {
             session,
+            sync,
+            status: status.clone(),
             albums: Albums::Loading,
-            sync: SyncState::Idle,
-            is_sync_requested: false,
             index: Arc::default(),
             visible: Arc::default(),
             sort: AlbumSort::default(),
@@ -176,72 +150,55 @@ impl Library {
             albums_scroll: UniformListScrollHandle::new(),
             songs_scroll: UniformListScrollHandle::new(),
             panes: cx.new(|_| ResizableState::default()),
-            _albums_task: Task::ready(()),
             _album_task: Task::ready(()),
             _album_action_task: Task::ready(()),
             _index_task: Task::ready(()),
             _subscriptions: subscriptions,
+            _sync_changes: sync_changes,
+            _sync_notices: sync_notices,
             _readings_changes: None,
         };
         this._readings_changes = this.session.readings().map(|readings| {
             ui::on_readings_changed(readings, cx, |this: &mut Self, cx| this.index_albums(cx))
         });
-        this.sync_library(Mode::IfStale, cx);
+        this.show_albums(status.albums().clone(), cx);
         this
     }
 
     /// Fetches the whole library from the server again.
-    pub fn refresh_library(&mut self, cx: &mut Context<Self>) {
-        self.sync_library(Mode::Always, cx);
+    pub fn refresh_library(&self) {
+        self.sync.refresh();
     }
 
-    /// Shows the saved albums, then brings the library up to date: the
-    /// albums first, then every song.
-    fn sync_library(&mut self, mode: Mode, cx: &mut Context<Self>) {
-        if let SyncState::Running { again } = &mut self.sync {
-            *again |= mode == Mode::Always;
-            return;
+    fn follow_sync(&mut self, status: SyncStatus, cx: &mut Context<Self>) {
+        if status.albums() != self.status.albums() {
+            self.show_albums(status.albums().clone(), cx);
         }
-        self.sync = SyncState::Running { again: false };
-        self.is_sync_requested = mode == Mode::Always;
-        if self.loaded_albums().is_none() {
-            self.albums = Albums::Loading;
-            self.visible = Arc::default();
-        }
-        let session = self.session.clone();
-        self._albums_task = cx.spawn(async move |this, cx| {
-            let result = run_sync(&this, &session, mode, cx).await;
-            this.update(cx, |this, cx| this.finish_sync(result, cx))
-                .ok();
-        });
+        self.status = status;
         cx.notify();
     }
 
-    fn finish_sync(&mut self, result: Result<(), SharedString>, cx: &mut Context<Self>) {
-        let again = matches!(self.sync, SyncState::Running { again: true });
-        if let (Err(error), true, false) = (&result, self.is_sync_requested, again) {
-            cx.emit(LibraryEvent::SyncFailed(error.clone()));
-        }
-        self.sync = match result {
-            Ok(()) => SyncState::Idle,
-            Err(error) if self.loaded_albums().is_some() => SyncState::Failed(error),
-            Err(error) => {
-                self.albums = Albums::Failed(error);
-                SyncState::Idle
+    /// Gives up on an album being revealed that the sync did not bring. The albums it brought
+    /// come first, as their change may not have been followed yet.
+    fn sync_finished(&mut self, cx: &mut Context<Self>) {
+        self.follow_sync(self.sync.status(), cx);
+        self.revealing = None;
+    }
+
+    fn show_albums(&mut self, albums: Albums, cx: &mut Context<Self>) {
+        match albums {
+            Albums::Loaded(albums) => self.set_albums(albums, cx),
+            Albums::Loading => {
+                self.albums = Albums::Loading;
+                self.visible = Arc::default();
             }
-        };
-        if again {
-            self.refresh_library(cx);
-        } else {
-            self.revealing = None;
-            cx.emit(LibraryEvent::SyncFinished);
+            Albums::Failed(error) => self.albums = Albums::Failed(error),
         }
-        cx.notify();
     }
 
     /// Replaces the album list, keeping the selection while the album is
     /// still there or a sync may yet bring it.
-    fn set_albums(&mut self, albums: Vec<Album>, cx: &mut Context<Self>) {
+    fn set_albums(&mut self, albums: Arc<[Album]>, cx: &mut Context<Self>) {
         let keeps_selection = self.revealing.is_some()
             || self
                 .selected_album
@@ -251,7 +208,7 @@ impl Library {
             .revealing
             .as_ref()
             .is_some_and(|revealing| albums.iter().any(|album| album.id() == revealing));
-        self.albums = Albums::Loaded(Arc::new(albums));
+        self.albums = Albums::Loaded(albums);
         self.index_albums(cx);
         if !keeps_selection {
             self.selected_album = None;
@@ -274,7 +231,7 @@ impl Library {
         }
     }
 
-    fn loaded_albums(&self) -> Option<&Arc<Vec<Album>>> {
+    fn loaded_albums(&self) -> Option<&Arc<[Album]>> {
         match &self.albums {
             Albums::Loaded(albums) => Some(albums),
             _ => None,
@@ -630,11 +587,8 @@ impl Library {
     fn render_albums(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let count = self.loaded_albums().map(|albums| albums.len());
         // While nothing shows, the list itself shows a spinner
-        let updating = count.is_some() && matches!(self.sync, SyncState::Running { .. });
-        let error = match &self.sync {
-            SyncState::Failed(error) => Some(error.clone()),
-            SyncState::Idle | SyncState::Running { .. } => None,
-        };
+        let updating = count.is_some() && self.status.is_running();
+        let error = self.status.failure().map(SharedString::from);
         v_flex()
             .size_full()
             .min_h_0()
@@ -652,7 +606,7 @@ impl Library {
                     Button::new("retry-refresh")
                         .label("Retry")
                         .small()
-                        .on_click(cx.listener(|this, _, _, cx| this.refresh_library(cx))),
+                        .on_click(cx.listener(|this, _, _, _| this.refresh_library())),
                 ))
             })
             .child(self.render_album_list(window, cx))
@@ -743,12 +697,12 @@ impl Library {
             Albums::Failed(error) => {
                 return LoadFailure::new(
                     "Couldn't load albums",
-                    error.clone(),
+                    SharedString::from(error.clone()),
                     Button::new("retry-albums")
                         .label("Retry")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.albums_focus.focus(window, cx);
-                            this.refresh_library(cx);
+                            this.refresh_library();
                         })),
                 )
                 .into_any_element();
@@ -966,7 +920,7 @@ impl Render for Library {
             .on_action(cx.listener(|this, _: &FocusFilter, window, cx| {
                 this.filter.update(cx, |input, cx| input.focus(window, cx));
             }))
-            .on_action(cx.listener(|this, _: &Refresh, _, cx| this.refresh_library(cx)))
+            .on_action(cx.listener(|this, _: &Refresh, _, _| this.refresh_library()))
             .child(MasterDetail::new(
                 "library-panes",
                 &self.panes,
@@ -982,157 +936,6 @@ fn add_album_command(playlist: Option<&PlaylistId>) -> Box<dyn gpui_kit::Action>
     Box::new(AddAlbumToPlaylist {
         playlist: playlist.cloned(),
     })
-}
-
-/// Brings `this` up to date with the server, through the saved library
-/// when there is one. Errors are sentences for the user.
-async fn run_sync(
-    this: &WeakEntity<Library>,
-    session: &session::Session,
-    mode: Mode,
-    cx: &mut AsyncApp,
-) -> Result<(), SharedString> {
-    let client = session.client().clone();
-    let describe = |error: client::Error| SharedString::from(session::describe(&error));
-    let describe_catalog =
-        |error: catalog::Error| SharedString::from(session::describe_catalog(&error));
-    let Some(catalog) = session.catalog().cloned() else {
-        let albums = cx
-            .background_spawn(async move { client.albums_by_name().await })
-            .await
-            .map_err(describe)?;
-        this.update(cx, |this, cx| {
-            this.set_albums(albums, cx);
-            cx.emit(LibraryEvent::AlbumsSynced);
-            // Without a copy, the songs are the server's, which may have changed
-            cx.emit(LibraryEvent::SongsSynced);
-        })
-        .ok();
-        return Ok(());
-    };
-
-    let saved = |cx: &mut AsyncApp| {
-        let catalog = catalog.clone();
-        cx.background_spawn(async move { catalog.albums() })
-    };
-    let mut shown = this
-        .read_with(cx, |this, _| this.loaded_albums().is_some())
-        .unwrap_or_default();
-    if !shown {
-        // A copy that can't be read is replaced by the sync below
-        if let Ok(albums) = saved(cx).await
-            && !albums.is_empty()
-        {
-            this.update(cx, |this, cx| this.set_albums(albums, cx)).ok();
-            shown = true;
-        }
-    }
-
-    let outcome = watched_sync(
-        this,
-        SyncStage::Albums,
-        catalog.clone(),
-        client.clone(),
-        mode,
-        cx,
-    )
-    .await
-    .map_err(describe_catalog)?;
-    let albums = match outcome {
-        Outcome::Synced { .. } | Outcome::Unsettled { .. } => {
-            Some(saved(cx).await.map_err(describe_catalog)?)
-        }
-        Outcome::UpToDate if !shown => Some(saved(cx).await.map_err(describe_catalog)?),
-        // The CLI may be filling an empty copy, so ask the server directly
-        Outcome::Busy if !shown => {
-            let client = client.clone();
-            Some(
-                cx.background_spawn(async move { client.albums_by_name().await })
-                    .await
-                    .map_err(describe)?,
-            )
-        }
-        Outcome::UpToDate | Outcome::Busy => None,
-    };
-    if let Some(albums) = albums {
-        this.update(cx, |this, cx| {
-            this.set_albums(albums, cx);
-            if matches!(outcome, Outcome::Synced { .. } | Outcome::Unsettled { .. }) {
-                cx.emit(LibraryEvent::AlbumsSynced);
-            }
-        })
-        .ok();
-    }
-
-    // The songs do not depend on the artists, so the sync goes on to them and
-    // reports the failure at the end.
-    let artists = watched_sync(
-        this,
-        SyncStage::Artists,
-        catalog.clone(),
-        client.clone(),
-        mode,
-        cx,
-    )
-    .await
-    .map_err(describe_catalog);
-    if matches!(
-        artists,
-        Ok(Outcome::Synced { .. } | Outcome::Unsettled { .. })
-    ) {
-        this.update(cx, |_, cx| cx.emit(LibraryEvent::ArtistsSynced))
-            .ok();
-    }
-
-    let songs = watched_sync(this, SyncStage::Songs, catalog, client, mode, cx)
-        .await
-        .map_err(describe_catalog);
-    if matches!(
-        songs,
-        Ok(Outcome::Synced { .. } | Outcome::Unsettled { .. })
-    ) {
-        this.update(cx, |_, cx| cx.emit(LibraryEvent::SongsSynced))
-            .ok();
-    }
-    artists.and(songs).map(|_| ())
-}
-
-/// Syncs `stage` off the UI thread, passing on what it has got to as it goes.
-async fn watched_sync(
-    this: &WeakEntity<Library>,
-    stage: SyncStage,
-    catalog: catalog::Catalog,
-    client: client::Client,
-    mode: Mode,
-    cx: &mut AsyncApp,
-) -> Result<Outcome, catalog::Error> {
-    let (sender, mut progress) = mpsc::unbounded();
-    let sync = cx.background_spawn(async move {
-        let report = |progress: catalog::SyncProgress| {
-            sender.unbounded_send(progress).ok();
-        };
-        match stage {
-            SyncStage::Albums => {
-                catalog::sync_albums_watched(&catalog, &client, mode, report).await
-            }
-            SyncStage::Artists => {
-                catalog::sync_artists_watched(&catalog, &client, mode, report).await
-            }
-            SyncStage::Songs => catalog::sync_songs_watched(&catalog, &client, mode, report).await,
-        }
-    });
-    // Ends when the sync does, which drops the sender
-    while let Some(catalog::SyncProgress { saved, total, .. }) = progress.next().await {
-        this.update(cx, |_, cx| {
-            cx.emit(LibraryEvent::SyncProgress {
-                stage,
-                saved,
-                total,
-            });
-        })
-        .ok();
-    }
-    sync.await
 }
 
 #[cfg(test)]

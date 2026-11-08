@@ -1,6 +1,5 @@
 use std::ops::Range;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use actions::{AlbumAction, EnqueueSongs, GoToArtist, Placement, PlaySongs, ShowAlbum, ShowArtist};
 use futures::future::join_all;
@@ -15,14 +14,15 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, AnyWindowHandle, App, AppContext as _, ClickEvent, Context, ElementId, FocusHandle,
-    Focusable, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, Role,
+    AnyElement, App, AppContext as _, ClickEvent, Context, ElementId, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, Role,
     ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
     Window, div, prelude::FluentBuilder as _,
 };
 use hiphile_core::favorites::Favorite;
 use hiphile_core::home::{
-    AlbumShelf, Item, Recommendations, fetch_recommended, most_recent, today,
+    AlbumShelf, DailyRecommendations, Item, MOST_PLAYED, NEW_ALBUMS, RecommendedAlbums,
+    RecommendedStatus, ReloadFailed, most_recent,
 };
 use subsonic::{Album, AlbumId, PlaylistId, Song, SongId, StarTarget};
 use ui::card_grid::{GridMotion as Motion, card_row, columns_for, media_card, step};
@@ -40,37 +40,27 @@ use crate::{
 };
 
 const RECENT_SONGS: usize = 8;
-/// How many to fetch, for the widest window.
-const MOST_PLAYED: u32 = 12;
 const NEW_ALBUM_ROWS: usize = 2;
-/// How many to fetch, for the widest window.
-const NEW_ALBUMS: u32 = 24;
 /// The same as the library's album cover, so that opening the album needs no
 /// second image.
 const CARD_COVER_PIXELS: u32 = 256;
 /// The same as the player's.
 const ROW_COVER_PIXELS: u32 = 48;
-/// A pick takes the server's outside service several seconds per album, and
-/// windows can come to the front often.
-const RECOMMENDED_RETRY_AFTER: Duration = Duration::from_secs(10 * 60);
 
 /// The lists come from the server, which alone knows every play. An item stays
 /// on show while a reload that replaces it is on its way or fails.
 ///
-/// The albums to try stay the same all day, unless asked to reload, so they are
-/// kept in the catalog and picked again on the first occasion of another day:
+/// The albums to try are picked again on the first occasion of another day:
 /// opening, coming back to the screen or the window, a play or a library sync.
 pub struct Home {
     session: session::Session,
     focus: FocusHandle,
     scroll: ScrollHandle,
+    recommendations: DailyRecommendations,
+    /// What the recommendations showed last.
+    recommended_status: RecommendedStatus,
+    /// Those of the recommendations that no other shelf shows.
     recommended: Shelf<Album>,
-    /// The day the albums on show were picked for.
-    recommended_day: Option<String>,
-    /// Whether the kept albums are being read or new ones picked.
-    recommending: bool,
-    /// When a pick that went wrong may be made again.
-    recommended_retry: Option<Instant>,
     recent: Shelf<Song>,
     most_played: Shelf<Album>,
     new_albums: Shelf<Album>,
@@ -78,12 +68,13 @@ pub struct Home {
     now_playing: Option<NowPlaying>,
     /// How many album cards fit across, from the last layout.
     columns: usize,
-    _recommended_task: Task<()>,
     _recent_task: Task<()>,
     _most_played_task: Task<()>,
     _new_albums_task: Task<()>,
     _album_task: Task<()>,
     _subscriptions: Vec<Subscription>,
+    _recommended_changes: Task<()>,
+    _recommended_failures: Task<()>,
 }
 
 /// One child of the scrolling list, in order. Each is a direct child so that
@@ -103,182 +94,84 @@ enum Part {
 }
 
 impl Home {
-    pub fn new(session: session::Session, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// A reload of `recommendations` that fails says so in `window`.
+    pub fn new(
+        session: session::Session,
+        recommendations: DailyRecommendations,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus = cx.focus_handle().tab_stop(true);
         let subscriptions = vec![
             // Focus changes the selection treatment
             cx.on_focus(&focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&focus, window, |_, _, cx| cx.notify()),
-            cx.observe_window_activation(window, |this, window, cx| {
+            cx.observe_window_activation(window, |this, window, _| {
                 if window.is_window_active() {
-                    this.renew_recommended(cx);
+                    this.renew_recommended();
                 }
             }),
         ];
+        let recommended_changes =
+            gpui_host::observe(recommendations.subscribe(), cx, Self::follow_recommended);
+        let recommended_failures = gpui_host::subscribe_in(
+            recommendations.notices(),
+            window,
+            cx,
+            |_, failed: ReloadFailed, window, cx| {
+                let message = failed.message().to_owned();
+                window.push_notification((NotificationType::Error, message), cx);
+            },
+        );
+        let recommended_status = recommendations.status();
         let mut this = Self {
             session,
             focus,
             scroll: ScrollHandle::new(),
+            recommendations,
+            recommended_status: recommended_status.clone(),
             recommended: Shelf::Loading,
-            recommended_day: None,
-            recommending: false,
-            recommended_retry: None,
             recent: Shelf::Loading,
             most_played: Shelf::Loading,
             new_albums: Shelf::Loading,
             selection: None,
             now_playing: None,
             columns: 4,
-            _recommended_task: Task::ready(()),
             _recent_task: Task::ready(()),
             _most_played_task: Task::ready(()),
             _new_albums_task: Task::ready(()),
             _album_task: Task::ready(()),
             _subscriptions: subscriptions,
+            _recommended_changes: recommended_changes,
+            _recommended_failures: recommended_failures,
         };
-        this.load_recommended(cx);
+        this.show_recommended(recommended_status.albums());
         this.reload_recently_played(cx);
         this.reload_most_played(cx);
         this.reload_new_albums(cx);
         this
     }
 
-    /// Shows the albums kept from the last pick, whichever day that was, and
-    /// picks new ones if it was not today.
-    fn load_recommended(&mut self, cx: &mut Context<Self>) {
-        self.recommending = true;
-        let catalog = self.session.catalog().cloned();
-        let user = self.session.username().to_owned();
-        self._recommended_task = cx.spawn(async move |this, cx| {
-            let kept = match catalog {
-                Some(catalog) => {
-                    cx.background_spawn(async move { catalog.recommended(&user) })
-                        .await
-                        // The albums can be picked again
-                        .ok()
-                        .flatten()
-                }
-                None => None,
-            };
-            this.update(cx, |this, cx| {
-                this.recommending = false;
-                if let Some(kept) = kept {
-                    this.recommended_day = Some(kept.day);
-                    this.recommended.finish(Ok(kept.albums));
-                    this.keep_shelves_off_recommended();
-                    cx.notify();
-                }
-                this.renew_recommended(cx);
-            })
-            .ok();
-        });
-    }
-
-    /// Picks new albums to try if those on show are from another day. Call
-    /// when something happens, for an app left open overnight.
-    pub fn renew_recommended(&mut self, cx: &mut Context<Self>) {
-        let waiting = self
-            .recommended_retry
-            .is_some_and(|retry| Instant::now() < retry);
-        if !self.recommending
-            && !waiting
-            && self.recommended_day.as_deref() != Some(today().as_str())
-        {
-            self.pick_recommended(cx);
+    fn follow_recommended(&mut self, status: RecommendedStatus, cx: &mut Context<Self>) {
+        if status.albums() != self.recommended_status.albums() {
+            self.show_recommended(status.albums());
         }
-    }
-
-    fn pick_recommended(&mut self, cx: &mut Context<Self>) {
-        self.start_pick(None, cx);
-    }
-
-    /// Picks new albums now, whichever day the ones on show are from. A pick
-    /// that leaves them there says why in `window`, as the shelf looks the same.
-    fn reload_recommended(&mut self, window: &Window, cx: &mut Context<Self>) {
-        self.start_pick(Some(window.window_handle()), cx);
-    }
-
-    fn start_pick(&mut self, report_to: Option<AnyWindowHandle>, cx: &mut Context<Self>) {
-        self.recommending = true;
-        self.recommended_retry = None;
-        self.recommended.begin();
-        let client = self.session.client().clone();
-        let day = today();
-        self._recommended_task = cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_spawn(async move {
-                    fetch_recommended(&client, NEW_ALBUMS, MOST_PLAYED).await
-                })
-                .await;
-            let kept = this
-                .update(cx, |this, cx| {
-                    let result = result.map_err(|error| session::describe(&error).into());
-                    this.finish_recommended(result, day, cx)
-                })
-                .ok()
-                .flatten();
-            if let (Some(window), Some(message)) = (report_to, kept) {
-                cx.update_window(window, |_, window, cx| {
-                    window.push_notification((NotificationType::Error, message), cx);
-                })
-                .ok();
-            }
-        });
+        self.recommended_status = status;
         cx.notify();
     }
 
-    /// Takes in a pick made for `day`. Only a complete one settles the day; the
-    /// next occasion tries again after one that went wrong. Albums on show stay
-    /// there unless a complete pick found others. Returns why, when something
-    /// went wrong and they did.
-    fn finish_recommended(
-        &mut self,
-        result: Result<Recommendations, SharedString>,
-        day: String,
-        cx: &mut Context<Self>,
-    ) -> Option<SharedString> {
-        self.recommending = false;
-        let kept = (!self.recommended.items().is_empty())
-            .then(|| match &result {
-                Ok(found) if found.complete => None,
-                Ok(_) => Some("Couldn't get new recommendations. Try again later.".into()),
-                Err(error) => Some(format!("Couldn't get new recommendations. {error}").into()),
-            })
-            .flatten();
-        match result {
-            Ok(found) => {
-                if found.complete {
-                    if !found.albums.is_empty() {
-                        self.keep_recommended(&day, &found.albums, cx);
-                    }
-                    self.recommended_day = Some(day);
-                } else {
-                    self.recommended_retry = Some(Instant::now() + RECOMMENDED_RETRY_AFTER);
-                }
-                let better = found.complete && !found.albums.is_empty();
-                if better || self.recommended.items().is_empty() {
-                    self.recommended.finish(Ok(found.albums));
-                }
-            }
-            Err(error) => {
-                self.recommended_retry = Some(Instant::now() + RECOMMENDED_RETRY_AFTER);
-                self.recommended.finish(Err(error));
-            }
-        }
-        self.keep_shelves_off_recommended();
-        cx.notify();
-        kept
-    }
-
-    fn keep_recommended(&self, day: &str, albums: &[Album], cx: &mut Context<Self>) {
-        let Some(catalog) = self.session.catalog().cloned() else {
-            return;
+    fn show_recommended(&mut self, albums: &RecommendedAlbums) {
+        self.recommended = match albums {
+            RecommendedAlbums::Loading => Shelf::Loading,
+            RecommendedAlbums::Loaded(albums) => Shelf::Loaded(albums.clone()),
+            RecommendedAlbums::Failed(error) => Shelf::Failed(error.clone().into()),
         };
-        let user = self.session.username().to_owned();
-        let (day, albums) = (day.to_owned(), albums.to_vec());
-        // Failing to keep them only means another pick next time
-        cx.background_spawn(async move { catalog.put_recommended(&user, &day, &albums).ok() })
-            .detach();
+        self.keep_shelves_off_recommended();
+    }
+
+    /// Picks new albums to try if those on show are from another day.
+    pub fn renew_recommended(&self) {
+        self.recommendations.renew();
     }
 
     /// Asks again what the server has after a library sync, which may also
@@ -286,10 +179,7 @@ impl Home {
     pub fn library_synced(&mut self, cx: &mut Context<Self>) {
         self.reload_most_played(cx);
         self.reload_new_albums(cx);
-        if self.recommended.items().is_empty() {
-            self.recommended_day = None;
-        }
-        self.renew_recommended(cx);
+        self.recommendations.library_synced();
     }
 
     /// A recommendation is something the other album shelves do not show,
@@ -314,7 +204,7 @@ impl Home {
     pub fn song_played(&mut self, cx: &mut Context<Self>) {
         self.reload_recently_played(cx);
         self.reload_most_played(cx);
-        self.renew_recommended(cx);
+        self.renew_recommended();
     }
 
     fn reload_most_played(&mut self, cx: &mut Context<Self>) {
@@ -731,10 +621,8 @@ impl Home {
                 .small()
                 .icon(IconName::RefreshCw)
                 .accessibility_label("Reload recommendations")
-                .loading(self.recommending)
-                .on_click(cx.listener(|this, _, window, cx| {
-                    this.reload_recommended(window, cx);
-                })),
+                .loading(self.recommended_status.is_recommending())
+                .on_click(cx.listener(|this, _, _, _| this.recommendations.reload())),
         )
         .into_any_element()
     }
@@ -746,7 +634,7 @@ impl Home {
                 Button::new("retry-recommended")
                     .label("Retry")
                     .small()
-                    .on_click(cx.listener(|this, _, _, cx| this.pick_recommended(cx))),
+                    .on_click(cx.listener(|this, _, _, _| this.recommendations.pick())),
                 cx,
             ),
             Shelf::Loading | Shelf::Loaded(_) => section_loading("Loading recommendations", cx),

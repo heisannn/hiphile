@@ -1,9 +1,12 @@
 use std::cell::RefCell;
+use std::net::TcpListener;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use gpui_kit::{
     Entity, KeyBinding, KeyUpEvent, Keystroke, TestAppContext, VisualTestContext, actions, px, size,
 };
+use hiphile_core::home::today;
 use serde_json::json;
 use subsonic::Credentials;
 use ui::card_grid::GridMotion;
@@ -41,6 +44,14 @@ fn catalog_in(dir: &tempfile::TempDir) -> catalog::Catalog {
 /// A session for `alice` that keeps her picks in `catalog`, with a server that
 /// cannot be reached.
 fn session_with(catalog: Option<catalog::Catalog>, cx: &mut TestAppContext) -> session::Session {
+    session_on("http://127.0.0.1:9", catalog, cx)
+}
+
+fn session_on(
+    url: &str,
+    catalog: Option<catalog::Catalog>,
+    cx: &mut TestAppContext,
+) -> session::Session {
     // The failing requests wake the test from the network's own thread
     cx.executor().allow_parking();
     cx.update(|cx| {
@@ -49,7 +60,7 @@ fn session_with(catalog: Option<catalog::Catalog>, cx: &mut TestAppContext) -> s
         crate::init(cx);
     });
     let net = net::Client::new("hiphile-test").unwrap();
-    let server = client::Server::new("http://127.0.0.1:9", Credentials::api_key("k")).unwrap();
+    let server = client::Server::new(url, Credentials::api_key("k")).unwrap();
     let info = serde_json::from_value(json!({ "version": "1.16.1" })).unwrap();
     session::Session::new(
         client::Client::new(net, server),
@@ -60,24 +71,69 @@ fn session_with(catalog: Option<catalog::Catalog>, cx: &mut TestAppContext) -> s
     )
 }
 
+/// A home screen once its recommendations have been read or picked, which leaves them alone
+/// until something happens.
 fn home_with(
     catalog: Option<catalog::Catalog>,
     cx: &mut TestAppContext,
 ) -> (Entity<Home>, &mut VisualTestContext) {
-    let session = session_with(catalog, cx);
-    cx.add_window_view(|window, cx| Home::new(session, window, cx))
+    home_on("http://127.0.0.1:9", catalog, cx)
+}
+
+fn home_on<'a>(
+    url: &str,
+    catalog: Option<catalog::Catalog>,
+    cx: &'a mut TestAppContext,
+) -> (Entity<Home>, &'a mut VisualTestContext) {
+    let session = session_on(url, catalog, cx);
+    let recommendations = recommendations_of(&session, cx);
+    let (home, cx) =
+        cx.add_window_view(|window, cx| Home::new(session, recommendations, window, cx));
+    settle(&home, cx);
+    (home, cx)
+}
+
+fn recommendations_of(session: &session::Session, cx: &mut TestAppContext) -> DailyRecommendations {
+    DailyRecommendations::new(cx.update(|cx| gpui_host::executor(cx)), session.clone())
+}
+
+/// Lets the recommendations being read or picked come, as they do off the executor when the
+/// server cannot be reached.
+fn settle(home: &Entity<Home>, cx: &mut VisualTestContext) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        cx.run_until_parked();
+        if !is_recommending(home, cx) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("the recommendations never came");
+}
+
+fn is_recommending(home: &Entity<Home>, cx: &mut VisualTestContext) -> bool {
+    cx.update(|_, cx| {
+        let home = home.read(cx);
+        home.recommendations.status().is_recommending()
+    })
 }
 
 /// A home screen in a window that can show notifications.
-fn home_in_root(cx: &mut TestAppContext) -> (Entity<Home>, &mut VisualTestContext) {
-    let session = session_with(None, cx);
+fn home_in_root(
+    catalog: Option<catalog::Catalog>,
+    cx: &mut TestAppContext,
+) -> (Entity<Home>, &mut VisualTestContext) {
+    let session = session_with(catalog, cx);
+    let recommendations = recommendations_of(&session, cx);
     let mut home = None;
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| Home::new(session, window, cx));
+        let view = cx.new(|cx| Home::new(session, recommendations, window, cx));
         home = Some(view.clone());
         gpui_kit::base::Root::new(view, window, cx)
     });
-    (home.unwrap(), cx)
+    let home = home.unwrap();
+    settle(&home, cx);
+    (home, cx)
 }
 
 fn update(
@@ -91,10 +147,6 @@ fn update(
 /// Fills the shelves, with no recommendations, cancelling the requests
 /// made on opening.
 fn fill(home: &mut Home, songs: &[&str], album_count: usize) {
-    home._recommended_task = Task::ready(());
-    home.recommending = false;
-    home.recommended_retry = None;
-    home.recommended_day = None;
     home.recommended = Shelf::Loaded(Arc::from([]));
     home._recent_task = Task::ready(());
     home._most_played_task = Task::ready(());
@@ -123,7 +175,6 @@ fn no_plays_takes_the_song_shelf_away(cx: &mut TestAppContext) {
 fn loading_and_failing_shelves_keep_their_place(cx: &mut TestAppContext) {
     let (home, cx) = home(cx);
     update(&home, cx, |home, _| {
-        home._recommended_task = Task::ready(());
         home._recent_task = Task::ready(());
         home._most_played_task = Task::ready(());
         home._new_albums_task = Task::ready(());
@@ -279,13 +330,13 @@ fn a_play_reloads_the_shelves_it_changes_keeping_what_is_on_show(cx: &mut TestAp
     update(&home, cx, |home, cx| {
         fill(home, &["s1"], 0);
         home.most_played = Shelf::Loaded(albums(1).into());
-        home.recommended_day = Some(today());
 
         home.song_played(cx);
 
         assert_eq!(home.recent.items().len(), 1);
         assert_eq!(home.most_played.items().len(), 1);
-        assert!(!home.recommending);
+        // The pick on opening went wrong, and is not made again so soon
+        assert!(!home.recommendations.status().is_recommending());
     });
     cx.run_until_parked();
 }
@@ -404,13 +455,6 @@ fn a_recommended_album_past_the_row_is_off_the_screen(cx: &mut TestAppContext) {
     });
 }
 
-fn found(ids: &[&str], complete: bool) -> Result<Recommendations, SharedString> {
-    Ok(Recommendations::new(
-        ids.iter().map(|id| album(id)).collect(),
-        complete,
-    ))
-}
-
 fn shown(home: &Home) -> Vec<String> {
     home.recommended
         .items()
@@ -419,191 +463,18 @@ fn shown(home: &Home) -> Vec<String> {
         .collect()
 }
 
-#[gpui_kit::test]
-fn a_complete_pick_settles_the_day_and_is_kept(cx: &mut TestAppContext) {
-    let dir = tempfile::tempdir().unwrap();
-    let catalog = catalog_in(&dir);
-    let (home, cx) = home_with(Some(catalog.clone()), cx);
-    update(&home, cx, |home, cx| {
-        fill(home, &[], 0);
-        home.finish_recommended(found(&["r0"], true), today(), cx);
-        assert_eq!(shown(home), ["r0"]);
-        assert_eq!(home.recommended_day, Some(today()));
-    });
-    cx.run_until_parked();
-
-    let kept = catalog.recommended("alice").unwrap().unwrap();
-    assert_eq!(kept.day, today());
-    assert_eq!(kept.albums[0].id().as_str(), "r0");
-}
-
-#[gpui_kit::test]
-fn an_incomplete_pick_is_not_kept_and_leaves_what_is_on_show(cx: &mut TestAppContext) {
-    let dir = tempfile::tempdir().unwrap();
-    let catalog = catalog_in(&dir);
-    let (home, cx) = home_with(Some(catalog.clone()), cx);
-    update(&home, cx, |home, cx| {
-        fill(home, &[], 0);
-        home.recommended = Shelf::Loaded(recommended(2).into());
-        home.finish_recommended(found(&["other"], false), today(), cx);
-        assert_eq!(shown(home), ["r0", "r1"]);
-        assert_eq!(home.recommended_day, None);
-        assert!(home.recommended_retry.is_some());
-    });
-    cx.run_until_parked();
-
-    assert!(catalog.recommended("alice").unwrap().is_none());
-}
-
-#[gpui_kit::test]
-fn an_incomplete_pick_shows_with_nothing_else_to_show(cx: &mut TestAppContext) {
-    let (home, cx) = home(cx);
-    update(&home, cx, |home, cx| {
-        fill(home, &[], 0);
-        home.recommended = Shelf::Loading;
-        home.finish_recommended(found(&["r0"], false), today(), cx);
-        assert_eq!(shown(home), ["r0"]);
-        assert_eq!(home.recommended_day, None);
-    });
-}
-
-#[gpui_kit::test]
-fn a_failed_pick_does_not_settle_the_day(cx: &mut TestAppContext) {
-    let (home, cx) = home(cx);
-    update(&home, cx, |home, cx| {
-        fill(home, &[], 0);
-        home.recommended = Shelf::Loaded(recommended(1).into());
-        home.finish_recommended(Err("offline".into()), today(), cx);
-        assert_eq!(shown(home), ["r0"]);
-        assert_eq!(home.recommended_day, None);
-        assert!(home.recommended_retry.is_some());
-    });
-}
-
-#[gpui_kit::test]
-fn an_empty_pick_is_not_kept_and_leaves_what_is_on_show(cx: &mut TestAppContext) {
-    let dir = tempfile::tempdir().unwrap();
-    let catalog = catalog_in(&dir);
-    catalog
-        .put_recommended("alice", "2000-01-01", &recommended(1))
-        .unwrap();
-    let (home, cx) = home_with(Some(catalog.clone()), cx);
-    update(&home, cx, |home, cx| {
-        fill(home, &[], 0);
-        home.recommended = Shelf::Loaded(recommended(1).into());
-        home.finish_recommended(found(&[], true), today(), cx);
-        assert_eq!(shown(home), ["r0"]);
-        // Plays need not ask again
-        home.renew_recommended(cx);
-        assert!(!home.recommending);
-    });
-    cx.run_until_parked();
-
-    assert_eq!(
-        catalog.recommended("alice").unwrap().unwrap().day,
-        "2000-01-01"
-    );
-}
-
-#[gpui_kit::test]
-fn a_library_sync_gives_an_empty_shelf_another_pick(cx: &mut TestAppContext) {
-    let (home, cx) = home(cx);
-    update(&home, cx, |home, cx| {
-        fill(home, &[], 0);
-        home.finish_recommended(found(&[], true), today(), cx);
-
-        home.library_synced(cx);
-
-        assert!(home.recommending);
-    });
-}
-
-#[gpui_kit::test]
-fn a_library_sync_leaves_the_days_pick_alone(cx: &mut TestAppContext) {
-    let (home, cx) = home(cx);
-    update(&home, cx, |home, cx| {
-        fill(home, &[], 0);
-        home.finish_recommended(found(&["r0"], true), today(), cx);
-
-        home.library_synced(cx);
-
-        assert!(!home.recommending);
-    });
-}
-
-#[gpui_kit::test]
-fn a_pick_that_went_wrong_is_not_made_again_right_away(cx: &mut TestAppContext) {
-    let (home, cx) = home(cx);
-    update(&home, cx, |home, cx| {
-        fill(home, &[], 0);
-        home.finish_recommended(Err("offline".into()), today(), cx);
-
-        home.renew_recommended(cx);
-        assert!(!home.recommending);
-
-        home.recommended_retry = Some(Instant::now());
-        home.renew_recommended(cx);
-        assert!(home.recommending);
-    });
-}
-
-#[gpui_kit::test]
-fn retry_does_not_wait(cx: &mut TestAppContext) {
-    let (home, cx) = home(cx);
-    update(&home, cx, |home, cx| {
-        fill(home, &[], 0);
-        home.finish_recommended(Err("offline".into()), today(), cx);
-        home.pick_recommended(cx);
-        assert!(home.recommending);
-        assert_eq!(home.recommended_retry, None);
-    });
-}
-
-#[gpui_kit::test]
-fn a_pick_that_leaves_albums_on_show_says_why(cx: &mut TestAppContext) {
-    let (home, cx) = home(cx);
-    update(&home, cx, |home, cx| {
-        fill(home, &[], 0);
-        home.recommended = Shelf::Loaded(recommended(1).into());
-        let kept = home.finish_recommended(Err("offline".into()), today(), cx);
-        assert_eq!(
-            kept.as_deref(),
-            Some("Couldn't get new recommendations. offline")
-        );
-        let kept = home.finish_recommended(found(&["other"], false), today(), cx);
-        assert!(kept.is_some());
-        assert_eq!(shown(home), ["r0"]);
-
-        assert_eq!(
-            home.finish_recommended(found(&["r1"], true), today(), cx),
-            None
-        );
-        assert_eq!(shown(home), ["r1"]);
-    });
-}
-
-#[gpui_kit::test]
-fn a_failure_that_shows_on_the_shelf_needs_no_other_word(cx: &mut TestAppContext) {
-    let (home, cx) = home(cx);
-    update(&home, cx, |home, cx| {
-        fill(home, &[], 0);
-        home.recommended = Shelf::Loading;
-        assert_eq!(
-            home.finish_recommended(Err("offline".into()), today(), cx),
-            None
-        );
-        assert!(matches!(home.recommended, Shelf::Failed(_)));
-    });
-}
-
 /// `key` presses a focused reload, which picks again though today's albums are
 /// on show. The server cannot be reached, so they stay and a notification says so.
 fn key_reloads_recommended(key: &str, cx: &mut TestAppContext) {
-    let (home, cx) = home_in_root(cx);
+    let dir = tempfile::tempdir().unwrap();
+    let catalog = catalog_in(&dir);
+    catalog
+        .put_recommended("alice", &today(), &recommended(1))
+        .unwrap();
+    let (home, cx) = home_in_root(Some(catalog), cx);
     update(&home, cx, |home, cx| {
         fill(home, &[], 1);
         home.recommended = Shelf::Loaded(recommended(1).into());
-        home.recommended_day = Some(today());
         cx.notify();
     });
     cx.update(|window, cx| {
@@ -620,20 +491,8 @@ fn key_reloads_recommended(key: &str, cx: &mut TestAppContext) {
         keystroke: Keystroke::parse_with_os(key, os).unwrap(),
     });
 
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut retry_set = false;
-    while Instant::now() < deadline && !retry_set {
-        std::thread::sleep(Duration::from_millis(5));
-        cx.run_until_parked();
-        retry_set = cx.update(|_, cx| home.read(cx).recommended_retry.is_some());
-    }
-    assert!(retry_set, "the pick never finished");
-    cx.update(|_, cx| {
-        let home = home.read(cx);
-        assert!(!home.recommending);
-        assert_eq!(shown(home), ["r0"]);
-        assert_eq!(home.recommended_day, Some(today()));
-    });
+    settle(&home, cx);
+    cx.update(|_, cx| assert_eq!(shown(home.read(cx)), ["r0"]));
     assert_eq!(cx.update(|window, cx| window.notifications(cx).len()), 1);
 }
 
@@ -656,14 +515,7 @@ fn todays_kept_pick_shows_again_with_no_new_pick(cx: &mut TestAppContext) {
         .unwrap();
     let (home, cx) = home_with(Some(catalog), cx);
 
-    cx.run_until_parked();
-
-    cx.update(|_, cx| {
-        let home = home.read(cx);
-        assert_eq!(shown(home), ["r0", "r1"]);
-        assert!(!home.recommending);
-        assert_eq!(home.recommended_retry, None);
-    });
+    cx.update(|_, cx| assert_eq!(shown(home.read(cx)), ["r0", "r1"]));
 }
 
 #[gpui_kit::test]
@@ -675,14 +527,7 @@ fn yesterdays_kept_pick_shows_while_a_new_one_is_made(cx: &mut TestAppContext) {
         .unwrap();
     let (home, cx) = home_with(Some(catalog), cx);
 
-    cx.run_until_parked();
-
-    cx.update(|_, cx| {
-        let home = home.read(cx);
-        assert_eq!(shown(home), ["r0"]);
-        // On its way, or already failed for want of a server
-        assert!(home.recommending || home.recommended_retry.is_some());
-    });
+    cx.update(|_, cx| assert_eq!(shown(home.read(cx)), ["r0"]));
 }
 
 #[gpui_kit::test]
@@ -694,30 +539,43 @@ fn another_users_kept_pick_does_not_show(cx: &mut TestAppContext) {
         .unwrap();
     let (home, cx) = home_with(Some(catalog), cx);
 
-    cx.run_until_parked();
-
     cx.update(|_, cx| assert!(shown(home.read(cx)).is_empty()));
+}
+
+/// A server that takes a while to drop each request, so that a request can be seen on its way.
+fn slow_server() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(500));
+                drop(stream);
+            });
+        }
+    });
+    url
 }
 
 #[gpui_kit::test]
 fn coming_back_to_the_window_on_another_day_picks_again(cx: &mut TestAppContext) {
-    let (home, cx) = home(cx);
-    update(&home, cx, |home, _| {
-        fill(home, &[], 0);
-        home.recommended = Shelf::Loaded(recommended(1).into());
-        home.recommended_day = Some("2000-01-01".to_owned());
-    });
+    let dir = tempfile::tempdir().unwrap();
+    let catalog = catalog_in(&dir);
+    catalog
+        .put_recommended("alice", "2000-01-01", &recommended(1))
+        .unwrap();
+    let (home, cx) = home_on(&slow_server(), Some(catalog), cx);
+    // The pick on opening went wrong, which may be tried again in a while
+    cx.executor().advance_clock(Duration::from_secs(60 * 60));
     cx.deactivate_window();
     cx.run_until_parked();
-    cx.update(|_, cx| assert!(!home.read(cx).recommending));
+    assert!(!is_recommending(&home, cx));
 
     cx.update(|window, _| window.activate_window());
     cx.run_until_parked();
 
-    cx.update(|_, cx| {
-        let home = home.read(cx);
-        assert!(home.recommending || home.recommended_retry.is_some());
-    });
+    assert!(is_recommending(&home, cx));
+    settle(&home, cx);
 }
 
 #[gpui_kit::test]
@@ -737,46 +595,6 @@ fn an_album_that_becomes_new_leaves_the_recommendations(cx: &mut TestAppContext)
             .map(|album| album.id().as_str())
             .collect();
         assert_eq!(ids, ["r1"]);
-    });
-}
-
-#[gpui_kit::test]
-fn the_recommendations_stay_for_the_day(cx: &mut TestAppContext) {
-    let (home, cx) = home(cx);
-    update(&home, cx, |home, cx| {
-        fill(home, &[], 0);
-        home.recommended_day = Some(today());
-        home.renew_recommended(cx);
-        assert!(!home.recommending);
-    });
-}
-
-#[gpui_kit::test]
-fn another_day_picks_new_recommendations_with_the_old_on_show(cx: &mut TestAppContext) {
-    let (home, cx) = home(cx);
-    update(&home, cx, |home, cx| {
-        fill(home, &[], 0);
-        home.recommended = Shelf::Loaded(recommended(1).into());
-        home.recommended_day = Some("2000-01-01".to_owned());
-
-        home.renew_recommended(cx);
-
-        assert!(home.recommending);
-        assert_eq!(home.recommended.items().len(), 1);
-    });
-}
-
-#[gpui_kit::test]
-fn a_pick_on_its_way_is_not_started_again(cx: &mut TestAppContext) {
-    let (home, cx) = home(cx);
-    update(&home, cx, |home, cx| {
-        fill(home, &[], 0);
-        home.recommended = Shelf::Failed("before".into());
-        home.recommending = true;
-
-        home.renew_recommended(cx);
-
-        assert!(matches!(home.recommended, Shelf::Failed(_)));
     });
 }
 

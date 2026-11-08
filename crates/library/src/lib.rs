@@ -5,7 +5,7 @@ mod library_view;
 use gpui_kit::{App, KeyBinding, actions};
 use ui::list_navigation::bind_list_navigation;
 
-pub use library_view::{Library, LibraryEvent, SyncStage};
+pub use library_view::{Library, LibraryEvent};
 
 pub const ALBUMS_CONTEXT: &str = "LibraryAlbums";
 pub const SONGS_CONTEXT: &str = "LibrarySongs";

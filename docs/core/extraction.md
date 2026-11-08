@@ -22,6 +22,8 @@ without a window, and the CLI can share it.
 | Before 3 | `gpui-host` split from `ui`, and the [decisions](#decided-before-steps-3-to-6) for steps 3 to 6 |
 | 3 | Done. `session` is free of GPUI and checked: `Readings` is a handle, the sign-in procedure is `session::Accounts`, and GPUI's HTTP client and the globals for covers and readings are in `ui` (`ui::init_network`, `ui::readings`, `ui::set_cover_capacity`, `ui::on_readings_changed`) |
 | 4 | Done. The settings models are handles in `hiphile_core::settings`; the `settings` crate keeps the window, its fields and applying the appearance. The seven `*Changed` events are gone |
+| 5 | Done. `FavoritesState` and `PlaylistsState` in `hiphile-core` load, keep and write the favorites and the playlists; `is_instrumental` and what is skipped are in `playback`. The `actions` globals hold copies the shell feeds from the handles. See [Found in steps 5 and 6](#found-in-steps-5-and-6) |
+| 6 | Done. `LibrarySync`, `LibraryActivity`, `SearchIndex` and `DailyRecommendations` in `hiphile-core`; `LibraryEvent` keeps only `LeftAlbum`, the rest are `LibraryNotice`s |
 
 ## Where things stand
 
@@ -113,10 +115,14 @@ gave `Recommendations` a `new`, and `History` a `Default`.
    give a typed `Task<R>` that cancels on drop as well. A host must not run the work before `spawn`
    returns, as the core spawns under its own locks. GPUI's is `gpui_host::executor(cx)`; tokio's is
    `Executor::tokio(handle)`, whose timers keep to that runtime's clock whatever polls them, so a test on
-   a current-thread runtime with paused time moves them with `tokio::time::advance`.
+   a current-thread runtime with paused time moves them with `tokio::time::advance`. The core reads no
+   clock of its own for waiting (`Instant::now()`): a wait is the executor's timer, which tests move.
 5. **Blocking work only through the executor's blocking spawn:** rusqlite, `CoverStore`, `SongCache`, config
    writes, the keychain, `self_update`, the fuzzy reader, `audio::output_devices`. Reading the saved
    settings in a constructor is the exception (see [Decided before steps 3 to 6](#decided-before-steps-3-to-6)).
+   The catalog's sync is async but blocks on the disk between its requests, so `LibrarySync` runs it
+   with `block_on` on a blocking thread and tells it to stop at its next await once it is dropped. A
+   sync now holds one of GPUI's background threads while it waits on the network.
 6. **Text is `String` or `Arc<str>`, not `SharedString`.** Error text is made in the core (the `describe`
    functions), so every UI says the same thing.
 7. **View state stays in views.** Slider drags, focus, selection, scroll, which panels are open and
@@ -160,7 +166,8 @@ Everything else goes into one new crate, apart from the executor.
 
 `hiphile-core` depends on `playback`, `session`, `updater`, `lyrics` and the crates under them, `executor`
 among them; the view crates depend on `hiphile-core`, and so does `actions` (and through it `ui`) for
-`Favorite`. No core crate may depend on `actions` or `ui`. `playback` gains `session`, `presence` and `media-controls`; `session`
+`Favorite` and `PlaylistChoice`, and on `playback` for what is skipped. No core crate may depend on
+`actions` or `ui`. `playback` gains `session`, `presence` and `media-controls`; `session`
 does not depend on `playback`, so no cycle appears.
 
 ## Steps
@@ -245,6 +252,39 @@ Step 2 tried the design rules on `updater`. They held, with these details settle
   them when the choice is off, so no test makes one. It should take the folder as it takes its store.
 - **Release.** `executor`, `gpui-host` and `hiphile-core` are kept out of release-plz (`git_only =
   false`) until a `v*` tag contains them. Remove those entries after the next release.
+
+## Found in steps 5 and 6
+
+- **Handles that follow handles.** `LibraryActivity` follows `LibrarySync` and `Readings`, and
+  `SearchIndex` follows `Readings`, inside the core: `hiphile_core::follow` runs `observe` and `subscribe`
+  on the executor, as `gpui-host` does on GPUI's foreground.
+- **Views keep a copy and compare it with the core's.** A view that copies part of a snapshot compares
+  the new snapshot with the last one it took from the core, not with its copy, so a later publish of the
+  same value does nothing. A view that has just called the core takes the snapshot at once (the
+  playlists view's `sync`), so a command right after it does not act on the old one. On a notice, a view
+  first catches up with the current snapshot.
+- **A request a dialog waits for returns a `Task`**: `PlaylistsState::create` gives
+  `Task<Result<PlaylistId, String>>`.
+- **The `actions` globals hold copies.** The known favorites, the playlist choices and the skip setting
+  are fed by the shell from the handles' `watch`es, so a change reaches the stars and menus one turn
+  later. A global could hold the handle instead, but about ten view tests set these copies directly.
+- **Names.** Handles are named after what they do (`LibrarySync`, `SearchIndex`, `DailyRecommendations`).
+  The favorites' and playlists' handles are `FavoritesState` and `PlaylistsState`, as their views have
+  the plain names.
+- **Test support.** `hiphile-core`'s `test-support` feature gives the fake favorites and playlists
+  servers and a signed-in session (`test_support::session`, `session_saving_into`); the view crates take
+  it as a dev-dependency without a cycle. What needs GPUI's test context stays in the core's own
+  `testing`. View tests wait for the core to settle before they put data in.
+- **Behaviour that changed.** When a reload drops the selected favorite, the row at its place is
+  selected rather than the first. The core judges whether today's recommendations are empty by its own
+  list, while the view leaves out albums on other shelves (`keep_shelves_off_recommended`): if every
+  recommended album is on another shelf, a sync no longer starts a new pick. Moving the other shelves
+  into the core ends that.
+- **Still in GPUI crates.** The album detail and its catalog cache (`select_album`) and the `act_on_album`
+  helpers; home's recently played, most played and new albums shelves; the filter indexes of the albums
+  and the playlists, which only the view's filter uses; the confirmations ("Added to …"), with
+  `AddToPlaylist` routed through the playlists view for them; `actions::toggle_favorite` deciding the
+  direction from its copy. The routing in `app_shell.rs` is step 8.
 
 ## Done when
 

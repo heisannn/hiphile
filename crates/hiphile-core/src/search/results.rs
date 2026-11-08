@@ -14,7 +14,7 @@ pub struct NamedArtist {
     pub name: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Hit {
     Artist(NamedArtist),
     Album(Album),
@@ -23,7 +23,7 @@ pub enum Hit {
 
 /// What a search found, kind by kind, the best of each first. A kind with
 /// nothing to show is left out, so positions here are positions in the palette.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Results {
     pub sections: Vec<(&'static str, Vec<Hit>)>,

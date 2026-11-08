@@ -10,6 +10,7 @@ license.workspace = true
 actions.workspace = true
 client.workspace = true
 futures.workspace = true
+gpui-host.workspace = true
 gpui-kit.workspace = true
 hiphile-core.workspace = true
 session.workspace = true

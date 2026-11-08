@@ -3,6 +3,7 @@
 
 pub mod artists;
 pub mod favorites;
+mod follow;
 pub mod home;
 pub mod library;
 pub mod navigation;
@@ -12,3 +13,5 @@ pub mod settings;
 pub mod songs;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+#[cfg(test)]
+mod testing;

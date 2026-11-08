@@ -22,8 +22,11 @@ use gpui_kit::{
     prelude::FluentBuilder as _, px,
 };
 use hiphile_core::favorites::{FavoritesNotice, FavoritesState};
+use hiphile_core::home::DailyRecommendations;
+use hiphile_core::library::{LibraryActivity, LibraryNotice, LibrarySync};
 use hiphile_core::navigation::{Destination, History, Location};
 use hiphile_core::playlists::PlaylistsState;
+use hiphile_core::search::SearchIndex;
 use hiphile_core::settings::{AudioSettings, CacheLimit, CacheLimitSnapshot, DiscordSettings};
 use home::Home;
 use library::{Library, LibraryEvent, Refresh};
@@ -42,7 +45,7 @@ use subsonic::{AlbumId, ArtistId};
 use ui::CoverCache;
 use updater::{UpdateState, Updater};
 
-use crate::library_activity::{ActivityChanged, LibraryActivity, NoticeChange};
+use crate::library_activity::ActivityNotice;
 use crate::{
     GoBack, GoForward, ShowAlbums, ShowArtists, ShowFavorites, ShowHome, ShowPlaylists, ShowSongs,
     SignOut,
@@ -91,8 +94,9 @@ struct Workspace {
     destination: Destination,
     history: History<Location>,
     home: Entity<Home>,
-    /// Kept while another screen shows, along with its selection and the sync
-    /// it runs.
+    /// Shared with the screens that show what it brings.
+    sync: LibrarySync,
+    /// Kept while another screen shows, along with its selection.
     library: Entity<Library>,
     /// Kept while another screen shows, along with its selection. Loads the
     /// first time it shows.
@@ -107,7 +111,6 @@ struct Workspace {
     /// The other screens' menus go by it and add to it.
     favorites_state: FavoritesState,
     search: Entity<Search>,
-    activity: Entity<LibraryActivity>,
     player: Entity<Player>,
     queue: Entity<QueueView>,
     /// Over the screen and the player when open; the rest stay as they were.
@@ -118,12 +121,13 @@ struct Workspace {
     covers: Entity<CoverCache>,
     _player_events: Subscription,
     _library_events: Subscription,
+    _library_notices: Task<()>,
     _artists_events: Subscription,
     _playlists_events: Subscription,
     _playlist_choices: Task<()>,
     _favorites_changes: (Task<()>, Task<()>),
     _search_events: Subscription,
-    _activity_changes: Subscription,
+    _activity_changes: Task<()>,
     _audio_changes: Task<()>,
     _discord_changes: Task<()>,
     _lyrics_changes: (Task<()>, Subscription),
@@ -274,36 +278,21 @@ impl AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let home = cx.new(|cx| Home::new(session.clone(), window, cx));
-        let library = cx.new(|cx| Library::new(session.clone(), window, cx));
+        let executor = gpui_host::executor(cx);
+        let sync = LibrarySync::new(executor.clone(), session.clone());
+        let recommendations = DailyRecommendations::new(executor.clone(), session.clone());
+        let home = cx.new(|cx| Home::new(session.clone(), recommendations, window, cx));
+        let library = cx.new(|cx| Library::new(session.clone(), sync.clone(), window, cx));
         let artists = cx.new(|cx| Artists::new(session.clone(), window, cx));
         let songs = cx.new(|cx| Songs::new(session.clone(), window, cx));
         let (playlists_state, playlists, playlist_choices) = Self::playlists(&session, window, cx);
         let (favorites_state, favorites, favorites_changes) = Self::favorites(&session, window, cx);
-        let search = cx.new(|cx| Search::new(session.clone(), window, cx));
+        let search_index = SearchIndex::new(executor.clone(), session.clone());
+        let search = cx.new(|cx| Search::new(session.clone(), search_index.clone(), window, cx));
         let search_events = cx.subscribe_in(&search, window, Self::on_search_event);
-        let activity = cx.new(|cx| LibraryActivity::new(session.clone(), cx));
-        let activity_changes = cx.subscribe_in(&activity, window, Self::on_library_activity);
-        let audio_settings = settings::audio_settings(cx);
-        let audio = audio_settings.snapshot();
-        let (output, transitions) = (audio.output().clone(), audio.transitions());
-        let discord_settings = settings::discord_settings(cx);
-        let discord = discord_settings.snapshot();
-        let cover_key = discord.imgbb_key().map(str::to_owned);
-        let is_presence_on = discord.is_presence_on();
-        let shell = cx.weak_entity();
-        let player = cx.new(|cx| {
-            let mut player = Player::new(session.clone(), output, window, cx);
-            player.set_transitions(transitions);
-            player.set_cover_key(cover_key.as_deref());
-            player.set_presence_on(is_presence_on);
-            player.set_panels(move |window, cx| {
-                shell
-                    .upgrade()
-                    .map_or_else(Panels::default, |shell| shell.read(cx).panels(window, cx))
-            });
-            player
-        });
+        let activity = LibraryActivity::new(executor, session.clone(), &sync);
+        let activity_changes = follow_library_activity(activity, window, cx);
+        let player = new_player(&session, window, cx);
         let queue = cx.new(|cx| QueueView::new(player.clone(), window, cx));
         let (lyrics, mini_player, lyrics_changes) = lyrics_views(&session, &player, window, cx);
         let covers = CoverCache::new(cx);
@@ -368,16 +357,17 @@ impl AppShell {
                 cx.notify();
             }
         });
-        let library_events =
-            Self::subscribe_to_library(&library, &home, &artists, &songs, &search, window, cx);
+        let library_events = cx.subscribe(&library, Self::on_library_event);
+        let library_notices =
+            follow_library(&sync, &home, &artists, &songs, search_index, window, cx);
         let artists_events = cx.subscribe(&artists, |this, _, event, cx| match event {
             ArtistsEvent::LeftArtist(artist) => {
                 this.remember(Location::Artists(Some(artist.clone())), cx);
             }
         });
         let playlists_events = cx.subscribe_in(&playlists, window, Self::on_playlists_event);
-        let audio_changes = follow_audio_settings(&audio_settings, &player, cx);
-        let discord_changes = follow_discord_settings(&discord_settings, &player, cx);
+        let audio_changes = follow_audio_settings(&settings::audio_settings(cx), &player, cx);
+        let discord_changes = follow_discord_settings(&settings::discord_settings(cx), &player, cx);
         let queue_changes = follow_queue_settings(&player, cx);
         // A focused control that goes away, such as Retry once loading starts,
         // would leave no focus and no working shortcuts.
@@ -391,6 +381,7 @@ impl AppShell {
             destination: Destination::Home,
             history: History::new(),
             home,
+            sync,
             library,
             artists,
             songs,
@@ -399,7 +390,6 @@ impl AppShell {
             favorites,
             favorites_state,
             search,
-            activity,
             player,
             queue,
             lyrics,
@@ -408,6 +398,7 @@ impl AppShell {
             covers,
             _player_events: player_events,
             _library_events: library_events,
+            _library_notices: library_notices,
             _artists_events: artists_events,
             _playlists_events: playlists_events,
             _playlist_choices: playlist_choices,
@@ -514,85 +505,14 @@ impl AppShell {
         )
     }
 
-    fn on_library_activity(
+    fn on_library_event(
         &mut self,
-        activity: &Entity<LibraryActivity>,
-        _: &ActivityChanged,
-        window: &mut Window,
+        _: Entity<Library>,
+        event: &LibraryEvent,
         cx: &mut Context<Self>,
     ) {
-        match activity.update(cx, |it, _| it.notice_change()) {
-            Some(NoticeChange::Show) => {
-                window.push_notification(LibraryActivity::notice(activity), cx);
-            }
-            Some(NoticeChange::Hide) => window.remove_notification::<LibraryActivity>(cx),
-            None => {}
-        }
-    }
-
-    fn subscribe_to_library(
-        library: &Entity<Library>,
-        home: &Entity<Home>,
-        artists: &Entity<Artists>,
-        songs: &Entity<Songs>,
-        search: &Entity<Search>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Subscription {
-        cx.subscribe_in(library, window, {
-            let home = home.downgrade();
-            let artists = artists.downgrade();
-            let songs = songs.downgrade();
-            let search = search.downgrade();
-            move |this, _, event, window, cx| match event {
-                LibraryEvent::SyncProgress {
-                    stage,
-                    saved,
-                    total,
-                } => {
-                    if let Screen::Workspace(workspace) = &this.screen {
-                        workspace.activity.update(cx, |it, cx| {
-                            it.sync_progress(*stage, *saved, *total, cx);
-                        });
-                    }
-                }
-                LibraryEvent::SyncFinished => {
-                    if let Screen::Workspace(workspace) = &this.screen {
-                        workspace.activity.update(cx, |it, cx| it.sync_finished(cx));
-                    }
-                }
-                LibraryEvent::AlbumsSynced => {
-                    home.update(cx, |home, cx| home.library_synced(cx)).ok();
-                    artists.update(cx, |artists, cx| artists.refresh(cx)).ok();
-                    search.update(cx, |it, cx| it.library_changed(cx)).ok();
-                }
-                LibraryEvent::ArtistsSynced => {
-                    artists
-                        .update(cx, |artists, cx| artists.artists_synced(cx))
-                        .ok();
-                    search.update(cx, |it, cx| it.library_changed(cx)).ok();
-                }
-                LibraryEvent::SongsSynced => {
-                    songs.update(cx, |songs, cx| songs.songs_synced(cx)).ok();
-                    artists
-                        .update(cx, |artists, cx| artists.songs_synced(cx))
-                        .ok();
-                    search.update(cx, |it, cx| it.library_changed(cx)).ok();
-                }
-                LibraryEvent::SyncFailed(error) => {
-                    // The albums' screen says so itself
-                    if let Screen::Workspace(workspace) = &this.screen
-                        && workspace.destination != Destination::Albums
-                    {
-                        let message = format!("Couldn't refresh the library. {error}");
-                        window.push_notification((NotificationType::Error, message), cx);
-                    }
-                }
-                LibraryEvent::LeftAlbum(album) => {
-                    this.remember(Location::Albums(Some(album.clone())), cx);
-                }
-            }
-        })
+        let LibraryEvent::LeftAlbum(album) = event;
+        self.remember(Location::Albums(Some(album.clone())), cx);
     }
 
     fn destination(&self) -> Option<Destination> {
@@ -651,9 +571,7 @@ impl AppShell {
         }
         workspace.destination = destination;
         match destination {
-            Destination::Home => workspace
-                .home
-                .update(cx, |home, cx| home.renew_recommended(cx)),
+            Destination::Home => workspace.home.read(cx).renew_recommended(),
             // Another device may have changed them meanwhile
             Destination::Playlists => workspace.playlists_state.refresh(),
             Destination::Favorites => workspace.favorites_state.refresh(),
@@ -767,16 +685,14 @@ impl AppShell {
 
     /// Fetches what the screen showing is about again, for the screens that
     /// do not run it themselves.
-    fn refresh(&self, cx: &mut Context<Self>) {
+    fn refresh(&self) {
         let Screen::Workspace(workspace) = &self.screen else {
             return;
         };
         match workspace.destination {
             Destination::Playlists => workspace.playlists_state.refresh(),
             Destination::Favorites => workspace.favorites_state.refresh(),
-            _ => workspace
-                .library
-                .update(cx, |library, cx| library.refresh_library(cx)),
+            _ => workspace.sync.refresh(),
         }
     }
 
@@ -812,7 +728,7 @@ impl AppShell {
         };
         self.accounts.forget_password(workspace.profile.clone());
         // The window keeps its notices, and this one would never hear the end
-        window.remove_notification::<LibraryActivity>(cx);
+        window.remove_notification::<ActivityNotice>(cx);
         self.focus.focus(window, cx);
         self.screen = Self::sign_in(&self.accounts, Start::Fresh, window, cx);
         self.update_menus(cx);
@@ -1175,6 +1091,78 @@ impl AppShell {
     }
 }
 
+/// Puts up the activity's notice when it should be up and takes it down when it should not.
+fn follow_library_activity(
+    activity: LibraryActivity,
+    window: &Window,
+    cx: &mut Context<AppShell>,
+) -> Task<()> {
+    let changes = activity.subscribe();
+    let mut is_shown = changes.borrow().is_notice_shown();
+    let notice = cx.new(|cx| ActivityNotice::new(activity, cx));
+    gpui_host::observe_in(changes, window, cx, move |_, activity, window, cx| {
+        if activity.is_notice_shown() == is_shown {
+            return;
+        }
+        is_shown = activity.is_notice_shown();
+        if is_shown {
+            window.push_notification(ActivityNotice::notification(&notice), cx);
+        } else {
+            window.remove_notification::<ActivityNotice>(cx);
+        }
+    })
+}
+
+/// Passes what a sync brought on to the screens that show it.
+fn follow_library(
+    sync: &LibrarySync,
+    home: &Entity<Home>,
+    artists: &Entity<Artists>,
+    songs: &Entity<Songs>,
+    search: SearchIndex,
+    window: &Window,
+    cx: &mut Context<AppShell>,
+) -> Task<()> {
+    let home = home.downgrade();
+    let artists = artists.downgrade();
+    let songs = songs.downgrade();
+    gpui_host::subscribe_in(
+        sync.notices(),
+        window,
+        cx,
+        move |this, notice, window, cx| match notice {
+            LibraryNotice::AlbumsSynced => {
+                home.update(cx, |home, cx| home.library_synced(cx)).ok();
+                artists.update(cx, |artists, cx| artists.refresh(cx)).ok();
+                search.library_changed();
+            }
+            LibraryNotice::ArtistsSynced => {
+                artists
+                    .update(cx, |artists, cx| artists.artists_synced(cx))
+                    .ok();
+                search.library_changed();
+            }
+            LibraryNotice::SongsSynced => {
+                songs.update(cx, |songs, cx| songs.songs_synced(cx)).ok();
+                artists
+                    .update(cx, |artists, cx| artists.songs_synced(cx))
+                    .ok();
+                search.library_changed();
+            }
+            LibraryNotice::SyncFailed(error) => {
+                // The albums' screen says so itself
+                if let Screen::Workspace(workspace) = &this.screen
+                    && workspace.destination != Destination::Albums
+                {
+                    let message = format!("Couldn't refresh the library. {error}");
+                    window.push_notification((NotificationType::Error, message), cx);
+                }
+            }
+            LibraryNotice::SyncFinished => {}
+        },
+    )
+}
+
 /// Only a change of the limit in effect reaches `set_capacity`, which reopens the cache: the
 /// settings also change as the limit is typed and when a save fails.
 fn follow_cache_limit(
@@ -1311,6 +1299,31 @@ fn title_bar_controls() -> Div {
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
 }
 
+fn new_player(
+    session: &Session,
+    window: &mut Window,
+    cx: &mut Context<AppShell>,
+) -> Entity<Player> {
+    let audio = settings::audio_settings(cx).snapshot();
+    let (output, transitions) = (audio.output().clone(), audio.transitions());
+    let discord = settings::discord_settings(cx).snapshot();
+    let cover_key = discord.imgbb_key().map(str::to_owned);
+    let is_presence_on = discord.is_presence_on();
+    let shell = cx.weak_entity();
+    cx.new(|cx| {
+        let mut player = Player::new(session.clone(), output, window, cx);
+        player.set_transitions(transitions);
+        player.set_cover_key(cover_key.as_deref());
+        player.set_presence_on(is_presence_on);
+        player.set_panels(move |window, cx| {
+            shell
+                .upgrade()
+                .map_or_else(Panels::default, |shell| shell.read(cx).panels(window, cx))
+        });
+        player
+    })
+}
+
 /// What shows the lyrics of what `player` plays, kept on the chosen highlight for
 /// as long as the task and the subscription live.
 fn lyrics_views(
@@ -1430,7 +1443,7 @@ impl Render for AppShell {
                 }))
                 // On the way in, as the albums' screen runs Refresh itself
                 .capture_action(cx.listener(|this, _: &Refresh, _, _| this.retry_favorites()))
-                .on_action(cx.listener(|this, _: &Refresh, _, cx| this.refresh(cx)))
+                .on_action(cx.listener(|this, _: &Refresh, _, _| this.refresh()))
                 .on_action(cx.listener(|this, action: &AddToPlaylist, window, cx| {
                     this.update_playlists(window, cx, |playlists, window, cx| {
                         playlists.add_songs(action.playlist(), action.songs(), window, cx);
