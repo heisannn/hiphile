@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/heisannn/hiphile/compare/v0.3.0...v0.4.0) - 2026-11-08
+
+### Added
+
+- *(player)* add a mode that skips instrumental songs
+- *(audio)* trim silence and crossfade between songs on PCM
+- *(audio)* resample with a clean-room soxr
+- *(audio)* resample with a port of r8brain-free-src
+- *(audio)* fade the sound on play, pause and stop
+
+### Fixed
+
+- *(audio)* keep a written fade to go back to, and hear a seek before fading
+
 ## [0.3.0](https://github.com/heisannn/hiphile/compare/v0.2.0...v0.3.0) - 2026-11-07
 
 ### Added

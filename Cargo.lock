@@ -84,11 +84,11 @@ dependencies = [
 
 [[package]]
 name = "account"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "catalog",
  "client",
- "config 0.3.0",
+ "config 0.4.0",
  "gpui-kit",
  "net",
  "session",
@@ -97,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "actions"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "gpui-kit",
  "serde_json",
@@ -358,7 +358,7 @@ checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
 name = "artists"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "actions",
  "catalog",
@@ -620,10 +620,10 @@ dependencies = [
 
 [[package]]
 name = "audio"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-channel",
- "config 0.3.0",
+ "config 0.4.0",
  "cpal",
  "dsd",
  "objc2-core-audio",
@@ -1063,7 +1063,7 @@ checksum = "37b2a672a2cb129a2e41c10b1224bb368f9f37a2b16b612598138befd7b37eb5"
 
 [[package]]
 name = "catalog"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "client",
  "dirs 7.0.0",
@@ -1253,7 +1253,7 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "client"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "net",
  "serde",
@@ -1351,7 +1351,7 @@ dependencies = [
 
 [[package]]
 name = "config"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "apple-native-keyring-store",
  "config 0.15.27",
@@ -2059,7 +2059,7 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
 name = "dsd"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "rubato",
  "thiserror 2.0.21",
@@ -2333,7 +2333,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "favorites"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "actions",
  "client",
@@ -2680,7 +2680,7 @@ dependencies = [
 
 [[package]]
 name = "fuzzy"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "dirs 7.0.0",
  "hex",
@@ -3959,12 +3959,12 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
 name = "hiphile"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "account",
  "actions",
  "artists",
- "config 0.3.0",
+ "config 0.4.0",
  "embed-resource",
  "favorites",
  "futures",
@@ -3986,7 +3986,7 @@ dependencies = [
 
 [[package]]
 name = "hiphile-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -3994,7 +3994,7 @@ dependencies = [
  "catalog",
  "clap",
  "client",
- "config 0.3.0",
+ "config 0.4.0",
  "futures",
  "net",
  "playback",
@@ -4039,7 +4039,7 @@ dependencies = [
 
 [[package]]
 name = "home"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "actions",
  "catalog",
@@ -4763,7 +4763,7 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "library"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "actions",
  "catalog",
@@ -4979,7 +4979,7 @@ dependencies = [
 
 [[package]]
 name = "lyrics"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -5097,7 +5097,7 @@ dependencies = [
 
 [[package]]
 name = "media-controls"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-channel",
  "raw-window-handle",
@@ -5285,7 +5285,7 @@ dependencies = [
 
 [[package]]
 name = "net"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "futures",
@@ -6334,7 +6334,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "playback"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "audio",
  "catalog",
@@ -6350,12 +6350,12 @@ dependencies = [
 
 [[package]]
 name = "player"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "actions",
  "audio",
  "client",
- "config 0.3.0",
+ "config 0.4.0",
  "futures",
  "gpui-kit",
  "lyrics",
@@ -6371,7 +6371,7 @@ dependencies = [
 
 [[package]]
 name = "playlists"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "actions",
  "client",
@@ -6543,7 +6543,7 @@ checksum = "925383efa346730478fb4838dbe9137d2a47675ad789c546d150a6e1dd4ab31c"
 
 [[package]]
 name = "presence"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "catalog",
@@ -6802,7 +6802,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "r8brain"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "realfft",
  "thiserror 2.0.21",
@@ -7719,7 +7719,7 @@ checksum = "1c107b6f4780854c8b126e228ea8869f4d7b71260f962fefb57b996b8959ba6b"
 
 [[package]]
 name = "search"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "actions",
  "catalog",
@@ -7952,12 +7952,12 @@ dependencies = [
 
 [[package]]
 name = "session"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "catalog",
  "client",
- "config 0.3.0",
+ "config 0.4.0",
  "futures",
  "fuzzy",
  "gpui-kit",
@@ -7969,11 +7969,11 @@ dependencies = [
 
 [[package]]
 name = "settings"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "audio",
  "catalog",
- "config 0.3.0",
+ "config 0.4.0",
  "fuzzy",
  "gpui-kit",
  "session",
@@ -8180,7 +8180,7 @@ dependencies = [
 
 [[package]]
 name = "songs"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "actions",
  "catalog",
@@ -8217,7 +8217,7 @@ dependencies = [
 
 [[package]]
 name = "soxr"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "realfft",
  "thiserror 2.0.21",
@@ -8357,7 +8357,7 @@ dependencies = [
 
 [[package]]
 name = "subsonic"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "hex",
  "md-5 0.11.0",
@@ -9230,7 +9230,7 @@ dependencies = [
 
 [[package]]
 name = "ui"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "actions",
  "gpui-kit",
@@ -9332,9 +9332,9 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "updater"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
- "config 0.3.0",
+ "config 0.4.0",
  "gpui-kit",
  "hex",
  "self_update",
