@@ -87,7 +87,7 @@ struct Write {
 /// What brings back how the favorites showed before a change.
 enum Undo {
     Remove,
-    Restore { favorite: Favorite, ix: usize },
+    Restore { favorite: Box<Favorite>, ix: usize },
 }
 
 impl Write {
@@ -235,7 +235,10 @@ impl Favorites {
                 return;
             };
             self.keep_selection(section, ix);
-            Undo::Restore { favorite, ix }
+            Undo::Restore {
+                favorite: Box::new(favorite),
+                ix,
+            }
         };
         self.edits += 1;
         self.writes.push_back(Write {
@@ -255,7 +258,7 @@ impl Favorites {
         let fallback_ix = match undo {
             Undo::Remove => removed_ix.unwrap_or_default(),
             Undo::Restore { favorite, ix } => {
-                self.lists.add(favorite, ix);
+                self.lists.add(*favorite, ix);
                 ix
             }
         };

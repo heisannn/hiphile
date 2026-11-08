@@ -23,7 +23,7 @@ use ui::card_grid::GridMotion;
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
 use ui::{
     ListFilter, ListPaneHeader, LoadFailure, MasterDetail, NowPlaying, RefreshFailure, Shelf,
-    centered, muted_text, no_matches, row_list,
+    SortOption, centered, muted_text, no_matches, row_list, sort_menu,
 };
 
 mod artist_row;
@@ -32,7 +32,10 @@ mod detail;
 use artist_row::ArtistRow;
 use detail::{Item, ListedDetail};
 
-use crate::list::{album_by_album, artist_index, artists_of_albums, newest_first};
+use crate::list::{
+    ArtistDates, ArtistOrder, ArtistSort, album_by_album, arrange, artist_index, artists_of_albums,
+    newest_first,
+};
 use crate::{
     ARTISTS_CONTEXT, AddSelectionToPlaylist, AddToPlaylist, AddToQueue, FocusFilter, Open, Play,
     PlayNext, ROOT_CONTEXT,
@@ -60,8 +63,11 @@ pub struct Artists {
     refresh_error: Option<SharedString>,
     is_refreshing: bool,
     index: Arc<fuzzy::Index>,
-    /// Positions in the loaded artists that match the filter, the best first.
+    /// Positions in the loaded artists that match the filter, in the order they show.
     visible: Arc<Vec<usize>>,
+    sort: ArtistSort,
+    /// From the saved albums: without a saved library, no artist has a date.
+    dates: Arc<ArtistDates>,
     selected_artist: Option<ArtistId>,
     /// Whether the list on its way should come to the artist just revealed,
     /// who may not be on the list yet or may move when it arrives.
@@ -146,6 +152,8 @@ impl Artists {
             is_refreshing: false,
             index: Arc::default(),
             visible: Arc::default(),
+            sort: ArtistSort::default(),
+            dates: Arc::default(),
             selected_artist: None,
             revealing: false,
             detail: None,
@@ -225,28 +233,37 @@ impl Artists {
             if let Some(catalog) = catalog {
                 let saved = cx
                     .background_spawn(async move {
+                        // Albums that can't be read only leave the artists without dates
+                        let albums = catalog.albums();
+                        let dates = albums.as_deref().map(ArtistDates::of_albums);
+                        let dates = Arc::new(dates.unwrap_or_default());
                         let artists = catalog.artists()?;
                         if !artists.is_empty() {
-                            return Ok((artists, true));
+                            return Ok((artists, dates, true));
                         }
-                        let albums = catalog.albums()?;
-                        Ok::<_, catalog::Error>((artists_of_albums(&albums), false))
+                        Ok::<_, catalog::Error>((artists_of_albums(&albums?), dates, false))
                     })
                     .await;
                 // A copy that can't be read only means waiting for the server
                 match saved {
-                    Ok((artists, true)) => {
+                    Ok((artists, dates, true)) => {
                         this.update(cx, |this, cx| {
+                            this.dates = dates;
                             this.finish_loading_artists(Ok(artists), cx);
                         })
                         .ok();
                         return;
                     }
-                    Ok((artists, false)) if !has_list && !artists.is_empty() => {
-                        this.update(cx, |this, cx| this.set_artists(artists, cx))
-                            .ok();
+                    Ok((artists, dates, false)) => {
+                        this.update(cx, |this, cx| {
+                            this.dates = dates;
+                            if !has_list && !artists.is_empty() {
+                                this.set_artists(artists, cx);
+                            }
+                        })
+                        .ok();
                     }
-                    Ok(_) | Err(_) => {}
+                    Err(_) => {}
                 }
             }
             let result = cx
@@ -323,8 +340,20 @@ impl Artists {
 
     fn apply_filter(&mut self, cx: &mut Context<Self>) {
         let query = self.filter.read(cx).value();
-        self.visible = Arc::new(self.index.search(&query));
+        let found = self.index.search(&query);
+        self.visible = Arc::new(match self.loaded_artists() {
+            Some(artists) => arrange(artists, found, &self.dates, self.sort),
+            None => found,
+        });
         cx.notify();
+    }
+
+    fn set_sort(&mut self, sort: ArtistSort, cx: &mut Context<Self>) {
+        if self.sort != sort {
+            self.sort = sort;
+            self.apply_filter(cx);
+            self.scroll_to_selected_artist();
+        }
     }
 
     /// Makes the artists searchable at once as far as they read without a
@@ -706,7 +735,8 @@ impl Artists {
             .bg(cx.theme().sidebar)
             .child(
                 ListPaneHeader::new("Artists", count)
-                    .when(is_updating, |this| this.updating("Updating the artists")),
+                    .when(is_updating, |this| this.updating("Updating the artists"))
+                    .action(self.render_sort_menu(cx)),
             )
             .child(ListFilter::new(&self.filter))
             .when_some(self.refresh_error.clone(), |this, error| {
@@ -721,6 +751,43 @@ impl Artists {
             })
             .child(self.render_list(window, cx))
             .into_any_element()
+    }
+
+    fn render_sort_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let current = self.sort;
+        let option = |label: &'static str, is_checked: bool, sort: ArtistSort| {
+            let owner = cx.entity().downgrade();
+            Some(SortOption::new(label, is_checked, move |_, cx| {
+                owner.update(cx, |this, cx| this.set_sort(sort, cx)).ok();
+            }))
+        };
+        let order = |label, order| {
+            let sort = if current.order == order {
+                current
+            } else {
+                ArtistSort::chosen(order)
+            };
+            option(label, current.order == order, sort)
+        };
+        let direction = |label, is_descending| {
+            let sort = ArtistSort {
+                is_descending,
+                ..current
+            };
+            option(label, current.is_descending == is_descending, sort)
+        };
+        sort_menu(
+            "sort-artists",
+            current.is_descending,
+            vec![
+                order("Name", ArtistOrder::Name),
+                order("Recently Added", ArtistOrder::Added),
+                order("Release Date", ArtistOrder::Released),
+                None,
+                direction("Ascending", false),
+                direction("Descending", true),
+            ],
+        )
     }
 
     /// The list's focus target, rendered in every state so focus and the

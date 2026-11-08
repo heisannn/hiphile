@@ -1,8 +1,9 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::date::parse_time;
 use crate::{AlbumId, ArtistId, CoverArtId, SongId};
 
 /// A song (`Child` with `isDir: false`).
@@ -45,6 +46,8 @@ struct Fields {
     sampling_rate: Option<u32>,
     bit_depth: Option<u32>,
     channel_count: Option<u32>,
+    year: Option<u32>,
+    created: Option<String>,
     played: Option<String>,
 }
 
@@ -122,6 +125,15 @@ impl Song {
     /// OpenSubsonic servers only.
     pub fn channel_count(&self) -> Option<u32> {
         self.0.channel_count
+    }
+
+    pub fn year(&self) -> Option<u32> {
+        self.0.year
+    }
+
+    /// When it was added to the library.
+    pub fn created(&self) -> Option<SystemTime> {
+        self.0.created.as_deref().and_then(parse_time)
     }
 
     /// When the user last played it, in RFC 3339. `None` if they never have,

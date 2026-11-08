@@ -18,6 +18,7 @@ mod row_text;
 mod sample_rate;
 mod section;
 mod skippable_song;
+mod sort_menu;
 
 pub use album_link::AlbumLink;
 pub use artist_link::{ArtistLine, ArtistLink, album_artist_link, song_artist_link};
@@ -40,3 +41,4 @@ pub use section::{
     section_failure, section_heading, section_heading_with_action, section_loading, song_with_cover,
 };
 pub use skippable_song::{SKIPPED_OPACITY, skippable_song, song_row_label};
+pub use sort_menu::{SortOption, sort_menu};

@@ -7,6 +7,7 @@
 mod album;
 mod artist;
 mod auth;
+mod date;
 mod endpoint;
 mod error;
 mod id;
@@ -17,6 +18,7 @@ mod song;
 pub use album::{Album, AlbumWithSongs};
 pub use artist::{Artist, ArtistWithAlbums};
 pub use auth::Credentials;
+pub use date::ReleaseDate;
 pub use endpoint::{CLIENT_NAME, CoverArtRequest, Endpoint, PROTOCOL_VERSION};
 pub use error::{Error, ServerErrorCode};
 pub use id::{AlbumId, ArtistId, CoverArtId, PlaylistId, SongId, StarTarget};

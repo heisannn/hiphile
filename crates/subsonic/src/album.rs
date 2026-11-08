@@ -1,8 +1,9 @@
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{AlbumId, ArtistId, CoverArtId, Song};
+use crate::date::parse_time;
+use crate::{AlbumId, ArtistId, CoverArtId, ReleaseDate, Song};
 
 /// An album (`AlbumID3`).
 ///
@@ -20,6 +21,9 @@ pub struct Album {
     /// Seconds.
     duration: Option<u64>,
     year: Option<u32>,
+    /// OpenSubsonic servers only.
+    release_date: Option<ReleaseDate>,
+    created: Option<String>,
     played: Option<String>,
 }
 
@@ -56,6 +60,18 @@ impl Album {
         self.year
     }
 
+    /// The full date where the server has one, otherwise the year.
+    pub fn release_date(&self) -> Option<ReleaseDate> {
+        self.release_date
+            .filter(ReleaseDate::has_year)
+            .or_else(|| self.year.map(ReleaseDate::year))
+    }
+
+    /// When it was added to the library.
+    pub fn created(&self) -> Option<SystemTime> {
+        self.created.as_deref().and_then(parse_time)
+    }
+
     /// When the user last played a song of it, in RFC 3339. `None` if they
     /// never have, or the server does not say.
     pub fn played(&self) -> Option<&str> {
@@ -87,5 +103,39 @@ impl AlbumWithSongs {
 
     pub fn into_parts(self) -> (Album, Vec<Song>) {
         (self.album, self.songs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn album(fields: serde_json::Value) -> Album {
+        let mut album = json!({ "id": "a", "name": "Kind of Blue" });
+        album
+            .as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
+        serde_json::from_value(album).unwrap()
+    }
+
+    #[test]
+    fn the_release_date_falls_back_to_the_year() {
+        let dated = album(json!({ "year": 1959, "releaseDate": { "year": 1959, "month": 8 } }));
+        assert!(dated.release_date().unwrap() > ReleaseDate::year(1959));
+        // OpenSubsonic servers send an empty date for an album without one
+        let undated = album(json!({ "year": 1959, "releaseDate": {} }));
+        assert_eq!(undated.release_date(), Some(ReleaseDate::year(1959)));
+        assert_eq!(album(json!({})).release_date(), None);
+    }
+
+    #[test]
+    fn a_stored_album_keeps_when_it_was_added() {
+        let added = album(json!({ "created": "2024-05-01T12:00:00Z" }));
+        let stored: Album = serde_json::from_value(serde_json::to_value(&added).unwrap()).unwrap();
+        assert!(stored.created().is_some());
+        assert_eq!(stored.created(), added.created());
     }
 }

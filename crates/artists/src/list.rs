@@ -1,7 +1,102 @@
+use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::time::SystemTime;
 
 use fuzzy::{Index, Speller};
-use subsonic::{Album, Artist, ArtistId, CoverArtId, Song};
+use subsonic::{Album, Artist, ArtistId, CoverArtId, ReleaseDate, Song};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ArtistOrder {
+    /// The server's name order. Ascending under a filter, the best match comes first instead.
+    #[default]
+    Name,
+    /// By the album added last.
+    Added,
+    /// By the album that came out last.
+    Released,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ArtistSort {
+    pub(crate) order: ArtistOrder,
+    pub(crate) is_descending: bool,
+}
+
+impl ArtistSort {
+    /// How `order` sorts when chosen: names from the start, dates newest first.
+    pub(crate) fn chosen(order: ArtistOrder) -> Self {
+        Self {
+            order,
+            is_descending: order != ArtistOrder::Name,
+        }
+    }
+}
+
+/// Each artist's newest album, by when it was added and by when it came out.
+#[derive(Debug, Default)]
+pub(crate) struct ArtistDates(HashMap<ArtistId, (Option<SystemTime>, Option<ReleaseDate>)>);
+
+impl ArtistDates {
+    pub(crate) fn of_albums(albums: &[Album]) -> Self {
+        let mut dates: HashMap<ArtistId, (Option<SystemTime>, Option<ReleaseDate>)> =
+            HashMap::new();
+        for album in albums {
+            let Some(artist) = album.artist_id() else {
+                continue;
+            };
+            let newest = dates.entry(artist.clone()).or_default();
+            newest.0 = newest.0.max(album.created());
+            newest.1 = newest.1.max(album.release_date());
+        }
+        Self(dates)
+    }
+
+    fn added(&self, artist: &ArtistId) -> Option<SystemTime> {
+        self.0.get(artist).and_then(|dates| dates.0)
+    }
+
+    fn released(&self, artist: &ArtistId) -> Option<ReleaseDate> {
+        self.0.get(artist).and_then(|dates| dates.1)
+    }
+}
+
+/// `found` holds positions in `artists`, which come in name order, and keeps its order among
+/// artists that compare the same. Artists without a dated album come last either way.
+pub(crate) fn arrange(
+    artists: &[Artist],
+    mut found: Vec<usize>,
+    dates: &ArtistDates,
+    sort: ArtistSort,
+) -> Vec<usize> {
+    let is_descending = sort.is_descending;
+    match sort.order {
+        ArtistOrder::Name if is_descending => found.sort_unstable_by(|a, b| b.cmp(a)),
+        ArtistOrder::Name => {}
+        ArtistOrder::Added => {
+            found = by_key(found, is_descending, |ix| dates.added(artists[ix].id()));
+        }
+        ArtistOrder::Released => {
+            found = by_key(found, is_descending, |ix| dates.released(artists[ix].id()));
+        }
+    }
+    found
+}
+
+fn by_key<K: Ord>(
+    found: Vec<usize>,
+    is_descending: bool,
+    key: impl Fn(usize) -> Option<K>,
+) -> Vec<usize> {
+    let mut keyed: Vec<(Option<K>, usize)> = found.into_iter().map(|ix| (key(ix), ix)).collect();
+    keyed.sort_by(|(a, _), (b, _)| match (a, b) {
+        (Some(a), Some(b)) if is_descending => b.cmp(a),
+        (Some(a), Some(b)) => a.cmp(b),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    });
+    keyed.into_iter().map(|(_, ix)| ix).collect()
+}
 
 pub(crate) fn artist_index(artists: &[Artist], speller: Option<&dyn Speller>) -> Index {
     Index::new(artists.iter().map(|artist| [artist.name()]), speller)
@@ -111,6 +206,62 @@ mod tests {
         ]);
         let ids: Vec<_> = albums.iter().map(|album| album.id().as_str()).collect();
         assert_eq!(ids, ["new", "old", "none"]);
+    }
+
+    #[test]
+    fn artists_go_by_their_newest_album_and_those_without_one_last() {
+        let dated = |id: &str, artist: &str, year: u32, created: &str| -> Album {
+            serde_json::from_value(json!({
+                "id": id, "name": id, "artistId": artist, "year": year, "created": created,
+            }))
+            .unwrap()
+        };
+        let albums = [
+            dated("m1", "m", 1959, "2025-01-01T00:00:00Z"),
+            dated("m2", "m", 1970, "2024-01-01T00:00:00Z"),
+            dated("b1", "b", 1961, "2024-06-01T00:00:00Z"),
+        ];
+        let dates = ArtistDates::of_albums(&albums);
+        let artists = [
+            Artist::new(ArtistId::new("b"), "Bill Evans".into(), None, None),
+            Artist::new(ArtistId::new("n"), "Nobody".into(), None, None),
+            Artist::new(ArtistId::new("m"), "Miles Davis".into(), None, None),
+        ];
+        let ids = |order| -> Vec<&str> {
+            arrange(&artists, vec![0, 1, 2], &dates, ArtistSort::chosen(order))
+                .into_iter()
+                .map(|ix| artists[ix].id().as_str())
+                .collect()
+        };
+        assert_eq!(ids(ArtistOrder::Name), ["b", "n", "m"]);
+        assert_eq!(ids(ArtistOrder::Added), ["m", "b", "n"]);
+        assert_eq!(ids(ArtistOrder::Released), ["m", "b", "n"]);
+        let older_release = [
+            dated("m1", "m", 1950, "2025-01-01T00:00:00Z"),
+            albums[2].clone(),
+        ];
+        let dates = ArtistDates::of_albums(&older_release);
+        let released = ArtistSort::chosen(ArtistOrder::Released);
+        assert_eq!(
+            arrange(&artists, vec![0, 1, 2], &dates, released),
+            [0, 2, 1]
+        );
+        let oldest_first = ArtistSort {
+            is_descending: false,
+            ..released
+        };
+        assert_eq!(
+            arrange(&artists, vec![0, 1, 2], &dates, oldest_first),
+            [2, 0, 1]
+        );
+        let names_from_the_end = ArtistSort {
+            order: ArtistOrder::Name,
+            is_descending: true,
+        };
+        assert_eq!(
+            arrange(&artists, vec![0, 2], &dates, names_from_the_end),
+            [2, 0]
+        );
     }
 
     #[test]

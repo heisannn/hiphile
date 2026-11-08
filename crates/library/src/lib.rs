@@ -2,6 +2,7 @@
 
 mod filter;
 mod library_view;
+mod order;
 
 use gpui_kit::{App, KeyBinding, actions};
 use ui::list_navigation::bind_list_navigation;

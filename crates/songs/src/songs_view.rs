@@ -21,8 +21,8 @@ use session::ReadingBook;
 use subsonic::{Song, SongId};
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
 use ui::{
-    ListPaneHeader, LoadFailure, NowPlaying, RefreshFailure, centered, filter_input, muted_text,
-    no_matches, row_list,
+    ListPaneHeader, LoadFailure, NowPlaying, RefreshFailure, SortOption, centered, filter_input,
+    muted_text, no_matches, row_list, sort_menu,
 };
 
 mod song_row;
@@ -326,6 +326,23 @@ impl Songs {
         });
     }
 
+    /// Choosing the column already sorted by keeps its direction.
+    fn choose_sort(&mut self, column: Column, cx: &mut Context<Self>) {
+        if self.is_ranked(cx) || self.sort.column != column {
+            self.sort = Sort::chosen(column);
+        }
+        self.by_relevance = false;
+        self.rearrange(cx);
+        cx.notify();
+    }
+
+    fn choose_direction(&mut self, is_descending: bool, cx: &mut Context<Self>) {
+        self.sort.is_descending = is_descending;
+        self.by_relevance = false;
+        self.rearrange(cx);
+        cx.notify();
+    }
+
     fn sort_by(&mut self, column: Column, cx: &mut Context<Self>) {
         // A heading clicked while the rows follow relevance shows as not sorted,
         // so it starts from the top rather than turning its column around.
@@ -425,13 +442,56 @@ impl Songs {
         }
     }
 
-    fn render_header(&self) -> AnyElement {
+    fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let count = self.loaded_songs().map(|songs| songs.len());
         let is_updating = count.is_some() && self.is_reloading;
         ListPaneHeader::new("Songs", count)
             .when(is_updating, |this| this.updating("Updating the songs"))
-            .action(div().w_56().child(filter_input(&self.filter)))
+            .action(
+                h_flex()
+                    .gap_2()
+                    .child(self.render_sort_menu(cx))
+                    .child(div().w_56().child(filter_input(&self.filter))),
+            )
             .into_any_element()
+    }
+
+    fn render_sort_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let is_ranked = self.is_ranked(cx);
+        let option = |label: &'static str, column: Column| {
+            let owner = cx.entity().downgrade();
+            let is_checked = self.sort.column == column && !is_ranked;
+            Some(SortOption::new(label, is_checked, move |_, cx| {
+                owner
+                    .update(cx, |this, cx| this.choose_sort(column, cx))
+                    .ok();
+            }))
+        };
+        let direction = |label: &'static str, is_descending: bool| {
+            let owner = cx.entity().downgrade();
+            let is_checked = self.sort.is_descending == is_descending && !is_ranked;
+            Some(SortOption::new(label, is_checked, move |_, cx| {
+                owner
+                    .update(cx, |this, cx| this.choose_direction(is_descending, cx))
+                    .ok();
+            }))
+        };
+        sort_menu(
+            "sort-songs",
+            self.sort.is_descending && !is_ranked,
+            vec![
+                option("Title", Column::Title),
+                option("Artist", Column::Artist),
+                option("Album", Column::Album),
+                option("Time", Column::Time),
+                None,
+                option("Recently Added", Column::Added),
+                option("Release Date", Column::Released),
+                None,
+                direction("Ascending", false),
+                direction("Descending", true),
+            ],
+        )
     }
 
     fn render_heading(
@@ -645,7 +705,7 @@ impl Render for Songs {
             .on_action(cx.listener(|this, _: &FocusFilter, window, cx| {
                 this.filter.update(cx, |input, cx| input.focus(window, cx));
             }))
-            .child(self.render_header())
+            .child(self.render_header(cx))
             .when_some(self.refresh_error.clone(), |this, error| {
                 this.child(RefreshFailure::new(
                     "Couldn't refresh the songs",

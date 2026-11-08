@@ -16,7 +16,7 @@ use crate::Error;
 
 /// Bump when the tables or the stored JSON change meaning. A database with
 /// another version is emptied, and the next sync fills it again.
-const SCHEMA_VERSION: i32 = 4;
+const SCHEMA_VERSION: i32 = 5;
 const DATABASE: &str = "catalog.sqlite";
 const SYNC_LOCK: &str = "sync.lock";
 /// The meta key for what the `readings` table was worked out with.

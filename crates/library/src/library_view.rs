@@ -27,8 +27,8 @@ use subsonic::{Album, AlbumId, AlbumWithSongs, PlaylistId, Song, SongId};
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
 use ui::{
     DetailHeader, ListFilter, ListPaneHeader, LoadFailure, MasterDetail, NowPlaying,
-    RefreshFailure, album_artist_link, centered, format_duration, format_song_count, join_details,
-    muted_text, no_matches, row_list,
+    RefreshFailure, SortOption, album_artist_link, centered, format_duration, format_song_count,
+    join_details, muted_text, no_matches, row_list, sort_menu,
 };
 
 mod album_row;
@@ -38,6 +38,7 @@ use album_row::AlbumRow;
 use song_row::SongRow;
 
 use crate::filter::album_index;
+use crate::order::{AlbumOrder, AlbumSort, arrange};
 use crate::{
     ALBUMS_CONTEXT, AddAlbumToPlaylist, AddToPlaylist, AddToQueue, Back, FocusFilter,
     LIBRARY_CONTEXT, Open, Play, PlayNext, Refresh, SONGS_CONTEXT,
@@ -81,8 +82,9 @@ pub struct Library {
     /// failure they should hear of wherever they are.
     is_sync_requested: bool,
     index: Arc<fuzzy::Index>,
-    /// Positions in the loaded albums that match the filter, the best first.
+    /// Positions in the loaded albums that match the filter, in the order they show.
     visible: Arc<Vec<usize>>,
+    sort: AlbumSort,
     selected_album: Option<AlbumId>,
     /// The selected album, when it was asked to show before the list had it.
     /// It stays selected and comes into view once a sync brings it.
@@ -124,7 +126,7 @@ enum SyncState {
 enum Detail {
     None,
     Loading,
-    Loaded(LoadedAlbum),
+    Loaded(Box<LoadedAlbum>),
     Failed(SharedString),
 }
 
@@ -162,6 +164,7 @@ impl Library {
             is_sync_requested: false,
             index: Arc::default(),
             visible: Arc::default(),
+            sort: AlbumSort::default(),
             selected_album: None,
             revealing: None,
             detail: Detail::None,
@@ -297,8 +300,20 @@ impl Library {
 
     fn apply_filter(&mut self, cx: &mut Context<Self>) {
         let query = self.filter.read(cx).value();
-        self.visible = Arc::new(self.index.search(&query));
+        let found = self.index.search(&query);
+        self.visible = Arc::new(match self.loaded_albums() {
+            Some(albums) => arrange(albums, found, self.sort),
+            None => found,
+        });
         cx.notify();
+    }
+
+    fn set_sort(&mut self, sort: AlbumSort, cx: &mut Context<Self>) {
+        if self.sort != sort {
+            self.sort = sort;
+            self.apply_filter(cx);
+            self.scroll_to_selected_album();
+        }
     }
 
     /// Makes the albums searchable at once as far as they read without a
@@ -422,11 +437,11 @@ impl Library {
         let cover_url = album
             .cover_art()
             .map(|cover_art| self.session.cover_art_url(cover_art, COVER_PIXELS));
-        self.detail = Detail::Loaded(LoadedAlbum {
+        self.detail = Detail::Loaded(Box::new(LoadedAlbum {
             album,
             songs: songs.into(),
             cover_url,
-        });
+        }));
         cx.notify();
     }
 
@@ -630,7 +645,8 @@ impl Library {
             .bg(cx.theme().sidebar)
             .child(
                 ListPaneHeader::new("Albums", count)
-                    .when(updating, |this| this.updating("Updating the library")),
+                    .when(updating, |this| this.updating("Updating the library"))
+                    .action(self.render_sort_menu(cx)),
             )
             .child(ListFilter::new(&self.filter))
             .when_some(error, |this, error| {
@@ -645,6 +661,44 @@ impl Library {
             })
             .child(self.render_album_list(window, cx))
             .into_any_element()
+    }
+
+    fn render_sort_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let current = self.sort;
+        let option = |label: &'static str, is_checked: bool, sort: AlbumSort| {
+            let owner = cx.entity().downgrade();
+            Some(SortOption::new(label, is_checked, move |_, cx| {
+                owner.update(cx, |this, cx| this.set_sort(sort, cx)).ok();
+            }))
+        };
+        let order = |label, order| {
+            let sort = if current.order == order {
+                current
+            } else {
+                AlbumSort::chosen(order)
+            };
+            option(label, current.order == order, sort)
+        };
+        let direction = |label, is_descending| {
+            let sort = AlbumSort {
+                is_descending,
+                ..current
+            };
+            option(label, current.is_descending == is_descending, sort)
+        };
+        sort_menu(
+            "sort-albums",
+            current.is_descending,
+            vec![
+                order("Name", AlbumOrder::Name),
+                order("Artist", AlbumOrder::Artist),
+                order("Recently Added", AlbumOrder::Added),
+                order("Release Date", AlbumOrder::Released),
+                None,
+                direction("Ascending", false),
+                direction("Descending", true),
+            ],
+        )
     }
 
     /// The album list's focus target, rendered in every state so focus and

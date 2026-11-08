@@ -184,6 +184,7 @@ fn heading_x(column: Column, cx: &mut VisualTestContext) -> f32 {
         Column::Album => album + edge,
         // The time's heading sits at the end of its column
         Column::Time => width - inset - edge,
+        Column::Added | Column::Released => unreachable!("only the menu sorts by a date"),
     }
 }
 
@@ -402,6 +403,49 @@ fn clicking_headings_sorts_and_clicking_again_turns_it_around(cx: &mut TestAppCo
     cx.update(|_, cx| assert_eq!(view.read(cx).sort.column, Column::Time));
     assert_eq!(shown(&view, cx), ["c", "b", "a"]);
     click_heading(time, cx);
+    assert_eq!(shown(&view, cx), ["a", "b", "c"]);
+}
+
+#[gpui_kit::test]
+fn a_date_from_the_menu_sorts_through_a_filter_and_a_heading_starts_from_the_top(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx) = table(cx);
+    let dated = songs()
+        .into_iter()
+        .zip([
+            "2024-01-01T00:00:00Z",
+            "2025-01-01T00:00:00Z",
+            "2023-01-01T00:00:00Z",
+        ])
+        .map(|(song, created)| {
+            let mut fields = serde_json::to_value(&song).unwrap();
+            fields["created"] = json!(created);
+            serde_json::from_value(fields).unwrap()
+        })
+        .collect();
+    cx.update(|_, cx| {
+        view.update(cx, |view, cx| {
+            let arranged = Arranged::new(dated, None, "".into(), view.sort, true);
+            view.finish_loading(Ok(arranged), cx);
+        });
+    });
+    set_filter(&view, "e", cx);
+    cx.update(|_, cx| view.update(cx, |view, cx| view.choose_sort(Column::Added, cx)));
+    cx.run_until_parked();
+    // Cherokee went in in 2024, Airegin in 2025 and Blues in 2023
+    assert_eq!(shown(&view, cx), ["a", "c", "b"]);
+    cx.update(|_, cx| assert!(!view.read(cx).is_ranked(cx)));
+
+    cx.update(|_, cx| view.update(cx, |view, cx| view.choose_direction(false, cx)));
+    cx.run_until_parked();
+    assert_eq!(shown(&view, cx), ["b", "c", "a"]);
+    // Choosing the order on show again keeps it the way it runs
+    cx.update(|_, cx| view.update(cx, |view, cx| view.choose_sort(Column::Added, cx)));
+    cx.run_until_parked();
+    assert_eq!(shown(&view, cx), ["b", "c", "a"]);
+
+    click_heading(heading_x(Column::Title, cx), cx);
     assert_eq!(shown(&view, cx), ["a", "b", "c"]);
 }
 

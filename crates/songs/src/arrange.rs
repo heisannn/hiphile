@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::time::SystemTime;
 
 use fuzzy::{Index, Speller};
 use subsonic::Song;
@@ -9,6 +10,10 @@ pub(crate) enum Column {
     Artist,
     Album,
     Time,
+    /// Newest first unless descending says otherwise. Has no heading.
+    Added,
+    /// Newest first unless descending says otherwise. Has no heading.
+    Released,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,6 +27,15 @@ impl Sort {
         column: Column::Title,
         is_descending: false,
     };
+
+    /// How `column` sorts when chosen from the menu: the dates newest first, the rest from the
+    /// start.
+    pub(crate) fn chosen(column: Column) -> Self {
+        Self {
+            column,
+            is_descending: matches!(column, Column::Added | Column::Released),
+        }
+    }
 
     pub(crate) fn clicked(self, column: Column) -> Self {
         Self {
@@ -40,6 +54,8 @@ struct Key {
     disc: Option<u32>,
     track: Option<u32>,
     seconds: Option<u64>,
+    added: Option<SystemTime>,
+    year: Option<u32>,
 }
 
 impl Key {
@@ -53,6 +69,8 @@ impl Key {
             disc: song.disc_number(),
             track: song.track(),
             seconds: song.duration().map(|duration| duration.as_secs()),
+            added: song.created(),
+            year: song.year(),
         }
     }
 }
@@ -92,6 +110,12 @@ fn compare(a: &Key, b: &Key, sort: Sort) -> Ordering {
             .then_with(|| compare_within_album(a, b))
             .then_with(|| by_title(a, b)),
         Column::Time => compare_column(a.seconds.as_ref(), b.seconds.as_ref(), is_descending)
+            .then_with(|| by_title(a, b)),
+        Column::Added => compare_column(a.added.as_ref(), b.added.as_ref(), is_descending)
+            .then_with(|| by_album(a, b))
+            .then_with(|| by_title(a, b)),
+        Column::Released => compare_column(a.year.as_ref(), b.year.as_ref(), is_descending)
+            .then_with(|| by_album(a, b))
             .then_with(|| by_title(a, b)),
     }
 }
@@ -229,6 +253,45 @@ mod tests {
         assert_eq!(
             ids(&songs, "", Column::Time, true),
             ["a1", "a2", "b1", "c1"]
+        );
+    }
+
+    #[test]
+    fn dates_from_the_menu_put_the_newest_first_and_the_undated_last() {
+        let songs = [
+            song(json!({
+                "id": "old", "title": "Old", "year": 1959, "created": "2025-01-01T00:00:00Z",
+            })),
+            song(json!({ "id": "none", "title": "None" })),
+            song(json!({
+                "id": "new", "title": "New", "year": 1970, "created": "2024-01-01T00:00:00Z",
+            })),
+        ];
+        let arranged = |column| -> Vec<&str> {
+            let index = song_index(&songs, None);
+            arrange(&songs, &index, "", Sort::chosen(column), false)
+                .into_iter()
+                .map(|ix| songs[ix].id().as_str())
+                .collect()
+        };
+        assert_eq!(arranged(Column::Added), ["old", "new", "none"]);
+        assert_eq!(arranged(Column::Released), ["new", "old", "none"]);
+        assert_eq!(Sort::chosen(Column::Title), Sort::DEFAULT);
+    }
+
+    #[test]
+    fn a_release_date_keeps_each_album_in_track_order() {
+        let songs = songs()
+            .into_iter()
+            .map(|song| {
+                let mut fields = serde_json::to_value(&song).unwrap();
+                fields["year"] = json!(1959);
+                serde_json::from_value(fields).unwrap()
+            })
+            .collect::<Vec<Song>>();
+        assert_eq!(
+            ids(&songs, "", Column::Released, true),
+            ["b1", "a1", "a2", "c1"]
         );
     }
 
