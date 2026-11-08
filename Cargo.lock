@@ -632,6 +632,7 @@ dependencies = [
  "r8brain",
  "rtrb",
  "rubato",
+ "soxr",
  "symphonia",
  "thiserror 2.0.21",
  "windows 0.62.2",
@@ -8212,6 +8213,14 @@ dependencies = [
  "zbus",
  "zbus_macros",
  "zvariant",
+]
+
+[[package]]
+name = "soxr"
+version = "0.3.0"
+dependencies = [
+ "realfft",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

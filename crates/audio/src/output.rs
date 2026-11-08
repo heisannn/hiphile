@@ -32,6 +32,25 @@ impl Default for R8brainSettings {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct SoxrSettings {
+    pub quality: soxr::QualitySpec,
+    pub runtime: soxr::RuntimeSpec,
+}
+
+impl Default for SoxrSettings {
+    /// VHQ, as HQ's 20 bits fall short of the 32-bit floating point that the
+    /// decoder gives. One thread, as the engine resamples a decoded packet at a
+    /// time, whose few thousand frames are too little work for soxr to share.
+    fn default() -> Self {
+        Self {
+            quality: soxr::QualitySpec::new(soxr::Quality::VeryHigh),
+            runtime: soxr::RuntimeSpec::new(1),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Resampling {
     /// Rubato's. `fft_size` is the least frames one FFT takes at the lower of
     /// the two rates. It is rounded up to a multiple of the block the two rates
@@ -41,6 +60,7 @@ pub enum Resampling {
         window: ResamplingWindow,
     },
     R8brain(R8brainSettings),
+    Soxr(SoxrSettings),
 }
 
 impl Resampling {

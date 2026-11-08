@@ -1,9 +1,11 @@
 use config::{
     DsdFilter, DsdOutput, DsdParameters, DsdRate, R8brainParameters, R8brainPhase,
-    ResamplingQuality, SampleRate,
+    ResamplingQuality, SampleRate, SoxrInterpolation, SoxrParameters, SoxrPhase,
 };
 
-use crate::output::{self, OutputSettings, R8brainSettings, Resampling, ResamplingWindow};
+use crate::output::{
+    self, OutputSettings, R8brainSettings, Resampling, ResamplingWindow, SoxrSettings,
+};
 
 impl OutputSettings {
     /// What the settings in `config.toml` come to. DSD applies only on the
@@ -21,6 +23,7 @@ impl OutputSettings {
                 ResamplingQuality::R8brain(parameters) => {
                     Resampling::R8brain(r8brain_settings(parameters))
                 }
+                ResamplingQuality::Soxr(parameters) => Resampling::Soxr(soxr_settings(parameters)),
                 _ => Resampling::new(quality.fft_size(), window_of(quality.window())),
             })
             .with_dop(dop)
@@ -45,6 +48,36 @@ fn r8brain_settings(parameters: R8brainParameters) -> R8brainSettings {
     options.filter_fractions = filter.filter_fractions;
     settings.cache_limits.filters = performance.filter_cache_size as usize;
     settings.cache_limits.filter_banks = performance.filter_bank_cache_size as usize;
+    settings
+}
+
+/// A preset comes to libsoxr's own but for the rolloff, which changes nothing in `soxr`, so that
+/// a custom filter with a preset's values sounds as it did.
+fn soxr_settings(parameters: SoxrParameters) -> SoxrSettings {
+    let filter = parameters.quality.filter();
+    let performance = parameters.performance;
+    let mut settings = SoxrSettings::default();
+    let quality = &mut settings.quality;
+    quality.precision = filter.precision;
+    quality.passband_end = filter.passband_end;
+    quality.phase_response = match filter.phase {
+        SoxrPhase::Linear => soxr::Phase::Linear,
+        SoxrPhase::Intermediate => soxr::Phase::Intermediate,
+        SoxrPhase::Minimum => soxr::Phase::Minimum,
+    }
+    .response();
+    quality.double_precision = filter.double_precision;
+    let runtime = &mut settings.runtime;
+    runtime.coef_size_kbytes = performance.coef_table_kb as usize;
+    runtime.coef_interpolation = match performance.coef_interpolation {
+        SoxrInterpolation::Auto => soxr::CoefInterpolation::Auto,
+        SoxrInterpolation::Linear => soxr::CoefInterpolation::Low,
+        SoxrInterpolation::Cubic => soxr::CoefInterpolation::High,
+    };
+    // soxr takes 0, which is out of its range, as its default
+    let log2 = |size: u32| size.checked_ilog2().unwrap_or(0);
+    runtime.log2_min_dft_size = log2(performance.min_dft_size);
+    runtime.log2_large_dft_size = log2(performance.large_dft_size);
     settings
 }
 
@@ -119,7 +152,7 @@ fn window_of(window: config::ResamplingWindow) -> ResamplingWindow {
 
 #[cfg(test)]
 mod tests {
-    use config::R8brainQuality;
+    use config::{R8brainQuality, SoxrQuality};
 
     use super::*;
 
@@ -256,6 +289,118 @@ mod tests {
                 .iter()
                 .fold(0.0f64, |peak, sample| peak.max(sample.abs()));
             assert!((peak - 1.0).abs() < 1e-3, "{quality:?}: {peak}");
+        }
+    }
+
+    #[test]
+    fn soxr_follows_the_quality_and_its_default_is_the_default_settings() {
+        let resampling_of = |quality| {
+            OutputSettings::from_config(None, SampleRate::MatchSong, quality, &DsdOutput::default())
+                .resampling()
+        };
+        assert_eq!(
+            resampling_of(ResamplingQuality::Soxr(SoxrParameters::default())),
+            Resampling::Soxr(SoxrSettings::default())
+        );
+    }
+
+    /// But for the rolloff, which changes nothing in `soxr`
+    #[test]
+    fn the_soxr_presets_are_libsoxrs() {
+        for (quality, of_soxr) in [
+            (SoxrQuality::Low, soxr::Quality::Low),
+            (SoxrQuality::Medium, soxr::Quality::Medium),
+            (SoxrQuality::High, soxr::Quality::High),
+            (SoxrQuality::VeryHigh, soxr::Quality::VeryHigh),
+        ] {
+            let mut parameters = SoxrParameters::default();
+            parameters.quality = quality;
+            let mut expected = soxr::QualitySpec::new(of_soxr);
+            expected.rolloff = soxr::Rolloff::Small;
+            assert_eq!(soxr_settings(parameters).quality, expected, "{quality:?}");
+
+            parameters.quality = SoxrQuality::Custom(quality.filter());
+            assert_eq!(soxr_settings(parameters).quality, expected, "{quality:?}");
+        }
+    }
+
+    #[test]
+    fn every_soxr_choice_reaches_the_resampler() {
+        let mut filter = SoxrQuality::High.filter();
+        filter.phase = SoxrPhase::Intermediate;
+        filter.double_precision = true;
+        let mut parameters = SoxrParameters::default();
+        parameters.quality = SoxrQuality::Custom(filter);
+        parameters.performance.coef_table_kb = 1;
+        parameters.performance.coef_interpolation = SoxrInterpolation::Linear;
+        parameters.performance.min_dft_size = 256;
+        parameters.performance.large_dft_size = 1_048_576;
+        let settings = soxr_settings(parameters);
+        assert_eq!(settings.quality.phase_response, 25.0);
+        assert!(settings.quality.double_precision);
+        assert_eq!(settings.runtime.coef_size_kbytes, 1);
+        assert_eq!(
+            settings.runtime.coef_interpolation,
+            soxr::CoefInterpolation::Low
+        );
+        assert_eq!(settings.runtime.log2_min_dft_size, 8);
+        assert_eq!(settings.runtime.log2_large_dft_size, 20);
+        assert_eq!(settings.runtime.num_threads, 1);
+        parameters.performance.coef_interpolation = SoxrInterpolation::Cubic;
+        assert_eq!(
+            soxr_settings(parameters).runtime.coef_interpolation,
+            soxr::CoefInterpolation::High
+        );
+        filter.phase = SoxrPhase::Minimum;
+        parameters.quality = SoxrQuality::Custom(filter);
+        assert_eq!(soxr_settings(parameters).quality.phase_response, 0.0);
+    }
+
+    #[test]
+    fn the_ends_of_the_soxr_ranges_are_what_the_resampler_takes() {
+        let with = |precision, passband_end, coef_table_kb, min_dft_size, large_dft_size| {
+            let mut filter = SoxrQuality::default().filter();
+            filter.precision = precision;
+            filter.passband_end = passband_end;
+            let mut parameters = SoxrParameters::default();
+            parameters.quality = SoxrQuality::Custom(filter);
+            parameters.performance.coef_table_kb = coef_table_kb;
+            parameters.performance.min_dft_size = min_dft_size;
+            parameters.performance.large_dft_size = large_dft_size;
+            soxr_settings(parameters)
+        };
+        let precisions = config::SOXR_PRECISIONS;
+        let passband_ends = config::SOXR_PASSBAND_ENDS;
+        let tables = config::SOXR_COEF_TABLE_KBS;
+        let min_sizes = config::SOXR_MIN_DFT_SIZES;
+        let large_sizes = config::SOXR_LARGE_DFT_SIZES;
+        for settings in [
+            with(
+                *precisions.start(),
+                *passband_ends.start(),
+                *tables.start(),
+                min_sizes[0],
+                large_sizes[0],
+            ),
+            with(
+                *precisions.end(),
+                *passband_ends.end(),
+                *tables.end(),
+                min_sizes[min_sizes.len() - 1],
+                large_sizes[large_sizes.len() - 1],
+            ),
+        ] {
+            for (from, to) in [(44_100.0, 47_999.5), (192_000.0, 44_100.0)] {
+                let mut resampler = soxr::Resampler::<f32, f32>::builder(from, to, 2)
+                    .quality(settings.quality)
+                    .runtime(settings.runtime)
+                    .build()
+                    .unwrap();
+                let mut out = vec![0.0; 2 * 1_000];
+                resampler
+                    .resample(&[0.25; 2 * 1_000][..], &mut out[..])
+                    .unwrap();
+            }
         }
     }
 

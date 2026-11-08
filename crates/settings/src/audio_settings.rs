@@ -3,7 +3,7 @@ use std::time::Duration;
 use audio::{OutputDevice, OutputSettings, Transitions};
 use config::{
     DsdOutput, R8brainParameters, RESAMPLING_FFT_SIZES, ResamplingQuality, ResamplingWindow,
-    SAMPLE_RATE_MULTIPLES, SampleRate,
+    SAMPLE_RATE_MULTIPLES, SampleRate, SoxrParameters,
 };
 use gpui_kit::{AppContext as _, Context, EventEmitter, SharedString, Task};
 use ui::format_sample_rate;
@@ -11,7 +11,9 @@ use ui::format_sample_rate;
 /// Device ids hold a colon, so none is equal to this.
 pub(crate) const SYSTEM_DEFAULT: &str = "system-default";
 pub(crate) const MATCH_SONG: &str = "match-song";
-pub(crate) const RESAMPLERS: [&str; 2] = ["Rubato", "r8brain"];
+pub(crate) const RESAMPLERS: [&str; 3] = ["Rubato", "r8brain", "soxr"];
+const R8BRAIN_IX: usize = 1;
+const SOXR_IX: usize = 2;
 pub(crate) const RUBATO_QUALITIES: [&str; 4] = ["Medium", "High", "Max", "Custom"];
 const BASE_RATES: [u32; 2] = [44_100, 48_000];
 
@@ -25,12 +27,16 @@ pub struct AudioSettings {
     output: OutputSettings,
     transitions: Transitions,
     quality: ResamplingQuality,
-    /// Kept while r8brain is in use, to come back to.
+    /// Kept while another resampler is in use, to come back to.
     rubato: ResamplingQuality,
-    /// Kept while Rubato is in use, to come back to.
+    /// Kept while another resampler is in use, to come back to.
     r8brain: R8brainParameters,
     /// What `r8brain` was when last saved, to write only what has changed since.
     saved_r8brain: R8brainParameters,
+    /// Kept while another resampler is in use, to come back to.
+    soxr: SoxrParameters,
+    /// What `soxr` was when last saved, to write only what has changed since.
+    saved_soxr: SoxrParameters,
     dsd: DsdOutput,
     /// What `dsd` was when last saved, to write only what has changed since.
     saved_dsd: DsdOutput,
@@ -58,6 +64,7 @@ struct Unsaved {
     play_pause_fade: bool,
     quality: bool,
     r8brain: bool,
+    soxr: bool,
     dsd: bool,
 }
 
@@ -69,11 +76,17 @@ impl AudioSettings {
         let (store, output, quality, dsd, save_error) = read_saved_output();
         let (transitions, transitions_error) = read_saved_transitions(store.as_ref());
         let (r8brain, r8brain_error) = read_saved_r8brain(store.as_ref());
-        let save_error = save_error.or(transitions_error).or(r8brain_error);
+        let (soxr, soxr_error) = read_saved_soxr(store.as_ref());
+        let save_error = save_error
+            .or(transitions_error)
+            .or(r8brain_error)
+            .or(soxr_error);
         let mut this = Self::with(store, output, quality, dsd, save_error);
         this.transitions = transitions;
         this.r8brain = r8brain;
         this.saved_r8brain = r8brain;
+        this.soxr = soxr;
+        this.saved_soxr = soxr;
         this.list_devices(cx);
         this
     }
@@ -89,17 +102,25 @@ impl AudioSettings {
             ResamplingQuality::R8brain(parameters) => parameters,
             _ => R8brainParameters::default(),
         };
+        let soxr = match quality {
+            ResamplingQuality::Soxr(parameters) => parameters,
+            _ => SoxrParameters::default(),
+        };
         Self {
             store,
             output,
             transitions: Transitions::default(),
             quality,
             rubato: match quality {
-                ResamplingQuality::R8brain(_) => ResamplingQuality::default(),
+                ResamplingQuality::R8brain(_) | ResamplingQuality::Soxr(_) => {
+                    ResamplingQuality::default()
+                }
                 quality => quality,
             },
             r8brain,
             saved_r8brain: r8brain,
+            soxr,
+            saved_soxr: soxr,
             saved_dsd: dsd.clone(),
             dsd,
             devices: None,
@@ -291,24 +312,32 @@ impl AudioSettings {
     }
 
     pub(crate) fn resampler_ix(&self) -> usize {
-        usize::from(self.uses_r8brain())
+        match self.quality {
+            ResamplingQuality::R8brain(_) => R8BRAIN_IX,
+            ResamplingQuality::Soxr(_) => SOXR_IX,
+            _ => 0,
+        }
     }
 
     /// `ix` is into [`RESAMPLERS`]. Each comes back at the quality it had.
     pub(crate) fn select_resampler(&mut self, ix: usize, cx: &mut Context<Self>) {
         let quality = match ix {
-            0 => self.rubato,
-            _ => ResamplingQuality::R8brain(self.r8brain),
+            R8BRAIN_IX => ResamplingQuality::R8brain(self.r8brain),
+            SOXR_IX => ResamplingQuality::Soxr(self.soxr),
+            _ => self.rubato,
         };
         self.set_quality(quality, cx);
     }
 
+    /// Rubato keeps none of the other resamplers' qualities.
     pub(crate) fn rubato_quality_ix(&self) -> usize {
         match self.rubato {
             ResamplingQuality::Medium => 0,
             ResamplingQuality::High => 1,
             ResamplingQuality::Max => 2,
-            ResamplingQuality::Custom { .. } | ResamplingQuality::R8brain(_) => 3,
+            ResamplingQuality::Custom { .. }
+            | ResamplingQuality::R8brain(_)
+            | ResamplingQuality::Soxr(_) => 3,
         }
     }
 
@@ -316,11 +345,37 @@ impl AudioSettings {
         matches!(self.quality, ResamplingQuality::R8brain(_))
     }
 
+    pub(crate) fn uses_soxr(&self) -> bool {
+        matches!(self.quality, ResamplingQuality::Soxr(_))
+    }
+
+    pub(crate) fn soxr_parameters(&self) -> SoxrParameters {
+        self.soxr
+    }
+
+    pub(crate) fn set_soxr_parameters(
+        &mut self,
+        parameters: SoxrParameters,
+        cx: &mut Context<Self>,
+    ) {
+        if self.soxr == parameters {
+            return;
+        }
+        self.soxr = parameters;
+        self.unsaved.soxr = true;
+        if self.uses_soxr() {
+            self.set_quality(ResamplingQuality::Soxr(parameters), cx);
+        } else {
+            self.save(cx);
+            cx.notify();
+        }
+    }
+
     pub(crate) fn r8brain_parameters(&self) -> R8brainParameters {
         self.r8brain
     }
 
-    /// A field's change can settle after Rubato was chosen, and Rubato stays.
+    /// A field's change can settle after another resampler was chosen, and that one stays.
     pub(crate) fn set_r8brain_parameters(
         &mut self,
         parameters: R8brainParameters,
@@ -406,7 +461,10 @@ impl AudioSettings {
             return;
         }
         self.quality = quality;
-        if !matches!(quality, ResamplingQuality::R8brain(_)) {
+        if !matches!(
+            quality,
+            ResamplingQuality::R8brain(_) | ResamplingQuality::Soxr(_)
+        ) {
             self.rubato = quality;
         }
         self.unsaved.quality = true;
@@ -487,6 +545,8 @@ impl AudioSettings {
                 quality,
                 saved_r8brain,
                 r8brain,
+                saved_soxr,
+                soxr,
                 saved_dsd,
                 dsd,
                 unsaved,
@@ -500,8 +560,10 @@ impl AudioSettings {
                     || unsaved.play_pause_fade
                     || unsaved.quality
                     || unsaved.r8brain
+                    || unsaved.soxr
                     || unsaved.dsd;
                 let saved_r8brain = std::mem::replace(&mut this.saved_r8brain, this.r8brain);
+                let saved_soxr = std::mem::replace(&mut this.saved_soxr, this.soxr);
                 let saved_dsd = std::mem::replace(&mut this.saved_dsd, this.dsd.clone());
                 this.saving.then(|| {
                     let dsd = this.dsd.clone();
@@ -511,6 +573,8 @@ impl AudioSettings {
                         this.quality,
                         saved_r8brain,
                         this.r8brain,
+                        saved_soxr,
+                        this.soxr,
                         saved_dsd,
                         dsd,
                         unsaved,
@@ -542,6 +606,9 @@ impl AudioSettings {
                         }
                         if unsaved.r8brain {
                             store.save_r8brain_changes(saved_r8brain, r8brain)?;
+                        }
+                        if unsaved.soxr {
+                            store.save_soxr_changes(saved_soxr, soxr)?;
                         }
                         if unsaved.quality {
                             store.save_resampling_quality(quality)?;
@@ -647,6 +714,20 @@ fn read_saved_r8brain(store: Option<&config::Store>) -> (R8brainParameters, Opti
         Ok(parameters) => (parameters, None),
         Err(error) => (
             R8brainParameters::default(),
+            Some(format!("Couldn't read the audio settings: {error}.").into()),
+        ),
+    }
+}
+
+/// As [`read_saved_r8brain`]
+fn read_saved_soxr(store: Option<&config::Store>) -> (SoxrParameters, Option<SharedString>) {
+    let Some(store) = store else {
+        return (SoxrParameters::default(), None);
+    };
+    match store.soxr_parameters() {
+        Ok(parameters) => (parameters, None),
+        Err(error) => (
+            SoxrParameters::default(),
             Some(format!("Couldn't read the audio settings: {error}.").into()),
         ),
     }

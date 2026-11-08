@@ -4,8 +4,9 @@ use gpui_kit::component::{
     radio::{Radio, RadioGroup},
     setting::{SettingField, SettingGroup, SettingItem},
 };
-use gpui_kit::{App, Context, Entity, SharedString, Window};
+use gpui_kit::{App, Entity, SharedString, Window};
 
+use crate::audio_options::dropdown;
 use crate::audio_settings::AudioSettings;
 
 const FORMATS: [&str; 2] = ["PCM", "DSD (DoP)"];
@@ -362,26 +363,5 @@ fn modulator_group(audio: &Entity<AudioSettings>, cx: &App) -> SettingGroup {
         ]
         .into_iter()
         .map(|item| item.keywords(["dsd"])),
-    )
-}
-
-fn dropdown(
-    audio: &Entity<AudioSettings>,
-    options: Vec<(SharedString, SharedString)>,
-    value: fn(&AudioSettings) -> SharedString,
-    set: fn(&mut AudioSettings, &str, &mut Context<AudioSettings>),
-) -> SettingField<SharedString> {
-    SettingField::scrollable_dropdown(
-        options,
-        {
-            let audio = audio.clone();
-            move |cx| value(audio.read(cx))
-        },
-        {
-            let audio = audio.clone();
-            move |chosen: SharedString, cx| {
-                audio.update(cx, |audio, cx| set(audio, &chosen, cx));
-            }
-        },
     )
 }

@@ -16,7 +16,7 @@ Hiphile is developed on macOS. Windows and Linux are not regularly tested.
 
 - **Library:** Browse albums, artists and songs, get daily recommendations on the home screen, edit playlists, and keep favorites.
 - **Playback:** Gapless playback, on PCM trimming the silence around songs, crossfade and fading on play and pause, repeat, shuffle and an editable queue.
-- **Audio output:** Choose an output device, and switch its sample rate automatically to match each file or a multiple of it. On macOS and Windows, keep other apps off the device with exclusive mode. On macOS, play as DSD up to DSD256 through DoP, with the filter and the modulator adjustable. See [how DSD output works](docs/dsd/implementation.md). Resample with Rubato or with a built-in port of r8brain-free-src. See [how resampling works](docs/resample/implementation.md).
+- **Audio output:** Choose an output device, and switch its sample rate automatically to match each file or a multiple of it. On macOS and Windows, keep other apps off the device with exclusive mode. On macOS, play as DSD up to DSD256 through DoP, with the filter and the modulator adjustable. See [how DSD output works](docs/dsd/implementation.md). Resample with Rubato, with a built-in port of r8brain-free-src, or with a built-in resampler that has the functions of libsoxr. See how [Rubato](docs/resampler/rubato.md), [r8brain](docs/resampler/r8brain.md) and [soxr](docs/resampler/soxr.md) work.
 - **Lyrics:** Synced lyrics, highlighted word by word or line by line.
 - **Mini player:** A small window above all others, with the controls and the lyrics.
 - **Local cache:** Library data, cover art and songs are cached on disk, and library data syncs in the background.
@@ -63,7 +63,7 @@ Change settings in the app under **hiphile > Settings…**. They are saved to
 | `trim_silence` (`true` leaves out the silence around songs and any longer than 10 seconds inside them; PCM only) | `HIPHILE_TRIM_SILENCE` | `false` |
 | `play_pause_fade` (`true` fades the sound in and out when playing, pausing and stopping; PCM only) | `HIPHILE_PLAY_PAUSE_FADE` | `false` |
 | `crossfade_seconds` (from `0` to `12`; PCM only; songs that need the device at another rate play apart, so set a fixed `sample_rate` to crossfade them all) | `HIPHILE_CROSSFADE_SECONDS` | `0` |
-| `resampling` (`medium`, `high`, `max`, `custom` or `r8brain`, a built-in port of [r8brain-free-src](https://github.com/avaneev/r8brain-free-src) that takes no FFT size or window) | `HIPHILE_RESAMPLING` | `medium` |
+| `resampling` (`medium`, `high`, `max`, `custom`, `r8brain`, a built-in port of [r8brain-free-src](https://github.com/avaneev/r8brain-free-src), or `soxr`, a built-in resampler with the functions of [libsoxr](https://sourceforge.net/projects/soxr/), neither of which takes an FFT size or window) | `HIPHILE_RESAMPLING` | `medium` |
 | `r8brain_quality` (with `r8brain`: `low`, `medium`, `high`, `max` or `custom`) | `HIPHILE_R8BRAIN_QUALITY` | `high` |
 | `r8brain_transition_band` (with `r8brain_quality = "custom"`: percent, from 0.5 to 45) | `HIPHILE_R8BRAIN_TRANSITION_BAND` | `2` |
 | `r8brain_attenuation` (with `r8brain_quality = "custom"`: decibels, from 49 to 218) | `HIPHILE_R8BRAIN_ATTENUATION` | `180.15` |
@@ -74,6 +74,15 @@ Change settings in the app under **hiphile > Settings…**. They are saved to
 | `r8brain_filter_fractions` (with `r8brain_quality = "custom"`: positions of the interpolating filters, from 5 to 65536) | `HIPHILE_R8BRAIN_FILTER_FRACTIONS` | chosen from the attenuation |
 | `r8brain_filter_cache_size` (with `r8brain`: filters kept for later songs, from 2 to 4096) | `HIPHILE_R8BRAIN_FILTER_CACHE_SIZE` | `96` |
 | `r8brain_filter_bank_cache_size` (with `r8brain`: filter banks kept for later songs, from 2 to 4096) | `HIPHILE_R8BRAIN_FILTER_BANK_CACHE_SIZE` | `12` |
+| `soxr_quality` (with `soxr`: `low`, `medium`, `high`, `very-high` or `custom`) | `HIPHILE_SOXR_QUALITY` | `very-high` |
+| `soxr_precision` (with `soxr_quality = "custom"`: bits, from 15 to 33) | `HIPHILE_SOXR_PRECISION` | `28` |
+| `soxr_passband_end` (with `soxr_quality = "custom"`: where the filter starts removing highs, a fraction of the lower rate's Nyquist frequency, from 0.5 to 0.998) | `HIPHILE_SOXR_PASSBAND_END` | `very-high`'s, about `0.911` |
+| `soxr_phase` (with `soxr_quality = "custom"`: `linear`, `intermediate` or `minimum`) | `HIPHILE_SOXR_PHASE` | `linear` |
+| `soxr_double_precision` (with `soxr_quality = "custom"`: computes in 64-bit floating point at 20 bits or less too) | `HIPHILE_SOXR_DOUBLE_PRECISION` | `false` |
+| `soxr_coef_table_kb` (with `soxr`: the most memory for the filter's steps between samples, in kB, from 1 to 65536) | `HIPHILE_SOXR_COEF_TABLE_KB` | `400` |
+| `soxr_coef_interpolation` (with `soxr`: `auto`, `linear` or `cubic`, how the steps it doesn't keep are worked out) | `HIPHILE_SOXR_COEF_INTERPOLATION` | `auto` |
+| `soxr_min_dft_size` (with `soxr`: a power of two from 256 to 32768) | `HIPHILE_SOXR_MIN_DFT_SIZE` | `1024` |
+| `soxr_large_dft_size` (with `soxr`: a power of two from 256 to 1048576) | `HIPHILE_SOXR_LARGE_DFT_SIZE` | `131072` |
 | `resampling_fft_size` (with `custom`: a power of two from 256 to 16384) | `HIPHILE_RESAMPLING_FFT_SIZE` | `256` |
 | `resampling_window` (with `custom`: `hann`, `hann-2`, `blackman`, `blackman-2`, `blackman-harris` or `blackman-harris-2`) | `HIPHILE_RESAMPLING_WINDOW` | `blackman-harris-2` |
 | `output_format` (`pcm` or `dsd`; macOS, for the device in `dop_device`) | `HIPHILE_OUTPUT_FORMAT` | `pcm` |

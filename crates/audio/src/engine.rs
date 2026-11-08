@@ -2323,7 +2323,7 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
-    use crate::output::{R8brainSettings, Resampling, ResamplingWindow};
+    use crate::output::{R8brainSettings, Resampling, ResamplingWindow, SoxrSettings};
     use crate::test_wav::wav;
 
     fn next_event(events: &async_channel::Receiver<Event>) -> Event {
@@ -3228,6 +3228,44 @@ mod tests {
         settings.options.filter_fractions = Some(4096);
         settings.options.max_input_len = 64;
         resampled_tracks_join_without_a_gap(Resampling::R8brain(settings));
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn resampled_tracks_join_without_a_gap_on_soxr() {
+        resampled_tracks_join_without_a_gap(Resampling::Soxr(SoxrSettings::default()));
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn resampled_tracks_join_without_a_gap_on_the_soxr_presets() {
+        for quality in [
+            config::SoxrQuality::Low,
+            config::SoxrQuality::Medium,
+            config::SoxrQuality::High,
+        ] {
+            let mut parameters = config::SoxrParameters::default();
+            parameters.quality = quality;
+            let resampling = OutputSettings::from_config(
+                None,
+                config::SampleRate::MatchSong,
+                config::ResamplingQuality::Soxr(parameters),
+                &config::DsdOutput::default(),
+            )
+            .resampling();
+            resampled_tracks_join_without_a_gap(resampling);
+        }
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn resampled_tracks_join_without_a_gap_on_soxr_with_other_options() {
+        let mut settings = SoxrSettings::default();
+        settings.quality.phase_response = soxr::Phase::Minimum.response();
+        settings.quality.passband_end = 0.99;
+        settings.runtime.coef_size_kbytes = 1;
+        settings.runtime.log2_min_dft_size = 15;
+        resampled_tracks_join_without_a_gap(Resampling::Soxr(settings));
     }
 
     #[test]

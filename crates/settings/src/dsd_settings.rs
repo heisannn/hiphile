@@ -5,6 +5,7 @@ use config::{
 };
 use gpui_kit::{Context, SharedString};
 
+use crate::audio_options::{Options, number_value, numbers, same_labels};
 use crate::audio_settings::{AudioSettings, window_label};
 
 const DSD_QUALITIES: [&str; 5] = ["Low", "Medium", "High", "Max", "Custom"];
@@ -22,8 +23,6 @@ const WIDE_NOISE_BAND: &str = "48000";
 const DITHER_DBS: [f64; 5] = [-140.0, -120.0, -100.0, -80.0, -60.0];
 const INPUT_LEVEL_DBS: [f64; 6] = [-12.0, -9.0, -6.0, -3.0, 0.0, 3.0];
 const LIMITER_CEILING_DBS: [f64; 3] = [1.0, 0.0, -1.0];
-
-type Options = Vec<(SharedString, SharedString)>;
 
 impl AudioSettings {
     pub(crate) fn is_dsd_offered() -> bool {
@@ -480,32 +479,6 @@ fn is_rate_supported(frame_rates: &[u32], rate: DsdRate) -> bool {
         || frame_rates.contains(&rate.frame_rate_for(48_000))
 }
 
-fn same_labels(values: impl Iterator<Item = String>) -> Options {
-    values
-        .map(|value| {
-            let value = SharedString::from(value);
-            (value.clone(), value)
-        })
-        .collect()
-}
-
-fn number_value(number: f64) -> SharedString {
-    number.to_string().into()
-}
-
-/// The values, and `current` too if the file holds one that is not among them,
-/// so that the choice stays visible.
-fn numbers(values: &[f64], current: f64, label: impl Fn(f64) -> String) -> Options {
-    let mut options: Options = values
-        .iter()
-        .map(|number| (number_value(*number), label(*number).into()))
-        .collect();
-    if !values.contains(&current) {
-        options.push((number_value(current), label(current).into()));
-    }
-    options
-}
-
 fn numbers_or(
     none_value: &'static str,
     none_label: &'static str,
@@ -784,12 +757,5 @@ mod tests {
         assert!(is_rate_supported(&[192_000], DsdRate::Dsd64));
         assert!(is_rate_supported(&[176_400], DsdRate::Dsd64));
         assert!(!is_rate_supported(&[176_400, 192_000], DsdRate::Dsd128));
-    }
-
-    #[test]
-    fn a_value_from_the_file_stays_an_option() {
-        let label = |number: f64| format!("{number:.2}");
-        assert_eq!(numbers(&[1.3, 1.4], 1.33, label).len(), 3);
-        assert_eq!(numbers(&[1.3, 1.4], 1.4, label).len(), 2);
     }
 }

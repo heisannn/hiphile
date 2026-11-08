@@ -32,6 +32,7 @@ use crate::lyrics_settings::{self, LyricsSettings};
 use crate::queue_settings::QueueSettings;
 use crate::r8brain_section::{R8brainFields, r8brain_groups, r8brain_quality_item};
 use crate::song_cache_usage::{SongCacheUsage, format_size};
+use crate::soxr_section::{soxr_groups, soxr_quality_item};
 use crate::{CloseWindow, SETTINGS_CONTEXT};
 
 /// How often the devices are listed and the kept songs counted again while the
@@ -311,6 +312,7 @@ impl SettingsView {
             .group(self.between_songs_group(cx))
             .group(self.resampling_group(cx))
             .groups(r8brain_groups(&self.audio, &self.r8brain_fields, cx))
+            .groups(soxr_groups(&self.audio, cx))
             .groups(dsd_groups(&self.audio, cx))
     }
 
@@ -410,6 +412,8 @@ impl SettingsView {
         let mut items = vec![SettingItem::new("Resampler", resampler)];
         if audio.uses_r8brain() {
             items.push(r8brain_quality_item(&self.audio));
+        } else if audio.uses_soxr() {
+            items.push(soxr_quality_item(&self.audio));
         } else {
             items.extend(self.rubato_items(cx));
         }

@@ -14,7 +14,9 @@ pub use profile::{
     R8BRAIN_CACHE_SIZES, R8BRAIN_FILTER_FRACTIONS, R8BRAIN_MAX_INPUT_FRAMES,
     R8BRAIN_TRANSITION_BANDS, R8brainFilter, R8brainParameters, R8brainPerformance, R8brainPhase,
     R8brainQuality, RESAMPLING_FFT_SIZES, ResamplingQuality, ResamplingWindow,
-    SAMPLE_RATE_MULTIPLES, SampleRate, Store, cache_capacity_of,
+    SAMPLE_RATE_MULTIPLES, SOXR_COEF_TABLE_KBS, SOXR_LARGE_DFT_SIZES, SOXR_MIN_DFT_SIZES,
+    SOXR_PASSBAND_ENDS, SOXR_PRECISIONS, SampleRate, SoxrFilter, SoxrInterpolation, SoxrParameters,
+    SoxrPerformance, SoxrPhase, SoxrQuality, Store, cache_capacity_of,
 };
 
 use std::path::PathBuf;

@@ -49,7 +49,9 @@ pub use device::{OutputDevice, output_devices};
 pub use dsd::{DopRate, Settings as DsdSettings};
 pub use engine::{Engine, Event, EventKind, LoadId, PlaybackFormat, Transitions};
 pub use error::Error;
-pub use output::{OutputSettings, R8brainPhase, R8brainSettings, Resampling, ResamplingWindow};
+pub use output::{
+    OutputSettings, R8brainPhase, R8brainSettings, Resampling, ResamplingWindow, SoxrSettings,
+};
 pub use track::Track;
 
 /// Whether this platform's audio can carry DoP at all. Its shared modes mix

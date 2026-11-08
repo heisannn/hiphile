@@ -2,6 +2,7 @@
 //! on their change events. The appearance only concerns the theme, which this crate keeps on it.
 
 mod appearance_settings;
+mod audio_options;
 mod audio_settings;
 mod cache_limit;
 mod cache_limit_field;
@@ -17,6 +18,8 @@ mod r8brain_section;
 mod r8brain_settings;
 mod settings_view;
 mod song_cache_usage;
+mod soxr_section;
+mod soxr_settings;
 
 use cache_limit::CacheKind;
 use gpui_kit::component::TitleBar;

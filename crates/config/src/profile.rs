@@ -203,6 +203,141 @@ impl Default for R8brainPerformance {
     }
 }
 
+/// In bits
+pub const SOXR_PRECISIONS: std::ops::RangeInclusive<f64> = 15.0..=33.0;
+/// As fractions of the Nyquist frequency. With the stop-band from the Nyquist frequency on, these
+/// are the ends of the widths that the transition band may have.
+pub const SOXR_PASSBAND_ENDS: std::ops::RangeInclusive<f64> = 0.5..=0.998;
+pub const SOXR_COEF_TABLE_KBS: std::ops::RangeInclusive<u32> = 1..=65_536;
+pub const SOXR_MIN_DFT_SIZES: [u32; 8] = [256, 512, 1024, 2048, 4096, 8192, 16_384, 32_768];
+pub const SOXR_LARGE_DFT_SIZES: [u32; 13] = [
+    256, 512, 1024, 2048, 4096, 8192, 16_384, 32_768, 65_536, 131_072, 262_144, 524_288, 1_048_576,
+];
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SoxrPhase {
+    #[default]
+    Linear,
+    /// Between minimum and linear
+    Intermediate,
+    Minimum,
+}
+
+impl SoxrPhase {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Linear => "linear",
+            Self::Intermediate => "intermediate",
+            Self::Minimum => "minimum",
+        }
+    }
+}
+
+/// What decides the sound of the `soxr` resampling.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct SoxrFilter {
+    /// In bits
+    pub precision: f64,
+    /// As a fraction of the lower rate's Nyquist frequency
+    pub passband_end: f64,
+    pub phase: SoxrPhase,
+    /// Computes in 64-bit floating point at 20 bits or less too, as it always does above.
+    pub double_precision: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum SoxrQuality {
+    Low,
+    Medium,
+    High,
+    #[default]
+    VeryHigh,
+    Custom(SoxrFilter),
+}
+
+impl SoxrQuality {
+    /// The presets are libsoxr's LQ, MQ, HQ and VHQ, to the bit.
+    pub fn filter(self) -> SoxrFilter {
+        let preset = |precision, passband_end| SoxrFilter {
+            precision,
+            passband_end,
+            phase: SoxrPhase::Linear,
+            double_precision: false,
+        };
+        match self {
+            Self::Low => preset(16.0, 0.67626953125),
+            Self::Medium => preset(16.0, 0.9158810491765671),
+            Self::High => preset(20.0, 0.9137436532733066),
+            Self::VeryHigh => preset(28.0, 0.9113283198951663),
+            Self::Custom(filter) => filter,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::VeryHigh => "very-high",
+            Self::Custom(_) => "custom",
+        }
+    }
+}
+
+/// How the `soxr` resampling finds the phases of its filter that it does not keep.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SoxrInterpolation {
+    /// Keeps every phase that a ratio of small whole numbers takes, if they fit in the table.
+    #[default]
+    Auto,
+    Linear,
+    Cubic,
+}
+
+impl SoxrInterpolation {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Linear => "linear",
+            Self::Cubic => "cubic",
+        }
+    }
+}
+
+/// What the file says about the `soxr` resampling, kept while another one is
+/// in use. Only the quality changes the sound.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct SoxrParameters {
+    pub quality: SoxrQuality,
+    pub performance: SoxrPerformance,
+}
+
+/// Of the `soxr` resampling, what changes the sound by no more than rounding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SoxrPerformance {
+    /// In kB
+    pub coef_table_kb: u32,
+    pub coef_interpolation: SoxrInterpolation,
+    /// One of [`SOXR_MIN_DFT_SIZES`]
+    pub min_dft_size: u32,
+    /// One of [`SOXR_LARGE_DFT_SIZES`]
+    pub large_dft_size: u32,
+}
+
+impl Default for SoxrPerformance {
+    fn default() -> Self {
+        Self {
+            coef_table_kb: 400,
+            coef_interpolation: SoxrInterpolation::Auto,
+            min_dft_size: 1024,
+            large_dft_size: 131_072,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum ResamplingQuality {
     #[default]
@@ -216,12 +351,14 @@ pub enum ResamplingQuality {
     /// Takes no FFT size or window of its own, and what it answers for those is
     /// what a custom quality starts from after it.
     R8brain(R8brainParameters),
+    /// As [`Self::R8brain`]
+    Soxr(SoxrParameters),
 }
 
 impl ResamplingQuality {
     pub fn fft_size(self) -> u32 {
         match self {
-            Self::Medium | Self::R8brain(_) => 256,
+            Self::Medium | Self::R8brain(_) | Self::Soxr(_) => 256,
             Self::High => 1024,
             Self::Max => 4096,
             Self::Custom { fft_size, .. } => fft_size,
@@ -230,7 +367,7 @@ impl ResamplingQuality {
 
     pub fn window(self) -> ResamplingWindow {
         match self {
-            Self::Medium | Self::High | Self::Max | Self::R8brain(_) => {
+            Self::Medium | Self::High | Self::Max | Self::R8brain(_) | Self::Soxr(_) => {
                 ResamplingWindow::BlackmanHarris2
             }
             Self::Custom { window, .. } => window,
@@ -244,6 +381,7 @@ impl ResamplingQuality {
             Self::Max => "max",
             Self::Custom { .. } => "custom",
             Self::R8brain(_) => "r8brain",
+            Self::Soxr(_) => "soxr",
         }
     }
 }
@@ -466,6 +604,15 @@ struct Settings {
     r8brain_filter_fractions: Option<u32>,
     r8brain_filter_cache_size: Option<u32>,
     r8brain_filter_bank_cache_size: Option<u32>,
+    soxr_quality: Option<String>,
+    soxr_precision: Option<f64>,
+    soxr_passband_end: Option<f64>,
+    soxr_phase: Option<String>,
+    soxr_double_precision: Option<bool>,
+    soxr_coef_table_kb: Option<u32>,
+    soxr_coef_interpolation: Option<String>,
+    soxr_min_dft_size: Option<u32>,
+    soxr_large_dft_size: Option<u32>,
     output_format: Option<String>,
     dop_device: Option<String>,
     dsd_rate: Option<u16>,
@@ -592,24 +739,36 @@ const R8BRAIN_FILTER_KEYS: [&str; 5] = [
     "r8brain_filter_fractions",
 ];
 
+/// The keys of a resampler's parameters, in the order of its items
+struct ParameterKeys {
+    quality: &'static str,
+    filter: &'static [&'static str],
+}
+
+/// A resampler's items, each a key and its value or `None` for no key, and whether its quality
+/// is custom
+type ParameterItems = (Vec<(&'static str, Option<toml_edit::Item>)>, bool);
+
 /// Writes what differs from `before`, the values in use until now, as the rest may have come from
 /// the environment. Moving to or from a preset writes every filter key, so that a key left over
-/// from another quality cannot come back unnoticed.
-fn write_r8brain_changes(
+/// from another quality cannot come back unnoticed. `quality_changes` also for another custom
+/// filter, so that the file says it is custom.
+fn write_changes(
     document: &mut toml_edit::DocumentMut,
-    before: R8brainParameters,
-    after: R8brainParameters,
+    keys: &ParameterKeys,
+    (before, before_is_custom): ParameterItems,
+    (after, after_is_custom): ParameterItems,
+    quality_changes: bool,
 ) {
-    let is_custom =
-        |parameters: R8brainParameters| matches!(parameters.quality, R8brainQuality::Custom(_));
-    let quality_changes = before.quality != after.quality;
-    let preset_changes = quality_changes && !(is_custom(before) && is_custom(after));
     let text = |item: &Option<toml_edit::Item>| item.as_ref().map(ToString::to_string);
-    for ((key, old), (_, new)) in r8brain_items(before).into_iter().zip(r8brain_items(after)) {
-        let rewrite = match key {
-            "r8brain_quality" => quality_changes,
-            _ if R8BRAIN_FILTER_KEYS.contains(&key) => preset_changes || text(&old) != text(&new),
-            _ => text(&old) != text(&new),
+    let preset_changes = quality_changes && !(before_is_custom && after_is_custom);
+    for ((key, old), (_, new)) in before.into_iter().zip(after) {
+        let rewrite = if key == keys.quality {
+            quality_changes
+        } else if keys.filter.contains(&key) {
+            preset_changes || text(&old) != text(&new)
+        } else {
+            text(&old) != text(&new)
         };
         if !rewrite {
             continue;
@@ -621,6 +780,27 @@ fn write_r8brain_changes(
             }
         }
     }
+}
+
+const R8BRAIN_KEYS: ParameterKeys = ParameterKeys {
+    quality: "r8brain_quality",
+    filter: &R8BRAIN_FILTER_KEYS,
+};
+
+fn write_r8brain_changes(
+    document: &mut toml_edit::DocumentMut,
+    before: R8brainParameters,
+    after: R8brainParameters,
+) {
+    let is_custom =
+        |parameters: R8brainParameters| matches!(parameters.quality, R8brainQuality::Custom(_));
+    write_changes(
+        document,
+        &R8BRAIN_KEYS,
+        (r8brain_items(before).into(), is_custom(before)),
+        (r8brain_items(after).into(), is_custom(after)),
+        before.quality != after.quality,
+    );
 }
 
 /// Only what the quality uses. What is at its default has no key, and so follows the default if
@@ -692,6 +872,97 @@ fn r8brain_items(parameters: R8brainParameters) -> [(&'static str, Option<toml_e
     ]
 }
 
+const SOXR_FILTER_KEYS: [&str; 4] = [
+    "soxr_precision",
+    "soxr_passband_end",
+    "soxr_phase",
+    "soxr_double_precision",
+];
+
+const SOXR_KEYS: ParameterKeys = ParameterKeys {
+    quality: "soxr_quality",
+    filter: &SOXR_FILTER_KEYS,
+};
+
+fn write_soxr_changes(
+    document: &mut toml_edit::DocumentMut,
+    before: SoxrParameters,
+    after: SoxrParameters,
+) {
+    let is_custom =
+        |parameters: SoxrParameters| matches!(parameters.quality, SoxrQuality::Custom(_));
+    write_changes(
+        document,
+        &SOXR_KEYS,
+        (soxr_items(before).into(), is_custom(before)),
+        (soxr_items(after).into(), is_custom(after)),
+        before.quality != after.quality,
+    );
+}
+
+/// As [`r8brain_items`], against the default quality's filter
+fn soxr_items(parameters: SoxrParameters) -> [(&'static str, Option<toml_edit::Item>); 9] {
+    let quality = parameters.quality;
+    let preset = SoxrQuality::default().filter();
+    let custom = match quality {
+        SoxrQuality::Custom(filter) => Some(filter),
+        _ => None,
+    };
+    let performance = parameters.performance;
+    let default = SoxrPerformance::default();
+    let whole = |number: u32| toml_edit::value(i64::from(number));
+    [
+        (
+            "soxr_quality",
+            (quality != SoxrQuality::default()).then(|| toml_edit::value(quality.name())),
+        ),
+        (
+            "soxr_precision",
+            custom
+                .filter(|filter| filter.precision != preset.precision)
+                .map(|filter| toml_edit::value(filter.precision)),
+        ),
+        (
+            "soxr_passband_end",
+            custom
+                .filter(|filter| filter.passband_end != preset.passband_end)
+                .map(|filter| toml_edit::value(filter.passband_end)),
+        ),
+        (
+            "soxr_phase",
+            custom
+                .filter(|filter| filter.phase != preset.phase)
+                .map(|filter| toml_edit::value(filter.phase.name())),
+        ),
+        (
+            "soxr_double_precision",
+            custom
+                .filter(|filter| filter.double_precision != preset.double_precision)
+                .map(|filter| toml_edit::value(filter.double_precision)),
+        ),
+        (
+            "soxr_coef_table_kb",
+            (performance.coef_table_kb != default.coef_table_kb)
+                .then(|| whole(performance.coef_table_kb)),
+        ),
+        (
+            "soxr_coef_interpolation",
+            (performance.coef_interpolation != default.coef_interpolation)
+                .then(|| toml_edit::value(performance.coef_interpolation.name())),
+        ),
+        (
+            "soxr_min_dft_size",
+            (performance.min_dft_size != default.min_dft_size)
+                .then(|| whole(performance.min_dft_size)),
+        ),
+        (
+            "soxr_large_dft_size",
+            (performance.large_dft_size != default.large_dft_size)
+                .then(|| whole(performance.large_dft_size)),
+        ),
+    ]
+}
+
 /// The settings directory and its `config.toml`:
 ///
 /// ```toml
@@ -720,6 +991,15 @@ fn r8brain_items(parameters: R8brainParameters) -> [(&'static str, Option<toml_e
 /// r8brain_filter_fractions = 2048
 /// r8brain_filter_cache_size = 96
 /// r8brain_filter_bank_cache_size = 12
+/// soxr_quality = "custom"
+/// soxr_precision = 24.0
+/// soxr_passband_end = 0.95 # Of the Nyquist frequency
+/// soxr_phase = "intermediate"
+/// soxr_double_precision = false
+/// soxr_coef_table_kb = 400
+/// soxr_coef_interpolation = "auto"
+/// soxr_min_dft_size = 1024
+/// soxr_large_dft_size = 131072
 /// output_format = "dsd"
 /// dop_device = "coreaudio:SomeDacUid"
 /// dsd_rate = 256
@@ -881,6 +1161,7 @@ impl Store {
     /// Medium unless the file says otherwise. The FFT size and window are only read for
     /// `custom`, and default to those of medium. The `r8brain_` keys are only read for `r8brain`,
     /// and those that decide the sound only for its `custom`, defaulting to those of its `high`.
+    /// The `soxr_` keys are read in the same way for `soxr`, defaulting to its `very-high`.
     pub fn resampling_quality(&self) -> Result<ResamplingQuality, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         self.parse_resampling_quality(&settings)
@@ -890,6 +1171,12 @@ impl Store {
     pub fn r8brain_parameters(&self) -> Result<R8brainParameters, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         self.parse_r8brain_parameters(&settings)
+    }
+
+    /// Whatever resampling is in use, so that it can come back to these.
+    pub fn soxr_parameters(&self) -> Result<SoxrParameters, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        self.parse_soxr_parameters(&settings)
     }
 
     /// Off unless the file says otherwise. The parameters are only read for
@@ -967,6 +1254,9 @@ impl Store {
             Some("r8brain") => self
                 .parse_r8brain_parameters(settings)
                 .map(ResamplingQuality::R8brain),
+            Some("soxr") => self
+                .parse_soxr_parameters(settings)
+                .map(ResamplingQuality::Soxr),
             Some("custom") => {
                 let medium = ResamplingQuality::Medium;
                 let fft_size = settings.resampling_fft_size.unwrap_or(medium.fft_size());
@@ -993,9 +1283,97 @@ impl Store {
             }
             Some(_) => Err(invalid(
                 "resampling",
-                "\"medium\", \"high\", \"max\", \"custom\" or \"r8brain\"",
+                "\"medium\", \"high\", \"max\", \"custom\", \"r8brain\" or \"soxr\"",
             )),
         }
+    }
+
+    fn parse_soxr_parameters(&self, settings: &Settings) -> Result<SoxrParameters, Error> {
+        let quality = match settings.soxr_quality.as_deref() {
+            Some("low") => SoxrQuality::Low,
+            Some("medium") => SoxrQuality::Medium,
+            Some("high") => SoxrQuality::High,
+            None | Some("very-high") => SoxrQuality::VeryHigh,
+            Some("custom") => SoxrQuality::Custom(self.parse_soxr_filter(settings)?),
+            Some(_) => {
+                return Err(self.invalid(
+                    "soxr_quality",
+                    "\"low\", \"medium\", \"high\", \"very-high\" or \"custom\"",
+                ));
+            }
+        };
+        Ok(SoxrParameters {
+            quality,
+            performance: self.parse_soxr_performance(settings)?,
+        })
+    }
+
+    fn parse_soxr_filter(&self, settings: &Settings) -> Result<SoxrFilter, Error> {
+        let preset = SoxrQuality::default().filter();
+        let precision = settings.soxr_precision.unwrap_or(preset.precision);
+        if !SOXR_PRECISIONS.contains(&precision) {
+            return Err(self.invalid("soxr_precision", "a number of bits from 15 to 33"));
+        }
+        let passband_end = settings.soxr_passband_end.unwrap_or(preset.passband_end);
+        if !SOXR_PASSBAND_ENDS.contains(&passband_end) {
+            return Err(self.invalid(
+                "soxr_passband_end",
+                "a fraction of the Nyquist frequency from 0.5 to 0.998",
+            ));
+        }
+        let phase = match settings.soxr_phase.as_deref() {
+            None | Some("linear") => SoxrPhase::Linear,
+            Some("intermediate") => SoxrPhase::Intermediate,
+            Some("minimum") => SoxrPhase::Minimum,
+            Some(_) => {
+                return Err(
+                    self.invalid("soxr_phase", "\"linear\", \"intermediate\" or \"minimum\"")
+                );
+            }
+        };
+        Ok(SoxrFilter {
+            precision,
+            passband_end,
+            phase,
+            double_precision: settings
+                .soxr_double_precision
+                .unwrap_or(preset.double_precision),
+        })
+    }
+
+    fn parse_soxr_performance(&self, settings: &Settings) -> Result<SoxrPerformance, Error> {
+        let default = SoxrPerformance::default();
+        let coef_table_kb = settings.soxr_coef_table_kb.unwrap_or(default.coef_table_kb);
+        if !SOXR_COEF_TABLE_KBS.contains(&coef_table_kb) {
+            return Err(self.invalid("soxr_coef_table_kb", "a whole number from 1 to 65536"));
+        }
+        let coef_interpolation = match settings.soxr_coef_interpolation.as_deref() {
+            None | Some("auto") => SoxrInterpolation::Auto,
+            Some("linear") => SoxrInterpolation::Linear,
+            Some("cubic") => SoxrInterpolation::Cubic,
+            Some(_) => {
+                return Err(self.invalid(
+                    "soxr_coef_interpolation",
+                    "\"auto\", \"linear\" or \"cubic\"",
+                ));
+            }
+        };
+        let min_dft_size = settings.soxr_min_dft_size.unwrap_or(default.min_dft_size);
+        if !SOXR_MIN_DFT_SIZES.contains(&min_dft_size) {
+            return Err(self.invalid("soxr_min_dft_size", "a power of two from 256 to 32768"));
+        }
+        let large_dft_size = settings
+            .soxr_large_dft_size
+            .unwrap_or(default.large_dft_size);
+        if !SOXR_LARGE_DFT_SIZES.contains(&large_dft_size) {
+            return Err(self.invalid("soxr_large_dft_size", "a power of two from 256 to 1048576"));
+        }
+        Ok(SoxrPerformance {
+            coef_table_kb,
+            coef_interpolation,
+            min_dft_size,
+            large_dft_size,
+        })
     }
 
     fn parse_r8brain_parameters(&self, settings: &Settings) -> Result<R8brainParameters, Error> {
@@ -1384,6 +1762,14 @@ impl Store {
         after: R8brainParameters,
     ) -> Result<(), Error> {
         self.edit(|document| write_r8brain_changes(document, before, after))
+    }
+
+    pub fn save_soxr_changes(
+        &self,
+        before: SoxrParameters,
+        after: SoxrParameters,
+    ) -> Result<(), Error> {
+        self.edit(|document| write_soxr_changes(document, before, after))
     }
 
     /// Writes only what the quality uses, so that a key left over from another
@@ -2167,6 +2553,272 @@ mod tests {
                  r8brain_attenuation = 218\nr8brain_transition_band = 0.5\n"),
             None
         );
+    }
+
+    fn unusual_soxr_parameters() -> SoxrParameters {
+        SoxrParameters {
+            quality: SoxrQuality::Custom(SoxrFilter {
+                precision: 24.5,
+                passband_end: 0.95,
+                phase: SoxrPhase::Intermediate,
+                double_precision: true,
+            }),
+            performance: SoxrPerformance {
+                coef_table_kb: 1,
+                coef_interpolation: SoxrInterpolation::Cubic,
+                min_dft_size: 4096,
+                large_dft_size: 1_048_576,
+            },
+        }
+    }
+
+    #[test]
+    fn soxr_parameters_round_trip_by_name_and_defaults_take_no_keys() {
+        let store = temporary_store("soxr-parameters");
+        store
+            .save_resampling_quality(ResamplingQuality::Custom {
+                fft_size: 2048,
+                window: ResamplingWindow::Hann2,
+            })
+            .unwrap();
+        let parameters = unusual_soxr_parameters();
+        store
+            .save_soxr_changes(SoxrParameters::default(), parameters)
+            .unwrap();
+        store
+            .save_resampling_quality(ResamplingQuality::Soxr(parameters))
+            .unwrap();
+        assert_eq!(
+            store.resampling_quality().unwrap(),
+            ResamplingQuality::Soxr(parameters)
+        );
+        let text = std::fs::read_to_string(store.config_path()).unwrap();
+        assert!(text.contains("resampling = \"soxr\""), "{text}");
+        assert!(!text.contains("resampling_fft_size"), "{text}");
+
+        store
+            .save_soxr_changes(parameters, SoxrParameters::default())
+            .unwrap();
+        let text = std::fs::read_to_string(store.config_path()).unwrap();
+        assert!(!text.contains("soxr_"), "{text}");
+    }
+
+    #[test]
+    fn soxr_presets_are_saved_by_name_without_what_custom_leaves_behind() {
+        let store = temporary_store("soxr-presets");
+        let mut saved = unusual_soxr_parameters();
+        store
+            .save_soxr_changes(SoxrParameters::default(), saved)
+            .unwrap();
+        for quality in [SoxrQuality::Low, SoxrQuality::Medium, SoxrQuality::High] {
+            let parameters = SoxrParameters {
+                quality,
+                ..unusual_soxr_parameters()
+            };
+            store.save_soxr_changes(saved, parameters).unwrap();
+            saved = parameters;
+            assert_eq!(store.soxr_parameters().unwrap(), parameters);
+            let text = std::fs::read_to_string(store.config_path()).unwrap();
+            assert!(
+                text.contains(&format!("soxr_quality = \"{}\"", quality.name())),
+                "{text}"
+            );
+            for key in SOXR_FILTER_KEYS {
+                assert!(!text.contains(key), "{text}");
+            }
+            assert!(text.contains("soxr_coef_interpolation"), "{text}");
+        }
+    }
+
+    #[test]
+    fn only_what_changed_of_the_soxr_parameters_is_saved() {
+        let store = temporary_store("soxr-changes");
+        let from_environment = SoxrParameters {
+            quality: SoxrQuality::Custom(SoxrFilter {
+                precision: 32.0,
+                ..SoxrQuality::default().filter()
+            }),
+            ..SoxrParameters::default()
+        };
+        let mut larger_table = from_environment;
+        larger_table.performance.coef_table_kb = 1600;
+        store
+            .save_soxr_changes(from_environment, larger_table)
+            .unwrap();
+        let text = std::fs::read_to_string(store.config_path()).unwrap();
+        assert!(text.contains("soxr_coef_table_kb = 1600"), "{text}");
+        for key in ["soxr_quality", "soxr_precision"] {
+            assert!(!text.contains(key), "{text}");
+        }
+
+        let mut filter = larger_table.quality.filter();
+        filter.phase = SoxrPhase::Minimum;
+        let minimum = SoxrParameters {
+            quality: SoxrQuality::Custom(filter),
+            ..larger_table
+        };
+        store.save_soxr_changes(larger_table, minimum).unwrap();
+        let text = std::fs::read_to_string(store.config_path()).unwrap();
+        assert!(text.contains("soxr_quality = \"custom\""), "{text}");
+        assert!(text.contains("soxr_phase = \"minimum\""), "{text}");
+        assert!(!text.contains("soxr_precision"), "{text}");
+    }
+
+    #[test]
+    fn soxr_defaults_to_very_high_and_custom_fills_in_from_it() {
+        let store = temporary_store("soxr-custom");
+        let parameters = store.soxr_parameters().unwrap();
+        assert_eq!(parameters, SoxrParameters::default());
+        assert_eq!(parameters.quality, SoxrQuality::VeryHigh);
+
+        std::fs::create_dir_all(store.dir()).unwrap();
+        std::fs::write(
+            store.config_path(),
+            "soxr_quality = \"custom\"\nsoxr_precision = 24\n",
+        )
+        .unwrap();
+        let filter = store.soxr_parameters().unwrap().quality.filter();
+        assert_eq!(filter.precision, 24.0);
+        assert_eq!(
+            filter.passband_end,
+            SoxrQuality::VeryHigh.filter().passband_end
+        );
+
+        std::fs::write(
+            store.config_path(),
+            "soxr_quality = \"low\"\nsoxr_precision = 24\n",
+        )
+        .unwrap();
+        let parameters = store.soxr_parameters().unwrap();
+        assert_eq!(parameters.quality, SoxrQuality::Low);
+        assert_eq!(parameters.quality.filter().precision, 16.0);
+    }
+
+    #[test]
+    fn soxr_parameters_stay_while_another_quality_is_in_use() {
+        let store = temporary_store("soxr-kept");
+        let parameters = unusual_soxr_parameters();
+        store
+            .save_soxr_changes(SoxrParameters::default(), parameters)
+            .unwrap();
+        store
+            .save_resampling_quality(ResamplingQuality::Soxr(parameters))
+            .unwrap();
+        store
+            .save_resampling_quality(ResamplingQuality::R8brain(R8brainParameters::default()))
+            .unwrap();
+
+        assert_eq!(
+            store.resampling_quality().unwrap(),
+            ResamplingQuality::R8brain(R8brainParameters::default())
+        );
+        assert_eq!(store.soxr_parameters().unwrap(), parameters);
+    }
+
+    #[test]
+    fn the_environment_sets_saved_soxr_parameters_aside() {
+        let store = temporary_store("soxr-environment");
+        store
+            .save_soxr_changes(SoxrParameters::default(), unusual_soxr_parameters())
+            .unwrap();
+        let settings = read(
+            &store,
+            &[
+                ("HIPHILE_SOXR_PRECISION", "20"),
+                ("HIPHILE_SOXR_PHASE", "linear"),
+                ("HIPHILE_SOXR_COEF_INTERPOLATION", "auto"),
+                ("HIPHILE_SOXR_MIN_DFT_SIZE", "256"),
+            ],
+        );
+        let parameters = store.parse_soxr_parameters(&settings).unwrap();
+        let filter = parameters.quality.filter();
+        assert_eq!(filter.precision, 20.0);
+        assert_eq!(filter.phase, SoxrPhase::Linear);
+        assert_eq!(filter.passband_end, 0.95);
+        assert_eq!(
+            parameters.performance.coef_interpolation,
+            SoxrInterpolation::Auto
+        );
+        assert_eq!(parameters.performance.min_dft_size, 256);
+
+        let settings = read(&store, &[("HIPHILE_SOXR_QUALITY", "high")]);
+        assert_eq!(
+            store.parse_soxr_parameters(&settings).unwrap().quality,
+            SoxrQuality::High
+        );
+    }
+
+    #[test]
+    fn soxr_values_outside_their_ranges_are_named_and_ignored_for_other_qualities() {
+        let store = temporary_store("soxr-invalid");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        let key = |text: &str| {
+            std::fs::write(store.config_path(), text).unwrap();
+            match store.resampling_quality() {
+                Err(Error::InvalidSetting { key, .. }) => Some(key),
+                Err(error) => panic!("{error}"),
+                Ok(_) => None,
+            }
+        };
+        for (line, expected) in [
+            ("soxr_precision = 14.9", "soxr_precision"),
+            ("soxr_precision = 33.5", "soxr_precision"),
+            ("soxr_passband_end = 0.49", "soxr_passband_end"),
+            ("soxr_passband_end = 0.999", "soxr_passband_end"),
+            ("soxr_passband_end = 95", "soxr_passband_end"),
+            ("soxr_phase = \"maximum\"", "soxr_phase"),
+            ("soxr_coef_table_kb = 0", "soxr_coef_table_kb"),
+            ("soxr_coef_table_kb = 65537", "soxr_coef_table_kb"),
+            (
+                "soxr_coef_interpolation = \"low\"",
+                "soxr_coef_interpolation",
+            ),
+            ("soxr_min_dft_size = 128", "soxr_min_dft_size"),
+            ("soxr_min_dft_size = 1000", "soxr_min_dft_size"),
+            ("soxr_min_dft_size = 65536", "soxr_min_dft_size"),
+            ("soxr_large_dft_size = 2097152", "soxr_large_dft_size"),
+        ] {
+            assert_eq!(
+                key(&format!(
+                    "resampling = \"soxr\"\nsoxr_quality = \"custom\"\n{line}\n"
+                )),
+                Some(expected)
+            );
+            assert_eq!(key(&format!("resampling = \"max\"\n{line}\n")), None);
+        }
+        assert_eq!(
+            key("resampling = \"soxr\"\nsoxr_quality = \"best\"\n"),
+            Some("soxr_quality")
+        );
+        assert_eq!(key("resampling = \"soxr\"\nsoxr_precision = 1\n"), None);
+        assert_eq!(
+            key("resampling = \"soxr\"\nsoxr_quality = \"custom\"\n\
+                 soxr_precision = 33\nsoxr_passband_end = 0.998\n\
+                 soxr_min_dft_size = 32768\nsoxr_large_dft_size = 256\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn soxr_presets_are_in_the_ranges_and_rise_in_precision() {
+        let filters = [
+            SoxrQuality::Low,
+            SoxrQuality::Medium,
+            SoxrQuality::High,
+            SoxrQuality::VeryHigh,
+        ]
+        .map(SoxrQuality::filter);
+        for pair in filters.windows(2) {
+            assert!(pair[0].precision <= pair[1].precision);
+        }
+        for filter in filters {
+            assert!(SOXR_PRECISIONS.contains(&filter.precision));
+            assert!(SOXR_PASSBAND_ENDS.contains(&filter.passband_end));
+        }
+        let default = SoxrPerformance::default();
+        assert!(SOXR_COEF_TABLE_KBS.contains(&default.coef_table_kb));
+        assert!(SOXR_MIN_DFT_SIZES.contains(&default.min_dft_size));
+        assert!(SOXR_LARGE_DFT_SIZES.contains(&default.large_dft_size));
     }
 
     #[test]

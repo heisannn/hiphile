@@ -34,6 +34,7 @@ search = { path = "crates/search" }
 session = { path = "crates/session" }
 settings = { path = "crates/settings" }
 songs = { path = "crates/songs" }
+soxr = { path = "crates/soxr" }
 subsonic = { path = "crates/subsonic" }
 ui = { path = "crates/ui" }
 updater = { path = "crates/updater" }
@@ -116,6 +117,7 @@ too_many_lines = "warn"
 [profile.dev.package]
 dsd = { opt-level = 3 }
 r8brain = { opt-level = 3 }
+soxr = { opt-level = 3 }
 rubato = { opt-level = 3 }
 realfft = { opt-level = 3 }
 rustfft = { opt-level = 3 }

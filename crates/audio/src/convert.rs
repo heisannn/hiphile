@@ -4,10 +4,12 @@ use rubato::audioadapter_buffers::direct::InterleavedSlice;
 use rubato::{Fft, FixedSync, Indexing, Resampler as _};
 
 use self::r8brain_converter::R8brainConverter;
+use self::soxr_converter::SoxrConverter;
 use crate::Error;
 use crate::output::{OutputSettings, Resampling, ResamplingWindow, Spec};
 
 mod r8brain_converter;
+mod soxr_converter;
 
 pub(crate) struct Converter {
     source: Spec,
@@ -200,6 +202,7 @@ pub(crate) fn map_channels(input: &[f32], from: usize, to: usize, out: &mut Vec<
 enum RateConverter {
     Fft(Box<FftConverter>),
     R8brain(R8brainConverter),
+    Soxr(Box<SoxrConverter>),
 }
 
 impl RateConverter {
@@ -212,6 +215,8 @@ impl RateConverter {
             Resampling::R8brain(settings) => {
                 R8brainConverter::new(from, to, channels, settings).map(Self::R8brain)
             }
+            Resampling::Soxr(settings) => SoxrConverter::new(from, to, channels, settings)
+                .map(|converter| Self::Soxr(Box::new(converter))),
         }
     }
 
@@ -222,6 +227,7 @@ impl RateConverter {
                 converter.push(samples, out);
                 Ok(())
             }
+            Self::Soxr(converter) => converter.push(samples, out),
         }
     }
 
@@ -229,6 +235,7 @@ impl RateConverter {
         match self {
             Self::Fft(converter) => converter.undelivered_frames(),
             Self::R8brain(converter) => converter.undelivered_frames(),
+            Self::Soxr(converter) => converter.undelivered_frames(),
         }
     }
 
@@ -239,6 +246,7 @@ impl RateConverter {
                 converter.finish(out);
                 Ok(())
             }
+            Self::Soxr(converter) => converter.finish(out),
         }
     }
 }
@@ -398,7 +406,7 @@ fn gcd(mut a: u32, mut b: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use crate::output::{R8brainPhase, R8brainSettings};
+    use crate::output::{R8brainPhase, R8brainSettings, SoxrSettings};
 
     use super::*;
     use crate::output::ResamplingWindow;
@@ -435,17 +443,20 @@ mod tests {
             .collect()
     }
 
-    fn each_resampling() -> [Resampling; 2] {
+    fn each_resampling() -> [Resampling; 3] {
         [
             Resampling::default(),
             Resampling::R8brain(R8brainSettings::default()),
+            Resampling::Soxr(SoxrSettings::default()),
         ]
     }
 
     fn fft_size_in(converter: &RateConverter) -> usize {
         match converter {
             RateConverter::Fft(converter) => converter.resampler.fft_size_in(),
-            RateConverter::R8brain(_) => panic!("expected the FFT resampler"),
+            RateConverter::R8brain(_) | RateConverter::Soxr(_) => {
+                panic!("expected the FFT resampler")
+            }
         }
     }
 
@@ -593,6 +604,109 @@ mod tests {
         converter.reset().unwrap();
         let mut again = Vec::new();
         converter.process(&input, &mut again).unwrap();
+        assert_eq!(first, again);
+    }
+
+    /// As with r8brain, at HQ, which computes in `f32`, and at VHQ, in `f64`
+    #[test]
+    fn soxr_keeps_the_time_and_the_channels_of_the_input() {
+        let spec = |rate| Spec { rate, channels: 2 };
+        let wave =
+            |frame: usize, rate: f64| (frame as f64 * 440.0 * std::f64::consts::TAU / rate).sin();
+        let input: Vec<f32> = (0..44_100)
+            .flat_map(|frame| [wave(frame, 44_100.0) as f32, 0.0])
+            .collect();
+        for resampling in [
+            SoxrSettings::default(),
+            soxr_settings(|settings| settings.quality = soxr::Quality::High.into()),
+        ] {
+            let mut converter =
+                Converter::new(spec(44_100), spec(48_000), Resampling::Soxr(resampling)).unwrap();
+            let mut out = Vec::new();
+            for chunk in input.chunks(2 * 333) {
+                converter.process(chunk, &mut out).unwrap();
+            }
+            converter.finish(&mut out).unwrap();
+
+            let frames = out.as_chunks::<2>().0.iter().enumerate();
+            for (frame, samples) in frames.take(47_000).skip(2_000) {
+                let error = (f64::from(samples[0]) - wave(frame, 48_000.0)).abs();
+                assert!(error < 1e-5, "frame {frame} off by {error}");
+                assert_eq!(samples[1], 0.0, "frame {frame}");
+            }
+        }
+    }
+
+    fn soxr_settings(change: impl FnOnce(&mut SoxrSettings)) -> SoxrSettings {
+        let mut settings = SoxrSettings::default();
+        change(&mut settings);
+        settings
+    }
+
+    #[test]
+    fn every_soxr_option_keeps_the_length_and_the_level() {
+        let spec = |rate| Spec { rate, channels: 2 };
+        let changes: [fn(&mut SoxrSettings); 10] = [
+            |settings| settings.quality = soxr::Quality::Low.into(),
+            |settings| settings.quality = soxr::Quality::High.into(),
+            |settings| settings.quality.precision = 33.0,
+            |settings| settings.quality.passband_end = 0.998,
+            |settings| settings.quality.phase_response = soxr::Phase::Minimum.response(),
+            |settings| {
+                settings.quality = soxr::Quality::High.into();
+                settings.quality.double_precision = true;
+            },
+            |settings| settings.runtime.coef_size_kbytes = 1,
+            |settings| settings.runtime.coef_interpolation = soxr::CoefInterpolation::High,
+            |settings| settings.runtime.log2_min_dft_size = 15,
+            |settings| settings.runtime.log2_large_dft_size = 8,
+        ];
+        for change in changes {
+            let settings = soxr_settings(change);
+            let resampling = Resampling::Soxr(settings);
+            let mut converter = Converter::new(spec(44_100), spec(48_000), resampling).unwrap();
+            let input: Vec<f32> = sine(44_100, 44_100)
+                .into_iter()
+                .flat_map(|sample| [sample, -sample])
+                .collect();
+            let mut out = Vec::new();
+            for chunk in input.chunks(2 * 333) {
+                converter.process(chunk, &mut out).unwrap();
+            }
+            converter.finish(&mut out).unwrap();
+
+            assert_eq!(out.len(), 2 * 48_000, "{settings:?}");
+            let middle = &out[2 * 20_000..2 * 28_000];
+            let peak = middle
+                .iter()
+                .fold(0.0f32, |peak, sample| peak.max(sample.abs()));
+            assert!((peak - 1.0).abs() < 0.01, "{settings:?}: {peak}");
+        }
+    }
+
+    #[test]
+    fn a_setting_outside_the_range_of_soxr_is_an_error() {
+        let spec = |rate| Spec { rate, channels: 2 };
+        let settings = soxr_settings(|settings| settings.quality.precision = 10.0);
+        assert!(Converter::new(spec(44_100), spec(48_000), Resampling::Soxr(settings)).is_err());
+    }
+
+    /// How the input is split does not change a bit of soxr's output.
+    #[test]
+    fn soxr_starts_over_on_a_reset_and_takes_any_split() {
+        let spec = |rate| Spec { rate, channels: 1 };
+        let resampling = Resampling::Soxr(SoxrSettings::default());
+        let mut converter = Converter::new(spec(44_100), spec(48_000), resampling).unwrap();
+        let input = sine(44_100, 8_000);
+        let mut first = Vec::new();
+        converter.process(&input, &mut first).unwrap();
+        assert!(converter.undelivered_frames() > 0);
+
+        converter.reset().unwrap();
+        let mut again = Vec::new();
+        for chunk in input.chunks(97) {
+            converter.process(chunk, &mut again).unwrap();
+        }
         assert_eq!(first, again);
     }
 

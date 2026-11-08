@@ -16,7 +16,7 @@ Hiphile は macOS で開発されています。Windows と Linux は定期的�
 
 - **ライブラリ:** アルバム、アーティスト、曲の閲覧、ホーム画面でのデイリーおすすめ機能、プレイリストの編集、お気に入り。
 - **再生:** ギャップレス再生、PCM 再生時の曲の前後の無音の削除、クロスフェード、再生・一時停止時のフェード、リピート、シャッフル、編集可能な再生待ちリスト (キュー)。
-- **オーディオ出力:** 出力デバイスの選択、および各ファイルのサンプリングレートまたはその倍率に合わせて自動的に切り替える機能。macOS と Windows では排他モードで他のアプリをデバイスから締め出せます。macOS では DoP による DSD256 までの DSD 再生に対応し、フィルターとモジュレーターを調整できます。詳しくは [DSD 出力の仕組み](docs/dsd/implementation.md)(英語)をご覧ください。リサンプリングには Rubato または内蔵の r8brain-free-src 移植版を使えます。詳しくは [リサンプリングの仕組み](docs/resample/implementation.md)(英語)をご覧ください。
+- **オーディオ出力:** 出力デバイスの選択、および各ファイルのサンプリングレートまたはその倍率に合わせて自動的に切り替える機能。macOS と Windows では排他モードで他のアプリをデバイスから締め出せます。macOS では DoP による DSD256 までの DSD 再生に対応し、フィルターとモジュレーターを調整できます。詳しくは [DSD 出力の仕組み](docs/dsd/implementation.md)(英語)をご覧ください。リサンプリングには Rubato、内蔵の r8brain-free-src 移植版、または libsoxr と同じ機能を持つ内蔵のリサンプラーを使えます。詳しくは [Rubato](docs/resampler/rubato.md)・[r8brain](docs/resampler/r8brain.md)・[soxr](docs/resampler/soxr.md) の仕組み(英語)をご覧ください。
 - **歌詞:** 同期歌詞、単語単位または行単位でのハイライト表示。
 - **ミニプレイヤー:** 再生コントロールと歌詞を表示する、常に最前面の小さなウィンドウ。
 - **ローカルキャッシュ:** ライブラリデータ、アルバムアート、楽曲がディスクにキャッシュされ、ライブラリデータはバックグラウンドで同期されます。
@@ -61,7 +61,7 @@ cargo run -p hiphile-cli -- --help   # CLIの使用方法を表示する
 | `trim_silence` (`true` で曲の前後の無音と、曲の途中の 10 秒を超える無音を飛ばします。PCM のみ) | `HIPHILE_TRIM_SILENCE` | `false` |
 | `play_pause_fade` (`true` で再生・一時停止・停止のときに音をフェードします。PCM のみ) | `HIPHILE_PLAY_PAUSE_FADE` | `false` |
 | `crossfade_seconds` (`0` から `12`。PCM のみ。デバイスのレートを切り替える必要がある曲の間はクロスフェードしません。すべての曲でクロスフェードするには `sample_rate` を固定してください) | `HIPHILE_CROSSFADE_SECONDS` | `0` |
-| `resampling` (`medium`、`high`、`max`、`custom`、`r8brain`。`r8brain` は [r8brain-free-src](https://github.com/avaneev/r8brain-free-src) を移植した内蔵のリサンプラーで、FFT サイズと窓関数は使いません) | `HIPHILE_RESAMPLING` | `medium` |
+| `resampling` (`medium`、`high`、`max`、`custom`、`r8brain`、`soxr`。`r8brain` は [r8brain-free-src](https://github.com/avaneev/r8brain-free-src) を移植した内蔵のリサンプラー、`soxr` は [libsoxr](https://sourceforge.net/projects/soxr/) と同じ機能を持つ内蔵のリサンプラーで、どちらも FFT サイズと窓関数は使いません) | `HIPHILE_RESAMPLING` | `medium` |
 | `r8brain_quality` (`r8brain` のとき: `low`、`medium`、`high`、`max`、`custom`) | `HIPHILE_R8BRAIN_QUALITY` | `high` |
 | `r8brain_transition_band` (`r8brain_quality = "custom"` のとき: 0.5〜45 のパーセント) | `HIPHILE_R8BRAIN_TRANSITION_BAND` | `2` |
 | `r8brain_attenuation` (`r8brain_quality = "custom"` のとき: 49〜218 のデシベル) | `HIPHILE_R8BRAIN_ATTENUATION` | `180.15` |
@@ -72,6 +72,15 @@ cargo run -p hiphile-cli -- --help   # CLIの使用方法を表示する
 | `r8brain_filter_fractions` (`r8brain_quality = "custom"` のとき: 補間フィルターの位置の数。5〜65536) | `HIPHILE_R8BRAIN_FILTER_FRACTIONS` | 減衰量から決定 |
 | `r8brain_filter_cache_size` (`r8brain` のとき: 後の曲のために保持するフィルターの数。2〜4096) | `HIPHILE_R8BRAIN_FILTER_CACHE_SIZE` | `96` |
 | `r8brain_filter_bank_cache_size` (`r8brain` のとき: 後の曲のために保持するフィルターバンクの数。2〜4096) | `HIPHILE_R8BRAIN_FILTER_BANK_CACHE_SIZE` | `12` |
+| `soxr_quality` (`soxr` のとき: `low`、`medium`、`high`、`very-high`、`custom`) | `HIPHILE_SOXR_QUALITY` | `very-high` |
+| `soxr_precision` (`soxr_quality = "custom"` のとき: 15〜33 のビット数) | `HIPHILE_SOXR_PRECISION` | `28` |
+| `soxr_passband_end` (`soxr_quality = "custom"` のとき: フィルターが高域を除き始める位置。低い方のレートのナイキスト周波数に対する比で、0.5〜0.998) | `HIPHILE_SOXR_PASSBAND_END` | `very-high` の値 (約 `0.911`) |
+| `soxr_phase` (`soxr_quality = "custom"` のとき: `linear`、`intermediate`、`minimum`) | `HIPHILE_SOXR_PHASE` | `linear` |
+| `soxr_double_precision` (`soxr_quality = "custom"` のとき: 20 ビット以下でも 64 ビット浮動小数点で計算します) | `HIPHILE_SOXR_DOUBLE_PRECISION` | `false` |
+| `soxr_coef_table_kb` (`soxr` のとき: サンプル間のフィルターの係数に使うメモリーの上限。1〜65536 の kB) | `HIPHILE_SOXR_COEF_TABLE_KB` | `400` |
+| `soxr_coef_interpolation` (`soxr` のとき: 保持しない係数の求め方。`auto`、`linear`、`cubic`) | `HIPHILE_SOXR_COEF_INTERPOLATION` | `auto` |
+| `soxr_min_dft_size` (`soxr` のとき: 256〜32768 の 2 の累乗) | `HIPHILE_SOXR_MIN_DFT_SIZE` | `1024` |
+| `soxr_large_dft_size` (`soxr` のとき: 256〜1048576 の 2 の累乗) | `HIPHILE_SOXR_LARGE_DFT_SIZE` | `131072` |
 | `resampling_fft_size` (`custom` のとき: 256〜16384 の 2 の累乗) | `HIPHILE_RESAMPLING_FFT_SIZE` | `256` |
 | `resampling_window` (`custom` のとき: `hann`、`hann-2`、`blackman`、`blackman-2`、`blackman-harris`、`blackman-harris-2`) | `HIPHILE_RESAMPLING_WINDOW` | `blackman-harris-2` |
 | `output_format` (`pcm` または `dsd`。macOS で `dop_device` のデバイスに適用) | `HIPHILE_OUTPUT_FORMAT` | `pcm` |

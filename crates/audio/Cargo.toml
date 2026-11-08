@@ -14,6 +14,7 @@ dsd.workspace = true
 r8brain.workspace = true
 rtrb.workspace = true
 rubato.workspace = true
+soxr.workspace = true
 symphonia.workspace = true
 thiserror.workspace = true
 
