@@ -1,3 +1,6 @@
+//! A Subsonic server on a local port that serves playlists and takes changes to them, for the
+//! tests of the core and of the views.
+
 use std::collections::HashSet;
 use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
@@ -9,14 +12,15 @@ use serde_json::{Value, json};
 const WRITES: [&str; 3] = ["createPlaylist", "updatePlaylist", "deletePlaylist"];
 
 #[derive(Clone, Debug)]
-pub(crate) struct Request {
-    pub(crate) verb: String,
-    pub(crate) method: String,
+#[non_exhaustive]
+pub struct Request {
+    pub verb: String,
+    pub method: String,
     params: Vec<(String, String)>,
 }
 
 impl Request {
-    pub(crate) fn values(&self, name: &str) -> Vec<&str> {
+    pub fn values(&self, name: &str) -> Vec<&str> {
         self.params
             .iter()
             .filter(|(param, _)| param == name)
@@ -40,20 +44,21 @@ struct State {
     playlists: Vec<FakePlaylist>,
     next_id: u32,
     requests: Vec<Request>,
+    readonly: HashSet<String>,
     held: HashSet<&'static str>,
     refused: HashSet<&'static str>,
 }
 
 type Shared = Arc<(Mutex<State>, Condvar)>;
 
-pub(crate) struct FakeServer {
+pub struct PlaylistsServer {
     url: String,
     state: Shared,
 }
 
-impl FakeServer {
+impl PlaylistsServer {
     /// Serves `playlists`, given as id, name and song ids.
-    pub(crate) fn new(playlists: &[(&str, &str, &[&str])]) -> Self {
+    pub fn new(playlists: &[(&str, &str, &[&str])]) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let state = Shared::default();
@@ -75,30 +80,30 @@ impl FakeServer {
         Self { url, state }
     }
 
-    pub(crate) fn url(&self) -> &str {
+    pub fn url(&self) -> &str {
         &self.url
     }
 
     /// Keeps back the answers to `method`. A read has what the server has when
     /// it arrives, and a write takes effect only once let go.
-    pub(crate) fn hold(&self, method: &'static str) {
+    pub fn hold(&self, method: &'static str) {
         self.state.0.lock().unwrap().held.insert(method);
     }
 
-    pub(crate) fn release(&self, method: &'static str) {
+    pub fn release(&self, method: &'static str) {
         self.state.0.lock().unwrap().held.remove(method);
         self.state.1.notify_all();
     }
 
-    pub(crate) fn refuse(&self, method: &'static str) {
+    pub fn refuse(&self, method: &'static str) {
         self.state.0.lock().unwrap().refused.insert(method);
     }
 
-    pub(crate) fn accept(&self, method: &'static str) {
+    pub fn accept(&self, method: &'static str) {
         self.state.0.lock().unwrap().refused.remove(method);
     }
 
-    pub(crate) fn requests(&self, method: &str) -> Vec<Request> {
+    pub fn requests(&self, method: &str) -> Vec<Request> {
         let state = self.state.0.lock().unwrap();
         state
             .requests
@@ -108,7 +113,23 @@ impl FakeServer {
             .collect()
     }
 
-    pub(crate) fn songs(&self, playlist: &str) -> Vec<String> {
+    /// Puts `songs` in `playlist` in place of those it has, as another device would.
+    pub fn set_songs(&self, playlist: &str, songs: &[&str]) {
+        let mut state = self.state.0.lock().unwrap();
+        let found = state
+            .playlists
+            .iter_mut()
+            .find(|listed| listed.id == playlist);
+        found.unwrap().songs = songs.iter().map(|song| (*song).to_owned()).collect();
+    }
+
+    /// Makes `playlist` another user's, which alice may only read.
+    pub fn make_readonly(&self, playlist: &str) {
+        let mut state = self.state.0.lock().unwrap();
+        state.readonly.insert(playlist.to_owned());
+    }
+
+    pub fn songs(&self, playlist: &str) -> Vec<String> {
         let state = self.state.0.lock().unwrap();
         state
             .playlists
@@ -171,14 +192,18 @@ fn answer(request: &Request, state: &mut State) -> Result<Value, &'static str> {
     }
     match request.method.as_str() {
         "getPlaylists" => {
-            let listed: Vec<Value> = state.playlists.iter().map(playlist_json).collect();
+            let listed: Vec<Value> = state
+                .playlists
+                .iter()
+                .map(|playlist| playlist_json(playlist, &state.readonly))
+                .collect();
             Ok(json!({ "playlists": { "playlist": listed } }))
         }
         "getPlaylist" => {
             let id = request.value("id").unwrap_or_default();
             let found = state.playlists.iter().find(|listed| listed.id == id);
             found
-                .map(|playlist| json!({ "playlist": with_songs(playlist) }))
+                .map(|playlist| json!({ "playlist": with_songs(playlist, &state.readonly) }))
                 .ok_or("Not found")
         }
         "createPlaylist" => {
@@ -202,7 +227,8 @@ fn answer(request: &Request, state: &mut State) -> Result<Value, &'static str> {
                 id
             };
             let playlist = state.playlists.iter().find(|listed| listed.id == id);
-            Ok(json!({ "playlist": with_songs(playlist.ok_or("Not found")?) }))
+            let playlist = playlist.ok_or("Not found")?;
+            Ok(json!({ "playlist": with_songs(playlist, &state.readonly) }))
         }
         "updatePlaylist" => {
             let id = request.value("playlistId").unwrap_or_default();
@@ -232,17 +258,22 @@ fn answer(request: &Request, state: &mut State) -> Result<Value, &'static str> {
     }
 }
 
-fn playlist_json(playlist: &FakePlaylist) -> Value {
-    json!({
+fn playlist_json(playlist: &FakePlaylist, readonly: &HashSet<String>) -> Value {
+    let mut json = json!({
         "id": playlist.id,
         "name": playlist.name,
         "owner": "alice",
         "songCount": playlist.songs.len(),
-    })
+    });
+    if readonly.contains(&playlist.id) {
+        json["owner"] = json!("bob");
+        json["readonly"] = json!(true);
+    }
+    json
 }
 
-fn with_songs(playlist: &FakePlaylist) -> Value {
-    let mut json = playlist_json(playlist);
+fn with_songs(playlist: &FakePlaylist, readonly: &HashSet<String>) -> Value {
+    let mut json = playlist_json(playlist, readonly);
     json["entry"] = playlist
         .songs
         .iter()

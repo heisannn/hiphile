@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-use std::mem;
 use std::sync::Arc;
 
 use actions::{
@@ -14,13 +12,15 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollStrategy, SharedString,
-    Styled as _, Subscription, Task, UniformListScrollHandle, Window, div,
-    prelude::FluentBuilder as _,
+    AnyElement, App, AppContext as _, Context, FocusHandle, Focusable, InteractiveElement as _,
+    IntoElement, ParentElement as _, Render, ScrollStrategy, SharedString, Styled as _,
+    Subscription, Task, UniformListScrollHandle, Window, div, prelude::FluentBuilder as _,
 };
-use hiphile_core::favorites::{Favorite, FavoriteLists, Section};
-use subsonic::{AlbumId, CoverArtId, PlaylistId, Song, SongId, StarTarget, Starred};
+use hiphile_core::favorites::{
+    Favorite, FavoriteLists, FavoritesLoad, FavoritesNotice, FavoritesSnapshot, FavoritesState,
+    Section,
+};
+use subsonic::{AlbumId, CoverArtId, PlaylistId, Song, SongId, StarTarget};
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
 use ui::{ListPaneHeader, LoadFailure, NowPlaying, RefreshFailure, centered, muted_text, row_list};
 
@@ -38,321 +38,104 @@ const ROW_COVER_PIXELS: u32 = 48;
 
 pub struct Favorites {
     session: session::Session,
-    state: LoadState,
-    lists: FavoriteLists,
-    is_reloading: bool,
-    refresh_error: Option<SharedString>,
+    favorites: FavoritesState,
+    /// What is on show, which follows `favorites`.
+    shown: FavoritesSnapshot,
     section: Section,
     /// What is selected of each kind, by [`Section::ix`].
     selected: [Option<StarTarget>; 3],
     now_playing: Option<NowPlaying>,
-    writes: VecDeque<Write>,
-    is_sending: bool,
-    /// Counts the changes made here, so that what the server said before the
-    /// latest of them, which it may not reflect, is not shown over it.
-    edits: u64,
-    /// Whether to read the favorites once the writes have gone, as a read that
-    /// overlaps one cannot be trusted to show it.
-    reload_after_writes: bool,
     focus: FocusHandle,
     /// The scroll of each kind, by [`Section::ix`].
     scrolls: [UniformListScrollHandle; 3],
-    _load_task: Task<()>,
-    _write_task: Task<()>,
     _album_task: Task<()>,
+    _changes: Task<()>,
+    _notices: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
-#[derive(Clone, Debug)]
-pub enum FavoritesEvent {
-    /// The favorites could not be read and nothing else has them, with why.
-    LoadFailed(SharedString),
-}
-
-impl EventEmitter<FavoritesEvent> for Favorites {}
-
-enum LoadState {
-    Loading,
-    Loaded,
-    Failed(SharedString),
-}
-
-/// A change to the favorites on its way to the server, already on show.
-struct Write {
-    target: StarTarget,
-    is_favorite: bool,
-    undo: Undo,
-}
-
-/// What brings back how the favorites showed before a change.
-enum Undo {
-    Remove,
-    Restore { favorite: Box<Favorite>, ix: usize },
-}
-
-impl Write {
-    fn failure(&self) -> &'static str {
-        if self.is_favorite {
-            "Couldn't add to favorites."
-        } else {
-            "Couldn't remove from favorites."
-        }
-    }
-}
-
 impl Favorites {
-    /// Starts loading at once, whether or not the screen ever shows: the menus
-    /// of every other screen say which way their command goes from this.
-    pub fn new(session: session::Session, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        session: session::Session,
+        favorites: FavoritesState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus = cx.focus_handle().tab_stop(true);
         let subscriptions = vec![
             // Focus changes the selection treatment of the rows
             cx.on_focus(&focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&focus, window, |_, _, cx| cx.notify()),
         ];
-        // Those of whoever was signed in before
-        actions::set_known_favorites(None, cx);
+        let changes = gpui_host::observe(favorites.subscribe(), cx, Self::show);
+        let notices =
+            gpui_host::subscribe_in(favorites.notices(), window, cx, |_, notice, window, cx| {
+                if let FavoritesNotice::WriteFailed(message) = notice {
+                    window.push_notification((NotificationType::Error, message), cx);
+                }
+            });
         let mut this = Self {
             session,
-            state: LoadState::Loading,
-            lists: FavoriteLists::default(),
-            is_reloading: false,
-            refresh_error: None,
+            shown: favorites.snapshot(),
+            favorites,
             section: Section::Songs,
             selected: [None, None, None],
             now_playing: None,
-            writes: VecDeque::new(),
-            is_sending: false,
-            edits: 0,
-            reload_after_writes: false,
             focus,
             scrolls: std::array::from_fn(|_| UniformListScrollHandle::new()),
-            _load_task: Task::ready(()),
-            _write_task: Task::ready(()),
             _album_task: Task::ready(()),
+            _changes: changes,
+            _notices: notices,
             _subscriptions: subscriptions,
         };
-        this.load(cx);
+        for section in Section::ALL {
+            this.keep_selection(section, 0);
+        }
         this
     }
 
-    /// Reads the favorites again: another device may have changed them.
-    pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        self.load(cx);
+    fn lists(&self) -> &FavoriteLists {
+        self.shown.lists()
     }
 
-    /// Reads the favorites again if they never arrived, which every screen's
-    /// menus are waiting on.
-    pub fn reload_if_failed(&mut self, cx: &mut Context<Self>) {
-        if matches!(self.state, LoadState::Failed(_)) {
-            self.load(cx);
-        }
-    }
-
-    fn load(&mut self, cx: &mut Context<Self>) {
-        if self.is_writing() {
-            self.reload_after_writes = true;
-            return;
-        }
-        self.is_reloading = true;
-        self.refresh_error = None;
-        if !matches!(self.state, LoadState::Loaded) {
-            self.state = LoadState::Loading;
-        }
-        let client = self.session.client().clone();
-        let edits = self.edits;
-        self._load_task = cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_spawn(async move { client.starred().await })
-                .await
-                .map_err(|error| SharedString::from(session::describe(&error)));
-            this.update(cx, |this, cx| this.finish_loading(result, edits, cx))
-                .ok();
+    /// Selects the row where what was selected was, when it is gone.
+    fn show(&mut self, favorites: FavoritesSnapshot, cx: &mut Context<Self>) {
+        let was_at = Section::ALL.map(|section| {
+            self.selected[section.ix()]
+                .as_ref()
+                .and_then(|target| self.lists().position(target))
         });
-        cx.notify();
-    }
-
-    fn finish_loading(
-        &mut self,
-        result: Result<Starred, SharedString>,
-        edits: u64,
-        cx: &mut Context<Self>,
-    ) {
-        self.is_reloading = false;
-        if edits != self.edits {
-            self.load(cx);
-            return;
-        }
-        match result {
-            Ok(starred) => {
-                self.state = LoadState::Loaded;
-                self.lists = FavoriteLists::new(starred);
-                for section in Section::ALL {
-                    self.keep_selection(section, 0);
-                }
-                self.tell_favorites(cx);
-            }
-            // The favorites on show stay there, with word of what went wrong
-            Err(error) if matches!(self.state, LoadState::Loaded) => {
-                self.refresh_error = Some(error);
-            }
-            Err(error) => {
-                self.state = LoadState::Failed(error.clone());
-                cx.emit(FavoritesEvent::LoadFailed(error));
-            }
+        self.shown = favorites;
+        for section in Section::ALL {
+            self.keep_selection(section, was_at[section.ix()].unwrap_or_default());
         }
         cx.notify();
-    }
-
-    fn tell_favorites(&self, cx: &mut App) {
-        actions::set_known_favorites(Some(self.lists.targets()), cx);
-    }
-
-    fn is_writing(&self) -> bool {
-        self.is_sending || !self.writes.is_empty()
-    }
-
-    /// Adds `favorite` to the favorites or takes it out, on show at once and on
-    /// the server as soon as what came before it has gone.
-    pub fn set_favorite(
-        &mut self,
-        favorite: Favorite,
-        is_favorite: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let target = favorite.target();
-        if !matches!(self.state, LoadState::Loaded) || self.lists.contains(&target) == is_favorite {
-            return;
-        }
-        let section = Section::of(&target);
-        let undo = if is_favorite {
-            self.lists.add(favorite, 0);
-            self.keep_selection(section, 0);
-            Undo::Remove
-        } else {
-            let Some((favorite, ix)) = self.lists.remove(&target) else {
-                return;
-            };
-            self.keep_selection(section, ix);
-            Undo::Restore {
-                favorite: Box::new(favorite),
-                ix,
-            }
-        };
-        self.edits += 1;
-        self.writes.push_back(Write {
-            target,
-            is_favorite,
-            undo,
-        });
-        self.tell_favorites(cx);
-        self.send_next_write(window, cx);
-        cx.notify();
-    }
-
-    /// Shows `target` as it was before a change, wherever later changes have
-    /// put it since.
-    fn undo(&mut self, target: &StarTarget, undo: Undo) {
-        let removed_ix = self.lists.remove(target).map(|(_, ix)| ix);
-        let fallback_ix = match undo {
-            Undo::Remove => removed_ix.unwrap_or_default(),
-            Undo::Restore { favorite, ix } => {
-                self.lists.add(*favorite, ix);
-                ix
-            }
-        };
-        self.keep_selection(Section::of(target), fallback_ix);
     }
 
     /// Selects the row at `fallback_ix`, or the last, when nothing is selected
     /// of `section` or what was is gone.
     fn keep_selection(&mut self, section: Section, fallback_ix: usize) {
+        let lists = self.shown.lists();
         let selected = &self.selected[section.ix()];
         if selected
             .as_ref()
-            .is_some_and(|target| self.lists.contains(target))
+            .is_some_and(|target| lists.contains(target))
         {
             return;
         }
-        let last = self.lists.len(section).saturating_sub(1);
-        self.selected[section.ix()] = self
-            .lists
+        let last = lists.len(section).saturating_sub(1);
+        self.selected[section.ix()] = lists
             .favorite_at(section, fallback_ix.min(last))
             .map(|favorite| favorite.target());
     }
 
-    /// Sends what waits, one at a time and in order: a later change overtaking
-    /// an earlier one on the network would leave the older on the server.
-    fn send_next_write(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_sending {
-            return;
-        }
-        let Some(write) = self.writes.pop_front() else {
-            if mem::take(&mut self.reload_after_writes) {
-                self.load(cx);
-            }
-            return;
-        };
-        self.is_sending = true;
-        let client = self.session.client().clone();
-        let target = write.target.clone();
-        let is_favorite = write.is_favorite;
-        self._write_task = cx.spawn_in(window, async move |this, cx| {
-            let result = cx
-                .background_spawn(async move {
-                    if is_favorite {
-                        client.star(&target).await
-                    } else {
-                        client.unstar(&target).await
-                    }
-                })
-                .await;
-            this.update_in(cx, |this, window, cx| {
-                this.finish_write(write, result, window, cx);
-            })
-            .ok();
-        });
-    }
-
-    fn finish_write(
-        &mut self,
-        write: Write,
-        result: Result<(), client::Error>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.is_sending = false;
-        if let Err(error) = result {
-            let message = format!("{} {}", write.failure(), session::describe(&error));
-            window.push_notification((NotificationType::Error, message), cx);
-            // The change may have got there with only the answer lost, which
-            // reading the favorites back tells.
-            self.reload_after_writes = true;
-            let later = self
-                .writes
-                .iter_mut()
-                .find(|later| later.target == write.target);
-            if let Some(later) = later {
-                // It decides what shows. Should it fail too, what it must go
-                // back to is what this one started from.
-                later.undo = write.undo;
-            } else {
-                self.undo(&write.target, write.undo);
-                self.tell_favorites(cx);
-            }
-            cx.notify();
-        }
-        self.send_next_write(window, cx);
-    }
-
     fn selected_position(&self) -> Option<usize> {
-        self.lists
+        self.lists()
             .position(self.selected[self.section.ix()].as_ref()?)
     }
 
     fn selected_favorite(&self) -> Option<Favorite> {
-        self.lists
+        self.lists()
             .favorite_at(self.section, self.selected_position()?)
     }
 
@@ -363,14 +146,14 @@ impl Favorites {
     }
 
     fn move_selection(&mut self, motion: Motion, cx: &mut Context<Self>) {
-        let len = self.lists.len(self.section);
+        let len = self.lists().len(self.section);
         let scroll = &self.scrolls[self.section.ix()];
         let page = page_rows(scroll, len);
         let Some(ix) = motion.apply(self.selected_position(), len, page) else {
             return;
         };
         scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
-        if let Some(favorite) = self.lists.favorite_at(self.section, ix) {
+        if let Some(favorite) = self.lists().favorite_at(self.section, ix) {
             self.select(favorite.target(), cx);
         }
     }
@@ -392,7 +175,7 @@ impl Favorites {
     }
 
     fn play_songs_from(&self, song: &SongId, window: &mut Window, cx: &mut Context<Self>) {
-        let songs: Arc<[Song]> = self.lists.songs.iter().cloned().collect();
+        let songs: Arc<[Song]> = self.lists().songs.iter().cloned().collect();
         if let Some(ix) = songs.iter().position(|listed| listed.id() == song) {
             window.dispatch_action(Box::new(PlaySongs::new(songs, ix)), cx);
         }
@@ -496,8 +279,11 @@ impl Favorites {
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
-        let count = matches!(self.state, LoadState::Loaded).then(|| self.lists.len(self.section));
-        let is_updating = count.is_some() && self.is_reloading;
+        let count = self
+            .shown
+            .is_loaded()
+            .then(|| self.lists().len(self.section));
+        let is_updating = count.is_some() && self.shown.is_reloading();
         ListPaneHeader::new("Favorites", count)
             .when(is_updating, |this| this.updating("Updating the favorites"))
             .action(
@@ -564,24 +350,24 @@ impl Favorites {
     }
 
     fn render_rows(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        match &self.state {
-            LoadState::Loading => return centered(Spinner::new()).into_any_element(),
-            LoadState::Failed(error) => {
+        match self.shown.load() {
+            FavoritesLoad::Loading => return centered(Spinner::new()).into_any_element(),
+            FavoritesLoad::Failed(error) => {
                 return LoadFailure::new(
                     "Couldn't load favorites",
-                    error.clone(),
+                    SharedString::from(error.clone()),
                     Button::new("retry-favorites")
                         .label("Retry")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.focus.focus(window, cx);
-                            this.load(cx);
+                            this.favorites.refresh();
                         })),
                 )
                 .into_any_element();
             }
-            LoadState::Loaded => {}
+            FavoritesLoad::Loaded => {}
         }
-        if self.lists.len(self.section) == 0 {
+        if self.lists().len(self.section) == 0 {
             let message = match self.section {
                 Section::Songs => "No favorite songs. Right-click a song to add it.",
                 Section::Albums => "No favorite albums. Right-click an album to add it.",
@@ -607,7 +393,7 @@ impl Favorites {
         let scroll = &self.scrolls[self.section.ix()];
         match self.section {
             Section::Songs => {
-                let songs = self.lists.songs.clone();
+                let songs = self.lists().songs.clone();
                 let now_playing = self.now_playing.clone();
                 row_list(
                     "favorite-songs",
@@ -628,7 +414,7 @@ impl Favorites {
                 .into_any_element()
             }
             Section::Albums => {
-                let albums = self.lists.albums.clone();
+                let albums = self.lists().albums.clone();
                 row_list(
                     "favorite-albums",
                     "Favorite albums",
@@ -647,7 +433,7 @@ impl Favorites {
                 .into_any_element()
             }
             Section::Artists => {
-                let artists = self.lists.artists.clone();
+                let artists = self.lists().artists.clone();
                 row_list(
                     "favorite-artists",
                     "Favorite artists",
@@ -690,14 +476,14 @@ impl Render for Favorites {
             .size_full()
             .min_h_0()
             .child(self.render_header(cx))
-            .when_some(self.refresh_error.clone(), |this, error| {
+            .when_some(self.shown.refresh_error(), |this, error| {
                 this.child(RefreshFailure::new(
                     "Couldn't refresh the favorites",
-                    error,
+                    SharedString::from(error.to_owned()),
                     Button::new("retry-refresh-favorites")
                         .label("Retry")
                         .small()
-                        .on_click(cx.listener(|this, _, _, cx| this.load(cx))),
+                        .on_click(cx.listener(|this, _, _, _| this.favorites.refresh())),
                 ))
             })
             .child(self.render_list(window, cx))

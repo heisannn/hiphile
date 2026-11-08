@@ -4,7 +4,7 @@ use actions::{
     ShowArtist,
 };
 use artists::{Artists, ArtistsEvent};
-use favorites::{Favorites, FavoritesEvent};
+use favorites::Favorites;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _, TitleBar, WindowExt as _,
@@ -21,7 +21,9 @@ use gpui_kit::{
     Pixels, Render, Stateful, Styled as _, Subscription, Task, Window, div,
     prelude::FluentBuilder as _, px,
 };
+use hiphile_core::favorites::{FavoritesNotice, FavoritesState};
 use hiphile_core::navigation::{Destination, History, Location};
+use hiphile_core::playlists::PlaylistsState;
 use hiphile_core::settings::{AudioSettings, CacheLimit, CacheLimitSnapshot, DiscordSettings};
 use home::Home;
 use library::{Library, LibraryEvent, Refresh};
@@ -100,9 +102,10 @@ struct Workspace {
     songs: Entity<Songs>,
     /// Kept while another screen shows: the other screens' menus add to it.
     playlists: Entity<Playlists>,
-    /// Kept while another screen shows: the other screens' menus go by it and
-    /// add to it.
+    playlists_state: PlaylistsState,
     favorites: Entity<Favorites>,
+    /// The other screens' menus go by it and add to it.
+    favorites_state: FavoritesState,
     search: Entity<Search>,
     activity: Entity<LibraryActivity>,
     player: Entity<Player>,
@@ -117,7 +120,8 @@ struct Workspace {
     _library_events: Subscription,
     _artists_events: Subscription,
     _playlists_events: Subscription,
-    _favorites_events: Subscription,
+    _playlist_choices: Task<()>,
+    _favorites_changes: (Task<()>, Task<()>),
     _search_events: Subscription,
     _activity_changes: Subscription,
     _audio_changes: Task<()>,
@@ -274,8 +278,8 @@ impl AppShell {
         let library = cx.new(|cx| Library::new(session.clone(), window, cx));
         let artists = cx.new(|cx| Artists::new(session.clone(), window, cx));
         let songs = cx.new(|cx| Songs::new(session.clone(), window, cx));
-        let playlists = cx.new(|cx| Playlists::new(session.clone(), window, cx));
-        let favorites = cx.new(|cx| Favorites::new(session.clone(), window, cx));
+        let (playlists_state, playlists, playlist_choices) = Self::playlists(&session, window, cx);
+        let (favorites_state, favorites, favorites_changes) = Self::favorites(&session, window, cx);
         let search = cx.new(|cx| Search::new(session.clone(), window, cx));
         let search_events = cx.subscribe_in(&search, window, Self::on_search_event);
         let activity = cx.new(|cx| LibraryActivity::new(session.clone(), cx));
@@ -372,7 +376,6 @@ impl AppShell {
             }
         });
         let playlists_events = cx.subscribe_in(&playlists, window, Self::on_playlists_event);
-        let favorites_events = cx.subscribe_in(&favorites, window, Self::on_favorites_event);
         let audio_changes = follow_audio_settings(&audio_settings, &player, cx);
         let discord_changes = follow_discord_settings(&discord_settings, &player, cx);
         let queue_changes = follow_queue_settings(&player, cx);
@@ -392,7 +395,9 @@ impl AppShell {
             artists,
             songs,
             playlists,
+            playlists_state,
             favorites,
+            favorites_state,
             search,
             activity,
             player,
@@ -405,7 +410,8 @@ impl AppShell {
             _library_events: library_events,
             _artists_events: artists_events,
             _playlists_events: playlists_events,
-            _favorites_events: favorites_events,
+            _playlist_choices: playlist_choices,
+            _favorites_changes: favorites_changes,
             _search_events: search_events,
             _activity_changes: activity_changes,
             _audio_changes: audio_changes,
@@ -441,6 +447,18 @@ impl AppShell {
         }
     }
 
+    /// The playlists, their screen, and what keeps the other screens' choices of them.
+    fn playlists(
+        session: &Session,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (PlaylistsState, Entity<Playlists>, Task<()>) {
+        let state = PlaylistsState::new(gpui_host::executor(cx), session.clone());
+        let view = cx.new(|cx| Playlists::new(session.clone(), state.clone(), window, cx));
+        let choices = follow_playlist_choices(&state, cx);
+        (state, view, choices)
+    }
+
     fn on_playlists_event(
         &mut self,
         _: &Entity<Playlists>,
@@ -459,14 +477,28 @@ impl AppShell {
         }
     }
 
-    fn on_favorites_event(
+    /// The favorites, their screen, and what passes them on to the other screens and the user.
+    fn favorites(
+        session: &Session,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (FavoritesState, Entity<Favorites>, (Task<()>, Task<()>)) {
+        let state = FavoritesState::new(gpui_host::executor(cx), session.client().clone());
+        let view = cx.new(|cx| Favorites::new(session.clone(), state.clone(), window, cx));
+        let notices =
+            gpui_host::subscribe_in(state.notices(), window, cx, Self::on_favorites_notice);
+        (state.clone(), view, (follow_favorites(&state, cx), notices))
+    }
+
+    fn on_favorites_notice(
         &mut self,
-        _: &Entity<Favorites>,
-        event: &FavoritesEvent,
+        notice: FavoritesNotice,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let FavoritesEvent::LoadFailed(error) = event;
+        let FavoritesNotice::LoadFailed(error) = notice else {
+            return;
+        };
         // The favorites' own screen says so where the list would be
         if !self.is_showing_favorites() {
             let message =
@@ -623,12 +655,8 @@ impl AppShell {
                 .home
                 .update(cx, |home, cx| home.renew_recommended(cx)),
             // Another device may have changed them meanwhile
-            Destination::Playlists => workspace
-                .playlists
-                .update(cx, |playlists, cx| playlists.refresh(window, cx)),
-            Destination::Favorites => workspace
-                .favorites
-                .update(cx, |favorites, cx| favorites.refresh(cx)),
+            Destination::Playlists => workspace.playlists_state.refresh(),
+            Destination::Favorites => workspace.favorites_state.refresh(),
             Destination::Artists => workspace
                 .artists
                 .update(cx, |artists, cx| artists.activate(cx)),
@@ -739,17 +767,13 @@ impl AppShell {
 
     /// Fetches what the screen showing is about again, for the screens that
     /// do not run it themselves.
-    fn refresh(&self, window: &mut Window, cx: &mut Context<Self>) {
+    fn refresh(&self, cx: &mut Context<Self>) {
         let Screen::Workspace(workspace) = &self.screen else {
             return;
         };
         match workspace.destination {
-            Destination::Playlists => workspace
-                .playlists
-                .update(cx, |playlists, cx| playlists.refresh(window, cx)),
-            Destination::Favorites => workspace
-                .favorites
-                .update(cx, |favorites, cx| favorites.refresh(cx)),
+            Destination::Playlists => workspace.playlists_state.refresh(),
+            Destination::Favorites => workspace.favorites_state.refresh(),
             _ => workspace
                 .library
                 .update(cx, |library, cx| library.refresh_library(cx)),
@@ -759,13 +783,11 @@ impl AppShell {
     /// Tries favorites that failed to load again from any screen, whose stars
     /// and menus are waiting on them. The favorites' own screen reads them
     /// anyway.
-    fn retry_favorites(&self, cx: &mut Context<Self>) {
+    fn retry_favorites(&self) {
         if let Screen::Workspace(workspace) = &self.screen
             && !self.is_showing_favorites()
         {
-            workspace
-                .favorites
-                .update(cx, |favorites, cx| favorites.reload_if_failed(cx));
+            workspace.favorites_state.reload_if_failed();
         }
     }
 
@@ -1218,6 +1240,33 @@ fn follow_queue_settings(player: &Entity<Player>, cx: &mut Context<AppShell>) ->
     })
 }
 
+/// The choices of the last session go at once.
+fn follow_playlist_choices(playlists: &PlaylistsState, cx: &mut Context<AppShell>) -> Task<()> {
+    let changes = playlists.subscribe();
+    let mut choices = changes.borrow().choices().clone();
+    actions::set_playlist_choices(choices.clone(), cx);
+    gpui_host::observe(changes, cx, move |_, playlists, cx| {
+        if *playlists.choices() != choices {
+            choices = playlists.choices().clone();
+            actions::set_playlist_choices(choices.clone(), cx);
+        }
+    })
+}
+
+/// Only a change of what is a favorite reaches the other screens, which all draw again.
+fn follow_favorites<V: 'static>(favorites: &FavoritesState, cx: &mut Context<V>) -> Task<()> {
+    let changes = favorites.subscribe();
+    let mut known = changes.borrow().known().cloned();
+    // Those of whoever was signed in before go
+    actions::set_known_favorites(known.as_deref().cloned(), cx);
+    gpui_host::observe(changes, cx, move |_, favorites, cx| {
+        if favorites.known() != known.as_ref() {
+            known = favorites.known().cloned();
+            actions::set_known_favorites(known.as_deref().cloned(), cx);
+        }
+    })
+}
+
 fn notify_skipped(window: &mut Window, cx: &mut App) {
     let message =
         "Instrumentals are being skipped. Turn off Skip instrumentals in Settings to play them.";
@@ -1365,12 +1414,12 @@ impl Render for AppShell {
                 .on_action(cx.listener(|this, _: &ShowFavorites, window, cx| {
                     this.show_destination(Destination::Favorites, window, cx);
                 }))
-                .on_action(cx.listener(|this, action: &SetFavorite, window, cx| {
+                .on_action(cx.listener(|this, action: &SetFavorite, _, _| {
                     if let Screen::Workspace(workspace) = &this.screen {
-                        workspace.favorites.update(cx, |favorites, cx| {
-                            let favorite = action.favorite().clone();
-                            favorites.set_favorite(favorite, action.is_favorite(), window, cx);
-                        });
+                        let favorite = action.favorite().clone();
+                        workspace
+                            .favorites_state
+                            .set_favorite(favorite, action.is_favorite());
                     }
                 }))
                 .on_action(cx.listener(|this, action: &ShowAlbum, window, cx| {
@@ -1380,8 +1429,8 @@ impl Render for AppShell {
                     this.show_artist(action.artist(), window, cx);
                 }))
                 // On the way in, as the albums' screen runs Refresh itself
-                .capture_action(cx.listener(|this, _: &Refresh, _, cx| this.retry_favorites(cx)))
-                .on_action(cx.listener(|this, _: &Refresh, window, cx| this.refresh(window, cx)))
+                .capture_action(cx.listener(|this, _: &Refresh, _, _| this.retry_favorites()))
+                .on_action(cx.listener(|this, _: &Refresh, _, cx| this.refresh(cx)))
                 .on_action(cx.listener(|this, action: &AddToPlaylist, window, cx| {
                     this.update_playlists(window, cx, |playlists, window, cx| {
                         playlists.add_songs(action.playlist(), action.songs(), window, cx);

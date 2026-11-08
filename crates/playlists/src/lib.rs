@@ -1,8 +1,8 @@
-//! Keeps the choices that `actions::add_to_playlist_submenu` offers the other
-//! features. The app shell routes what they dispatch back to [`Playlists`].
+//! The screen of the playlists, which `hiphile_core::playlists::PlaylistsState` keeps, with its
+//! dialogs and the choice of playlist asked for from the keyboard. The app shell routes what the
+//! other features dispatch to [`Playlists`], and keeps the choices that
+//! `actions::add_to_playlist_submenu` offers them in step with the state.
 
-#[cfg(test)]
-mod fake_server;
 mod filter;
 mod name_form;
 mod playlists_view;

@@ -9,10 +9,10 @@ license.workspace = true
 [dependencies]
 gpui-kit.workspace = true
 hiphile-core.workspace = true
+playback.workspace = true
 subsonic.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 gpui-kit = { workspace = true, features = ["test-support"] }
 
 [lints]

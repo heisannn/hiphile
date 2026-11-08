@@ -15,13 +15,20 @@ config.workspace = true
 executor.workspace = true
 futures.workspace = true
 fuzzy.workspace = true
+net = { workspace = true, optional = true }
 playback.workspace = true
+serde_json = { workspace = true, optional = true }
+session.workspace = true
 subsonic.workspace = true
 tokio = { workspace = true, features = ["sync"] }
+
+[features]
+test-support = ["dep:net", "dep:serde_json"]
 
 [dev-dependencies]
 gpui-host.workspace = true
 gpui-kit = { workspace = true, features = ["test-support"] }
+net.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 

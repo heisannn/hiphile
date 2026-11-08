@@ -1,9 +1,11 @@
 mod format;
+mod instrumentals;
 mod play_tally;
 mod queue;
 mod song_cache;
 
 pub use format::{describe_format, format_sample_rate};
+pub use instrumentals::{is_instrumental, is_skipped, without_skipped};
 pub use play_tally::PlayTally;
 pub use queue::{Entry, EntryId, Placement, Queue, RepeatMode};
 pub use song_cache::SongCache;

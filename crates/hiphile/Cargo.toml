@@ -35,6 +35,7 @@ embed-resource.workspace = true
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }
+hiphile-core = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

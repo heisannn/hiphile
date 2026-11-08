@@ -10,3 +10,5 @@ pub mod playlists;
 pub mod search;
 pub mod settings;
 pub mod songs;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;

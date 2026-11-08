@@ -1,10 +1,14 @@
 use std::cell::Cell;
+use std::collections::HashSet;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use gpui_kit::{
     Modifiers, MouseDownEvent, MouseUpEvent, PlatformInput, Point, TestAppContext,
     VisualTestContext, point, px,
 };
+use hiphile_core::test_support::{self, FavoritesServer};
+use subsonic::{SongId, StarTarget};
 
 use super::*;
 
@@ -92,4 +96,48 @@ fn a_press_on_a_button_elsewhere_goes_on(cx: &mut TestAppContext) {
     let (_, cx) = bar(cx);
 
     assert!(press(ON_ITS_OWN, cx));
+}
+
+struct Follower {
+    _favorites: Task<()>,
+}
+
+impl Render for Follower {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
+#[gpui_kit::test]
+fn a_new_session_forgets_the_favorites_of_whoever_came_before(cx: &mut TestAppContext) {
+    let server = FavoritesServer::new(&["a"]);
+    server.hold("getStarred2");
+    // The requests wake the test from the network's own thread
+    cx.executor().allow_parking();
+    let before = StarTarget::Song(SongId::new("from-before"));
+    cx.update(|cx| actions::set_known_favorites(Some(HashSet::from([before.clone()])), cx));
+    let session = test_support::session(server.url());
+    let favorites = FavoritesState::new(
+        cx.update(|cx| gpui_host::executor(cx)),
+        session.client().clone(),
+    );
+
+    let _follower = cx.new(|cx| Follower {
+        _favorites: follow_favorites(&favorites, cx),
+    });
+
+    cx.update(|cx| assert_eq!(actions::is_favorite(&before, cx), None));
+    server.release("getStarred2");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !favorites.snapshot().is_loaded() {
+        assert!(Instant::now() < deadline, "the favorites never loaded");
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(actions::is_favorite(&before, cx), Some(false));
+        let a = StarTarget::Song(SongId::new("a"));
+        assert_eq!(actions::is_favorite(&a, cx), Some(true));
+    });
 }

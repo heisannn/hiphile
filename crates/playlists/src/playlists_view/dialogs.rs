@@ -7,8 +7,7 @@ use gpui_kit::{
     AnyElement, App, AppContext as _, Context, DismissEvent, Entity, FocusHandle, Focusable as _,
     IntoElement as _, ParentElement as _, SharedString, Subscription, Window, anchored, deferred,
 };
-use hiphile_core::playlists::Write;
-use subsonic::{PlaylistId, PlaylistWithSongs, Song, SongId};
+use subsonic::{PlaylistId, Song};
 
 use super::{Playlists, PlaylistsEvent};
 use crate::name_form::NameForm;
@@ -78,28 +77,15 @@ impl Playlists {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // A list on its way would not have the new playlist
-        self.edits += 1;
-        let client = self.session.client().clone();
+        let created = self.playlists.create(name.clone(), &songs);
         self._create_task = cx.spawn_in(window, async move |this, cx| {
-            let ids: Vec<SongId> = songs.iter().map(|song| song.id().clone()).collect();
-            let result = {
-                let name = name.clone();
-                cx.background_spawn(async move { client.create_playlist(&name, &ids).await })
-                    .await
-            };
-            this.update_in(cx, |this, window, cx| {
-                this.edits += 1;
-                this.refresh(window, cx);
-                match result {
-                    Ok(created) => {
-                        window.close_dialog(cx);
-                        this.playlist_created(created, &name, songs.len(), window, cx);
-                    }
-                    Err(error) => form.update(cx, |form, cx| {
-                        form.set_failed(session::describe(&error).into(), cx);
-                    }),
+            let created = created.await;
+            this.update_in(cx, |this, window, cx| match created {
+                Ok(id) => {
+                    window.close_dialog(cx);
+                    this.playlist_created(id, &name, songs.len(), window, cx);
                 }
+                Err(error) => form.update(cx, |form, cx| form.set_failed(error.into(), cx)),
             })
             .ok();
         });
@@ -107,18 +93,13 @@ impl Playlists {
 
     fn playlist_created(
         &mut self,
-        created: PlaylistWithSongs,
+        id: PlaylistId,
         name: &str,
         song_count: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let id = created.playlist().id().clone();
-        // Without a list, the one on its way has the new playlist
-        if let Some(mut playlists) = self.loaded_list().map(|list| list.to_vec()) {
-            playlists.push(created.playlist().clone());
-            self.set_list(playlists, window, cx);
-        }
+        self.sync(window, cx);
         if song_count == 0 {
             // It may be hidden by the filter, which it should not stay under
             self.filter
@@ -178,27 +159,8 @@ impl Playlists {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(loaded) = self
-            .loaded_detail_mut()
-            .filter(|loaded| loaded.playlist.id() == &playlist)
-        {
-            loaded.playlist = loaded.playlist.clone().with_name(&name);
-        }
-        let renamed = self.loaded_list().map(|list| {
-            list.iter()
-                .map(|listed| {
-                    if listed.id() == &playlist {
-                        listed.clone().with_name(&name)
-                    } else {
-                        listed.clone()
-                    }
-                })
-                .collect::<Vec<_>>()
-        });
-        if let Some(renamed) = renamed {
-            self.set_list(renamed, window, cx);
-        }
-        self.write(Write::Rename { playlist, name }, window, cx);
+        self.playlists.rename(playlist, name);
+        self.sync(window, cx);
     }
 
     pub(super) fn open_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -239,18 +201,8 @@ impl Playlists {
         cx: &mut Context<Self>,
     ) {
         let position = self.selected_position();
-        let remaining = self.loaded_list().map(|list| {
-            list.iter()
-                .filter(|listed| listed.id() != &playlist)
-                .cloned()
-                .collect::<Vec<_>>()
-        });
-        if self.selected.as_ref() == Some(&playlist) {
-            self.clear_selection();
-        }
-        if let Some(remaining) = remaining {
-            self.set_list(remaining, window, cx);
-        }
+        self.playlists.delete(playlist);
+        self.sync(window, cx);
         if let Some(next) = position
             .and_then(|position| {
                 self.visible_playlist(position)
@@ -260,7 +212,6 @@ impl Playlists {
         {
             self.select(next, window, cx);
         }
-        self.write(Write::Delete { playlist }, window, cx);
         self.list_focus.focus(window, cx);
     }
 

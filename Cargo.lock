@@ -97,7 +97,7 @@ version = "0.4.0"
 dependencies = [
  "gpui-kit",
  "hiphile-core",
- "serde_json",
+ "playback",
  "subsonic",
 ]
 
@@ -2342,10 +2342,9 @@ name = "favorites"
 version = "0.4.0"
 dependencies = [
  "actions",
- "client",
+ "gpui-host",
  "gpui-kit",
  "hiphile-core",
- "net",
  "serde_json",
  "session",
  "subsonic",
@@ -4033,8 +4032,10 @@ dependencies = [
  "fuzzy",
  "gpui-host",
  "gpui-kit",
+ "net",
  "playback",
  "serde_json",
+ "session",
  "subsonic",
  "tempfile",
  "tokio",
@@ -6415,11 +6416,10 @@ name = "playlists"
 version = "0.4.0"
 dependencies = [
  "actions",
- "client",
  "fuzzy",
+ "gpui-host",
  "gpui-kit",
  "hiphile-core",
- "net",
  "serde_json",
  "session",
  "subsonic",

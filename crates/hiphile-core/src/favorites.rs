@@ -1,8 +1,10 @@
 mod lists;
+mod state;
 
 use subsonic::{Album, Artist, Song, StarTarget};
 
 pub use lists::{FavoriteLists, Section};
+pub use state::{FavoritesLoad, FavoritesNotice, FavoritesSnapshot, FavoritesState};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Favorite {

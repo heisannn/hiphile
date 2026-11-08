@@ -13,7 +13,7 @@ impl EntryId {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
     id: EntryId,
     song: Song,
@@ -31,6 +31,7 @@ impl Entry {
 
 /// The songs of the playlist on show, in order, which edits change first and
 /// the server after.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entries {
     /// Shared with the list's row renderer.
     entries: Arc<Vec<Entry>>,
@@ -45,6 +46,13 @@ impl Entries {
         };
         this.extend(songs);
         this
+    }
+
+    /// Takes `songs` in place of those listed, as new entries: none takes the id of one
+    /// listed before.
+    pub fn replace(&mut self, songs: Vec<Song>) {
+        self.entries = Arc::default();
+        self.extend(songs);
     }
 
     pub fn shared(&self) -> Arc<Vec<Entry>> {
@@ -213,6 +221,15 @@ mod tests {
     fn a_song_put_back_past_the_end_goes_last() {
         let mut list = entries(&["a"]);
         list.insert(9, song("b"));
+        assert_eq!(ids(&list), ["a", "b"]);
+    }
+
+    #[test]
+    fn songs_put_in_place_of_others_are_new_entries() {
+        let mut list = entries(&["a", "b"]);
+        let a = id_at(&list, 0);
+        list.replace(vec![song("a"), song("b")]);
+        assert_eq!(list.position(a), None);
         assert_eq!(ids(&list), ["a", "b"]);
     }
 

@@ -1,13 +1,14 @@
-//! Every other feature adds to the favorites and takes from them through
-//! `actions::SetFavorite`, which the app shell routes to [`Favorites`], and reads
-//! them through `actions::is_favorite`, which [`Favorites`] keeps up to date.
+//! The screen of the favorites, which `hiphile_core::favorites::FavoritesState` keeps. Every
+//! other feature adds to them and takes from them through `actions::SetFavorite`, which the app
+//! shell routes to the state, and reads them through `actions::is_favorite`, which the app shell
+//! keeps in step with it.
 
 mod favorites_view;
 
 use gpui_kit::{App, KeyBinding, actions};
 use ui::list_navigation::bind_list_navigation;
 
-pub use favorites_view::{Favorites, FavoritesEvent};
+pub use favorites_view::Favorites;
 
 pub const FAVORITES_CONTEXT: &str = "Favorites";
 

@@ -1,12 +1,14 @@
+use std::mem;
 use std::sync::Arc;
 
 use actions::{EnqueueSongs, Placement, PlaySongs};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _,
+    ActiveTheme as _, Disableable as _, Sizable as _, StyledExt as _, WindowExt as _,
     button::{Button, ButtonVariants as _},
     input::{InputEvent, InputState},
     menu::DropdownMenu as _,
+    notification::NotificationType,
     resizable::ResizableState,
     spinner::Spinner,
     v_flex,
@@ -18,8 +20,11 @@ use gpui_kit::{
     prelude::FluentBuilder as _,
 };
 use hiphile_core::favorites::Favorite;
-use hiphile_core::playlists::{Entries, EntryId, WriteQueue};
-use subsonic::{Playlist, PlaylistId, PlaylistWithSongs, Song, SongId};
+use hiphile_core::playlists::{
+    Entries, Entry, EntryId, OpenPlaylist, PlaylistDetail, PlaylistList, PlaylistsNotice,
+    PlaylistsSnapshot, PlaylistsState,
+};
+use subsonic::{Playlist, PlaylistId, Song, SongId};
 use ui::list_navigation::{CONTROL_CONTEXT, ListNavigationExt as _, Motion, page_rows};
 use ui::{
     DetailHeader, ListFilter, ListPaneHeader, LoadFailure, MasterDetail, NowPlaying,
@@ -33,7 +38,7 @@ mod playlist_row;
 mod song_row;
 
 use dialogs::Chooser;
-use editing::RemovedSong;
+use editing::SongRemoved;
 use playlist_row::PlaylistRow;
 use song_row::SongRow;
 
@@ -61,13 +66,13 @@ pub enum PlaylistsEvent {
 
 pub struct Playlists {
     session: session::Session,
-    list: List,
-    refresh_error: Option<SharedString>,
+    playlists: PlaylistsState,
+    /// What is on show, which follows `playlists`.
+    shown: PlaylistsSnapshot,
     index: Arc<fuzzy::Index>,
     /// Positions in the loaded playlists that match the filter, the best first.
     visible: Arc<Vec<usize>>,
     selected: Option<PlaylistId>,
-    detail: Detail,
     selected_entry: Option<EntryId>,
     now_playing: Option<NowPlaying>,
     /// Waits for the selected playlist's songs.
@@ -78,44 +83,13 @@ pub struct Playlists {
     list_scroll: UniformListScrollHandle,
     songs_scroll: UniformListScrollHandle,
     panes: Entity<ResizableState>,
-    writes: WriteQueue,
-    /// The playlist of the write under way.
-    sending: Option<PlaylistId>,
-    /// Counts the changes made here, so that what the server said before the
-    /// latest of them, which it may not reflect, is not shown over it.
-    edits: u64,
-    /// Whether a save failed on the playlist on show, which then shows what
-    /// the server doesn't have until it has been read again.
-    diverged: bool,
-    /// What the Undo of the last song removed puts back.
-    removed: Option<RemovedSong>,
     chooser: Option<Chooser>,
-    _list_task: Task<()>,
-    _detail_task: Task<()>,
-    _write_task: Task<()>,
     _create_task: Task<()>,
     _index_task: Task<()>,
     _subscriptions: Vec<Subscription>,
     _readings_changes: Option<Task<()>>,
-}
-
-enum List {
-    Loading,
-    Loaded(Arc<Vec<Playlist>>),
-    Failed(SharedString),
-}
-
-enum Detail {
-    None,
-    Loading,
-    Loaded(LoadedPlaylist),
-    Failed(SharedString),
-}
-
-struct LoadedPlaylist {
-    playlist: Playlist,
-    entries: Entries,
-    cover_url: Option<SharedString>,
+    _changes: Task<()>,
+    _notices: Task<()>,
 }
 
 #[derive(Clone, Copy)]
@@ -127,7 +101,12 @@ enum SongsCommand {
 impl EventEmitter<PlaylistsEvent> for Playlists {}
 
 impl Playlists {
-    pub fn new(session: session::Session, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        session: session::Session,
+        playlists: PlaylistsState,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter playlists"));
         let list_focus = cx.focus_handle().tab_stop(true);
         let songs_focus = cx.focus_handle().tab_stop(true);
@@ -143,16 +122,19 @@ impl Playlists {
             cx.on_focus(&songs_focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&songs_focus, window, |_, _, cx| cx.notify()),
         ];
-        // The last session's choices must not outlive it
-        actions::set_playlist_choices(Vec::new(), cx);
+        let changes = gpui_host::observe_in(playlists.subscribe(), window, cx, Self::show);
+        let notices =
+            gpui_host::subscribe_in(playlists.notices(), window, cx, |_, notice, window, cx| {
+                let PlaylistsNotice::WriteFailed(message) = notice;
+                window.push_notification((NotificationType::Error, message), cx);
+            });
         let mut this = Self {
             session,
-            list: List::Loading,
-            refresh_error: None,
+            shown: playlists.snapshot(),
+            playlists,
             index: Arc::default(),
             visible: Arc::default(),
             selected: None,
-            detail: Detail::None,
             selected_entry: None,
             now_playing: None,
             after_load: None,
@@ -162,97 +144,55 @@ impl Playlists {
             list_scroll: UniformListScrollHandle::new(),
             songs_scroll: UniformListScrollHandle::new(),
             panes: cx.new(|_| ResizableState::default()),
-            writes: WriteQueue::default(),
-            sending: None,
-            edits: 0,
-            diverged: false,
-            removed: None,
             chooser: None,
-            _list_task: Task::ready(()),
-            _detail_task: Task::ready(()),
-            _write_task: Task::ready(()),
             _create_task: Task::ready(()),
             _index_task: Task::ready(()),
             _subscriptions: subscriptions,
             _readings_changes: None,
+            _changes: changes,
+            _notices: notices,
         };
         this._readings_changes = this.session.readings().map(|readings| {
             ui::on_readings_changed(readings, cx, |this: &mut Self, cx| this.index_playlists(cx))
         });
-        this.refresh(window, cx);
+        if this.shown.loaded_list().is_some() {
+            this.list_changed(window, cx);
+        }
         this
     }
 
-    /// Brings the list and the playlist on show up to date with the server.
-    /// Changes still being saved do that themselves once they are.
-    pub fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.sending.is_some() {
-            return;
+    /// Brings what is on show up to date with the playlists, after a change made here or one
+    /// they published.
+    fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show(self.playlists.snapshot(), window, cx);
+    }
+
+    fn show(&mut self, playlists: PlaylistsSnapshot, window: &mut Window, cx: &mut Context<Self>) {
+        let was = mem::replace(&mut self.shown, playlists);
+        self.follow_detail(&was, window, cx);
+        // A save failed on the playlist the song was removed from, so it may still be there
+        if was.can_undo_removal() && !self.shown.can_undo_removal() {
+            window.remove_notification::<SongRemoved>(cx);
         }
-        self.fetch_list(window, cx);
-        self.reload_detail(window, cx);
+        let is_new_list = self
+            .shown
+            .loaded_list()
+            .is_some_and(|list| was.loaded_list().is_none_or(|was| !Arc::ptr_eq(was, list)));
+        if is_new_list {
+            self.list_changed(window, cx);
+        }
+        cx.notify();
     }
 
-    fn fetch_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let client = self.session.client().clone();
-        let edits = self.edits;
-        self._list_task = cx.spawn_in(window, async move |this, cx| {
-            let result = cx
-                .background_spawn(async move { client.playlists().await })
-                .await;
-            this.update_in(cx, |this, window, cx| match result {
-                // A list from before the latest change would undo it on
-                // screen, and the save of that change fetches another.
-                Ok(playlists) if this.edits == edits => {
-                    this.refresh_error = None;
-                    this.set_list(playlists, window, cx);
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    let error = SharedString::from(session::describe(&error));
-                    if this.loaded_list().is_some() {
-                        this.refresh_error = Some(error);
-                    } else {
-                        this.list = List::Failed(error);
-                    }
-                    cx.notify();
-                }
-            })
-            .ok();
-        });
-    }
-
-    /// Replaces the list, sorted by name, keeping the selection while the
-    /// playlist is still there.
-    fn set_list(
-        &mut self,
-        mut playlists: Vec<Playlist>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        playlists.sort_by_cached_key(|playlist| playlist.name().to_lowercase());
-        let username = self.session.username();
-        actions::set_playlist_choices(
-            playlists
-                .iter()
-                .filter(|playlist| playlist.is_editable_by(username))
-                .map(|playlist| {
-                    (
-                        playlist.id().clone(),
-                        SharedString::from(playlist.name().to_owned()),
-                    )
-                })
-                .collect(),
-            cx,
-        );
-        let keeps_selection = self
-            .selected
-            .as_ref()
-            .is_some_and(|selected| playlists.iter().any(|playlist| playlist.id() == selected));
-        self.list = List::Loaded(Arc::new(playlists));
+    /// Keeps the selection while the playlist is still there.
+    fn list_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.index_playlists(cx);
+        let keeps_selection = self.selected.as_ref().is_some_and(|selected| {
+            self.loaded_list()
+                .is_some_and(|list| list.iter().any(|playlist| playlist.id() == selected))
+        });
         if !keeps_selection {
-            self.clear_selection();
+            self.clear_selection(window, cx);
             if let Some(first) = self
                 .visible_playlist(0)
                 .map(|playlist| playlist.id().clone())
@@ -260,22 +200,49 @@ impl Playlists {
                 self.select(first, window, cx);
             }
         }
-        cx.notify();
     }
 
-    fn clear_selection(&mut self) {
+    /// Follows the selected song to where it is now, and runs what waited for the songs.
+    fn follow_detail(
+        &mut self,
+        was: &PlaylistsSnapshot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.shown.detail() {
+            PlaylistDetail::Loaded(open) => {
+                let was = was
+                    .open_playlist()
+                    .filter(|was| was.playlist().id() == open.playlist().id());
+                self.selected_entry = match (self.selected_entry, was) {
+                    (Some(selected), Some(_)) if open.entries().position(selected).is_some() => {
+                        Some(selected)
+                    }
+                    (Some(selected), Some(was)) => {
+                        follow_song(selected, was.entries(), open.entries())
+                    }
+                    // What was selected belongs to entries no longer on show
+                    _ => None,
+                };
+                if let Some(command) = self.after_load.take() {
+                    self.run_songs_command(command, window, cx);
+                }
+            }
+            PlaylistDetail::Failed(_) => self.after_load = None,
+            PlaylistDetail::None | PlaylistDetail::Loading => {}
+        }
+    }
+
+    fn clear_selection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.selected = None;
         self.selected_entry = None;
-        self.detail = Detail::None;
         self.after_load = None;
-        self.diverged = false;
+        self.playlists.close();
+        self.sync(window, cx);
     }
 
     fn loaded_list(&self) -> Option<&Arc<Vec<Playlist>>> {
-        match &self.list {
-            List::Loaded(playlists) => Some(playlists),
-            _ => None,
-        }
+        self.shown.loaded_list()
     }
 
     fn visible_playlist(&self, position: usize) -> Option<&Playlist> {
@@ -375,52 +342,9 @@ impl Playlists {
         self.scroll_to_selected();
         self.selected_entry = None;
         self.after_load = None;
-        self.diverged = false;
-        self.detail = Detail::Loading;
         self.songs_scroll.scroll_to_item(0, ScrollStrategy::Top);
-        self.fetch_detail(playlist, window, cx);
-        cx.notify();
-    }
-
-    fn fetch_detail(&mut self, playlist: PlaylistId, window: &mut Window, cx: &mut Context<Self>) {
-        let client = self.session.client().clone();
-        let edits = self.edits;
-        self._detail_task = cx.spawn_in(window, async move |this, cx| {
-            let result = {
-                let playlist = playlist.clone();
-                cx.background_spawn(async move { client.playlist(&playlist).await })
-                    .await
-            };
-            this.update_in(cx, |this, window, cx| {
-                if this.selected.as_ref() != Some(&playlist) {
-                    return;
-                }
-                // Edits would go on top of an answer that doesn't have the
-                // latest of them, and undo them. Saving fetches another when
-                // it ends.
-                if this.edits != edits || this.has_unsaved(&playlist) {
-                    return;
-                }
-                match result {
-                    Ok(loaded) => this.show_detail(loaded, window, cx),
-                    // Songs on show stay there, if they are what the server has
-                    Err(_) if this.loaded_detail().is_some() && !this.diverged => {}
-                    Err(error) => {
-                        this.after_load = None;
-                        this.diverged = false;
-                        this.detail = Detail::Failed(session::describe(&error).into());
-                        cx.notify();
-                    }
-                }
-            })
-            .ok();
-        });
-    }
-
-    fn reload_detail(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(selected) = self.selected.clone() {
-            self.fetch_detail(selected, window, cx);
-        }
+        self.playlists.open(playlist);
+        self.sync(window, cx);
     }
 
     fn retry_detail(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -429,73 +353,8 @@ impl Playlists {
         }
     }
 
-    /// Rows that didn't change keep their identity, which also keeps their selection
-    /// and any menu open on them.
-    fn show_detail(
-        &mut self,
-        loaded: PlaylistWithSongs,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.diverged = false;
-        let (playlist, songs) = loaded.into_parts();
-        let cover_url = playlist
-            .cover_art()
-            .map(|cover_art| self.session.cover_art_url(cover_art, COVER_PIXELS).into());
-        match &mut self.detail {
-            Detail::Loaded(shown)
-                if shown.playlist.id() == playlist.id() && shown.entries.has_songs(&songs) =>
-            {
-                shown.playlist = playlist;
-                shown.cover_url = cover_url;
-            }
-            detail => {
-                let selected_song = self.selected_entry.and_then(|selected| {
-                    let Detail::Loaded(shown) = &*detail else {
-                        return None;
-                    };
-                    let ix = shown.entries.position(selected)?;
-                    Some((ix, shown.entries.get(ix)?.song().id().clone()))
-                });
-                let entries = Entries::new(songs);
-                // Follows the selected song to where it is now
-                self.selected_entry = selected_song.and_then(|(ix, song)| {
-                    let same_place = entries
-                        .get(ix)
-                        .filter(|entry| entry.song().id() == &song)
-                        .map(|entry| entry.id());
-                    same_place.or_else(|| {
-                        (0..entries.len())
-                            .filter_map(|ix| entries.get(ix))
-                            .find(|entry| entry.song().id() == &song)
-                            .map(|entry| entry.id())
-                    })
-                });
-                *detail = Detail::Loaded(LoadedPlaylist {
-                    playlist,
-                    entries,
-                    cover_url,
-                });
-            }
-        }
-        if let Some(command) = self.after_load.take() {
-            self.run_songs_command(command, window, cx);
-        }
-        cx.notify();
-    }
-
-    fn loaded_detail(&self) -> Option<&LoadedPlaylist> {
-        match &self.detail {
-            Detail::Loaded(loaded) => Some(loaded),
-            _ => None,
-        }
-    }
-
-    fn loaded_detail_mut(&mut self) -> Option<&mut LoadedPlaylist> {
-        match &mut self.detail {
-            Detail::Loaded(loaded) => Some(loaded),
-            _ => None,
-        }
+    fn loaded_detail(&self) -> Option<&OpenPlaylist> {
+        self.shown.open_playlist()
     }
 
     pub fn min_width(&self, window: &Window, cx: &App) -> gpui_kit::Pixels {
@@ -525,13 +384,15 @@ impl Playlists {
     }
 
     fn selected_entry_ix(&self) -> Option<usize> {
-        self.loaded_detail()?.entries.position(self.selected_entry?)
+        self.loaded_detail()?
+            .entries()
+            .position(self.selected_entry?)
     }
 
     fn select_entry_at(&mut self, ix: usize, cx: &mut Context<Self>) {
         let Some(id) = self
             .loaded_detail()
-            .and_then(|loaded| loaded.entries.get(ix))
+            .and_then(|loaded| loaded.entries().get(ix))
             .map(|entry| entry.id())
         else {
             return;
@@ -545,7 +406,7 @@ impl Playlists {
     fn select_entry(&mut self, id: EntryId, cx: &mut Context<Self>) {
         let ix = self
             .loaded_detail()
-            .and_then(|loaded| loaded.entries.position(id));
+            .and_then(|loaded| loaded.entries().position(id));
         if let Some(ix) = ix {
             self.select_entry_at(ix, cx);
         }
@@ -554,7 +415,7 @@ impl Playlists {
     fn move_entry_selection(&mut self, motion: Motion, cx: &mut Context<Self>) {
         let len = self
             .loaded_detail()
-            .map_or(0, |loaded| loaded.entries.len());
+            .map_or(0, |loaded| loaded.entries().len());
         let page = page_rows(&self.songs_scroll, len);
         if let Some(ix) = motion.apply(self.selected_entry_ix(), len, page) {
             self.select_entry_at(ix, cx);
@@ -565,7 +426,7 @@ impl Playlists {
     fn open_playlist(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self
             .loaded_detail()
-            .is_none_or(|loaded| loaded.entries.is_empty())
+            .is_none_or(|loaded| loaded.entries().is_empty())
         {
             return;
         }
@@ -578,8 +439,8 @@ impl Playlists {
     fn play_from(&self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let songs = self
             .loaded_detail()
-            .filter(|loaded| ix < loaded.entries.len())
-            .map(|loaded| loaded.entries.songs());
+            .filter(|loaded| ix < loaded.entries().len())
+            .map(|loaded| loaded.entries().songs());
         if let Some(songs) = songs {
             window.dispatch_action(Box::new(PlaySongs::new(songs, ix)), cx);
         }
@@ -588,8 +449,8 @@ impl Playlists {
     fn play_whole(&self, window: &mut Window, cx: &mut Context<Self>) {
         let songs = self
             .loaded_detail()
-            .filter(|loaded| !loaded.entries.is_empty())
-            .map(|loaded| loaded.entries.songs());
+            .filter(|loaded| !loaded.entries().is_empty())
+            .map(|loaded| loaded.entries().songs());
         if let Some(songs) = songs {
             window.dispatch_action(Box::new(PlaySongs::whole(songs)), cx);
         }
@@ -598,10 +459,10 @@ impl Playlists {
     /// Runs `command` on the whole of the selected playlist, once its songs
     /// are here: a right click selects a row and opens its menu at once.
     fn on_playlist(&mut self, command: SongsCommand, window: &mut Window, cx: &mut Context<Self>) {
-        match self.detail {
-            Detail::Loaded(_) => self.run_songs_command(command, window, cx),
-            Detail::Loading => self.after_load = Some(command),
-            Detail::None | Detail::Failed(_) => {}
+        match self.shown.detail() {
+            PlaylistDetail::Loaded(_) => self.run_songs_command(command, window, cx),
+            PlaylistDetail::Loading => self.after_load = Some(command),
+            PlaylistDetail::None | PlaylistDetail::Failed(_) => {}
         }
     }
 
@@ -616,8 +477,8 @@ impl Playlists {
             SongsCommand::Enqueue(placement) => {
                 let songs = self
                     .loaded_detail()
-                    .filter(|loaded| !loaded.entries.is_empty())
-                    .map(|loaded| loaded.entries.songs());
+                    .filter(|loaded| !loaded.entries().is_empty())
+                    .map(|loaded| loaded.entries().songs());
                 if let Some(songs) = songs {
                     window.dispatch_action(Box::new(EnqueueSongs::new(songs, placement)), cx);
                 }
@@ -627,7 +488,7 @@ impl Playlists {
 
     fn selected_song(&self) -> Option<Song> {
         let ix = self.selected_entry_ix()?;
-        Some(self.loaded_detail()?.entries.get(ix)?.song().clone())
+        Some(self.loaded_detail()?.entries().get(ix)?.song().clone())
     }
 
     fn enqueue_selected_song(
@@ -675,7 +536,7 @@ impl Playlists {
     fn selected_playlist(&self) -> Option<&Playlist> {
         let selected = self.selected.as_ref()?;
         self.loaded_detail()
-            .map(|loaded| &loaded.playlist)
+            .map(OpenPlaylist::playlist)
             .or_else(|| {
                 self.loaded_list()?
                     .iter()
@@ -690,7 +551,7 @@ impl Playlists {
 
     /// Whether the songs on show can be changed, which saves all of them.
     fn can_edit_songs(&self) -> bool {
-        self.is_editable() && !self.diverged
+        self.is_editable() && !self.shown.is_diverged()
     }
 
     fn render_list_pane(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
@@ -715,16 +576,14 @@ impl Playlists {
             .when(count.is_some_and(|count| count > 0), |this| {
                 this.child(ListFilter::new(&self.filter))
             })
-            .when_some(self.refresh_error.clone(), |this, error| {
+            .when_some(self.shown.refresh_error(), |this, error| {
                 this.child(RefreshFailure::new(
                     "Couldn't refresh playlists",
-                    error,
+                    SharedString::from(error.to_owned()),
                     Button::new("retry-refresh-playlists")
                         .label("Retry")
                         .small()
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.refresh(window, cx);
-                        })),
+                        .on_click(cx.listener(|this, _, _, _| this.playlists.refresh())),
                 ))
             })
             .child(self.render_list(window, cx))
@@ -769,23 +628,23 @@ impl Playlists {
     }
 
     fn render_rows(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let playlists = match &self.list {
-            List::Loading => return centered(Spinner::new()).into_any_element(),
-            List::Failed(error) => {
+        let playlists = match self.shown.list() {
+            PlaylistList::Loading => return centered(Spinner::new()).into_any_element(),
+            PlaylistList::Failed(error) => {
                 return LoadFailure::new(
                     "Couldn't load playlists",
-                    error.clone(),
+                    SharedString::from(error.clone()),
                     Button::new("retry-playlists")
                         .label("Retry")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.list_focus.focus(window, cx);
-                            this.list = List::Loading;
-                            this.fetch_list(window, cx);
+                            this.playlists.retry_list();
+                            this.sync(window, cx);
                         })),
                 )
                 .into_any_element();
             }
-            List::Loaded(playlists) => playlists.clone(),
+            PlaylistList::Loaded(playlists) => playlists.clone(),
         };
         if playlists.is_empty() {
             return centered(
@@ -902,13 +761,13 @@ impl Playlists {
     }
 
     fn render_detail_content(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let loaded = match &self.detail {
-            Detail::None => return div().size_full().into_any_element(),
-            Detail::Loading => return centered(Spinner::new()).into_any_element(),
-            Detail::Failed(error) => {
+        let loaded = match self.shown.detail() {
+            PlaylistDetail::None => return div().size_full().into_any_element(),
+            PlaylistDetail::Loading => return centered(Spinner::new()).into_any_element(),
+            PlaylistDetail::Failed(error) => {
                 return LoadFailure::new(
                     "Couldn't load this playlist",
-                    error.clone(),
+                    SharedString::from(error.clone()),
                     Button::new("retry-playlist")
                         .label("Retry")
                         .on_click(cx.listener(|this, _, window, cx| {
@@ -918,12 +777,15 @@ impl Playlists {
                 )
                 .into_any_element();
             }
-            Detail::Loaded(loaded) => loaded,
+            PlaylistDetail::Loaded(loaded) => loaded,
         };
-        let playlist = &loaded.playlist;
+        let playlist = loaded.playlist();
         let username = self.session.username();
         let editable = playlist.is_editable_by(username);
-        let songs = loaded.entries.songs();
+        let songs = loaded.entries().songs();
+        let cover_url = playlist
+            .cover_art()
+            .map(|cover_art| self.session.cover_art_url(cover_art, COVER_PIXELS).into());
         let total: Option<std::time::Duration> = songs.iter().map(Song::duration).sum();
         let total = total.or_else(|| playlist.duration());
         let summary = join_details([
@@ -938,21 +800,19 @@ impl Playlists {
             .min_w_0()
             .min_h_0()
             .child(
-                DetailHeader::new(
-                    loaded.cover_url.clone(),
-                    playlist.name().to_owned().into(),
-                    summary,
-                )
-                .subtitle(owner.map(|owner| owner.to_owned().into()))
-                .comment(playlist.comment().map(|comment| comment.to_owned().into()))
-                .action(
-                    Button::new("play-playlist")
-                        .icon(IconName::Play)
-                        .label("Play")
-                        .disabled(songs.is_empty())
-                        .on_click(cx.listener(|this, _, window, cx| this.play_whole(window, cx))),
-                )
-                .action(self.render_playlist_menu(editable, !songs.is_empty())),
+                DetailHeader::new(cover_url, playlist.name().to_owned().into(), summary)
+                    .subtitle(owner.map(|owner| owner.to_owned().into()))
+                    .comment(playlist.comment().map(|comment| comment.to_owned().into()))
+                    .action(
+                        Button::new("play-playlist")
+                            .icon(IconName::Play)
+                            .label("Play")
+                            .disabled(songs.is_empty())
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.play_whole(window, cx)),
+                            ),
+                    )
+                    .action(self.render_playlist_menu(editable, !songs.is_empty())),
             )
             .child(self.render_songs(loaded, editable, window, cx))
             .into_any_element()
@@ -981,12 +841,12 @@ impl Playlists {
 
     fn render_songs(
         &self,
-        loaded: &LoadedPlaylist,
+        loaded: &OpenPlaylist,
         editable: bool,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if loaded.entries.is_empty() {
+        if loaded.entries().is_empty() {
             return centered(
                 v_flex()
                     .items_center()
@@ -999,7 +859,7 @@ impl Playlists {
             )
             .into_any_element();
         }
-        let entries = loaded.entries.shared();
+        let entries = loaded.entries().shared();
         let session = self.session.clone();
         let selected = self.selected_entry;
         let now_playing = self.now_playing.clone();
@@ -1035,6 +895,23 @@ impl Playlists {
         .min_h_0()
         .into_any_element()
     }
+}
+
+/// The entry in `now` of the song `selected` was in `was`: at the same place, or else the
+/// first of that song.
+fn follow_song(selected: EntryId, was: &Entries, now: &Entries) -> Option<EntryId> {
+    let ix = was.position(selected)?;
+    let song = was.get(ix)?.song().id();
+    let same_place = now
+        .get(ix)
+        .filter(|entry| entry.song().id() == song)
+        .map(Entry::id);
+    same_place.or_else(|| {
+        (0..now.len())
+            .filter_map(|ix| now.get(ix))
+            .find(|entry| entry.song().id() == song)
+            .map(Entry::id)
+    })
 }
 
 impl Focusable for Playlists {

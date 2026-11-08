@@ -4,7 +4,7 @@ use serde::Deserialize;
 
 use crate::{CoverArtId, PlaylistId, Song};
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Playlist {
     id: PlaylistId,

@@ -15,11 +15,10 @@ use gpui_kit::{
     Action, App, Context, Global, KeyBinding, SharedString, Subscription, Window, actions,
 };
 use hiphile_core::favorites::Favorite;
+use hiphile_core::playlists::PlaylistChoice;
 use subsonic::{AlbumId, ArtistId, PlaylistId, Song, StarTarget};
 
-pub use instrumentals::{
-    is_instrumental, is_skipped, queue_menu_items, set_skip_instrumentals, without_skipped,
-};
+pub use instrumentals::{is_skipped, queue_menu_items, set_skip_instrumentals, without_skipped};
 
 #[derive(Clone, Debug, PartialEq, Action)]
 #[action(namespace = hiphile, no_json)]
@@ -82,15 +81,15 @@ impl ChoosePlaylist {
     }
 }
 
-/// The playlists songs can be added to, which the feature owning playlists
-/// keeps up to date for the menus of every other feature.
+/// The playlists songs can be added to, which the app shell keeps in step with
+/// the playlists for the menus of every feature.
 #[derive(Default)]
-struct PlaylistChoices(Arc<[(PlaylistId, SharedString)]>);
+struct PlaylistChoices(Arc<[PlaylistChoice]>);
 
 impl Global for PlaylistChoices {}
 
-pub fn set_playlist_choices(choices: Vec<(PlaylistId, SharedString)>, cx: &mut App) {
-    cx.set_global(PlaylistChoices(choices.into()));
+pub fn set_playlist_choices(choices: Arc<[PlaylistChoice]>, cx: &mut App) {
+    cx.set_global(PlaylistChoices(choices));
 }
 
 /// The returned command takes the playlist to add to, or `None` for a new one.
@@ -116,8 +115,9 @@ pub fn playlist_choices(
     } else {
         menu.separator()
     };
-    choices.iter().fold(menu, |menu, (playlist, name)| {
-        menu.menu(name.clone(), command(Some(playlist)))
+    choices.iter().fold(menu, |menu, choice| {
+        let name = SharedString::from(choice.name().clone());
+        menu.menu(name, command(Some(choice.id())))
     })
 }
 
@@ -267,8 +267,8 @@ pub fn bind_toggle_favorite(context: &'static str, cx: &mut App) {
     cx.bind_keys([KeyBinding::new(key, ToggleFavorite, Some(context))]);
 }
 
-/// What the user's favorites are, which the feature owning them keeps up to
-/// date for every other feature. Holds nothing until the server has said.
+/// What the user's favorites are, which the app shell keeps in step with the
+/// favorites for every feature. Holds nothing until the server has said.
 #[derive(Default)]
 struct KnownFavorites(Option<HashSet<StarTarget>>);
 

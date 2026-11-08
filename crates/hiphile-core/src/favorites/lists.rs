@@ -43,7 +43,7 @@ impl Section {
 
 /// The user's favorites of each kind, in the server's order. One added here
 /// goes first, as it does on Navidrome, which lists the newest first.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct FavoriteLists {
     pub songs: Arc<Vec<Song>>,
