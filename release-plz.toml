@@ -29,8 +29,10 @@ changelog_include = [
     "client",
     "config",
     "dsd",
+    "executor",
     "favorites",
     "fuzzy",
+    "hiphile-core",
     "home",
     "library",
     "lyrics",
@@ -55,3 +57,14 @@ changelog_include = [
 [[package]]
 name = "hiphile-cli"
 release = false
+
+# release-plz looks for each crate in the latest `v*` tag and fails on a crate that the tag lacks,
+# so a crate stays out of the release until the first tag that contains it. Remove its entry once
+# that tag exists: until then a change to it alone does not start a release or reach the changelog.
+[[package]]
+name = "executor"
+git_only = false
+
+[[package]]
+name = "hiphile-core"
+git_only = false

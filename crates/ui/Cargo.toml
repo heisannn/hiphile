@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 actions.workspace = true
+executor.workspace = true
 gpui-kit.workspace = true
 subsonic.workspace = true
 

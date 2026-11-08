@@ -1,0 +1,12 @@
+[package]
+name = "hiphile-core"
+description = "The app's state and logic, for any UI. No GPUI."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

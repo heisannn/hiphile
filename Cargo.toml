@@ -18,8 +18,10 @@ catalog = { path = "crates/catalog" }
 client = { path = "crates/client" }
 config = { path = "crates/config" }
 dsd = { path = "crates/dsd" }
+executor = { path = "crates/executor" }
 favorites = { path = "crates/favorites" }
 fuzzy = { path = "crates/fuzzy" }
+hiphile-core = { path = "crates/hiphile-core" }
 home = { path = "crates/home" }
 library = { path = "crates/library" }
 lyrics = { path = "crates/lyrics" }

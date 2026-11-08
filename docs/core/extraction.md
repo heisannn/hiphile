@@ -12,13 +12,21 @@ without a window, and the CLI can share it.
 | Order | Pure files first, then one service at a time, the player last (see [Steps](#steps)) |
 | Check | `script/check-gpui-free` lists every crate that must stay free of GPUI |
 
+## Progress
+
+| Step | State |
+| --- | --- |
+| 0 | Done. `executor` (the trait, `Task`, the tokio implementation, `Saver`), `ui::executor` (GPUI's), an empty `hiphile-core`; the check covers the new crates and the five that were free but unchecked |
+
 ## Where things stand
+
+As planned on 2026-11-09; [Progress](#progress) says what has moved since.
 
 ### Already free of GPUI
 
 `subsonic`, `client`, `net`, `audio`, `playback`, `presence`, `catalog`, `config`, `fuzzy` and
-`hiphile-cli` are checked by `script/check-gpui-free`. `lyrics`, `media-controls`, `dsd`, `r8brain` and `soxr`
-are free of GPUI too but not checked.
+`hiphile-cli` were checked by `script/check-gpui-free`. `lyrics`, `media-controls`, `dsd`, `r8brain` and `soxr`
+were free of GPUI too but not checked; step 0 added them.
 
 They already work with any executor, which is what lets `hiphile-cli` run them with
 `futures::executor::block_on`:
@@ -82,7 +90,13 @@ These files reference no GPUI type and move as they are:
    work, a timer); the task handle cancels on drop, as GPUI's `Task` does. GPUI hosts pass GPUI's
    `BackgroundExecutor`, so the 30 test files that use `run_until_parked` and the 5 that use `advance_clock`
    still drive the core deterministically. Hosts on tokio (the CLI, NSH) pass a tokio one. The core never
-   starts a runtime of its own.
+   starts a runtime of its own. In `executor`: a host implements `Spawner` (`spawn`, `spawn_blocking`,
+   `timer`), which returns a `Spawned` handle per piece of work that cancels it on drop and can be
+   detached. The core keeps an `Executor` (an `Arc<dyn Spawner>`), whose `spawn` and `spawn_blocking`
+   give a typed `Task<R>` that cancels on drop as well. A host must not run the work before `spawn`
+   returns, as the core spawns under its own locks. GPUI's is `ui::executor(cx)`; tokio's is
+   `Executor::tokio(handle)`, whose timers keep to that runtime's clock whatever polls them, so a test on
+   a current-thread runtime with paused time moves them with `tokio::time::advance`.
 5. **Blocking work only through the executor's blocking spawn:** rusqlite, `CoverStore`, `SongCache`, config
    writes, the keychain, `self_update`, the fuzzy reader, `audio::output_devices`.
 6. **Text is `String` or `Arc<str>`, not `SharedString`.** Error text is made in the core (the `describe`
@@ -95,6 +109,10 @@ These files reference no GPUI type and move as they are:
    `cx.on_app_quit`).
 9. **Saves are serial and coalesced:** one write at a time, the last value wins. One helper replaces the
    four copies in `Player::save_volume`, `AudioSettings`, `Updater::save` and `Readings::save_choice`.
+   It is `executor::Saver<T>`: `save(value)` replaces the value still waiting, and `save_with(|waiting| …)`
+   builds on it, for `AudioSettings`, which writes only the fields that changed. The write runs on a
+   blocking thread and reports through the owner's closure, and what was given is written even if the
+   saver is dropped first. `Readings::save_choice` is not serial today.
 10. **Constructors take their stores.** `Player::new` uses the user's real config store today, so a test that
     changes the volume changes the user's saved volume. Core constructors take the config store (and the
     catalog, the caches), and tests give them temporary ones.
@@ -103,11 +121,14 @@ These files reference no GPUI type and move as they are:
 
 ## Target layout
 
-A proposal, to be confirmed in step 0. Existing crates whose purpose already covers the logic take it.
-Everything else goes into one new crate.
+Confirmed in step 0: with every edge below added to the manifests, `cargo metadata` finds no cycle, and
+`playback`, `session`, `updater`, `lyrics`, `media-controls` and `hiphile-core` reach no GPUI once
+`session` and `updater` drop gpui-kit. Existing crates whose purpose already covers the logic take it.
+Everything else goes into one new crate, apart from the executor.
 
 | Logic | From | To |
 | --- | --- | --- |
+| The executor trait, `Task`, the tokio implementation, the serial saver | New | New `executor`, under every core crate. Not `hiphile-core`: `updater`, `session` and `playback` need it and `hiphile-core` depends on them, a cycle cargo rejects |
 | The player's state machine, queue operations, preparing the next song, scrobbling, Discord and media controls, the volume | `player/src/player.rs` | `playback`, whose description is already "Play queue and playback orchestration. No GPUI." |
 | The format text, `is_instrumental` and the skip setting | `player/src/format.rs`, `actions/src/instrumentals.rs` | `playback` |
 | Fetching the current song's lyrics, their cache, the line and word timing | `player/src/lyrics_view/current.rs`, `lyrics_view/lines.rs` | `lyrics` |
@@ -116,8 +137,8 @@ Everything else goes into one new crate.
 | The update check, automatic installs, the saved choice | `updater` | `updater`, made free of GPUI. `GlobalUpdater` and `cx.restart()` move to the app |
 | The app and the signed-in workspace, routing between them, the settings models, the library sync and its activity, favorites, playlists, the search index, home recommendations, the sort and filter modules, navigation history | `hiphile`, `settings`, `library`, `favorites`, `playlists`, `search`, `home`, `songs`, `artists` | New `hiphile-core` |
 
-`hiphile-core` depends on `playback`, `session`, `updater`, `lyrics` and the crates under them; the view
-crates depend on `hiphile-core`. `playback` gains `session`, `presence` and `media-controls`; `session`
+`hiphile-core` depends on `playback`, `session`, `updater`, `lyrics` and the crates under them, `executor`
+among them; the view crates depend on `hiphile-core`. `playback` gains `session`, `presence` and `media-controls`; `session`
 does not depend on `playback`, so no cycle appears.
 
 ## Steps
@@ -152,5 +173,3 @@ stay with the views.
   times.
 - Whether a service with many writers (the player) is better as one task that owns the state and takes
   commands than as a lock. The lock is the default because it keeps today's synchronous semantics.
-- Which tokio-based test executor: a current-thread runtime with paused time controls timers as
-  `advance_clock` does.
