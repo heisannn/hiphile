@@ -16,9 +16,9 @@ tokio = { workspace = true, features = ["sync"] }
 workspace = true
 
 [dev-dependencies]
+gpui-host.workspace = true
 gpui-kit = { workspace = true, features = ["test-support"] }
 hex.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "test-util"] }
-ui.workspace = true

@@ -8,11 +8,9 @@ license.workspace = true
 
 [dependencies]
 actions.workspace = true
-executor.workspace = true
 gpui-kit.workspace = true
 hiphile-core.workspace = true
 subsonic.workspace = true
-tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }

@@ -32,6 +32,7 @@ changelog_include = [
     "executor",
     "favorites",
     "fuzzy",
+    "gpui-host",
     "hiphile-core",
     "home",
     "library",
@@ -67,4 +68,8 @@ git_only = false
 
 [[package]]
 name = "hiphile-core"
+git_only = false
+
+[[package]]
+name = "gpui-host"
 git_only = false

@@ -21,6 +21,7 @@ dsd = { path = "crates/dsd" }
 executor = { path = "crates/executor" }
 favorites = { path = "crates/favorites" }
 fuzzy = { path = "crates/fuzzy" }
+gpui-host = { path = "crates/gpui-host" }
 hiphile-core = { path = "crates/hiphile-core" }
 home = { path = "crates/home" }
 library = { path = "crates/library" }

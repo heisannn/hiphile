@@ -54,7 +54,8 @@ fn main() {
             playlists::init(cx);
             favorites::init(cx);
             search::init(WORKSPACE_CONTEXT, cx);
-            let updater = updater::Updater::of_this_app(ui::executor(cx), config::Store::user());
+            let updater =
+                updater::Updater::of_this_app(gpui_host::executor(cx), config::Store::user());
             settings::init(updater.clone(), cx);
             install_app_commands(cx);
 

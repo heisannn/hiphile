@@ -1,5 +1,5 @@
 //! The core runs on threads and a clock that its host lends it through an [`Executor`], and
-//! starts no runtime of its own. A GPUI app lends GPUI's background executor (`ui::executor`),
+//! starts no runtime of its own. A GPUI app lends GPUI's background executor (`gpui_host::executor`),
 //! so that GPUI's tests drive the core with `run_until_parked` and `advance_clock`. A host on
 //! tokio, such as the CLI or a test, lends a runtime with [`Executor::tokio`].
 

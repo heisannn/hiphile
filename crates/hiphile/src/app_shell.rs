@@ -232,7 +232,7 @@ impl AppShell {
             _system_appearance_changes: settings::follow_system_appearance(window),
             _updater_changes: updater
                 .as_ref()
-                .map(|updater| ui::notify_on_change(updater.subscribe(), cx)),
+                .map(|updater| gpui_host::notify_on_change(updater.subscribe(), cx)),
             updater,
         }
     }

@@ -134,7 +134,7 @@ impl SettingsView {
         Self {
             _updater_changes: updater
                 .as_ref()
-                .map(|updater| ui::notify_on_change(updater.subscribe(), cx)),
+                .map(|updater| gpui_host::notify_on_change(updater.subscribe(), cx)),
             updater,
             _readings_changes: readings
                 .as_ref()

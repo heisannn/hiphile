@@ -1,0 +1,18 @@
+[package]
+name = "gpui-host"
+description = "The GPUI side of the core: its executor on GPUI's threads, and views that follow it."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+executor.workspace = true
+gpui-kit.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

@@ -1,13 +1,11 @@
 mod album_link;
 mod artist_link;
 pub mod card_grid;
-mod changes;
 mod cover_art;
 mod cover_cache;
 mod details;
 mod drag_preview;
 mod duration;
-mod executor;
 mod favorite_button;
 pub mod list_navigation;
 mod load_state;
@@ -23,13 +21,11 @@ mod sort_menu;
 
 pub use album_link::AlbumLink;
 pub use artist_link::{ArtistLine, ArtistLink, album_artist_link, song_artist_link};
-pub use changes::notify_on_change;
 pub use cover_art::CoverArt;
 pub use cover_cache::CoverCache;
 pub use details::{format_album_count, format_song_count, join_details};
 pub use drag_preview::DragPreview;
 pub use duration::format_duration;
-pub use executor::executor;
 pub use favorite_button::favorite_button;
 pub use load_state::{LoadFailure, Shelf, centered, muted_text, no_matches};
 pub use master_detail::{

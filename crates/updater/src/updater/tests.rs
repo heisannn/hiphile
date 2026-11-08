@@ -37,7 +37,7 @@ fn scripted(
 
 /// On GPUI's executor, which the test's `run_until_parked` and clock drive.
 fn updater(releases: &Arc<Scripted>, is_automatic: bool, cx: &mut TestAppContext) -> Updater {
-    let executor = cx.update(|cx| ui::executor(cx));
+    let executor = cx.update(|cx| gpui_host::executor(cx));
     Updater::with(executor, releases.clone(), None, is_automatic, None)
 }
 
@@ -168,7 +168,7 @@ fn the_choice_is_saved(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let releases = scripted(vec![Ok(None)], vec![]);
-    let executor = cx.update(|cx| ui::executor(cx));
+    let executor = cx.update(|cx| gpui_host::executor(cx));
     let updater = Updater::with(executor, releases.clone(), Some(store.clone()), false, None);
 
     updater.set_automatic(true);

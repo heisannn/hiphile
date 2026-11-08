@@ -16,9 +16,10 @@ without a window, and the CLI can share it.
 
 | Step | State |
 | --- | --- |
-| 0 | Done. `executor` (the trait, `Task`, the tokio implementation, `Saver`), `ui::executor` (GPUI's), an empty `hiphile-core`; the check covers the new crates and the five that were free but unchecked |
+| 0 | Done. `executor` (the trait, `Task`, the tokio implementation, `Saver`), `gpui_host::executor` (GPUI's, at first in `ui`), an empty `hiphile-core`; the check covers the new crates and the five that were free but unchecked |
 | 1 | Done. The [pure files](#free-of-gpui-but-inside-gpui-crates) are in `hiphile-core` and `playback`, with three items they used from GPUI crates; the views use them there |
 | 2 | Done. `updater` is free of GPUI and the rules held; see [The updater pilot](#the-updater-pilot) |
+| Before 3 | `gpui-host` split from `ui`, and the [decisions](#decided-before-steps-3-to-6) for steps 3 to 6 |
 
 ## Where things stand
 
@@ -104,11 +105,12 @@ gave `Recommendations` a `new`, and `History` a `Default`.
    `timer`), which returns a `Spawned` handle per piece of work that cancels it on drop and can be
    detached. The core keeps an `Executor` (an `Arc<dyn Spawner>`), whose `spawn` and `spawn_blocking`
    give a typed `Task<R>` that cancels on drop as well. A host must not run the work before `spawn`
-   returns, as the core spawns under its own locks. GPUI's is `ui::executor(cx)`; tokio's is
+   returns, as the core spawns under its own locks. GPUI's is `gpui_host::executor(cx)`; tokio's is
    `Executor::tokio(handle)`, whose timers keep to that runtime's clock whatever polls them, so a test on
    a current-thread runtime with paused time moves them with `tokio::time::advance`.
 5. **Blocking work only through the executor's blocking spawn:** rusqlite, `CoverStore`, `SongCache`, config
-   writes, the keychain, `self_update`, the fuzzy reader, `audio::output_devices`.
+   writes, the keychain, `self_update`, the fuzzy reader, `audio::output_devices`. Reading the saved
+   settings in a constructor is the exception (see [Decided before steps 3 to 6](#decided-before-steps-3-to-6)).
 6. **Text is `String` or `Arc<str>`, not `SharedString`.** Error text is made in the core (the `describe`
    functions), so every UI says the same thing.
 7. **View state stays in views.** Slider drags, focus, selection, scroll, which panels are open and
@@ -163,9 +165,9 @@ stay with the views.
 | 0 | Create `hiphile-core`; the executor trait, its GPUI implementation (in `ui`) and a tokio one for tests and the CLI; the coalescing saver; add the core crates to `script/check-gpui-free` | — |
 | 1 | Move the [pure files](#free-of-gpui-but-inside-gpui-crates) | By file |
 | 2 | Pilot the rules on `updater`: small, with a timer, a saved choice and an `advance_clock` test | — |
-| 3 | `session`, the sign-in procedure, `Readings` | After 2, steps 3 to 6 in parallel. They touch different crates and meet only in `hiphile-core`'s `lib.rs` and `Cargo.toml` |
+| 3 | `session`, the sign-in procedure, `Readings` | 3 and 4 in parallel after 2 |
 | 4 | The settings models | |
-| 5 | Favorites, playlists, skipping instrumentals | |
+| 5 | Favorites, playlists, skipping instrumentals | 5 and 6 in parallel after 3: their logic needs `Session` and `Readings`, which only step 3 frees of GPUI. All four also meet in `app_shell.rs` and in the views that follow `Readings` |
 | 6 | The library sync and its activity, the search index, home recommendations | |
 | 7 | The player into `playback`, in four parts: states and queue operations; engine events and preparing the next song; scrobbling, Discord and media controls; the volume, the window handle and `shutdown()` | One part at a time |
 | 8 | The routing and the session's lifetime from `app_shell.rs` into `hiphile-core` | Last |
@@ -188,32 +190,42 @@ Step 2 tried the design rules on `updater`. They held, with these details settle
   tasks and so cancels the schedule and any look.
 - **Saving.** `set_automatic` hands the choice to `Saver` under the lock, so the choices reach the disk in
   the order they were made; the save reports its error back into the status.
-- **Views.** `ui::notify_on_change(updater.subscribe(), cx)` replaces `cx.observe`. It notifies on the
+- **Views.** `gpui_host::notify_on_change(updater.subscribe(), cx)` replaces `cx.observe`. It notifies on the
   next turn of the foreground executor rather than at once, so a GPUI test runs `run_until_parked` before
   it looks at what is drawn.
-- **Tests.** The eight tests run on `ui::executor`, and the `advance_clock` one is unchanged. The others
+- **Tests.** The eight tests run on `gpui_host::executor`, and the `advance_clock` one is unchanged. The others
   read `updater.status()` where they read the entity, and compare `String`s (rule 6). Two are new: every
   change is published at once (on GPUI's executor), and the 6-hour schedule on tokio with a paused clock.
 
-## Before steps 3 to 6
+## Decided before steps 3 to 6
 
-- **Where the GPUI host lives.** A core crate whose tests use GPUI's executor needs `ui` as a
-  dev-dependency, as `updater` does. `ui` depends on `actions`, which depends on `hiphile-core`, so once
-  `hiphile-core` depends on `session`, `updater` or `playback`, that is a cycle through dev-dependencies:
-  cargo builds the crate twice and its types do not cross. Either move `ui::executor` and
-  `notify_on_change` into a small GPUI crate that depends only on gpui-kit and `executor`, or run the
-  core's own tests on tokio and keep GPUI's executor for view tests.
-- **Notices.** One-off events (`ReadingsFailed`, `OutputChanged`, `TransitionsChanged`, the sign-in's
-  `SignedIn`, the library's sync events) need one channel type: `tokio::sync::broadcast` where several
-  owners listen, or `async_channel` where one does.
-- **Stores.** `updater` takes `Result<config::Store, config::Error>` and makes its own error text from a
-  failure. `config::Error` is not `Clone`, so the app calls `config::Store::user()` once per service.
-  The other services should take their store the same way, or the app should hold one result for all.
-- **Reading at construction.** The updater reads its saved choice synchronously when it is made, as every
-  service does today. Rule 5 lists config writes, not reads; keep reads in constructors or move them to
-  blocking work and start from a loading state.
-- **Release.** `executor` and `hiphile-core` are kept out of release-plz (`git_only = false`) until a
-  `v*` tag contains them. Remove those entries after the next release.
+- **The GPUI host is its own crate.** `gpui-host` holds `executor(cx)` and the bridges that views follow
+  the core with: `observe` and `observe_in` for a `watch`, `subscribe` and `subscribe_in` for a
+  `broadcast`, in the shape of `cx.observe` and `cx.subscribe`, and `notify_on_change`. It
+  depends only on gpui-kit, `executor` and tokio's `sync`. A core crate takes it as a dev-dependency to
+  test on GPUI's executor, which keeps the existing tests as they are while their code moves. With
+  `ui` it could not: `ui` depends on `actions`, which depends on `hiphile-core`, so a core crate under
+  `hiphile-core` would reach itself through its dev-dependencies, which cargo builds as a second copy
+  whose types do not cross. Should GPUI go, a deterministic test executor in `executor` takes its place.
+- **Notices go on `tokio::sync::broadcast`.** A change of state is no notice: views follow the
+  snapshot's `watch` (rule 3), so events such as `OutputChanged`, `TransitionsChanged`,
+  `SkipInstrumentalsChanged`, `CacheLimitChanged` and `ReadingsChanged` become `watch` subscriptions.
+  What is left, a one-off such as `ReadingsFailed`, `SignedIn`, the end of a sync or a request to raise
+  the window, goes on a `broadcast`: like `cx.subscribe`, it gives every receiver each notice sent after
+  it subscribed, and several listen today (`ReadingsChanged` has six, `PlayerEvent` five), where
+  `async_channel` would give each notice to one receiver only. The capacity leaves room for a burst; a
+  receiver that lags goes on from the oldest notice it still has. `audio` keeps `async_channel`, which
+  has one receiver, the player.
+- **Every constructor takes `Result<config::Store, config::Error>`**, as `Updater::of_this_app` does,
+  and makes its own text for a failure ("… won't be saved: …"). The app passes `config::Store::user()`
+  to each, as `config::Error` is not `Clone`; tests pass `Ok(config::Store::at(dir))` of a temporary
+  directory.
+- **Saved settings are read in the constructor.** They are one small local file, and the state starts
+  from them: read later, a view would show the defaults first and the user's first change could race
+  the read. Everything else that can block still goes through blocking work (rule 5), the keychain
+  above all, as it can show a system prompt.
+- **Release.** `executor`, `gpui-host` and `hiphile-core` are kept out of release-plz (`git_only =
+  false`) until a `v*` tag contains them. Remove those entries after the next release.
 
 ## Done when
 
