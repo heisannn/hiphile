@@ -21,6 +21,7 @@ use gpui_kit::{
     Pixels, Render, Stateful, Styled as _, Subscription, Window, div, prelude::FluentBuilder as _,
     px,
 };
+use hiphile_core::navigation::{Destination, History, Location};
 use home::Home;
 use library::{Library, LibraryEvent, Refresh};
 use player::{
@@ -39,7 +40,6 @@ use ui::CoverCache;
 use updater::UpdateState;
 
 use crate::library_activity::{ActivityChanged, LibraryActivity, NoticeChange};
-use crate::navigation::{History, Location};
 use crate::{
     GoBack, GoForward, ShowAlbums, ShowArtists, ShowFavorites, ShowHome, ShowPlaylists, ShowSongs,
     SignOut,
@@ -81,39 +81,6 @@ enum Screen {
         _subscription: Subscription,
     },
     Workspace(Box<Workspace>),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Destination {
-    Home,
-    Artists,
-    Albums,
-    Songs,
-    Playlists,
-    Favorites,
-}
-
-impl Destination {
-    /// In the order the title bar shows them.
-    const ALL: [Self; 6] = [
-        Self::Home,
-        Self::Artists,
-        Self::Albums,
-        Self::Songs,
-        Self::Playlists,
-        Self::Favorites,
-    ];
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Home => "Home",
-            Self::Artists => "Artists",
-            Self::Albums => "Albums",
-            Self::Songs => "Songs",
-            Self::Playlists => "Playlists",
-            Self::Favorites => "Favorites",
-        }
-    }
 }
 
 /// Everything that exists only while signed in.

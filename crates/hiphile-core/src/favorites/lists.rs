@@ -1,11 +1,12 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use actions::Favorite;
 use subsonic::{Album, Artist, Song, StarTarget, Starred};
 
+use super::Favorite;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Section {
+pub enum Section {
     Songs,
     Albums,
     Artists,
@@ -13,9 +14,9 @@ pub(crate) enum Section {
 
 impl Section {
     /// In the order the screen shows them.
-    pub(crate) const ALL: [Self; 3] = [Self::Songs, Self::Albums, Self::Artists];
+    pub const ALL: [Self; 3] = [Self::Songs, Self::Albums, Self::Artists];
 
-    pub(crate) fn ix(self) -> usize {
+    pub fn ix(self) -> usize {
         match self {
             Self::Songs => 0,
             Self::Albums => 1,
@@ -23,7 +24,7 @@ impl Section {
         }
     }
 
-    pub(crate) fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Self::Songs => "Songs",
             Self::Albums => "Albums",
@@ -31,7 +32,7 @@ impl Section {
         }
     }
 
-    pub(crate) fn of(target: &StarTarget) -> Self {
+    pub fn of(target: &StarTarget) -> Self {
         match target {
             StarTarget::Song(_) => Self::Songs,
             StarTarget::Album(_) => Self::Albums,
@@ -43,14 +44,15 @@ impl Section {
 /// The user's favorites of each kind, in the server's order. One added here
 /// goes first, as it does on Navidrome, which lists the newest first.
 #[derive(Clone, Default)]
-pub(crate) struct FavoriteLists {
-    pub(crate) songs: Arc<Vec<Song>>,
-    pub(crate) albums: Arc<Vec<Album>>,
-    pub(crate) artists: Arc<Vec<Artist>>,
+#[non_exhaustive]
+pub struct FavoriteLists {
+    pub songs: Arc<Vec<Song>>,
+    pub albums: Arc<Vec<Album>>,
+    pub artists: Arc<Vec<Artist>>,
 }
 
 impl FavoriteLists {
-    pub(crate) fn new(starred: Starred) -> Self {
+    pub fn new(starred: Starred) -> Self {
         let (songs, albums, artists) = starred.into_parts();
         Self {
             songs: Arc::new(songs),
@@ -59,7 +61,7 @@ impl FavoriteLists {
         }
     }
 
-    pub(crate) fn targets(&self) -> HashSet<StarTarget> {
+    pub fn targets(&self) -> HashSet<StarTarget> {
         let songs = self
             .songs
             .iter()
@@ -75,7 +77,7 @@ impl FavoriteLists {
         songs.chain(albums).chain(artists).collect()
     }
 
-    pub(crate) fn len(&self, section: Section) -> usize {
+    pub fn len(&self, section: Section) -> usize {
         match section {
             Section::Songs => self.songs.len(),
             Section::Albums => self.albums.len(),
@@ -83,7 +85,7 @@ impl FavoriteLists {
         }
     }
 
-    pub(crate) fn favorite_at(&self, section: Section, ix: usize) -> Option<Favorite> {
+    pub fn favorite_at(&self, section: Section, ix: usize) -> Option<Favorite> {
         match section {
             Section::Songs => self.songs.get(ix).cloned().map(Favorite::Song),
             Section::Albums => self.albums.get(ix).cloned().map(Favorite::Album),
@@ -91,7 +93,7 @@ impl FavoriteLists {
         }
     }
 
-    pub(crate) fn position(&self, target: &StarTarget) -> Option<usize> {
+    pub fn position(&self, target: &StarTarget) -> Option<usize> {
         match target {
             StarTarget::Song(id) => self.songs.iter().position(|song| song.id() == id),
             StarTarget::Album(id) => self.albums.iter().position(|album| album.id() == id),
@@ -99,13 +101,13 @@ impl FavoriteLists {
         }
     }
 
-    pub(crate) fn contains(&self, target: &StarTarget) -> bool {
+    pub fn contains(&self, target: &StarTarget) -> bool {
         self.position(target).is_some()
     }
 
     /// Puts `favorite` at `ix`, or at the end when that is past it, unless it
     /// is there already.
-    pub(crate) fn add(&mut self, favorite: Favorite, ix: usize) {
+    pub fn add(&mut self, favorite: Favorite, ix: usize) {
         if self.contains(&favorite.target()) {
             return;
         }
@@ -116,7 +118,7 @@ impl FavoriteLists {
         }
     }
 
-    pub(crate) fn remove(&mut self, target: &StarTarget) -> Option<(Favorite, usize)> {
+    pub fn remove(&mut self, target: &StarTarget) -> Option<(Favorite, usize)> {
         let ix = self.position(target)?;
         let favorite = self.favorite_at(Section::of(target), ix)?;
         match target {

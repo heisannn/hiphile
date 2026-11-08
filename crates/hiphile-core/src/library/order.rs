@@ -3,7 +3,7 @@ use std::cmp::Ordering;
 use subsonic::Album;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum AlbumOrder {
+pub enum AlbumOrder {
     /// The server's name order. Ascending under a filter, the best match comes first instead.
     #[default]
     Name,
@@ -14,14 +14,15 @@ pub(crate) enum AlbumOrder {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct AlbumSort {
-    pub(crate) order: AlbumOrder,
-    pub(crate) is_descending: bool,
+#[non_exhaustive]
+pub struct AlbumSort {
+    pub order: AlbumOrder,
+    pub is_descending: bool,
 }
 
 impl AlbumSort {
     /// How `order` sorts when chosen: names from the start, dates newest first.
-    pub(crate) fn chosen(order: AlbumOrder) -> Self {
+    pub fn chosen(order: AlbumOrder) -> Self {
         Self {
             order,
             is_descending: matches!(order, AlbumOrder::Added | AlbumOrder::Released),
@@ -31,7 +32,7 @@ impl AlbumSort {
 
 /// `found` holds positions in `albums`, which come in the server's name order, and keeps its
 /// order among albums that compare the same. Albums that do not say come last either way.
-pub(crate) fn arrange(albums: &[Album], mut found: Vec<usize>, sort: AlbumSort) -> Vec<usize> {
+pub fn arrange(albums: &[Album], mut found: Vec<usize>, sort: AlbumSort) -> Vec<usize> {
     match sort.order {
         AlbumOrder::Name if sort.is_descending => found.sort_unstable_by(|a, b| b.cmp(a)),
         AlbumOrder::Name => {}

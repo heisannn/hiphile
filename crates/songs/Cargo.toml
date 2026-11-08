@@ -11,6 +11,7 @@ actions.workspace = true
 client.workspace = true
 fuzzy.workspace = true
 gpui-kit.workspace = true
+hiphile-core.workspace = true
 session.workspace = true
 subsonic.workspace = true
 ui.workspace = true

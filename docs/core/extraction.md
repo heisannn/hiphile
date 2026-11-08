@@ -17,6 +17,7 @@ without a window, and the CLI can share it.
 | Step | State |
 | --- | --- |
 | 0 | Done. `executor` (the trait, `Task`, the tokio implementation, `Saver`), `ui::executor` (GPUI's), an empty `hiphile-core`; the check covers the new crates and the five that were free but unchecked |
+| 1 | Done. The [pure files](#free-of-gpui-but-inside-gpui-crates) are in `hiphile-core` and `playback`, with three items they used from GPUI crates; the views use them there |
 
 ## Where things stand
 
@@ -44,20 +45,28 @@ They already work with any executor, which is what lets `hiphile-cli` run them w
 
 ### Free of GPUI but inside GPUI crates
 
-These files reference no GPUI type and move as they are:
+These files reference no GPUI type and moved as they were in step 1, their tests with them:
 
-| File | What it holds |
-| --- | --- |
-| `hiphile/src/navigation.rs` | `History`, `Location` and the rule for what is worth going back to |
-| `library/src/order.rs`, `library/src/filter.rs` | Album sort orders and the album filter |
-| `songs/src/arrange.rs` | Song columns, sorts and the filter index |
-| `artists/src/list.rs` | Artist sorts and dates, albums by artist |
-| `favorites/src/lists.rs` | `FavoriteLists` |
-| `playlists/src/entries.rs`, `playlists/src/writes.rs` | Playlist entries and the serial write queue |
-| `search/src/results.rs` | `SearchLibrary`, hits and results |
-| `home/src/recommend.rs`, `home/src/recent.rs`, `home/src/layout.rs` | Daily recommendations, recently played, the shelf layout |
-| `player/src/format.rs` | The playing format's text |
-| `updater/src/install.rs` | Releases and installing with `self_update` |
+| File | What it holds | Moved to |
+| --- | --- | --- |
+| `hiphile/src/navigation.rs` | `History`, `Location` and the rule for what is worth going back to | `hiphile_core::navigation` |
+| `library/src/order.rs`, `library/src/filter.rs` | Album sort orders and the album filter | `hiphile_core::library` |
+| `songs/src/arrange.rs` | Song columns, sorts and the filter index | `hiphile_core::songs` |
+| `artists/src/list.rs` | Artist sorts and dates, albums by artist | `hiphile_core::artists` |
+| `favorites/src/lists.rs` | `FavoriteLists` | `hiphile_core::favorites` |
+| `playlists/src/entries.rs`, `playlists/src/writes.rs` | Playlist entries and the serial write queue | `hiphile_core::playlists` |
+| `search/src/results.rs` | `SearchLibrary`, hits and results | `hiphile_core::search` |
+| `home/src/recommend.rs`, `home/src/recent.rs`, `home/src/layout.rs` | Daily recommendations, recently played, the shelf layout | `hiphile_core::home` |
+| `player/src/format.rs` | The playing format's text | `playback` (`describe_format`) |
+| `updater/src/install.rs` | Releases and installing with `self_update` | Stays: step 2 frees `updater` itself |
+
+Three of them used an item of a GPUI crate, which moved along: `Destination` from `app_shell.rs` (into
+`hiphile_core::navigation`), `actions::Favorite` (into `hiphile_core::favorites`) and
+`ui::format_sample_rate` (into `playback`, which the settings window now uses for its sample rates). The
+test in `layout.rs` steps through `ui::card_grid`, so it stays in home's view tests. Each domain of
+`hiphile-core` is a module named after its view crate that re-exports what the views use. Items that
+became public follow the coding guide: public structs with public fields are `#[non_exhaustive]`, which
+gave `Recommendations` a `new`, and `History` a `Default`.
 
 ### Bound to GPUI
 
@@ -138,7 +147,8 @@ Everything else goes into one new crate, apart from the executor.
 | The app and the signed-in workspace, routing between them, the settings models, the library sync and its activity, favorites, playlists, the search index, home recommendations, the sort and filter modules, navigation history | `hiphile`, `settings`, `library`, `favorites`, `playlists`, `search`, `home`, `songs`, `artists` | New `hiphile-core` |
 
 `hiphile-core` depends on `playback`, `session`, `updater`, `lyrics` and the crates under them, `executor`
-among them; the view crates depend on `hiphile-core`. `playback` gains `session`, `presence` and `media-controls`; `session`
+among them; the view crates depend on `hiphile-core`, and so does `actions` (and through it `ui`) for
+`Favorite`. No core crate may depend on `actions` or `ui`. `playback` gains `session`, `presence` and `media-controls`; `session`
 does not depend on `playback`, so no cycle appears.
 
 ## Steps

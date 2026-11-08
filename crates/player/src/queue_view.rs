@@ -14,6 +14,7 @@ use gpui_kit::{
     Subscription, UniformListScrollHandle, WeakEntity, Window, actions, div,
     prelude::FluentBuilder as _,
 };
+use hiphile_core::favorites::Favorite;
 use playback::EntryId;
 use subsonic::{Song, StarTarget};
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
@@ -196,7 +197,7 @@ impl QueueView {
             Some(entries.get(ix)?.item().clone())
         });
         if let Some(song) = song {
-            actions::toggle_favorite(actions::Favorite::Song(song), window, cx);
+            actions::toggle_favorite(Favorite::Song(song), window, cx);
         }
     }
 

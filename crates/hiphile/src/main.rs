@@ -4,20 +4,20 @@
 mod app_shell;
 mod assets;
 mod library_activity;
-mod navigation;
 
 use gpui_kit::component::TitleBar;
 use gpui_kit::{
     App, AppContext as _, KeyBinding, Menu, MenuItem, WindowBounds, WindowOptions, actions, px,
     size,
 };
+use hiphile_core::navigation::Destination;
 use player::{
     NextSong, PreviousSong, RepeatMode, SaveQueue, SeekBackward, SeekForward, SetRepeat,
     ToggleLyrics, ToggleMiniPlayer, ToggleMute, TogglePlayback, ToggleQueue, ToggleShuffle,
     VolumeDown, VolumeUp,
 };
 
-use app_shell::{AppShell, Destination, WORKSPACE_CONTEXT};
+use app_shell::{AppShell, WORKSPACE_CONTEXT};
 
 actions!(
     hiphile,

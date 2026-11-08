@@ -5,7 +5,7 @@ use fuzzy::{Index, Speller};
 use subsonic::Song;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Column {
+pub enum Column {
     Title,
     Artist,
     Album,
@@ -17,27 +17,28 @@ pub(crate) enum Column {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Sort {
-    pub(crate) column: Column,
-    pub(crate) is_descending: bool,
+#[non_exhaustive]
+pub struct Sort {
+    pub column: Column,
+    pub is_descending: bool,
 }
 
 impl Sort {
-    pub(crate) const DEFAULT: Self = Self {
+    pub const DEFAULT: Self = Self {
         column: Column::Title,
         is_descending: false,
     };
 
     /// How `column` sorts when chosen from the menu: the dates newest first, the rest from the
     /// start.
-    pub(crate) fn chosen(column: Column) -> Self {
+    pub fn chosen(column: Column) -> Self {
         Self {
             column,
             is_descending: matches!(column, Column::Added | Column::Released),
         }
     }
 
-    pub(crate) fn clicked(self, column: Column) -> Self {
+    pub fn clicked(self, column: Column) -> Self {
         Self {
             column,
             is_descending: self.column == column && !self.is_descending,
@@ -120,7 +121,7 @@ fn compare(a: &Key, b: &Key, sort: Sort) -> Ordering {
     }
 }
 
-pub(crate) fn song_index(songs: &[Song], speller: Option<&dyn Speller>) -> Index {
+pub fn song_index(songs: &[Song], speller: Option<&dyn Speller>) -> Index {
     Index::new(
         songs.iter().map(|song| {
             let title = Some(song.title());
@@ -134,7 +135,7 @@ pub(crate) fn song_index(songs: &[Song], speller: Option<&dyn Speller>) -> Index
 /// and there is a query to rank by, otherwise in the order of `sort`. Songs that
 /// compare the same go by ID, so that the order holds whatever order the songs
 /// arrive in.
-pub(crate) fn arrange(
+pub fn arrange(
     songs: &[Song],
     index: &Index,
     query: &str,

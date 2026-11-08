@@ -1,10 +1,10 @@
-use actions::Favorite;
 use gpui_kit::App;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     Disableable as _,
     button::{Button, ButtonVariants as _},
 };
+use hiphile_core::favorites::Favorite;
 
 /// Disabled until the favorites are known.
 pub fn favorite_button(id: &'static str, favorite: Favorite, cx: &App) -> Button {

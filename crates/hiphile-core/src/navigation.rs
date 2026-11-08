@@ -1,9 +1,40 @@
 use subsonic::{AlbumId, ArtistId, PlaylistId};
 
-use crate::app_shell::Destination;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Destination {
+    Home,
+    Artists,
+    Albums,
+    Songs,
+    Playlists,
+    Favorites,
+}
+
+impl Destination {
+    /// In the order the title bar shows them.
+    pub const ALL: [Self; 6] = [
+        Self::Home,
+        Self::Artists,
+        Self::Albums,
+        Self::Songs,
+        Self::Playlists,
+        Self::Favorites,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Home => "Home",
+            Self::Artists => "Artists",
+            Self::Albums => "Albums",
+            Self::Songs => "Songs",
+            Self::Playlists => "Playlists",
+            Self::Favorites => "Favorites",
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Location {
+pub enum Location {
     Home,
     Artists(Option<ArtistId>),
     Albums(Option<AlbumId>),
@@ -13,7 +44,7 @@ pub(crate) enum Location {
 }
 
 impl Location {
-    pub(crate) fn destination(&self) -> Destination {
+    pub fn destination(&self) -> Destination {
         match self {
             Self::Home => Destination::Home,
             Self::Artists(_) => Destination::Artists,
@@ -27,7 +58,7 @@ impl Location {
     /// Whether this is somewhere to come back to after going to `next`. A
     /// screen with nothing selected is not, once `next` selects something on
     /// it: going back could not show it again.
-    pub(crate) fn is_worth_returning_to_from(&self, next: &Self) -> bool {
+    pub fn is_worth_returning_to_from(&self, next: &Self) -> bool {
         let has_selection = matches!(
             self,
             Self::Artists(Some(_)) | Self::Albums(Some(_)) | Self::Playlists(Some(_))
@@ -37,13 +68,13 @@ impl Location {
 }
 
 /// The places behind and ahead of the current one, which its owner knows.
-pub(crate) struct History<T> {
+pub struct History<T> {
     behind: Vec<T>,
     ahead: Vec<T>,
 }
 
 impl<T> History<T> {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             behind: Vec::new(),
             ahead: Vec::new(),
@@ -51,29 +82,35 @@ impl<T> History<T> {
     }
 
     /// Records going somewhere new from `left`, which drops what was ahead.
-    pub(crate) fn visit(&mut self, left: T) {
+    pub fn visit(&mut self, left: T) {
         self.behind.push(left);
         self.ahead.clear();
     }
 
-    pub(crate) fn back(&mut self, current: T) -> Option<T> {
+    pub fn back(&mut self, current: T) -> Option<T> {
         let previous = self.behind.pop()?;
         self.ahead.push(current);
         Some(previous)
     }
 
-    pub(crate) fn forward(&mut self, current: T) -> Option<T> {
+    pub fn forward(&mut self, current: T) -> Option<T> {
         let next = self.ahead.pop()?;
         self.behind.push(current);
         Some(next)
     }
 
-    pub(crate) fn can_go_back(&self) -> bool {
+    pub fn can_go_back(&self) -> bool {
         !self.behind.is_empty()
     }
 
-    pub(crate) fn can_go_forward(&self) -> bool {
+    pub fn can_go_forward(&self) -> bool {
         !self.ahead.is_empty()
+    }
+}
+
+impl<T> Default for History<T> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

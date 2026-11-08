@@ -1,13 +1,11 @@
 //! Keeps the choices that `actions::add_to_playlist_submenu` offers the other
 //! features. The app shell routes what they dispatch back to [`Playlists`].
 
-mod entries;
 #[cfg(test)]
 mod fake_server;
 mod filter;
 mod name_form;
 mod playlists_view;
-mod writes;
 
 use gpui_kit::{App, KeyBinding, actions};
 use ui::list_navigation::bind_list_navigation;

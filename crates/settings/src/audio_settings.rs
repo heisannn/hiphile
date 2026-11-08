@@ -6,7 +6,7 @@ use config::{
     SAMPLE_RATE_MULTIPLES, SampleRate, SoxrParameters,
 };
 use gpui_kit::{AppContext as _, Context, EventEmitter, SharedString, Task};
-use ui::format_sample_rate;
+use playback::format_sample_rate;
 
 /// Device ids hold a colon, so none is equal to this.
 pub(crate) const SYSTEM_DEFAULT: &str = "system-default";

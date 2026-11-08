@@ -5,40 +5,40 @@ use subsonic::{Song, SongId};
 /// A row of a playlist. A song can be in a playlist more than once, so rows
 /// keep their selection and identity by this rather than by song or position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct EntryId(u64);
+pub struct EntryId(u64);
 
 impl EntryId {
-    pub(crate) fn get(self) -> u64 {
+    pub fn get(self) -> u64 {
         self.0
     }
 }
 
 #[derive(Clone)]
-pub(crate) struct Entry {
+pub struct Entry {
     id: EntryId,
     song: Song,
 }
 
 impl Entry {
-    pub(crate) fn id(&self) -> EntryId {
+    pub fn id(&self) -> EntryId {
         self.id
     }
 
-    pub(crate) fn song(&self) -> &Song {
+    pub fn song(&self) -> &Song {
         &self.song
     }
 }
 
 /// The songs of the playlist on show, in order, which edits change first and
 /// the server after.
-pub(crate) struct Entries {
+pub struct Entries {
     /// Shared with the list's row renderer.
     entries: Arc<Vec<Entry>>,
     next_id: u64,
 }
 
 impl Entries {
-    pub(crate) fn new(songs: Vec<Song>) -> Self {
+    pub fn new(songs: Vec<Song>) -> Self {
         let mut this = Self {
             entries: Arc::default(),
             next_id: 0,
@@ -47,41 +47,41 @@ impl Entries {
         this
     }
 
-    pub(crate) fn shared(&self) -> Arc<Vec<Entry>> {
+    pub fn shared(&self) -> Arc<Vec<Entry>> {
         self.entries.clone()
     }
 
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
-    pub(crate) fn get(&self, ix: usize) -> Option<&Entry> {
+    pub fn get(&self, ix: usize) -> Option<&Entry> {
         self.entries.get(ix)
     }
 
-    pub(crate) fn position(&self, id: EntryId) -> Option<usize> {
+    pub fn position(&self, id: EntryId) -> Option<usize> {
         self.entries.iter().position(|entry| entry.id == id)
     }
 
-    pub(crate) fn songs(&self) -> Arc<[Song]> {
+    pub fn songs(&self) -> Arc<[Song]> {
         self.entries
             .iter()
             .map(|entry| entry.song.clone())
             .collect()
     }
 
-    pub(crate) fn song_ids(&self) -> Vec<SongId> {
+    pub fn song_ids(&self) -> Vec<SongId> {
         self.entries
             .iter()
             .map(|entry| entry.song.id().clone())
             .collect()
     }
 
-    pub(crate) fn has_songs(&self, songs: &[Song]) -> bool {
+    pub fn has_songs(&self, songs: &[Song]) -> bool {
         self.entries.len() == songs.len()
             && self
                 .entries
@@ -90,14 +90,14 @@ impl Entries {
                 .all(|(entry, song)| entry.song.id() == song.id())
     }
 
-    pub(crate) fn extend(&mut self, songs: impl IntoIterator<Item = Song>) {
+    pub fn extend(&mut self, songs: impl IntoIterator<Item = Song>) {
         let added: Vec<Entry> = songs.into_iter().map(|song| self.entry(song)).collect();
         Arc::make_mut(&mut self.entries).extend(added);
     }
 
     /// Puts the entry at position `to_ix`, or the last if past the end.
     /// Whether that moved it.
-    pub(crate) fn move_entry(&mut self, id: EntryId, to_ix: usize) -> bool {
+    pub fn move_entry(&mut self, id: EntryId, to_ix: usize) -> bool {
         let Some(from_ix) = self.position(id) else {
             return false;
         };
@@ -111,14 +111,14 @@ impl Entries {
         true
     }
 
-    pub(crate) fn remove(&mut self, id: EntryId) -> Option<(usize, Song)> {
+    pub fn remove(&mut self, id: EntryId) -> Option<(usize, Song)> {
         let ix = self.position(id)?;
         let entry = Arc::make_mut(&mut self.entries).remove(ix);
         Some((ix, entry.song))
     }
 
     /// Puts `song` at position `ix`, or the last if past the end.
-    pub(crate) fn insert(&mut self, ix: usize, song: Song) -> EntryId {
+    pub fn insert(&mut self, ix: usize, song: Song) -> EntryId {
         let entry = self.entry(song);
         let id = entry.id;
         let ix = ix.min(self.entries.len());

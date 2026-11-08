@@ -16,7 +16,6 @@ mod now_playing;
 mod reorder;
 mod row_list;
 mod row_text;
-mod sample_rate;
 mod section;
 mod skippable_song;
 mod sort_menu;
@@ -38,7 +37,6 @@ pub use now_playing::{NowPlaying, PlayState, PlayStateIcon};
 pub use reorder::ReorderExt;
 pub use row_list::row_list;
 pub use row_text::RowText;
-pub use sample_rate::format_sample_rate;
 pub use section::{
     section_failure, section_heading, section_heading_with_action, section_loading, song_with_cover,
 };

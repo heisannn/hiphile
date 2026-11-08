@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use actions::{EnqueueSongs, PlaySongs, ShowAlbum, ShowArtist};
 use gpui_kit::{KeyUpEvent, Keystroke, TestAppContext, VisualTestContext, px};
+use hiphile_core::favorites::Favorite;
 use serde_json::{Value, json};
 use subsonic::{AlbumId, Credentials};
 
@@ -593,7 +594,7 @@ fn an_artist_cannot_become_a_favorite_before_their_name_is_known(cx: &mut TestAp
     });
     let asked: Vec<actions::SetFavorite> =
         dispatched_by(key, |view| view.list_focus.clone(), &view, cx);
-    let actions::Favorite::Artist(artist) = asked[0].favorite() else {
+    let Favorite::Artist(artist) = asked[0].favorite() else {
         panic!("not an artist");
     };
     assert_eq!(artist.name(), "Unlisted");

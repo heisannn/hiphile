@@ -1,4 +1,3 @@
-mod arrange;
 mod songs_view;
 
 use gpui_kit::{App, KeyBinding, actions};

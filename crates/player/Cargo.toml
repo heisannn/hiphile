@@ -13,6 +13,7 @@ client.workspace = true
 config.workspace = true
 futures.workspace = true
 gpui-kit.workspace = true
+hiphile-core.workspace = true
 lyrics.workspace = true
 media-controls.workspace = true
 playback.workspace = true

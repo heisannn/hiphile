@@ -7,11 +7,11 @@ use gpui_kit::{
     AnyElement, App, AppContext as _, Context, DismissEvent, Entity, FocusHandle, Focusable as _,
     IntoElement as _, ParentElement as _, SharedString, Subscription, Window, anchored, deferred,
 };
+use hiphile_core::playlists::Write;
 use subsonic::{PlaylistId, PlaylistWithSongs, Song, SongId};
 
 use super::{Playlists, PlaylistsEvent};
 use crate::name_form::NameForm;
-use crate::writes::Write;
 
 /// A menu of playlists, opened from the keyboard. It stands apart from any row
 /// and from the screen, as the screen on show may be another feature's.

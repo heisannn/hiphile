@@ -6,11 +6,10 @@ use gpui_kit::component::{
     notification::{Notification, NotificationType},
 };
 use gpui_kit::{AppContext as _, Context, Window};
+use hiphile_core::playlists::{EntryId, Write};
 use subsonic::{PlaylistId, Song};
 
 use super::Playlists;
-use crate::entries::EntryId;
-use crate::writes::Write;
 
 pub(super) struct RemovedSong {
     playlist: PlaylistId,

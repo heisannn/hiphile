@@ -17,6 +17,8 @@ use gpui_kit::{
     Styled as _, Subscription, Task, UniformListScrollHandle, Window, div,
     prelude::FluentBuilder as _,
 };
+use hiphile_core::favorites::Favorite;
+use hiphile_core::songs::{Column, Sort, arrange, song_index};
 use session::ReadingBook;
 use subsonic::{Song, SongId};
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
@@ -29,7 +31,6 @@ mod song_row;
 
 use song_row::SongRow;
 
-use crate::arrange::{Column, Sort, arrange, song_index};
 use crate::{
     AddToPlaylist, AddToQueue, FocusFilter, GoToAlbum, Open, PlayNext, ROOT_CONTEXT, SONGS_CONTEXT,
 };
@@ -346,14 +347,12 @@ impl Songs {
     fn sort_by(&mut self, column: Column, cx: &mut Context<Self>) {
         // A heading clicked while the rows follow relevance shows as not sorted,
         // so it starts from the top rather than turning its column around.
-        self.sort = if self.is_ranked(cx) {
-            Sort {
-                column,
-                is_descending: false,
-            }
+        if self.is_ranked(cx) {
+            self.sort.column = column;
+            self.sort.is_descending = false;
         } else {
-            self.sort.clicked(column)
-        };
+            self.sort = self.sort.clicked(column);
+        }
         self.by_relevance = false;
         self.rearrange(cx);
         cx.notify();
@@ -418,7 +417,7 @@ impl Songs {
 
     fn toggle_selected_favorite(&self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(song) = self.selected_song() {
-            actions::toggle_favorite(actions::Favorite::Song(song.clone()), window, cx);
+            actions::toggle_favorite(Favorite::Song(song.clone()), window, cx);
         }
     }
 

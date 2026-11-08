@@ -1,7 +1,7 @@
 use fuzzy::{Index, Speller};
 use subsonic::Album;
 
-pub(crate) fn album_index(albums: &[Album], speller: Option<&dyn Speller>) -> Index {
+pub fn album_index(albums: &[Album], speller: Option<&dyn Speller>) -> Index {
     Index::new(
         albums.iter().map(|album| {
             let name = Some(album.name());

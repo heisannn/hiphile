@@ -8,6 +8,7 @@ use subsonic::Credentials;
 
 use config::LyricsHighlight;
 use futures::FutureExt as _;
+use hiphile_core::favorites::Favorite;
 use lyrics::{Lyrics, TimedLine, TrackQuery};
 use subsonic::SongId;
 
@@ -390,10 +391,7 @@ fn the_star_ends_the_details_and_asks_for_the_song(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(
         *asked.lock().unwrap(),
-        [actions::SetFavorite::new(
-            actions::Favorite::Song(song("a")),
-            true
-        )]
+        [actions::SetFavorite::new(Favorite::Song(song("a")), true)]
     );
 }
 

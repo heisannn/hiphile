@@ -2,7 +2,6 @@
 //! `actions::ShowArtist` back to [`Artists`].
 
 mod artists_view;
-mod list;
 
 use gpui_kit::{App, KeyBinding, actions};
 use ui::list_navigation::bind_list_navigation;

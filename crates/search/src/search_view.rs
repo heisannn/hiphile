@@ -10,10 +10,9 @@ use gpui_kit::{
     ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, Window, div,
     prelude::FluentBuilder as _, rems,
 };
+use hiphile_core::search::{Hit, Results, SearchLibrary};
 use subsonic::{AlbumId, ArtistId, Song};
 use ui::no_matches;
-
-use crate::results::{Hit, Results, SearchLibrary};
 
 #[cfg(test)]
 mod tests;

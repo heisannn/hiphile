@@ -20,6 +20,10 @@ use gpui_kit::{
     ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
     Window, div, prelude::FluentBuilder as _,
 };
+use hiphile_core::favorites::Favorite;
+use hiphile_core::home::{
+    AlbumShelf, Item, Recommendations, fetch_recommended, most_recent, today,
+};
 use subsonic::{Album, AlbumId, PlaylistId, Song, SongId, StarTarget};
 use ui::card_grid::{GridMotion as Motion, card_row, columns_for, media_card, step};
 use ui::list_navigation::{
@@ -30,9 +34,6 @@ use ui::{
     section_heading_with_action, section_loading, skippable_song, song_row_label, song_with_cover,
 };
 
-use crate::layout::{AlbumShelf, Item};
-use crate::recent::most_recent;
-use crate::recommend::{Recommendations, fetch_recommended, today};
 use crate::{
     AddSelectionToPlaylist, AddToQueue, ChoosePlaylist, HOME_CONTEXT, Open, Play, PlayNext,
     SelectLeft, SelectRight, ShowInLibrary,
@@ -646,10 +647,10 @@ impl Home {
                 .iter()
                 .find(|album| album.id() == &id)
                 .cloned()
-                .map(actions::Favorite::Album),
+                .map(Favorite::Album),
             Some(Item::Song(id)) => self
                 .song_ix(&id)
-                .map(|ix| actions::Favorite::Song(self.recent.items()[ix].clone())),
+                .map(|ix| Favorite::Song(self.recent.items()[ix].clone())),
             None => None,
         };
         if let Some(favorite) = favorite {

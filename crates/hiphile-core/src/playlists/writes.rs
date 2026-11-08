@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use subsonic::{PlaylistId, SongId};
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Write {
+pub enum Write {
     ReplaceSongs {
         playlist: PlaylistId,
         songs: Vec<SongId>,
@@ -29,7 +29,7 @@ pub(crate) enum Write {
 }
 
 impl Write {
-    pub(crate) fn playlist(&self) -> &PlaylistId {
+    pub fn playlist(&self) -> &PlaylistId {
         match self {
             Self::ReplaceSongs { playlist, .. }
             | Self::AddSongs { playlist, .. }
@@ -39,7 +39,7 @@ impl Write {
         }
     }
 
-    pub(crate) async fn send(self, client: client::Client) -> Result<(), client::Error> {
+    pub async fn send(self, client: client::Client) -> Result<(), client::Error> {
         match self {
             Self::ReplaceSongs { playlist, songs } => {
                 client.replace_playlist_songs(&playlist, &songs).await
@@ -61,7 +61,7 @@ impl Write {
     }
 
     /// What couldn't be done, to go before the reason.
-    pub(crate) fn failure(&self) -> &'static str {
+    pub fn failure(&self) -> &'static str {
         match self {
             Self::ReplaceSongs { .. } | Self::InsertSong { .. } => {
                 "Couldn't save the playlist's songs."
@@ -77,13 +77,13 @@ impl Write {
 /// overtaking an earlier one on the network would leave the older on the
 /// server.
 #[derive(Default)]
-pub(crate) struct WriteQueue(VecDeque<Write>);
+pub struct WriteQueue(VecDeque<Write>);
 
 impl WriteQueue {
     /// Adds `write`. Saving a playlist's whole song list makes one waiting
     /// right before it pointless, so moving a song many places in a row saves
     /// only where it ends up.
-    pub(crate) fn push(&mut self, write: Write) {
+    pub fn push(&mut self, write: Write) {
         if let (
             Write::ReplaceSongs { playlist, .. },
             Some(Write::ReplaceSongs {
@@ -97,17 +97,17 @@ impl WriteQueue {
         self.0.push_back(write);
     }
 
-    pub(crate) fn pop(&mut self) -> Option<Write> {
+    pub fn pop(&mut self) -> Option<Write> {
         self.0.pop_front()
     }
 
-    pub(crate) fn contains(&self, playlist: &PlaylistId) -> bool {
+    pub fn contains(&self, playlist: &PlaylistId) -> bool {
         self.0.iter().any(|write| write.playlist() == playlist)
     }
 
     /// Drops what waits for `playlist`, after a write to it failed: what
     /// follows was made on top of a change the server doesn't have.
-    pub(crate) fn forget(&mut self, playlist: &PlaylistId) {
+    pub fn forget(&mut self, playlist: &PlaylistId) {
         self.0.retain(|write| write.playlist() != playlist);
     }
 }

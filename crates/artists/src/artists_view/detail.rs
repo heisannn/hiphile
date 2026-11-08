@@ -2,7 +2,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use actions::{
-    AlbumAction, EnqueueSongs, Favorite, GoToArtist, Placement, PlaySongs, ShowAlbum, ShowArtist,
+    AlbumAction, EnqueueSongs, GoToArtist, Placement, PlaySongs, ShowAlbum, ShowArtist,
     ToggleFavorite,
 };
 use gpui_kit::assets::IconName;
@@ -22,6 +22,7 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled as _, Window, div, list, prelude::FluentBuilder as _,
     px,
 };
+use hiphile_core::favorites::Favorite;
 use subsonic::{Album, AlbumId, Artist, ArtistId, Song, SongId, StarTarget};
 use ui::card_grid::{GridMotion, card_row, card_row_height, columns_for, media_card, step};
 use ui::list_navigation::{

@@ -6,6 +6,7 @@ use gpui_kit::{
 };
 use serde_json::json;
 use subsonic::Credentials;
+use ui::card_grid::GridMotion;
 
 use super::*;
 
@@ -404,10 +405,10 @@ fn a_recommended_album_past_the_row_is_off_the_screen(cx: &mut TestAppContext) {
 }
 
 fn found(ids: &[&str], complete: bool) -> Result<Recommendations, SharedString> {
-    Ok(Recommendations {
-        albums: ids.iter().map(|id| album(id)).collect(),
+    Ok(Recommendations::new(
+        ids.iter().map(|id| album(id)).collect(),
         complete,
-    })
+    ))
 }
 
 fn shown(home: &Home) -> Vec<String> {
@@ -985,4 +986,18 @@ fn a_reload_keeps_the_selection_of_a_song_still_there(cx: &mut TestAppContext) {
         assert_eq!(home.selection_on_screen(), selection);
         assert_eq!(home.song_ix(&SongId::new("s2")), Some(0));
     });
+}
+
+#[test]
+fn an_album_on_two_shelves_does_not_hold_up_a_move() {
+    let on = |shelf| Item::Album(shelf, AlbumId::new("a"));
+    let rows = [vec![on(AlbumShelf::MostPlayed)], vec![on(AlbumShelf::New)]];
+    assert_eq!(
+        step(&rows, Some(&on(AlbumShelf::MostPlayed)), GridMotion::Down),
+        Some(on(AlbumShelf::New))
+    );
+    assert_eq!(
+        step(&rows, Some(&on(AlbumShelf::New)), GridMotion::Up),
+        Some(on(AlbumShelf::MostPlayed))
+    );
 }

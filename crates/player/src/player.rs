@@ -15,13 +15,13 @@ use gpui_kit::{
     IntoElement, ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _,
     Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _, relative, rems,
 };
+use hiphile_core::favorites::Favorite;
 use media_controls::{CoverFile, MediaCommand, MediaControls, MediaStatus};
-use playback::{Arrival, EntryId, Placement, PlayTally, Queue, RepeatMode};
+use playback::{Arrival, EntryId, Placement, PlayTally, Queue, RepeatMode, describe_format};
 use presence::{CoverHost, Presence};
 use subsonic::{CoverArtId, Song, SongId};
 use ui::{AlbumLink, ArtistLink, CoverArt, song_artist_link};
 
-use crate::format;
 use crate::transport::{PanelToggles, PositionLine, TransportControls, VolumeControl};
 use crate::{GlobalSongCache, ToggleLyrics};
 
@@ -564,7 +564,7 @@ impl Player {
     pub(crate) fn format_text(&self) -> Option<String> {
         self.format
             .as_ref()
-            .map(|format| format::describe(format, self.queue.current().and_then(Song::suffix)))
+            .map(|format| describe_format(format, self.queue.current().and_then(Song::suffix)))
     }
 
     pub(crate) fn position_state(&self) -> &Entity<SliderState> {
@@ -1423,7 +1423,7 @@ impl Player {
                         .child(
                             ui::favorite_button(
                                 "player-favorite",
-                                actions::Favorite::Song(song.clone()),
+                                Favorite::Song(song.clone()),
                                 cx,
                             )
                             .small(),
@@ -1704,7 +1704,7 @@ mod tests {
         assert!(star.left() > cover.right());
         cx.simulate_click(star.center(), gpui_kit::Modifiers::default());
         cx.run_until_parked();
-        let favorite = actions::Favorite::Song(song);
+        let favorite = Favorite::Song(song);
         assert_eq!(
             asked.take(),
             [actions::SetFavorite::new(favorite.clone(), true)]

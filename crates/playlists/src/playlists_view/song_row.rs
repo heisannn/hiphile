@@ -8,6 +8,7 @@ use gpui_kit::{
     App, ElementId, FocusHandle, IntoElement, MouseButton, ParentElement as _, RenderOnce,
     SharedString, Styled as _, WeakEntity, Window, div, prelude::FluentBuilder as _,
 };
+use hiphile_core::playlists::EntryId;
 use subsonic::{Song, StarTarget};
 use ui::{
     ArtistLine, CoverArt, PlayState, PlayStateIcon, ReorderExt as _, RowText, format_duration,
@@ -15,7 +16,6 @@ use ui::{
 };
 
 use super::Playlists;
-use crate::entries::EntryId;
 use crate::{AddToQueue, MoveDown, MoveUp, Open, PlayNext, Remove, ShowAlbum};
 
 #[derive(IntoElement)]

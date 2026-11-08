@@ -3,7 +3,7 @@ use std::mem;
 use std::sync::Arc;
 
 use actions::{
-    AlbumAction, Favorite, GoToArtist, Placement, PlaySongs, ShowAlbum, ShowArtist, ToggleFavorite,
+    AlbumAction, GoToArtist, Placement, PlaySongs, ShowAlbum, ShowArtist, ToggleFavorite,
 };
 use gpui_kit::component::{
     Sizable as _, WindowExt as _,
@@ -19,6 +19,7 @@ use gpui_kit::{
     Styled as _, Subscription, Task, UniformListScrollHandle, Window, div,
     prelude::FluentBuilder as _,
 };
+use hiphile_core::favorites::{Favorite, FavoriteLists, Section};
 use subsonic::{AlbumId, CoverArtId, PlaylistId, Song, SongId, StarTarget, Starred};
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
 use ui::{ListPaneHeader, LoadFailure, NowPlaying, RefreshFailure, centered, muted_text, row_list};
@@ -27,7 +28,6 @@ mod rows;
 
 use rows::{AlbumRow, ArtistRow, RowContext, SongRow};
 
-use crate::lists::{FavoriteLists, Section};
 use crate::{
     AddSelectionToPlaylist, AddToPlaylist, AddToQueue, FAVORITES_CONTEXT, GoToAlbum, NextSection,
     Open, Play, PlayNext, PreviousSection,

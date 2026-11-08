@@ -1,4 +1,3 @@
-mod format;
 mod hover_slider;
 mod lyrics_view;
 mod mini_player;

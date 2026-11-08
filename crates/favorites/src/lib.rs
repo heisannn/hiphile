@@ -3,7 +3,6 @@
 //! them through `actions::is_favorite`, which [`Favorites`] keeps up to date.
 
 mod favorites_view;
-mod lists;
 
 use gpui_kit::{App, KeyBinding, actions};
 use ui::list_navigation::bind_list_navigation;

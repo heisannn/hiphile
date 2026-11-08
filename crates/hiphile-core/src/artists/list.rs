@@ -6,7 +6,7 @@ use fuzzy::{Index, Speller};
 use subsonic::{Album, Artist, ArtistId, CoverArtId, ReleaseDate, Song};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum ArtistOrder {
+pub enum ArtistOrder {
     /// The server's name order. Ascending under a filter, the best match comes first instead.
     #[default]
     Name,
@@ -17,14 +17,15 @@ pub(crate) enum ArtistOrder {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct ArtistSort {
-    pub(crate) order: ArtistOrder,
-    pub(crate) is_descending: bool,
+#[non_exhaustive]
+pub struct ArtistSort {
+    pub order: ArtistOrder,
+    pub is_descending: bool,
 }
 
 impl ArtistSort {
     /// How `order` sorts when chosen: names from the start, dates newest first.
-    pub(crate) fn chosen(order: ArtistOrder) -> Self {
+    pub fn chosen(order: ArtistOrder) -> Self {
         Self {
             order,
             is_descending: order != ArtistOrder::Name,
@@ -34,10 +35,10 @@ impl ArtistSort {
 
 /// Each artist's newest album, by when it was added and by when it came out.
 #[derive(Debug, Default)]
-pub(crate) struct ArtistDates(HashMap<ArtistId, (Option<SystemTime>, Option<ReleaseDate>)>);
+pub struct ArtistDates(HashMap<ArtistId, (Option<SystemTime>, Option<ReleaseDate>)>);
 
 impl ArtistDates {
-    pub(crate) fn of_albums(albums: &[Album]) -> Self {
+    pub fn of_albums(albums: &[Album]) -> Self {
         let mut dates: HashMap<ArtistId, (Option<SystemTime>, Option<ReleaseDate>)> =
             HashMap::new();
         for album in albums {
@@ -62,7 +63,7 @@ impl ArtistDates {
 
 /// `found` holds positions in `artists`, which come in name order, and keeps its order among
 /// artists that compare the same. Artists without a dated album come last either way.
-pub(crate) fn arrange(
+pub fn arrange(
     artists: &[Artist],
     mut found: Vec<usize>,
     dates: &ArtistDates,
@@ -98,11 +99,11 @@ fn by_key<K: Ord>(
     keyed.into_iter().map(|(_, ix)| ix).collect()
 }
 
-pub(crate) fn artist_index(artists: &[Artist], speller: Option<&dyn Speller>) -> Index {
+pub fn artist_index(artists: &[Artist], speller: Option<&dyn Speller>) -> Index {
     Index::new(artists.iter().map(|artist| [artist.name()]), speller)
 }
 
-pub(crate) fn artists_of_albums(albums: &[Album]) -> Vec<Artist> {
+pub fn artists_of_albums(albums: &[Album]) -> Vec<Artist> {
     let mut found: HashMap<&ArtistId, (&str, Option<&CoverArtId>, u32)> = HashMap::new();
     for album in albums {
         let (Some(id), Some(name)) = (album.artist_id(), album.artist()) else {
@@ -125,7 +126,7 @@ pub(crate) fn artists_of_albums(albums: &[Album]) -> Vec<Artist> {
     artists
 }
 
-pub(crate) fn album_by_album(mut songs: Vec<Song>) -> Vec<Song> {
+pub fn album_by_album(mut songs: Vec<Song>) -> Vec<Song> {
     songs.sort_by_cached_key(|song| {
         let album = song.album().unwrap_or_default().to_lowercase();
         (album, song.disc_number(), song.track())
@@ -134,7 +135,7 @@ pub(crate) fn album_by_album(mut songs: Vec<Song>) -> Vec<Song> {
 }
 
 /// Those without a year come last.
-pub(crate) fn newest_first(mut albums: Vec<Album>) -> Vec<Album> {
+pub fn newest_first(mut albums: Vec<Album>) -> Vec<Album> {
     albums.sort_by_key(|album| std::cmp::Reverse(album.year()));
     albums
 }

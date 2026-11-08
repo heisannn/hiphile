@@ -1,7 +1,7 @@
 use subsonic::Song;
 
 /// Most recent first. Songs never played are left out.
-pub(crate) fn most_recent(mut songs: Vec<Song>, count: usize) -> Vec<Song> {
+pub fn most_recent(mut songs: Vec<Song>, count: usize) -> Vec<Song> {
     songs.retain(|song| song.played().is_some());
     songs.sort_by(|a, b| b.played().map(played_key).cmp(&a.played().map(played_key)));
     songs.truncate(count);

@@ -18,6 +18,11 @@ use gpui_kit::{
     Pixels, Render, ScrollStrategy, SharedString, Styled as _, Subscription, Task,
     UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px,
 };
+use hiphile_core::artists::{
+    ArtistDates, ArtistOrder, ArtistSort, album_by_album, arrange, artist_index, artists_of_albums,
+    newest_first,
+};
+use hiphile_core::favorites::Favorite;
 use subsonic::{Album, Artist, ArtistId, CoverArtId, PlaylistId, Song, SongId};
 use ui::card_grid::GridMotion;
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
@@ -32,10 +37,6 @@ mod detail;
 use artist_row::ArtistRow;
 use detail::{Item, ListedDetail};
 
-use crate::list::{
-    ArtistDates, ArtistOrder, ArtistSort, album_by_album, arrange, artist_index, artists_of_albums,
-    newest_first,
-};
 use crate::{
     ARTISTS_CONTEXT, AddSelectionToPlaylist, AddToPlaylist, AddToQueue, FocusFilter, Open, Play,
     PlayNext, ROOT_CONTEXT,
@@ -770,10 +771,8 @@ impl Artists {
             option(label, current.order == order, sort)
         };
         let direction = |label, is_descending| {
-            let sort = ArtistSort {
-                is_descending,
-                ..current
-            };
+            let mut sort = current;
+            sort.is_descending = is_descending;
             option(label, current.is_descending == is_descending, sort)
         };
         sort_menu(
@@ -825,7 +824,7 @@ impl Artists {
             .on_action(
                 cx.listener(|this, _: &actions::ToggleFavorite, window, cx| {
                     if let Some(artist) = this.selected_artist_whole() {
-                        actions::toggle_favorite(actions::Favorite::Artist(artist), window, cx);
+                        actions::toggle_favorite(Favorite::Artist(artist), window, cx);
                     }
                 }),
             )

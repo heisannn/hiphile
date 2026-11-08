@@ -14,6 +14,7 @@ use gpui_kit::{
     SharedString, Size, StatefulInteractiveElement as _, Styled as _, StyledImage as _,
     Subscription, Task, Window, div, img, point, prelude::FluentBuilder as _, px, size,
 };
+use hiphile_core::favorites::Favorite;
 use subsonic::Song;
 use ui::CoverArt;
 use ui::list_navigation::CONTROL_CONTEXT;
@@ -399,7 +400,7 @@ impl LyricsView {
                             .flex_none()
                             .child(ui::favorite_button(
                                 "lyrics-favorite",
-                                actions::Favorite::Song(song.clone()),
+                                Favorite::Song(song.clone()),
                                 cx,
                             )),
                     ),

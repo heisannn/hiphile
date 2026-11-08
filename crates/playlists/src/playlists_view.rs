@@ -17,6 +17,8 @@ use gpui_kit::{
     Styled as _, Subscription, Task, UniformListScrollHandle, Window, div,
     prelude::FluentBuilder as _,
 };
+use hiphile_core::favorites::Favorite;
+use hiphile_core::playlists::{Entries, EntryId, WriteQueue};
 use subsonic::{Playlist, PlaylistId, PlaylistWithSongs, Song, SongId};
 use ui::list_navigation::{CONTROL_CONTEXT, ListNavigationExt as _, Motion, page_rows};
 use ui::{
@@ -35,9 +37,7 @@ use editing::RemovedSong;
 use playlist_row::PlaylistRow;
 use song_row::SongRow;
 
-use crate::entries::{Entries, EntryId};
 use crate::filter::playlist_index;
-use crate::writes::WriteQueue;
 use crate::{
     AddToPlaylist, AddToQueue, Back, Delete, FocusFilter, MoveDown, MoveUp, Open,
     PLAYLISTS_CONTEXT, Play, PlayNext, ROOT_CONTEXT, Remove, Rename, SONGS_CONTEXT, ShowAlbum,
@@ -878,7 +878,7 @@ impl Playlists {
             .on_action(
                 cx.listener(|this, _: &actions::ToggleFavorite, window, cx| {
                     if let Some(song) = this.selected_song() {
-                        actions::toggle_favorite(actions::Favorite::Song(song), window, cx);
+                        actions::toggle_favorite(Favorite::Song(song), window, cx);
                     }
                 }),
             )

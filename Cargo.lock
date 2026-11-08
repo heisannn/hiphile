@@ -100,6 +100,7 @@ name = "actions"
 version = "0.4.0"
 dependencies = [
  "gpui-kit",
+ "hiphile-core",
  "serde_json",
  "subsonic",
 ]
@@ -366,6 +367,7 @@ dependencies = [
  "futures",
  "fuzzy",
  "gpui-kit",
+ "hiphile-core",
  "net",
  "serde_json",
  "session",
@@ -2346,6 +2348,7 @@ dependencies = [
  "actions",
  "client",
  "gpui-kit",
+ "hiphile-core",
  "net",
  "serde_json",
  "session",
@@ -3977,6 +3980,7 @@ dependencies = [
  "favorites",
  "futures",
  "gpui-kit",
+ "hiphile-core",
  "home",
  "library",
  "lyrics",
@@ -4012,6 +4016,14 @@ dependencies = [
 [[package]]
 name = "hiphile-core"
 version = "0.4.0"
+dependencies = [
+ "chrono",
+ "client",
+ "futures",
+ "fuzzy",
+ "serde_json",
+ "subsonic",
+]
 
 [[package]]
 name = "hkdf"
@@ -4055,10 +4067,10 @@ version = "0.4.0"
 dependencies = [
  "actions",
  "catalog",
- "chrono",
  "client",
  "futures",
  "gpui-kit",
+ "hiphile-core",
  "net",
  "serde_json",
  "session",
@@ -4783,6 +4795,7 @@ dependencies = [
  "futures",
  "fuzzy",
  "gpui-kit",
+ "hiphile-core",
  "net",
  "serde_json",
  "session",
@@ -6370,6 +6383,7 @@ dependencies = [
  "config 0.4.0",
  "futures",
  "gpui-kit",
+ "hiphile-core",
  "lyrics",
  "media-controls",
  "net",
@@ -6389,6 +6403,7 @@ dependencies = [
  "client",
  "fuzzy",
  "gpui-kit",
+ "hiphile-core",
  "net",
  "serde_json",
  "session",
@@ -7737,8 +7752,8 @@ dependencies = [
  "catalog",
  "client",
  "futures",
- "fuzzy",
  "gpui-kit",
+ "hiphile-core",
  "net",
  "serde_json",
  "session",
@@ -7988,6 +8003,7 @@ dependencies = [
  "config 0.4.0",
  "fuzzy",
  "gpui-kit",
+ "playback",
  "session",
  "tempfile",
  "ui",
@@ -8200,6 +8216,7 @@ dependencies = [
  "futures",
  "fuzzy",
  "gpui-kit",
+ "hiphile-core",
  "net",
  "serde_json",
  "session",
@@ -9248,6 +9265,7 @@ dependencies = [
  "actions",
  "executor",
  "gpui-kit",
+ "hiphile-core",
  "subsonic",
 ]
 

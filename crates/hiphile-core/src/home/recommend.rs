@@ -24,21 +24,28 @@ const MIN_SIMILAR_SONGS: usize = 5;
 const FILL_ALBUMS: u32 = 30;
 
 /// The local day, which is how long a pick lasts.
-pub(crate) fn today() -> String {
+pub fn today() -> String {
     Local::now().date_naive().to_string()
 }
 
-pub(crate) struct Recommendations {
-    pub(crate) albums: Vec<Album>,
+#[non_exhaustive]
+pub struct Recommendations {
+    pub albums: Vec<Album>,
     /// Whether everything asked of the server came through. Otherwise this is
     /// not what the day's pick should be, though it may be better than nothing.
-    pub(crate) complete: bool,
+    pub complete: bool,
+}
+
+impl Recommendations {
+    pub fn new(albums: Vec<Album>, complete: bool) -> Self {
+        Self { albums, complete }
+    }
 }
 
 /// Picks the albums to recommend now. Similar songs are the best guide but
 /// depend on the server's outside service, so a failure there only leaves more
 /// to the other albums.
-pub(crate) async fn fetch_recommended(
+pub async fn fetch_recommended(
     client: &client::Client,
     new_albums: u32,
     most_played: u32,

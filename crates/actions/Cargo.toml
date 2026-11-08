@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 gpui-kit.workspace = true
+hiphile-core.workspace = true
 subsonic.workspace = true
 
 [dev-dependencies]

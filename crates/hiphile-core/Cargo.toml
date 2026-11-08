@@ -7,6 +7,14 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+chrono.workspace = true
+client.workspace = true
+futures.workspace = true
+fuzzy.workspace = true
+subsonic.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true

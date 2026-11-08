@@ -8,13 +8,14 @@ const MAX_ALBUMS: usize = 8;
 const MAX_SONGS: usize = 30;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct NamedArtist {
-    pub(crate) id: ArtistId,
-    pub(crate) name: String,
+#[non_exhaustive]
+pub struct NamedArtist {
+    pub id: ArtistId,
+    pub name: String,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum Hit {
+pub enum Hit {
     Artist(NamedArtist),
     Album(Album),
     Song(Song),
@@ -23,18 +24,19 @@ pub(crate) enum Hit {
 /// What a search found, kind by kind, the best of each first. A kind with
 /// nothing to show is left out, so positions here are positions in the palette.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct Results {
-    pub(crate) sections: Vec<(&'static str, Vec<Hit>)>,
+#[non_exhaustive]
+pub struct Results {
+    pub sections: Vec<(&'static str, Vec<Hit>)>,
 }
 
 impl Results {
-    pub(crate) fn hit(&self, section: usize, row: usize) -> Option<&Hit> {
+    pub fn hit(&self, section: usize, row: usize) -> Option<&Hit> {
         self.sections.get(section)?.1.get(row)
     }
 }
 
 /// Takes a while to read with a dictionary: build it off the UI thread.
-pub(crate) struct SearchLibrary {
+pub struct SearchLibrary {
     artists: Vec<NamedArtist>,
     albums: Vec<Album>,
     songs: Vec<Song>,
@@ -44,7 +46,7 @@ pub(crate) struct SearchLibrary {
 }
 
 impl SearchLibrary {
-    pub(crate) fn new(albums: Vec<Album>, songs: Vec<Song>, speller: Option<&dyn Speller>) -> Self {
+    pub fn new(albums: Vec<Album>, songs: Vec<Song>, speller: Option<&dyn Speller>) -> Self {
         let artists = named_artists(&albums, &songs);
         let artist_index = Index::new(artists.iter().map(|artist| [artist.name.as_str()]), speller);
         let album_index = Index::new(
@@ -71,7 +73,7 @@ impl SearchLibrary {
         }
     }
 
-    pub(crate) fn search(&self, query: &str) -> Results {
+    pub fn search(&self, query: &str) -> Results {
         if query.trim().is_empty() {
             return Results::default();
         }

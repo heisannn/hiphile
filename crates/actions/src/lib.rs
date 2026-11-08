@@ -14,7 +14,8 @@ use gpui_kit::component::{WindowExt as _, menu::PopupMenu, notification::Notific
 use gpui_kit::{
     Action, App, Context, Global, KeyBinding, SharedString, Subscription, Window, actions,
 };
-use subsonic::{Album, AlbumId, Artist, ArtistId, PlaylistId, Song, StarTarget};
+use hiphile_core::favorites::Favorite;
+use subsonic::{AlbumId, ArtistId, PlaylistId, Song, StarTarget};
 
 pub use instrumentals::{
     is_instrumental, is_skipped, queue_menu_items, set_skip_instrumentals, without_skipped,
@@ -222,23 +223,6 @@ pub fn bind_go_to_artist(context: &'static str, cx: &mut App) {
         "ctrl-shift-a"
     };
     cx.bind_keys([KeyBinding::new(key, GoToArtist, Some(context))]);
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum Favorite {
-    Song(Song),
-    Album(Album),
-    Artist(Artist),
-}
-
-impl Favorite {
-    pub fn target(&self) -> StarTarget {
-        match self {
-            Self::Song(song) => StarTarget::Song(song.id().clone()),
-            Self::Album(album) => StarTarget::Album(album.id().clone()),
-            Self::Artist(artist) => StarTarget::Artist(artist.id().clone()),
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Action)]

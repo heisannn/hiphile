@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
 use actions::{
-    AlbumAction, EnqueueSongs, Favorite, GoToArtist, Placement, PlaySongs, ShowArtist,
-    ToggleFavorite,
+    AlbumAction, EnqueueSongs, GoToArtist, Placement, PlaySongs, ShowArtist, ToggleFavorite,
 };
 use catalog::{Mode, Outcome};
 use futures::StreamExt as _;
@@ -23,6 +22,8 @@ use gpui_kit::{
     Styled as _, Subscription, Task, UniformListScrollHandle, WeakEntity, Window, div,
     prelude::FluentBuilder as _,
 };
+use hiphile_core::favorites::Favorite;
+use hiphile_core::library::{AlbumOrder, AlbumSort, album_index, arrange};
 use subsonic::{Album, AlbumId, AlbumWithSongs, PlaylistId, Song, SongId};
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
 use ui::{
@@ -37,8 +38,6 @@ mod song_row;
 use album_row::AlbumRow;
 use song_row::SongRow;
 
-use crate::filter::album_index;
-use crate::order::{AlbumOrder, AlbumSort, arrange};
 use crate::{
     ALBUMS_CONTEXT, AddAlbumToPlaylist, AddToPlaylist, AddToQueue, Back, FocusFilter,
     LIBRARY_CONTEXT, Open, Play, PlayNext, Refresh, SONGS_CONTEXT,
@@ -680,10 +679,8 @@ impl Library {
             option(label, current.order == order, sort)
         };
         let direction = |label, is_descending| {
-            let sort = AlbumSort {
-                is_descending,
-                ..current
-            };
+            let mut sort = current;
+            sort.is_descending = is_descending;
             option(label, current.is_descending == is_descending, sort)
         };
         sort_menu(

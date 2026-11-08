@@ -1,9 +1,6 @@
 //! The app shell routes the `actions` this feature dispatches.
 
 mod home_view;
-mod layout;
-mod recent;
-mod recommend;
 
 use gpui_kit::{App, KeyBinding, actions};
 use ui::list_navigation::bind_list_navigation;

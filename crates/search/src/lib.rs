@@ -1,4 +1,3 @@
-mod results;
 mod search_view;
 
 use gpui_kit::{App, KeyBinding, actions};
