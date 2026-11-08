@@ -1,58 +1,38 @@
-//! The choices of the Audio page's dropdowns, each a value and its label
+//! The Audio page's dropdowns, whose choices the settings give as values and labels
 
+use gpui_kit::SharedString;
 use gpui_kit::component::setting::SettingField;
-use gpui_kit::{Context, Entity, SharedString};
-
-use crate::audio_settings::AudioSettings;
+use hiphile_core::settings::{AudioSettings, AudioSnapshot, Choice};
 
 pub(crate) type Options = Vec<(SharedString, SharedString)>;
 
-pub(crate) fn same_labels(values: impl Iterator<Item = String>) -> Options {
-    values
-        .map(|value| {
-            let value = SharedString::from(value);
-            (value.clone(), value)
+pub(crate) fn options(choices: Vec<Choice>) -> Options {
+    choices
+        .into_iter()
+        .map(|choice| {
+            (
+                SharedString::from(choice.value().to_owned()),
+                SharedString::from(choice.label().to_owned()),
+            )
         })
         .collect()
 }
 
-pub(crate) fn number_value(number: f64) -> SharedString {
-    number.to_string().into()
-}
-
-/// The values, and `current` too if the file holds one that is not among them,
-/// so that the choice stays visible.
-pub(crate) fn numbers(values: &[f64], current: f64, label: impl Fn(f64) -> String) -> Options {
-    let mut options: Options = values
-        .iter()
-        .map(|number| (number_value(*number), label(*number).into()))
-        .collect();
-    if !values.contains(&current) {
-        options.push((number_value(current), label(current).into()));
-    }
-    options
-}
-
 pub(crate) fn dropdown(
-    audio: &Entity<AudioSettings>,
-    options: Options,
-    value: fn(&AudioSettings) -> SharedString,
-    set: fn(&mut AudioSettings, &str, &mut Context<AudioSettings>),
+    audio: &AudioSettings,
+    choices: Vec<Choice>,
+    value: fn(&AudioSnapshot) -> String,
+    set: fn(&AudioSettings, &str),
 ) -> SettingField<SharedString> {
     SettingField::scrollable_dropdown(
-        options,
+        options(choices),
         {
             let audio = audio.clone();
-            move |cx| value(audio.read(cx))
+            move |_| value(&audio.snapshot()).into()
         },
         {
             let audio = audio.clone();
-            move |chosen: SharedString, cx| {
-                audio.update(cx, |audio, cx| set(audio, &chosen, cx));
-            }
+            move |chosen: SharedString, _| set(&audio, &chosen)
         },
     )
 }
-
-#[cfg(test)]
-mod tests;

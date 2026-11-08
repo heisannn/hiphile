@@ -7,14 +7,23 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+audio.workspace = true
+catalog.workspace = true
 chrono.workspace = true
 client.workspace = true
+config.workspace = true
+executor.workspace = true
 futures.workspace = true
 fuzzy.workspace = true
+playback.workspace = true
 subsonic.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
+gpui-host.workspace = true
+gpui-kit = { workspace = true, features = ["test-support"] }
 serde_json.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

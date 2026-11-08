@@ -22,6 +22,7 @@ use gpui_kit::{
     prelude::FluentBuilder as _, px,
 };
 use hiphile_core::navigation::{Destination, History, Location};
+use hiphile_core::settings::{AudioSettings, CacheLimit, CacheLimitSnapshot, DiscordSettings};
 use home::Home;
 use library::{Library, LibraryEvent, Refresh};
 use player::{
@@ -68,8 +69,8 @@ pub struct AppShell {
     /// enough for it.
     queue_shown: bool,
     _readings_failures: Option<Task<()>>,
-    _song_cache_changes: Subscription,
-    _cover_cache_changes: Subscription,
+    _song_cache_changes: Task<()>,
+    _cover_cache_changes: Task<()>,
     _system_appearance_changes: Subscription,
     _updater_changes: Option<Task<()>>,
 }
@@ -119,10 +120,10 @@ struct Workspace {
     _favorites_events: Subscription,
     _search_events: Subscription,
     _activity_changes: Subscription,
-    _audio_changes: [Subscription; 2],
-    _discord_changes: [Subscription; 2],
-    _lyrics_changes: [Subscription; 2],
-    _queue_changes: Subscription,
+    _audio_changes: Task<()>,
+    _discord_changes: Task<()>,
+    _lyrics_changes: (Task<()>, Subscription),
+    _queue_changes: Task<()>,
     _focus_lost: Subscription,
 }
 
@@ -196,19 +197,14 @@ impl AppShell {
         let screen = Self::sign_in(&accounts, Start::Resume, window, cx);
         let queue_shown = true;
         crate::set_menus(queue_shown, false, false, None, false, RepeatMode::Off, cx);
-        let song_cache_changes = cx.subscribe(
-            &settings::song_cache_settings(cx),
-            |_, song_cache, _: &settings::CacheLimitChanged, cx| {
-                let capacity = song_cache.read(cx).capacity();
+        let song_cache_changes =
+            follow_cache_limit(&settings::song_cache_settings(cx), cx, |capacity, cx| {
                 player::set_song_capacity(capacity, cx);
-            },
-        );
-        let cover_cache_changes = cx.subscribe(
-            &settings::cover_cache_settings(cx),
-            |_, cover_cache, _: &settings::CacheLimitChanged, cx| {
-                ui::set_cover_capacity(cover_cache.read(cx).capacity(), cx);
-            },
-        );
+            });
+        let cover_cache_changes =
+            follow_cache_limit(&settings::cover_cache_settings(cx), cx, |capacity, cx| {
+                ui::set_cover_capacity(capacity, cx);
+            });
         let readings_failures = readings.map(|readings| {
             let notices = readings.notices();
             // What failed before there was a window to say so in. A failure since then is told
@@ -285,11 +281,12 @@ impl AppShell {
         let activity = cx.new(|cx| LibraryActivity::new(session.clone(), cx));
         let activity_changes = cx.subscribe_in(&activity, window, Self::on_library_activity);
         let audio_settings = settings::audio_settings(cx);
-        let output = audio_settings.read(cx).output().clone();
-        let transitions = audio_settings.read(cx).transitions();
+        let audio = audio_settings.snapshot();
+        let (output, transitions) = (audio.output().clone(), audio.transitions());
         let discord_settings = settings::discord_settings(cx);
-        let cover_key = discord_settings.read(cx).imgbb_key().map(str::to_owned);
-        let is_presence_on = discord_settings.read(cx).is_presence_on();
+        let discord = discord_settings.snapshot();
+        let cover_key = discord.imgbb_key().map(str::to_owned);
+        let is_presence_on = discord.is_presence_on();
         let shell = cx.weak_entity();
         let player = cx.new(|cx| {
             let mut player = Player::new(session.clone(), output, window, cx);
@@ -357,12 +354,7 @@ impl AppShell {
                         home.update(cx, |home, cx| home.song_played(cx)).ok();
                     }
                     PlayerEvent::CoverSought { error } => {
-                        let error = error
-                            .as_ref()
-                            .map(|error| format!("Couldn't upload the cover: {error}.").into());
-                        settings::discord_settings(cx).update(cx, |settings, cx| {
-                            settings.set_upload_error(error, cx);
-                        });
+                        settings::discord_settings(cx).set_upload_error(error.as_deref());
                     }
                     PlayerEvent::ShuffleChanged | PlayerEvent::RepeatChanged => {
                         this.update_menus(cx);
@@ -1161,44 +1153,68 @@ impl AppShell {
     }
 }
 
+/// Only a change of the limit in effect reaches `set_capacity`, which reopens the cache: the
+/// settings also change as the limit is typed and when a save fails.
+fn follow_cache_limit(
+    limit: &CacheLimit,
+    cx: &mut Context<AppShell>,
+    set_capacity: impl Fn(Option<u64>, &mut App) + 'static,
+) -> Task<()> {
+    let in_effect = |limit: &CacheLimitSnapshot| (limit.capacity(), limit.is_keeping_none());
+    let changes = limit.subscribe();
+    let mut passed_on = in_effect(&changes.borrow());
+    gpui_host::observe(changes, cx, move |_, limit, cx| {
+        if in_effect(&limit) != passed_on {
+            passed_on = in_effect(&limit);
+            set_capacity(limit.capacity(), cx);
+        }
+    })
+}
+
+/// The settings also change for what only their window shows, such as the devices listed, which
+/// `player` hears nothing of.
 fn follow_audio_settings(
-    audio_settings: &Entity<settings::AudioSettings>,
+    audio_settings: &AudioSettings,
     player: &Entity<Player>,
     cx: &mut Context<AppShell>,
-) -> [Subscription; 2] {
-    let output_changes = cx.subscribe(audio_settings, {
-        let player = player.downgrade();
-        move |_, audio_settings, _: &settings::OutputChanged, cx| {
-            let output = audio_settings.read(cx).output().clone();
+) -> Task<()> {
+    let changes = audio_settings.subscribe();
+    let (mut output, mut transitions) = {
+        let audio = changes.borrow();
+        (audio.output().clone(), audio.transitions())
+    };
+    let player = player.downgrade();
+    gpui_host::observe(changes, cx, move |_, audio, cx| {
+        if *audio.output() != output {
+            output = audio.output().clone();
+            let output = output.clone();
             player
                 .update(cx, |player, cx| player.set_output(output, cx))
                 .ok();
         }
-    });
-    let transitions_changes = cx.subscribe(audio_settings, {
-        let player = player.downgrade();
-        move |_, audio_settings, _: &settings::TransitionsChanged, cx| {
-            let transitions = audio_settings.read(cx).transitions();
+        if audio.transitions() != transitions {
+            transitions = audio.transitions();
             player
                 .update(cx, |player, _| player.set_transitions(transitions))
                 .ok();
         }
-    });
-    [output_changes, transitions_changes]
+    })
 }
 
-fn follow_queue_settings(player: &Entity<Player>, cx: &mut Context<AppShell>) -> Subscription {
-    let queue_settings = settings::queue_settings(cx);
-    actions::set_skip_instrumentals(queue_settings.read(cx).is_skip_instrumentals_on(), cx);
-    cx.subscribe(&queue_settings, {
-        let player = player.downgrade();
-        move |_, queue_settings, _: &settings::SkipInstrumentalsChanged, cx| {
-            let is_on = queue_settings.read(cx).is_skip_instrumentals_on();
-            actions::set_skip_instrumentals(is_on, cx);
-            player
-                .update(cx, |player, cx| player.apply_skipping(cx))
-                .ok();
+fn follow_queue_settings(player: &Entity<Player>, cx: &mut Context<AppShell>) -> Task<()> {
+    let changes = settings::queue_settings(cx).subscribe();
+    let mut is_on = changes.borrow().is_skip_instrumentals_on();
+    actions::set_skip_instrumentals(is_on, cx);
+    let player = player.downgrade();
+    gpui_host::observe(changes, cx, move |_, queue, cx| {
+        if queue.is_skip_instrumentals_on() == is_on {
+            return;
         }
+        is_on = queue.is_skip_instrumentals_on();
+        actions::set_skip_instrumentals(is_on, cx);
+        player
+            .update(cx, |player, cx| player.apply_skipping(cx))
+            .ok();
     })
 }
 
@@ -1209,29 +1225,33 @@ fn notify_skipped(window: &mut Window, cx: &mut App) {
 }
 
 fn follow_discord_settings(
-    discord_settings: &Entity<settings::DiscordSettings>,
+    discord_settings: &DiscordSettings,
     player: &Entity<Player>,
     cx: &mut Context<AppShell>,
-) -> [Subscription; 2] {
-    let key_changes = cx.subscribe(discord_settings, {
-        let player = player.downgrade();
-        move |_, discord_settings, _: &settings::ImgbbKeyChanged, cx| {
-            let key = discord_settings.read(cx).imgbb_key().map(str::to_owned);
+) -> Task<()> {
+    let changes = discord_settings.subscribe();
+    let (mut key, mut is_presence_on) = {
+        let discord = changes.borrow();
+        (
+            discord.imgbb_key().map(str::to_owned),
+            discord.is_presence_on(),
+        )
+    };
+    let player = player.downgrade();
+    gpui_host::observe(changes, cx, move |_, discord, cx| {
+        if discord.imgbb_key() != key.as_deref() {
+            key = discord.imgbb_key().map(str::to_owned);
             player
                 .update(cx, |player, _| player.set_cover_key(key.as_deref()))
                 .ok();
         }
-    });
-    let presence_changes = cx.subscribe(discord_settings, {
-        let player = player.downgrade();
-        move |_, discord_settings, _: &settings::PresenceChanged, cx| {
-            let is_on = discord_settings.read(cx).is_presence_on();
+        if discord.is_presence_on() != is_presence_on {
+            is_presence_on = discord.is_presence_on();
             player
-                .update(cx, |player, _| player.set_presence_on(is_on))
+                .update(cx, |player, _| player.set_presence_on(is_presence_on))
                 .ok();
         }
-    });
-    [key_changes, presence_changes]
+    })
 }
 
 /// The title bar moves the window, and on Windows a press that goes on to the title bar starts
@@ -1243,25 +1263,32 @@ fn title_bar_controls() -> Div {
 }
 
 /// What shows the lyrics of what `player` plays, kept on the chosen highlight for
-/// as long as the subscriptions live.
+/// as long as the task and the subscription live.
 fn lyrics_views(
     session: &Session,
     player: &Entity<Player>,
     window: &Window,
     cx: &mut Context<AppShell>,
-) -> (Entity<LyricsView>, Entity<MiniPlayer>, [Subscription; 2]) {
+) -> (
+    Entity<LyricsView>,
+    Entity<MiniPlayer>,
+    (Task<()>, Subscription),
+) {
     let finder = lyrics::Finder::user(session.client().net().clone());
-    let lyrics_settings = settings::lyrics_settings(cx);
-    let highlight = lyrics_settings.read(cx).highlight();
+    let changes = settings::lyrics_settings(cx).subscribe();
+    let mut highlight = changes.borrow().highlight();
     let current = cx.new(|cx| {
         let mut current = CurrentLyrics::new(player.clone(), finder);
         current.set_highlight(highlight, cx);
         current
     });
-    let highlight_changes = cx.subscribe(&lyrics_settings, {
+    let highlight_changes = gpui_host::observe(changes, cx, {
         let current = current.downgrade();
-        move |_, lyrics_settings, _: &settings::LyricsHighlightChanged, cx| {
-            let highlight = lyrics_settings.read(cx).highlight();
+        move |_, lyrics, cx| {
+            if lyrics.highlight() == highlight {
+                return;
+            }
+            highlight = lyrics.highlight();
             current
                 .update(cx, |current, cx| current.set_highlight(highlight, cx))
                 .ok();
@@ -1273,7 +1300,7 @@ fn lyrics_views(
         this.update_menus(cx);
         cx.notify();
     });
-    (view, mini_player, [highlight_changes, mini_player_changes])
+    (view, mini_player, (highlight_changes, mini_player_changes))
 }
 
 impl Render for AppShell {

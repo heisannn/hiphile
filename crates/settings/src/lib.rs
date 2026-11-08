@@ -1,40 +1,28 @@
-//! Each setting saves itself. The app shell hands the settings to those who use them and passes
-//! on their change events. The appearance only concerns the theme, which this crate keeps on it.
+//! The settings window. The settings themselves are in `hiphile_core::settings`; this crate keeps
+//! them for the app, and the app shell hands them to those who use them. The appearance only
+//! concerns the theme, which this crate keeps on it.
 
 mod appearance_settings;
 mod audio_options;
-mod audio_settings;
-mod cache_limit;
 mod cache_limit_field;
-mod discord_settings;
 mod dsd_section;
-mod dsd_settings;
 mod imgbb_key_field;
-mod lyrics_settings;
 mod number_field;
-mod queue_settings;
 mod r8brain_number_field;
 mod r8brain_section;
-mod r8brain_settings;
 mod settings_view;
-mod song_cache_usage;
 mod soxr_section;
-mod soxr_settings;
 
-use cache_limit::CacheKind;
 use gpui_kit::component::TitleBar;
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext as _, Bounds, Entity, Global, KeyBinding, Subscription,
+    AnyWindowHandle, App, AppContext as _, Bounds, Global, KeyBinding, Subscription,
     TitlebarOptions, Window, WindowBounds, WindowOptions, actions, px, size,
 };
+use hiphile_core::settings::{
+    AppearanceSettings, AudioSettings, CacheKind, CacheLimit, DiscordSettings, LyricsSettings,
+    QueueSettings,
+};
 
-pub use audio_settings::{AudioSettings, OutputChanged, TransitionsChanged};
-pub use cache_limit::{CacheLimit, CacheLimitChanged};
-pub use discord_settings::{DiscordSettings, ImgbbKeyChanged, PresenceChanged};
-pub use lyrics_settings::{LyricsHighlightChanged, LyricsSettings};
-pub use queue_settings::{QueueSettings, SkipInstrumentalsChanged};
-
-use appearance_settings::AppearanceSettings;
 use settings_view::SettingsView;
 use updater::Updater;
 
@@ -43,17 +31,18 @@ const SETTINGS_CONTEXT: &str = "Settings";
 actions!(settings, [OpenSettings, CloseWindow]);
 
 struct GlobalSettings {
-    appearance: Entity<AppearanceSettings>,
-    audio: Entity<AudioSettings>,
-    song_cache: Entity<CacheLimit>,
-    cover_cache: Entity<CacheLimit>,
-    discord: Entity<DiscordSettings>,
-    lyrics: Entity<LyricsSettings>,
-    queue: Entity<QueueSettings>,
+    appearance: AppearanceSettings,
+    audio: AudioSettings,
+    song_cache: CacheLimit,
+    cover_cache: CacheLimit,
+    discord: DiscordSettings,
+    lyrics: LyricsSettings,
+    queue: QueueSettings,
     /// `None` in a build that does not update itself.
     updater: Option<Updater>,
     /// It may have been closed since.
     window: Option<AnyWindowHandle>,
+    _quit: Subscription,
 }
 
 impl Global for GlobalSettings {}
@@ -61,13 +50,27 @@ impl Global for GlobalSettings {}
 /// Call before building the menu bar.
 pub fn init(updater: Option<Updater>, cx: &mut App) {
     number_field::init(cx);
-    let appearance = cx.new(AppearanceSettings::new);
-    let audio = cx.new(AudioSettings::new);
-    let song_cache = cx.new(|cx| CacheLimit::new(CacheKind::Songs, cx));
-    let cover_cache = cx.new(|cx| CacheLimit::new(CacheKind::Covers, cx));
-    let discord = cx.new(DiscordSettings::new);
-    let lyrics = cx.new(LyricsSettings::new);
-    let queue = cx.new(QueueSettings::new);
+    let executor = gpui_host::executor(cx);
+    let appearance = AppearanceSettings::new(executor.clone(), config::Store::user());
+    appearance_settings::apply(&appearance, cx);
+    let audio = AudioSettings::new(executor.clone(), config::Store::user());
+    audio.list_devices();
+    let song_cache = CacheLimit::new(CacheKind::Songs, executor.clone(), config::Store::user());
+    let cover_cache = CacheLimit::new(CacheKind::Covers, executor.clone(), config::Store::user());
+    let discord = DiscordSettings::new(executor.clone(), config::Store::user());
+    let lyrics = LyricsSettings::new(executor.clone(), config::Store::user());
+    let queue = QueueSettings::new(executor, config::Store::user());
+    // Nothing would write what is still settling or waiting once the app has quit
+    let quit = cx.on_app_quit({
+        let (song_cache, cover_cache, discord) =
+            (song_cache.clone(), cover_cache.clone(), discord.clone());
+        move |_| {
+            song_cache.save_before_quitting();
+            cover_cache.save_before_quitting();
+            discord.save_before_quitting();
+            async {}
+        }
+    });
     cx.set_global(GlobalSettings {
         appearance,
         audio,
@@ -78,6 +81,7 @@ pub fn init(updater: Option<Updater>, cx: &mut App) {
         queue,
         updater,
         window: None,
+        _quit: quit,
     });
     // Deferred because an action reaches this handler while its window is being
     // updated. That window cannot be updated again until then, which `open`
@@ -94,19 +98,19 @@ pub fn init(updater: Option<Updater>, cx: &mut App) {
     ]);
 }
 
-pub fn audio_settings(cx: &App) -> Entity<AudioSettings> {
+pub fn audio_settings(cx: &App) -> AudioSettings {
     cx.global::<GlobalSettings>().audio.clone()
 }
 
-pub fn discord_settings(cx: &App) -> Entity<DiscordSettings> {
+pub fn discord_settings(cx: &App) -> DiscordSettings {
     cx.global::<GlobalSettings>().discord.clone()
 }
 
-pub fn lyrics_settings(cx: &App) -> Entity<LyricsSettings> {
+pub fn lyrics_settings(cx: &App) -> LyricsSettings {
     cx.global::<GlobalSettings>().lyrics.clone()
 }
 
-pub fn queue_settings(cx: &App) -> Entity<QueueSettings> {
+pub fn queue_settings(cx: &App) -> QueueSettings {
     cx.global::<GlobalSettings>().queue.clone()
 }
 
@@ -114,12 +118,16 @@ fn updater(cx: &App) -> Option<Updater> {
     cx.global::<GlobalSettings>().updater.clone()
 }
 
-pub fn song_cache_settings(cx: &App) -> Entity<CacheLimit> {
+pub fn song_cache_settings(cx: &App) -> CacheLimit {
     cx.global::<GlobalSettings>().song_cache.clone()
 }
 
-pub fn cover_cache_settings(cx: &App) -> Entity<CacheLimit> {
+pub fn cover_cache_settings(cx: &App) -> CacheLimit {
     cx.global::<GlobalSettings>().cover_cache.clone()
+}
+
+fn appearance(cx: &App) -> AppearanceSettings {
+    cx.global::<GlobalSettings>().appearance.clone()
 }
 
 /// Keeps the theme on the system's appearance for as long as the subscription
@@ -127,10 +135,8 @@ pub fn cover_cache_settings(cx: &App) -> Entity<CacheLimit> {
 /// window that can be the last one open holds one.
 pub fn follow_system_appearance(window: &Window) -> Subscription {
     window.observe_window_appearance(|window, cx| {
-        let appearance = cx.global::<GlobalSettings>().appearance.clone();
-        appearance.update(cx, |appearance, cx| {
-            appearance.on_system_appearance_changed(window, cx);
-        });
+        let appearance = appearance(cx);
+        appearance_settings::on_system_appearance_changed(&appearance, window, cx);
     })
 }
 
@@ -156,7 +162,7 @@ fn open(cx: &mut App) {
         }),
         ..TitleBar::window_options()
     };
-    let appearance = cx.global::<GlobalSettings>().appearance.clone();
+    let appearance = appearance(cx);
     let audio = audio_settings(cx);
     let song_cache = song_cache_settings(cx);
     let cover_cache = cover_cache_settings(cx);

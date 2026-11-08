@@ -8,10 +8,10 @@ license.workspace = true
 
 [dependencies]
 futures.workspace = true
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["sync", "time"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["time", "test-util"] }
+tokio = { workspace = true, features = ["sync", "time", "test-util"] }
 
 [lints]
 workspace = true

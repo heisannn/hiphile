@@ -4023,12 +4023,21 @@ dependencies = [
 name = "hiphile-core"
 version = "0.4.0"
 dependencies = [
+ "audio",
+ "catalog",
  "chrono",
  "client",
+ "config 0.4.0",
+ "executor",
  "futures",
  "fuzzy",
+ "gpui-host",
+ "gpui-kit",
+ "playback",
  "serde_json",
  "subsonic",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -8006,13 +8015,12 @@ dependencies = [
 name = "settings"
 version = "0.4.0"
 dependencies = [
- "audio",
  "catalog",
  "config 0.4.0",
  "fuzzy",
  "gpui-host",
  "gpui-kit",
- "playback",
+ "hiphile-core",
  "session",
  "tempfile",
  "ui",

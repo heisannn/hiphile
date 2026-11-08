@@ -4,6 +4,7 @@
 //! tokio, such as the CLI or a test, lends a runtime with [`Executor::tokio`].
 
 mod on_tokio;
+mod published;
 mod saver;
 
 use std::pin::Pin;
@@ -14,6 +15,7 @@ use std::time::Duration;
 use futures::channel::oneshot;
 
 pub use futures::future::BoxFuture;
+pub use published::{Publish, Published};
 pub use saver::Saver;
 
 /// What a host implements to lend the core its threads and its clock.

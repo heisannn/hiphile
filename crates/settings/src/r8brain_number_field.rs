@@ -5,11 +5,9 @@ use config::{
     R8BRAIN_TRANSITION_BANDS, R8brainParameters, R8brainQuality,
 };
 use gpui_kit::component::input::{InputEvent, InputState};
-use gpui_kit::{
-    App, AppContext as _, Context, Entity, IntoElement, Render, Subscription, Task, Window,
-};
+use gpui_kit::{AppContext as _, Context, Entity, IntoElement, Render, Subscription, Task, Window};
+use hiphile_core::settings::{AudioSettings, AudioSnapshot};
 
-use crate::audio_settings::AudioSettings;
 use crate::number_field::{NumberField, NumberRange};
 
 /// The field reports every keystroke, and each change restarts the resampling of what is playing.
@@ -125,25 +123,26 @@ impl R8brainNumber {
 /// text keeps its own form while it stands for the value, and another value from elsewhere, such
 /// as from a preset, replaces typing that has not settled.
 pub(crate) struct R8brainNumberField {
-    audio: Entity<AudioSettings>,
+    audio: AudioSettings,
     number: R8brainNumber,
     input: Entity<InputState>,
     /// The value that the text stands for
     shown: Option<f64>,
     _settle: Task<()>,
     _input_events: Subscription,
-    _audio_changes: Subscription,
+    _audio_changes: Task<()>,
 }
 
 impl R8brainNumberField {
     pub(crate) fn new(
-        audio: Entity<AudioSettings>,
+        audio: AudioSettings,
         number: R8brainNumber,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let shown = number.value(&audio.read(cx).r8brain_parameters());
-        let text = number.text(&audio.read(cx).r8brain_parameters());
+        let parameters = audio.snapshot().r8brain_parameters();
+        let shown = number.value(&parameters);
+        let text = number.text(&parameters);
         let input = cx.new(|cx| {
             let state = number.range().state(window, cx).default_value(text);
             if number == R8brainNumber::FilterFractions {
@@ -154,7 +153,12 @@ impl R8brainNumberField {
         });
         Self {
             _input_events: cx.subscribe_in(&input, window, Self::on_input_event),
-            _audio_changes: cx.observe_in(&audio, window, Self::on_audio_changed),
+            _audio_changes: gpui_host::observe_in(
+                audio.subscribe(),
+                window,
+                cx,
+                Self::on_audio_changed,
+            ),
             _settle: Task::ready(()),
             audio,
             number,
@@ -188,11 +192,11 @@ impl R8brainNumberField {
 
     fn on_audio_changed(
         &mut self,
-        _: Entity<AudioSettings>,
+        audio: AudioSnapshot,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.number.value(&self.audio.read(cx).r8brain_parameters()) != self.shown {
+        if self.number.value(&audio.r8brain_parameters()) != self.shown {
             self._settle = Task::ready(());
             self.show_value(window, cx);
         }
@@ -213,15 +217,14 @@ impl R8brainNumberField {
         let text = self.input.read(cx).value();
         if let Some(value) = self.number.parse(&text) {
             let number = self.number;
-            self.audio.update(cx, |audio, cx| {
-                audio.change_r8brain(|parameters| number.set(parameters, value), cx);
-            });
-            self.shown = number.value(&self.audio.read(cx).r8brain_parameters());
+            self.audio
+                .change_r8brain(|parameters| number.set(parameters, value));
+            self.shown = number.value(&self.audio.snapshot().r8brain_parameters());
         }
     }
 
     fn show_value(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let parameters = self.audio.read(cx).r8brain_parameters();
+        let parameters = self.audio.snapshot().r8brain_parameters();
         self.shown = self.number.value(&parameters);
         let text = self.number.text(&parameters);
         if self.input.read(cx).value().as_ref() != text {
@@ -230,10 +233,10 @@ impl R8brainNumberField {
         }
     }
 
-    pub(crate) fn is_resettable(&self, cx: &App) -> bool {
+    pub(crate) fn is_resettable(&self) -> bool {
         let number = self.number;
         !number.differs_between_presets()
-            && number.value(&self.audio.read(cx).r8brain_parameters())
+            && number.value(&self.audio.snapshot().r8brain_parameters())
                 != number.value(&R8brainParameters::default())
     }
 
@@ -241,9 +244,8 @@ impl R8brainNumberField {
         self._settle = Task::ready(());
         let number = self.number;
         let default = number.value(&R8brainParameters::default());
-        self.audio.update(cx, |audio, cx| {
-            audio.change_r8brain(|parameters| number.set(parameters, default), cx);
-        });
+        self.audio
+            .change_r8brain(|parameters| number.set(parameters, default));
         self.show_value(window, cx);
     }
 }

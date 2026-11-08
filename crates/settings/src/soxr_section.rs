@@ -3,15 +3,16 @@ use gpui_kit::component::{
     radio::{Radio, RadioGroup},
     setting::{SettingField, SettingGroup, SettingItem},
 };
-use gpui_kit::{App, Axis, Context, Entity, SharedString};
+use gpui_kit::{Axis, SharedString};
+use hiphile_core::settings::{
+    AudioSettings, AudioSnapshot, Choice, SOXR_INTERPOLATIONS, SOXR_PHASES, SOXR_QUALITIES,
+};
 
-use crate::audio_options::{Options, dropdown};
-use crate::audio_settings::AudioSettings;
-use crate::soxr_settings::{SOXR_INTERPOLATIONS, SOXR_PHASES, SOXR_QUALITIES};
+use crate::audio_options::dropdown;
 
 /// The Audio page's soxr groups, which stay out of the way unless it is what resamples.
-pub(crate) fn soxr_groups(audio: &Entity<AudioSettings>, cx: &App) -> Vec<SettingGroup> {
-    let settings = audio.read(cx);
+pub(crate) fn soxr_groups(audio: &AudioSettings) -> Vec<SettingGroup> {
+    let settings = audio.snapshot();
     if !settings.uses_soxr() || settings.is_dsd_on() {
         return Vec::new();
     }
@@ -21,7 +22,7 @@ pub(crate) fn soxr_groups(audio: &Entity<AudioSettings>, cx: &App) -> Vec<Settin
             dropdown(
                 audio,
                 settings.soxr_precision_options(),
-                AudioSettings::soxr_precision_value,
+                AudioSnapshot::soxr_precision_value,
                 AudioSettings::set_soxr_precision,
             ),
         )
@@ -34,7 +35,7 @@ pub(crate) fn soxr_groups(audio: &Entity<AudioSettings>, cx: &App) -> Vec<Settin
             dropdown(
                 audio,
                 settings.soxr_passband_end_options(),
-                AudioSettings::soxr_passband_end_value,
+                AudioSnapshot::soxr_passband_end_value,
                 AudioSettings::set_soxr_passband_end,
             ),
         )
@@ -62,7 +63,7 @@ pub(crate) fn soxr_groups(audio: &Entity<AudioSettings>, cx: &App) -> Vec<Settin
         ),
     ];
     let performance = [
-        SettingItem::new("Coefficient table", coef_table_field(audio, cx)).description(
+        SettingItem::new("Coefficient table", coef_table_field(audio, &settings)).description(
             "The most memory for the filter's steps between samples. With less, it works out \
              those it doesn't keep.",
         ),
@@ -78,7 +79,7 @@ pub(crate) fn soxr_groups(audio: &Entity<AudioSettings>, cx: &App) -> Vec<Settin
             performance_dropdown(
                 audio,
                 settings.soxr_min_dft_options(),
-                AudioSettings::soxr_min_dft_value,
+                AudioSnapshot::soxr_min_dft_value,
                 AudioSettings::set_soxr_min_dft,
                 |performance| performance.min_dft_size,
                 |performance, size| performance.min_dft_size = size,
@@ -92,7 +93,7 @@ pub(crate) fn soxr_groups(audio: &Entity<AudioSettings>, cx: &App) -> Vec<Settin
             performance_dropdown(
                 audio,
                 settings.soxr_large_dft_options(),
-                AudioSettings::soxr_large_dft_value,
+                AudioSnapshot::soxr_large_dft_value,
                 AudioSettings::set_soxr_large_dft,
                 |performance| performance.large_dft_size,
                 |performance, size| performance.large_dft_size = size,
@@ -118,7 +119,7 @@ fn with_keywords(item: SettingItem) -> SettingItem {
 }
 
 /// For the Resampling group, in the place of Rubato's quality
-pub(crate) fn soxr_quality_item(audio: &Entity<AudioSettings>) -> SettingItem {
+pub(crate) fn soxr_quality_item(audio: &AudioSettings) -> SettingItem {
     SettingItem::new("Quality", quality_field(audio))
         .layout(Axis::Vertical)
         .description(
@@ -127,13 +128,13 @@ pub(crate) fn soxr_quality_item(audio: &Entity<AudioSettings>) -> SettingItem {
         )
 }
 
-fn quality_field(audio: &Entity<AudioSettings>) -> SettingField<SharedString> {
+fn quality_field(audio: &AudioSettings) -> SettingField<SharedString> {
     let reset_check = audio.clone();
     let reset = audio.clone();
     let audio = audio.clone();
-    SettingField::render(move |_, _, cx| {
-        let selected = audio.read(cx).soxr_quality_ix();
-        let is_dsd_on = audio.read(cx).is_dsd_on();
+    SettingField::render(move |_, _, _| {
+        let selected = audio.snapshot().soxr_quality_ix();
+        let is_dsd_on = audio.snapshot().is_dsd_on();
         let audio = audio.clone();
         RadioGroup::horizontal("soxr-quality")
             .selected_index(Some(selected))
@@ -144,26 +145,24 @@ fn quality_field(audio: &Entity<AudioSettings>) -> SettingField<SharedString> {
                     .enumerate()
                     .map(|(ix, label)| Radio::new(("soxr-quality", ix)).label(*label)),
             )
-            .on_click(move |ix, _, cx| {
-                audio.update(cx, |audio, cx| audio.select_soxr_quality(*ix, cx));
+            .on_click(move |ix, _, _| {
+                audio.select_soxr_quality(*ix);
             })
     })
     .on_reset(
-        move |cx| reset_check.read(cx).soxr_parameters().quality != SoxrQuality::default(),
-        move |_, cx| {
-            reset.update(cx, |audio, cx| {
-                audio.change_soxr(|parameters| parameters.quality = SoxrQuality::default(), cx);
-            });
+        move |_| reset_check.snapshot().soxr_parameters().quality != SoxrQuality::default(),
+        move |_, _| {
+            reset.change_soxr(|parameters| parameters.quality = SoxrQuality::default());
         },
     )
 }
 
-fn phase_field(audio: &Entity<AudioSettings>) -> SettingField<SharedString> {
+fn phase_field(audio: &AudioSettings) -> SettingField<SharedString> {
     let audio = audio.clone();
     let reset_check = audio.clone();
     let reset = audio.clone();
-    SettingField::render(move |_, _, cx| {
-        let selected = audio.read(cx).soxr_phase_ix();
+    SettingField::render(move |_, _, _| {
+        let selected = audio.snapshot().soxr_phase_ix();
         let audio = audio.clone();
         RadioGroup::horizontal("soxr-phase")
             .selected_index(Some(selected))
@@ -173,22 +172,20 @@ fn phase_field(audio: &Entity<AudioSettings>) -> SettingField<SharedString> {
                     .enumerate()
                     .map(|(ix, label)| Radio::new(("soxr-phase", ix)).label(*label)),
             )
-            .on_click(move |ix, _, cx| {
-                audio.update(cx, |audio, cx| audio.select_soxr_phase(*ix, cx));
+            .on_click(move |ix, _, _| {
+                audio.select_soxr_phase(*ix);
             })
     })
     .on_reset(
-        move |cx| reset_check.read(cx).soxr_filter().phase != default_filter().phase,
-        move |_, cx| {
-            reset.update(cx, |audio, cx| {
-                audio.change_soxr_filter(|filter| filter.phase = default_filter().phase, cx);
-            });
+        move |_| reset_check.snapshot().soxr_filter().phase != default_filter().phase,
+        move |_, _| {
+            reset.change_soxr_filter(|filter| filter.phase = default_filter().phase);
         },
     )
 }
 
 fn filter_switch(
-    audio: &Entity<AudioSettings>,
+    audio: &AudioSettings,
     get: fn(&SoxrFilter) -> bool,
     set: fn(&mut SoxrFilter, bool),
 ) -> SettingField<bool> {
@@ -198,45 +195,41 @@ fn filter_switch(
     SettingField::switch(
         {
             let audio = audio.clone();
-            move |cx| get(&audio.read(cx).soxr_filter())
+            move |_| get(&audio.snapshot().soxr_filter())
         },
         {
             let audio = audio.clone();
-            move |is_on, cx| {
-                audio.update(cx, |audio, cx| {
-                    audio.change_soxr_filter(|filter| set(filter, is_on), cx);
-                });
+            move |is_on, _| {
+                audio.change_soxr_filter(|filter| set(filter, is_on));
             }
         },
     )
     .on_reset(
-        move |cx| get(&reset_check.read(cx).soxr_filter()) != default,
-        move |_, cx| {
-            reset.update(cx, |audio, cx| {
-                audio.change_soxr_filter(|filter| set(filter, default), cx);
-            });
+        move |_| get(&reset_check.snapshot().soxr_filter()) != default,
+        move |_, _| {
+            reset.change_soxr_filter(|filter| set(filter, default));
         },
     )
 }
 
-fn coef_table_field(audio: &Entity<AudioSettings>, cx: &App) -> SettingField<SharedString> {
+fn coef_table_field(audio: &AudioSettings, settings: &AudioSnapshot) -> SettingField<SharedString> {
     performance_dropdown(
         audio,
-        audio.read(cx).soxr_coef_table_options(),
-        AudioSettings::soxr_coef_table_value,
+        settings.soxr_coef_table_options(),
+        AudioSnapshot::soxr_coef_table_value,
         AudioSettings::set_soxr_coef_table,
         |performance| performance.coef_table_kb,
         |performance, kb| performance.coef_table_kb = kb,
     )
 }
 
-fn interpolation_field(audio: &Entity<AudioSettings>) -> SettingField<SharedString> {
+fn interpolation_field(audio: &AudioSettings) -> SettingField<SharedString> {
     let audio = audio.clone();
     let reset_check = audio.clone();
     let reset = audio.clone();
     let default = SoxrPerformance::default().coef_interpolation;
-    SettingField::render(move |_, _, cx| {
-        let selected = audio.read(cx).soxr_interpolation_ix();
+    SettingField::render(move |_, _, _| {
+        let selected = audio.snapshot().soxr_interpolation_ix();
         let audio = audio.clone();
         RadioGroup::horizontal("soxr-interpolation")
             .selected_index(Some(selected))
@@ -246,46 +239,39 @@ fn interpolation_field(audio: &Entity<AudioSettings>) -> SettingField<SharedStri
                     .enumerate()
                     .map(|(ix, label)| Radio::new(("soxr-interpolation", ix)).label(*label)),
             )
-            .on_click(move |ix, _, cx| {
-                audio.update(cx, |audio, cx| audio.select_soxr_interpolation(*ix, cx));
+            .on_click(move |ix, _, _| {
+                audio.select_soxr_interpolation(*ix);
             })
     })
     .on_reset(
-        move |cx| performance(reset_check.read(cx)).coef_interpolation != default,
-        move |_, cx| {
-            reset.update(cx, |audio, cx| {
-                audio.change_soxr(
-                    |parameters| parameters.performance.coef_interpolation = default,
-                    cx,
-                );
-            });
+        move |_| performance(&reset_check.snapshot()).coef_interpolation != default,
+        move |_, _| {
+            reset.change_soxr(|parameters| parameters.performance.coef_interpolation = default);
         },
     )
 }
 
 /// A dropdown of one of the performance values, which resets to its default.
 fn performance_dropdown(
-    audio: &Entity<AudioSettings>,
-    options: Options,
-    value: fn(&AudioSettings) -> SharedString,
-    set: fn(&mut AudioSettings, &str, &mut Context<AudioSettings>),
+    audio: &AudioSettings,
+    choices: Vec<Choice>,
+    value: fn(&AudioSnapshot) -> String,
+    set: fn(&AudioSettings, &str),
     get: fn(&SoxrPerformance) -> u32,
     put: fn(&mut SoxrPerformance, u32),
 ) -> SettingField<SharedString> {
     let default = get(&SoxrPerformance::default());
     let reset_check = audio.clone();
     let reset = audio.clone();
-    dropdown(audio, options, value, set).on_reset(
-        move |cx| get(&performance(reset_check.read(cx))) != default,
-        move |_, cx| {
-            reset.update(cx, |audio, cx| {
-                audio.change_soxr(|parameters| put(&mut parameters.performance, default), cx);
-            });
+    dropdown(audio, choices, value, set).on_reset(
+        move |_| get(&performance(&reset_check.snapshot())) != default,
+        move |_, _| {
+            reset.change_soxr(|parameters| put(&mut parameters.performance, default));
         },
     )
 }
 
-fn performance(audio: &AudioSettings) -> SoxrPerformance {
+fn performance(audio: &AudioSnapshot) -> SoxrPerformance {
     audio.soxr_parameters().performance
 }
 

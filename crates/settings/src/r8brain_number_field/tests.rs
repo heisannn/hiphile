@@ -1,23 +1,22 @@
 use gpui_kit::{TestAppContext, VisualTestContext};
 
 use super::*;
-use crate::audio_settings::tests::settings_saving_to;
 
 struct Fixture<'a> {
-    audio: Entity<AudioSettings>,
+    audio: AudioSettings,
     field: Entity<R8brainNumberField>,
     cx: &'a mut VisualTestContext,
     store: config::Store,
     _dir: tempfile::TempDir,
-    _subscription: gpui_kit::Subscription,
 }
 
 fn fixture(number: R8brainNumber, cx: &mut TestAppContext) -> Fixture<'_> {
     cx.update(gpui_kit::init);
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
-    let (audio, _told, subscription) = settings_saving_to(&store, cx);
-    audio.update(cx, |audio, cx| audio.select_resampler(1, cx));
+    let executor = cx.update(|cx| gpui_host::executor(cx));
+    let audio = AudioSettings::new(executor, Ok(store.clone()));
+    audio.select_resampler(1);
     let held = audio.clone();
     let (field, cx) =
         cx.add_window_view(|window, cx| R8brainNumberField::new(held, number, window, cx));
@@ -27,14 +26,12 @@ fn fixture(number: R8brainNumber, cx: &mut TestAppContext) -> Fixture<'_> {
         cx,
         store,
         _dir: dir,
-        _subscription: subscription,
     }
 }
 
 impl Fixture<'_> {
     fn parameters(&mut self) -> R8brainParameters {
-        self.audio
-            .read_with(self.cx, |audio, _| audio.r8brain_parameters())
+        self.audio.snapshot().r8brain_parameters()
     }
 
     fn filter(&mut self) -> config::R8brainFilter {
@@ -84,8 +81,7 @@ impl Fixture<'_> {
     }
 
     fn select_preset(&mut self, ix: usize) {
-        self.audio
-            .update(self.cx, |audio, cx| audio.select_r8brain_quality(ix, cx));
+        self.audio.select_r8brain_quality(ix);
         self.cx.run_until_parked();
     }
 
@@ -193,9 +189,7 @@ fn whole_numbers_stay_whole(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn the_field_follows_a_change_from_elsewhere(cx: &mut TestAppContext) {
     let mut it = fixture(R8brainNumber::Attenuation, cx);
-    it.audio.update(it.cx, |audio, cx| {
-        audio.set_r8brain_bit_depth("16-bit", cx);
-    });
+    it.audio.set_r8brain_bit_depth("16-bit");
     it.cx.run_until_parked();
     assert_eq!(it.shown(), "136.45");
 }
@@ -203,9 +197,7 @@ fn the_field_follows_a_change_from_elsewhere(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn the_field_follows_a_preset(cx: &mut TestAppContext) {
     let mut it = fixture(R8brainNumber::TransitionBand, cx);
-    it.audio.update(it.cx, |audio, cx| {
-        audio.select_r8brain_quality(3, cx);
-    });
+    it.audio.select_r8brain_quality(3);
     it.cx.run_until_parked();
     assert_eq!(it.shown(), "0.5");
 }
@@ -254,12 +246,8 @@ fn another_number_settling_leaves_typing_alone(cx: &mut TestAppContext) {
     let mut it = fixture(R8brainNumber::Attenuation, cx);
     it.focus();
     it.type_text("150");
-    it.audio.update(it.cx, |audio, cx| {
-        audio.change_r8brain(
-            |parameters| parameters.performance.max_input_frames = 4096,
-            cx,
-        );
-    });
+    it.audio
+        .change_r8brain(|parameters| parameters.performance.max_input_frames = 4096);
     it.cx.run_until_parked();
     assert_eq!(it.shown(), "150");
 
@@ -270,9 +258,7 @@ fn another_number_settling_leaves_typing_alone(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn the_same_number_leaves_the_preset_and_another_makes_it_custom(cx: &mut TestAppContext) {
     let mut it = fixture(R8brainNumber::Attenuation, cx);
-    it.audio.update(it.cx, |audio, cx| {
-        audio.select_r8brain_quality(1, cx);
-    });
+    it.audio.select_r8brain_quality(1);
     it.cx.run_until_parked();
 
     it.type_text("136.45");
@@ -296,11 +282,11 @@ fn what_leaves_the_sound_alone_leaves_the_preset_too(cx: &mut TestAppContext) {
 fn reset_goes_back_to_the_default(cx: &mut TestAppContext) {
     let mut it = fixture(R8brainNumber::FilterBankCacheSize, cx);
     it.field
-        .read_with(it.cx, |field, cx| assert!(!field.is_resettable(cx)));
+        .read_with(it.cx, |field, _| assert!(!field.is_resettable()));
     it.type_text("3");
     it.press_enter();
     it.field
-        .read_with(it.cx, |field, cx| assert!(field.is_resettable(cx)));
+        .read_with(it.cx, |field, _| assert!(field.is_resettable()));
 
     it.field
         .update_in(it.cx, |field, window, cx| field.reset(window, cx));
@@ -314,11 +300,11 @@ fn numbers_that_differ_between_presets_leave_the_reset_to_the_preset(cx: &mut Te
         let mut it = fixture(number, cx);
         it.select_preset(0);
         it.field
-            .read_with(it.cx, |field, cx| assert!(!field.is_resettable(cx)));
+            .read_with(it.cx, |field, _| assert!(!field.is_resettable()));
         it.type_text("10");
         it.press_enter();
         it.field
-            .read_with(it.cx, |field, cx| assert!(!field.is_resettable(cx)));
+            .read_with(it.cx, |field, _| assert!(!field.is_resettable()));
     }
 }
 

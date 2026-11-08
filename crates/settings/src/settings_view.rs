@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use catalog::{SONG_CAPACITY, SongStore};
 use fuzzy::bundle::BUNDLE;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
@@ -13,25 +14,22 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    App, AppContext as _, Axis, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
+    AppContext as _, Axis, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, Window, div,
+};
+use hiphile_core::settings::{
+    APPEARANCES, AppearanceSettings, AudioSettings, AudioSnapshot, CacheLimit, DiscordSettings,
+    LYRICS_HIGHLIGHTS, LyricsSettings, MATCH_SONG, QueueSettings, RESAMPLERS, RUBATO_QUALITIES,
+    SYSTEM_DEFAULT, SongCacheUsage, format_size,
 };
 use session::{Readings, ReadingsState};
 use updater::{UpdateState, Updater};
 
-use crate::appearance_settings::{AppearanceSettings, CHOICES};
-use crate::audio_settings::{
-    AudioSettings, MATCH_SONG, RESAMPLERS, RUBATO_QUALITIES, SYSTEM_DEFAULT,
-};
-use crate::cache_limit::CacheLimit;
+use crate::audio_options::dropdown;
 use crate::cache_limit_field::CacheLimitField;
-use crate::discord_settings::DiscordSettings;
 use crate::dsd_section::dsd_groups;
 use crate::imgbb_key_field::ImgbbKeyField;
-use crate::lyrics_settings::{self, LyricsSettings};
-use crate::queue_settings::QueueSettings;
 use crate::r8brain_section::{R8brainFields, r8brain_groups, r8brain_quality_item};
-use crate::song_cache_usage::{SongCacheUsage, format_size};
 use crate::soxr_section::{soxr_groups, soxr_quality_item};
 use crate::{CloseWindow, SETTINGS_CONTEXT};
 
@@ -43,47 +41,45 @@ const REFRESH: Duration = Duration::from_secs(2);
 const PCM_ONLY: &str = "DSD plays songs whole while it's on.";
 
 pub(crate) struct SettingsView {
-    appearance: Entity<AppearanceSettings>,
-    audio: Entity<AudioSettings>,
+    appearance: AppearanceSettings,
+    audio: AudioSettings,
     r8brain_fields: R8brainFields,
-    song_cache: Entity<CacheLimit>,
+    song_cache: CacheLimit,
     song_cache_field: Entity<CacheLimitField>,
-    cover_cache: Entity<CacheLimit>,
+    cover_cache: CacheLimit,
     cover_cache_field: Entity<CacheLimitField>,
-    song_cache_usage: Entity<SongCacheUsage>,
-    discord: Entity<DiscordSettings>,
+    song_cache_usage: SongCacheUsage,
+    discord: DiscordSettings,
     imgbb_key_field: Entity<ImgbbKeyField>,
-    lyrics: Entity<LyricsSettings>,
-    queue: Entity<QueueSettings>,
+    lyrics: LyricsSettings,
+    queue: QueueSettings,
     readings: Option<Readings>,
     /// `None` in a build that does not update itself.
     updater: Option<Updater>,
     focus: FocusHandle,
-    _appearance_changes: Subscription,
+    _appearance_changes: Task<()>,
     _system_appearance_changes: Subscription,
-    _audio_changes: Subscription,
-    _song_cache_changes: Subscription,
-    _cover_cache_changes: Subscription,
-    _song_cache_usage_changes: Subscription,
-    _discord_changes: Subscription,
-    _lyrics_changes: Subscription,
-    _queue_changes: Subscription,
+    _audio_changes: Task<()>,
+    _song_cache_changes: Task<()>,
+    _cover_cache_changes: Task<()>,
+    _song_cache_usage_changes: Task<()>,
+    _discord_changes: Task<()>,
+    _lyrics_changes: Task<()>,
+    _queue_changes: Task<()>,
     _readings_changes: Option<Task<()>>,
     _updater_changes: Option<Task<()>>,
     _refresh: Task<()>,
 }
 
-fn exclusive_item(audio: &Entity<AudioSettings>, is_dsd_on: bool) -> SettingItem {
+fn exclusive_item(audio: &AudioSettings, is_dsd_on: bool) -> SettingItem {
     let field = SettingField::switch(
         {
             let audio = audio.clone();
-            move |cx| audio.read(cx).is_exclusive_on()
+            move |_| audio.snapshot().is_exclusive_on()
         },
         {
             let audio = audio.clone();
-            move |is_on, cx| {
-                audio.update(cx, |audio, cx| audio.set_exclusive(is_on, cx));
-            }
+            move |is_on, _| audio.set_exclusive(is_on)
         },
     );
     let item = SettingItem::new("Exclusive mode", field).disabled(is_dsd_on);
@@ -96,30 +92,29 @@ fn exclusive_item(audio: &Entity<AudioSettings>, is_dsd_on: bool) -> SettingItem
 
 impl SettingsView {
     pub(crate) fn new(
-        appearance: Entity<AppearanceSettings>,
-        audio: Entity<AudioSettings>,
-        song_cache: Entity<CacheLimit>,
-        cover_cache: Entity<CacheLimit>,
-        discord: Entity<DiscordSettings>,
+        appearance: AppearanceSettings,
+        audio: AudioSettings,
+        song_cache: CacheLimit,
+        cover_cache: CacheLimit,
+        discord: DiscordSettings,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         // Holds focus so the window's commands work before anything is clicked
         let focus = cx.focus_handle();
         focus.focus(window, cx);
-        audio.update(cx, |audio, cx| audio.list_devices(cx));
-        let song_cache_usage = cx.new(SongCacheUsage::new);
+        audio.list_devices();
+        // Counting and removing keep to no capacity
+        let songs = SongStore::user(SONG_CAPACITY).ok();
+        let song_cache_usage = SongCacheUsage::new(gpui_host::executor(cx), songs);
         let refresh = cx.spawn({
-            let audio = audio.downgrade();
-            let usage = song_cache_usage.downgrade();
+            let audio = audio.clone();
+            let usage = song_cache_usage.clone();
             async move |_, cx| {
                 loop {
                     cx.background_executor().timer(REFRESH).await;
-                    let listed = audio.update(cx, |audio, cx| audio.list_devices(cx));
-                    let counted = usage.update(cx, |usage, cx| usage.count(cx));
-                    if listed.is_err() || counted.is_err() {
-                        break;
-                    }
+                    audio.list_devices();
+                    usage.count();
                 }
             }
         });
@@ -140,19 +135,22 @@ impl SettingsView {
                 .as_ref()
                 .map(|readings| gpui_host::notify_on_change(readings.subscribe(), cx)),
             readings,
-            _appearance_changes: cx.observe(&appearance, |_, _, cx| cx.notify()),
+            _appearance_changes: gpui_host::notify_on_change(appearance.subscribe(), cx),
             _system_appearance_changes: crate::follow_system_appearance(window),
             appearance,
-            _audio_changes: cx.observe(&audio, |_, _, cx| cx.notify()),
-            _song_cache_changes: cx.observe(&song_cache, |_, _, cx| cx.notify()),
-            _cover_cache_changes: cx.observe(&cover_cache, |_, _, cx| cx.notify()),
-            _song_cache_usage_changes: cx.observe(&song_cache_usage, |_, _, cx| cx.notify()),
-            _discord_changes: cx.observe(&discord, |_, _, cx| cx.notify()),
+            _audio_changes: gpui_host::notify_on_change(audio.subscribe(), cx),
+            _song_cache_changes: gpui_host::notify_on_change(song_cache.subscribe(), cx),
+            _cover_cache_changes: gpui_host::notify_on_change(cover_cache.subscribe(), cx),
+            _song_cache_usage_changes: gpui_host::notify_on_change(
+                song_cache_usage.subscribe(),
+                cx,
+            ),
+            _discord_changes: gpui_host::notify_on_change(discord.subscribe(), cx),
             discord,
             imgbb_key_field,
-            _lyrics_changes: cx.observe(&lyrics, |_, _, cx| cx.notify()),
+            _lyrics_changes: gpui_host::notify_on_change(lyrics.subscribe(), cx),
             lyrics,
-            _queue_changes: cx.observe(&queue, |_, _, cx| cx.notify()),
+            _queue_changes: gpui_host::notify_on_change(queue.subscribe(), cx),
             queue,
             r8brain_fields,
             audio,
@@ -166,31 +164,33 @@ impl SettingsView {
         }
     }
 
-    fn appearance_page(&self, cx: &mut Context<Self>) -> SettingPage {
+    fn appearance_page(&self) -> SettingPage {
         let theme = SettingField::render({
             let appearance = self.appearance.clone();
-            move |_, _, cx| {
-                let selected = appearance.read(cx).appearance();
+            move |_, _, _| {
+                let selected = appearance.snapshot().appearance();
                 let appearance = appearance.clone();
                 RadioGroup::horizontal("appearance")
-                    .selected_index(CHOICES.iter().position(|(choice, _)| *choice == selected))
+                    .selected_index(
+                        APPEARANCES
+                            .iter()
+                            .position(|(choice, _)| *choice == selected),
+                    )
                     .children(
-                        CHOICES
+                        APPEARANCES
                             .iter()
                             .enumerate()
                             .map(|(ix, (_, label))| Radio::new(("appearance", ix)).label(*label)),
                     )
                     .on_click(move |ix, _, cx| {
-                        let (choice, _) = CHOICES[*ix];
-                        appearance.update(cx, |appearance, cx| {
-                            appearance.set_appearance(choice, cx);
-                        });
+                        let (choice, _) = APPEARANCES[*ix];
+                        crate::appearance_settings::set_appearance(&appearance, choice, cx);
                     })
             }
         });
 
         let mut group = SettingGroup::new().item(SettingItem::new("Theme", theme));
-        if let Some(error) = self.appearance.read(cx).error().cloned() {
+        if let Some(error) = error_text(self.appearance.snapshot().error()) {
             group =
                 group.footer(move |_, cx| div().text_color(cx.theme().danger).child(error.clone()));
         }
@@ -199,28 +199,28 @@ impl SettingsView {
             .group(group)
     }
 
-    fn lyrics_page(&self, cx: &mut Context<Self>) -> SettingPage {
+    fn lyrics_page(&self) -> SettingPage {
         let highlight =
             SettingField::render({
                 let lyrics = self.lyrics.clone();
-                move |_, _, cx| {
-                    let selected = lyrics.read(cx).highlight();
+                move |_, _, _| {
+                    let selected = lyrics.snapshot().highlight();
                     let lyrics = lyrics.clone();
-                    let choices = lyrics_settings::CHOICES;
+                    let choices = LYRICS_HIGHLIGHTS;
                     RadioGroup::horizontal("lyrics-highlight")
                         .selected_index(choices.iter().position(|(choice, _)| *choice == selected))
                         .children(choices.iter().enumerate().map(|(ix, (_, label))| {
                             Radio::new(("lyrics-highlight", ix)).label(*label)
                         }))
-                        .on_click(move |ix, _, cx| {
+                        .on_click(move |ix, _, _| {
                             let (choice, _) = choices[*ix];
-                            lyrics.update(cx, |lyrics, cx| lyrics.set_highlight(choice, cx));
+                            lyrics.set_highlight(choice);
                         })
                 }
             });
 
         let mut group = SettingGroup::new().item(SettingItem::new("Highlight", highlight));
-        if let Some(error) = self.lyrics.read(cx).error().cloned() {
+        if let Some(error) = error_text(self.lyrics.snapshot().error()) {
             group =
                 group.footer(move |_, cx| div().text_color(cx.theme().danger).child(error.clone()));
         }
@@ -229,22 +229,20 @@ impl SettingsView {
             .group(group)
     }
 
-    fn queue_page(&self, cx: &mut Context<Self>) -> SettingPage {
+    fn queue_page(&self) -> SettingPage {
         let skip_instrumentals = SettingField::switch(
             {
                 let queue = self.queue.clone();
-                move |cx| queue.read(cx).is_skip_instrumentals_on()
+                move |_| queue.snapshot().is_skip_instrumentals_on()
             },
             {
                 let queue = self.queue.clone();
-                move |is_on, cx| {
-                    queue.update(cx, |queue, cx| queue.set_skip_instrumentals(is_on, cx));
-                }
+                move |is_on, _| queue.set_skip_instrumentals(is_on)
             },
         );
         let mut group =
             SettingGroup::new().item(SettingItem::new("Skip instrumentals", skip_instrumentals));
-        if let Some(error) = self.queue.read(cx).error().cloned() {
+        if let Some(error) = error_text(self.queue.snapshot().error()) {
             group =
                 group.footer(move |_, cx| div().text_color(cx.theme().danger).child(error.clone()));
         }
@@ -253,38 +251,24 @@ impl SettingsView {
             .group(group)
     }
 
-    fn audio_page(&self, cx: &mut Context<Self>) -> SettingPage {
-        let audio = self.audio.read(cx);
-        let device = SettingField::scrollable_dropdown(
+    fn audio_page(&self) -> SettingPage {
+        let audio = self.audio.snapshot();
+        let device = dropdown(
+            &self.audio,
             audio.device_options(),
-            {
-                let audio = self.audio.clone();
-                move |cx| audio.read(cx).device_value()
-            },
-            {
-                let audio = self.audio.clone();
-                move |value: SharedString, cx| {
-                    audio.update(cx, |audio, cx| audio.set_device(&value, cx));
-                }
-            },
+            AudioSnapshot::device_value,
+            AudioSettings::set_device,
         )
         .default_value(SYSTEM_DEFAULT);
-        let rate = SettingField::scrollable_dropdown(
+        let rate = dropdown(
+            &self.audio,
             audio.rate_options(),
-            {
-                let audio = self.audio.clone();
-                move |cx| audio.read(cx).rate_value()
-            },
-            {
-                let audio = self.audio.clone();
-                move |value: SharedString, cx| {
-                    audio.update(cx, |audio, cx| audio.set_rate(&value, cx));
-                }
-            },
+            AudioSnapshot::rate_value,
+            AudioSettings::set_rate,
         )
         .default_value(MATCH_SONG);
 
-        let errors: Vec<SharedString> = audio.errors().cloned().collect();
+        let errors: Vec<SharedString> = audio.errors().map(SharedString::new).collect();
         let mut rate = SettingItem::new("Sample rate", rate).disabled(audio.is_dsd_on());
         if audio.is_dsd_on() {
             rate = rate.description("DSD sets the rate while it's on.");
@@ -308,28 +292,26 @@ impl SettingsView {
         SettingPage::new("Audio")
             .icon(IconName::AudioLines)
             .group(output)
-            .group(self.play_and_pause_group(cx))
-            .group(self.between_songs_group(cx))
-            .group(self.resampling_group(cx))
-            .groups(r8brain_groups(&self.audio, &self.r8brain_fields, cx))
-            .groups(soxr_groups(&self.audio, cx))
-            .groups(dsd_groups(&self.audio, cx))
+            .group(self.play_and_pause_group(&audio))
+            .group(self.between_songs_group(&audio))
+            .group(self.resampling_group(&audio))
+            .groups(r8brain_groups(&self.audio, &self.r8brain_fields))
+            .groups(soxr_groups(&self.audio))
+            .groups(dsd_groups(&self.audio))
     }
 
-    fn play_and_pause_group(&self, cx: &mut Context<Self>) -> SettingGroup {
+    fn play_and_pause_group(&self, audio: &AudioSnapshot) -> SettingGroup {
         let fade = SettingField::switch(
             {
                 let audio = self.audio.clone();
-                move |cx| audio.read(cx).is_play_pause_fade_on()
+                move |_| audio.snapshot().is_play_pause_fade_on()
             },
             {
                 let audio = self.audio.clone();
-                move |is_on, cx| {
-                    audio.update(cx, |audio, cx| audio.set_play_pause_fade(is_on, cx));
-                }
+                move |is_on, _| audio.set_play_pause_fade(is_on)
             },
         );
-        let is_dsd_on = self.audio.read(cx).is_dsd_on();
+        let is_dsd_on = audio.is_dsd_on();
         let mut fade = SettingItem::new("Fade", fade).disabled(is_dsd_on);
         if is_dsd_on {
             fade = fade.description("DSD cuts in and out at once while it's on.");
@@ -337,33 +319,23 @@ impl SettingsView {
         SettingGroup::new().title("Play and pause").items([fade])
     }
 
-    fn between_songs_group(&self, cx: &mut Context<Self>) -> SettingGroup {
+    fn between_songs_group(&self, audio: &AudioSnapshot) -> SettingGroup {
         let trim_silence = SettingField::switch(
             {
                 let audio = self.audio.clone();
-                move |cx| audio.read(cx).is_trim_silence_on()
+                move |_| audio.snapshot().is_trim_silence_on()
             },
             {
                 let audio = self.audio.clone();
-                move |is_on, cx| {
-                    audio.update(cx, |audio, cx| audio.set_trim_silence(is_on, cx));
-                }
+                move |is_on, _| audio.set_trim_silence(is_on)
             },
         );
-        let crossfade = SettingField::scrollable_dropdown(
+        let crossfade = dropdown(
+            &self.audio,
             AudioSettings::crossfade_options(),
-            {
-                let audio = self.audio.clone();
-                move |cx| audio.read(cx).crossfade_value()
-            },
-            {
-                let audio = self.audio.clone();
-                move |value: SharedString, cx| {
-                    audio.update(cx, |audio, cx| audio.set_crossfade(&value, cx));
-                }
-            },
+            AudioSnapshot::crossfade_value,
+            AudioSettings::set_crossfade,
         );
-        let audio = self.audio.read(cx);
         let is_dsd_on = audio.is_dsd_on();
         let trim_silence = SettingItem::new("Trim silence", trim_silence)
             .disabled(is_dsd_on)
@@ -386,12 +358,13 @@ impl SettingsView {
             .items([trim_silence, crossfade])
     }
 
-    fn resampling_group(&self, cx: &mut Context<Self>) -> SettingGroup {
+    fn resampling_group(&self, audio: &AudioSnapshot) -> SettingGroup {
         let resampler = SettingField::render({
             let audio = self.audio.clone();
-            move |_, _, cx| {
-                let selected = audio.read(cx).resampler_ix();
-                let is_dsd_on = audio.read(cx).is_dsd_on();
+            move |_, _, _| {
+                let settings = audio.snapshot();
+                let selected = settings.resampler_ix();
+                let is_dsd_on = settings.is_dsd_on();
                 let audio = audio.clone();
                 RadioGroup::horizontal("resampler")
                     .selected_index(Some(selected))
@@ -402,12 +375,9 @@ impl SettingsView {
                             .enumerate()
                             .map(|(ix, label)| Radio::new(("resampler", ix)).label(*label)),
                     )
-                    .on_click(move |ix, _, cx| {
-                        audio.update(cx, |audio, cx| audio.select_resampler(*ix, cx));
-                    })
+                    .on_click(move |ix, _, _| audio.select_resampler(*ix))
             }
         });
-        let audio = self.audio.read(cx);
         let is_dsd_on = audio.is_dsd_on();
         let mut items = vec![SettingItem::new("Resampler", resampler)];
         if audio.uses_r8brain() {
@@ -415,7 +385,7 @@ impl SettingsView {
         } else if audio.uses_soxr() {
             items.push(soxr_quality_item(&self.audio));
         } else {
-            items.extend(self.rubato_items(cx));
+            items.extend(self.rubato_items(audio));
         }
         let mut group = SettingGroup::new().title("Resampling").items(
             items
@@ -428,12 +398,13 @@ impl SettingsView {
         group
     }
 
-    fn rubato_items(&self, cx: &App) -> [SettingItem; 3] {
+    fn rubato_items(&self, audio: &AudioSnapshot) -> [SettingItem; 3] {
         let quality = SettingField::render({
             let audio = self.audio.clone();
-            move |_, _, cx| {
-                let selected = audio.read(cx).rubato_quality_ix();
-                let is_dsd_on = audio.read(cx).is_dsd_on();
+            move |_, _, _| {
+                let settings = audio.snapshot();
+                let selected = settings.rubato_quality_ix();
+                let is_dsd_on = settings.is_dsd_on();
                 let audio = audio.clone();
                 RadioGroup::horizontal("rubato-quality")
                     .selected_index(Some(selected))
@@ -444,37 +415,20 @@ impl SettingsView {
                             .enumerate()
                             .map(|(ix, label)| Radio::new(("rubato-quality", ix)).label(*label)),
                     )
-                    .on_click(move |ix, _, cx| {
-                        audio.update(cx, |audio, cx| audio.select_rubato_quality(*ix, cx));
-                    })
+                    .on_click(move |ix, _, _| audio.select_rubato_quality(*ix))
             }
         });
-        let audio = self.audio.read(cx);
-        let fft_size = SettingField::scrollable_dropdown(
+        let fft_size = dropdown(
+            &self.audio,
             audio.fft_size_options(),
-            {
-                let audio = self.audio.clone();
-                move |cx| audio.read(cx).fft_size_value()
-            },
-            {
-                let audio = self.audio.clone();
-                move |value: SharedString, cx| {
-                    audio.update(cx, |audio, cx| audio.set_fft_size(&value, cx));
-                }
-            },
+            AudioSnapshot::fft_size_value,
+            AudioSettings::set_fft_size,
         );
-        let window = SettingField::scrollable_dropdown(
+        let window = dropdown(
+            &self.audio,
             audio.window_options(),
-            {
-                let audio = self.audio.clone();
-                move |cx| audio.read(cx).window_value()
-            },
-            {
-                let audio = self.audio.clone();
-                move |value: SharedString, cx| {
-                    audio.update(cx, |audio, cx| audio.set_window(&value, cx));
-                }
-            },
+            AudioSnapshot::window_value,
+            AudioSettings::set_window,
         );
         [
             SettingItem::new("Quality", quality),
@@ -483,7 +437,7 @@ impl SettingsView {
         ]
     }
 
-    fn discord_page(&self, cx: &mut Context<Self>) -> SettingPage {
+    fn discord_page(&self) -> SettingPage {
         let key = SettingField::render({
             let field = self.imgbb_key_field.clone();
             move |_, _, _| field.clone()
@@ -491,16 +445,16 @@ impl SettingsView {
         let status = SettingField::switch(
             {
                 let discord = self.discord.clone();
-                move |cx| discord.read(cx).is_presence_on()
+                move |_| discord.snapshot().is_presence_on()
             },
             {
                 let discord = self.discord.clone();
-                move |is_on, cx| discord.update(cx, |it, cx| it.set_presence_on(is_on, cx))
+                move |is_on, _| discord.set_presence_on(is_on)
             },
         );
-        let discord = self.discord.read(cx);
+        let discord = self.discord.snapshot();
         let is_presence_on = discord.is_presence_on();
-        let errors: Vec<SharedString> = discord.errors().cloned().collect();
+        let errors: Vec<SharedString> = discord.errors().map(SharedString::new).collect();
         let mut group = SettingGroup::new().items([
             SettingItem::new("Show current song as status", status)
                 .keywords(["presence", "rich presence"]),
@@ -526,12 +480,12 @@ impl SettingsView {
             .group(group)
     }
 
-    fn storage_page(&self, cx: &mut Context<Self>) -> SettingPage {
+    fn storage_page(&self) -> SettingPage {
         let used = SettingField::render({
             let usage = self.song_cache_usage.clone();
-            move |_, _, cx| {
+            move |_, _, _| {
                 let (kept, clearing) = {
-                    let usage = usage.read(cx);
+                    let usage = usage.snapshot();
                     (usage.kept(), usage.is_clearing())
                 };
                 let size = kept.map(format_size).unwrap_or_default();
@@ -543,18 +497,18 @@ impl SettingsView {
                         .accessibility_label("Clear song cache")
                         .loading(clearing)
                         .disabled(kept.is_none_or(|kept| kept == 0))
-                        .on_click(move |_, _, cx| usage.update(cx, |usage, cx| usage.clear(cx))),
+                        .on_click(move |_, _, _| usage.clear()),
                 )
             }
         });
 
         let errors: Vec<SharedString> = [
-            self.song_cache.read(cx).error(),
-            self.song_cache_usage.read(cx).error(),
+            self.song_cache.snapshot().error(),
+            self.song_cache_usage.snapshot().error(),
         ]
         .into_iter()
         .flatten()
-        .cloned()
+        .map(SharedString::new)
         .collect();
         let mut songs = SettingGroup::new().title("Song cache").items([
             limit_item(&self.song_cache_field, "song cache"),
@@ -571,7 +525,7 @@ impl SettingsView {
         let mut covers = SettingGroup::new()
             .title("Cover cache")
             .items([limit_item(&self.cover_cache_field, "cover cache")]);
-        if let Some(error) = self.cover_cache.read(cx).error().cloned() {
+        if let Some(error) = error_text(self.cover_cache.snapshot().error()) {
             covers = covers
                 .footer(move |_, cx| div().text_color(cx.theme().danger).child(error.clone()));
         }
@@ -733,6 +687,10 @@ fn readings_error(state: &ReadingsState) -> Option<SharedString> {
     }
 }
 
+fn error_text(error: Option<&str>) -> Option<SharedString> {
+    error.map(SharedString::new)
+}
+
 fn limit_item(field: &Entity<CacheLimitField>, keyword: &'static str) -> SettingItem {
     let limit = SettingField::render({
         let field = field.clone();
@@ -741,7 +699,7 @@ fn limit_item(field: &Entity<CacheLimitField>, keyword: &'static str) -> Setting
     .on_reset(
         {
             let field = field.clone();
-            move |cx| field.read(cx).is_resettable(cx)
+            move |cx| field.read(cx).is_resettable()
         },
         {
             let field = field.clone();
@@ -775,12 +733,12 @@ impl Render for SettingsView {
                 div().flex_1().min_h_0().child(
                     Settings::new("settings")
                         .with_group_variant(GroupBoxVariant::Outline)
-                        .page(self.audio_page(cx))
-                        .page(self.queue_page(cx))
-                        .page(self.lyrics_page(cx))
-                        .page(self.storage_page(cx))
-                        .page(self.discord_page(cx))
-                        .page(self.appearance_page(cx))
+                        .page(self.audio_page())
+                        .page(self.queue_page())
+                        .page(self.lyrics_page())
+                        .page(self.storage_page())
+                        .page(self.discord_page())
+                        .page(self.appearance_page())
                         .pages(self.updater.iter().map(updates_page)),
                 ),
             )

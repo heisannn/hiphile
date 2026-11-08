@@ -1,99 +1,34 @@
 use config::Appearance;
 use gpui_kit::component::{Theme, ThemeMode};
-use gpui_kit::{AppContext as _, Context, SharedString, Task, Window, WindowAppearance};
+use gpui_kit::{App, Window, WindowAppearance};
+use hiphile_core::settings::AppearanceSettings;
 
-/// `None` follows the system.
-pub(crate) const CHOICES: [(Option<Appearance>, &str); 3] = [
-    (None, "System"),
-    (Some(Appearance::Light), "Light"),
-    (Some(Appearance::Dark), "Dark"),
-];
-
-pub(crate) struct AppearanceSettings {
-    /// `None` without a home directory: the choice then lasts until quitting.
-    store: Option<config::Store>,
-    /// `None` follows the system.
-    appearance: Option<Appearance>,
-    error: Option<SharedString>,
-    /// Whether the user has changed `appearance` since it was last saved. Only
-    /// then is it written: it may have come from the environment, or from a
-    /// file that could not be read.
-    unsaved: bool,
-    saving: bool,
-    _save: Task<()>,
+/// Puts the theme on the chosen appearance.
+pub(crate) fn apply(appearance: &AppearanceSettings, cx: &mut App) {
+    let mode = theme_mode(appearance.snapshot().appearance(), cx.window_appearance());
+    Theme::change(mode, None, cx);
 }
 
-impl AppearanceSettings {
-    pub(crate) fn new(cx: &mut Context<Self>) -> Self {
-        let (store, appearance, error) = read_saved_appearance();
-        Theme::change(theme_mode(appearance, cx.window_appearance()), None, cx);
-        Self {
-            store,
-            appearance,
-            error,
-            unsaved: false,
-            saving: false,
-            _save: Task::ready(()),
-        }
+/// `None` follows the system.
+pub(crate) fn set_appearance(
+    appearance: &AppearanceSettings,
+    choice: Option<Appearance>,
+    cx: &mut App,
+) {
+    if appearance.snapshot().appearance() == choice {
+        return;
     }
+    appearance.set_appearance(choice);
+    apply(appearance, cx);
+}
 
-    pub(crate) fn appearance(&self) -> Option<Appearance> {
-        self.appearance
-    }
-
-    pub(crate) fn error(&self) -> Option<&SharedString> {
-        self.error.as_ref()
-    }
-
-    pub(crate) fn set_appearance(
-        &mut self,
-        appearance: Option<Appearance>,
-        cx: &mut Context<Self>,
-    ) {
-        if self.appearance == appearance {
-            return;
-        }
-        self.appearance = appearance;
-        self.unsaved = true;
-        Theme::change(theme_mode(appearance, cx.window_appearance()), None, cx);
-        self.save(cx);
-        cx.notify();
-    }
-
-    pub(crate) fn on_system_appearance_changed(&self, window: &Window, cx: &mut Context<Self>) {
-        if self.appearance.is_none() {
-            Theme::change(theme_mode(None, window.appearance()), None, cx);
-        }
-    }
-
-    /// One write at a time, so a slow one cannot leave an older choice on
-    /// disk; the latest is written when the current write finishes.
-    fn save(&mut self, cx: &mut Context<Self>) {
-        let Some(store) = self.store.clone() else {
-            return;
-        };
-        if self.saving {
-            return;
-        }
-        self.saving = true;
-        self._save = cx.spawn(async move |this, cx| {
-            while let Ok(Some(appearance)) = this.update(cx, |this, _| {
-                this.saving = std::mem::take(&mut this.unsaved);
-                this.saving.then_some(this.appearance)
-            }) {
-                let store = store.clone();
-                let saved = cx
-                    .background_spawn(async move { store.save_appearance(appearance) })
-                    .await;
-                this.update(cx, |this, cx| {
-                    this.error = saved
-                        .err()
-                        .map(|error| format!("Couldn't save the appearance: {error}.").into());
-                    cx.notify();
-                })
-                .ok();
-            }
-        });
+pub(crate) fn on_system_appearance_changed(
+    appearance: &AppearanceSettings,
+    window: &Window,
+    cx: &mut App,
+) {
+    if appearance.snapshot().appearance().is_none() {
+        Theme::change(theme_mode(None, window.appearance()), None, cx);
     }
 }
 
@@ -102,28 +37,6 @@ fn theme_mode(appearance: Option<Appearance>, system: WindowAppearance) -> Theme
         Some(Appearance::Light) => ThemeMode::Light,
         Some(Appearance::Dark) => ThemeMode::Dark,
         None => system.into(),
-    }
-}
-
-/// The saved appearance, and why it could not be read or will not be saved.
-fn read_saved_appearance() -> (
-    Option<config::Store>,
-    Option<Appearance>,
-    Option<SharedString>,
-) {
-    let store = match config::Store::user() {
-        Ok(store) => store,
-        Err(error) => {
-            let error = format!("The appearance won't be saved: {error}.").into();
-            return (None, None, Some(error));
-        }
-    };
-    match store.appearance() {
-        Ok(appearance) => (Some(store), appearance, None),
-        Err(error) => {
-            let error = format!("Couldn't read the appearance: {error}.").into();
-            (Some(store), None, Some(error))
-        }
     }
 }
 

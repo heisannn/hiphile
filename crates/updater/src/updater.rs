@@ -1,7 +1,7 @@
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
-use executor::{Executor, Saver, Task};
+use executor::{Executor, Publish, Published, Saver, Task};
 use tokio::sync::watch;
 
 use crate::install::{Installation, Outcome, Releases};
@@ -61,8 +61,7 @@ struct Inner {
     releases: Arc<dyn Releases>,
     /// `None` without a home directory: the choice then lasts until quitting.
     saver: Option<Saver<bool>>,
-    state: Mutex<State>,
-    published: watch::Sender<Status>,
+    state: Published<State>,
 }
 
 struct State {
@@ -118,8 +117,7 @@ impl Updater {
             }),
             executor,
             releases,
-            published: watch::Sender::new(status.clone()),
-            state: Mutex::new(State {
+            state: Published::new(State {
                 status,
                 _check: Task::ready(()),
                 _install: Task::ready(()),
@@ -132,13 +130,13 @@ impl Updater {
     }
 
     pub fn status(&self) -> Status {
-        lock(&self.0.state).status.clone()
+        self.0.state.snapshot()
     }
 
     /// Sees each new status. A borrow of it must not be held while calling the updater, which
     /// publishes under its own lock.
     pub fn subscribe(&self) -> watch::Receiver<Status> {
-        self.0.published.subscribe()
+        self.0.state.subscribe()
     }
 
     /// Installs what it finds only if updates are automatic by the time it has looked.
@@ -257,24 +255,17 @@ impl WeakUpdater {
 }
 
 impl Inner {
-    /// Publishes before letting go of the lock, so that an older status cannot follow a newer
-    /// one.
     fn update<R>(&self, change: impl FnOnce(&mut State) -> R) -> R {
-        let mut state = lock(&self.state);
-        let result = change(&mut state);
-        self.published.send_if_modified(|published| {
-            let is_new = *published != state.status;
-            if is_new {
-                published.clone_from(&state.status);
-            }
-            is_new
-        });
-        result
+        self.state.update(change)
     }
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+impl Publish for State {
+    type Snapshot = Status;
+
+    fn snapshot(&self) -> &Status {
+        &self.status
+    }
 }
 
 /// Not automatic when the choice cannot be read, as it may have been turned off.

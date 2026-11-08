@@ -20,6 +20,8 @@ without a window, and the CLI can share it.
 | 1 | Done. The [pure files](#free-of-gpui-but-inside-gpui-crates) are in `hiphile-core` and `playback`, with three items they used from GPUI crates; the views use them there |
 | 2 | Done. `updater` is free of GPUI and the rules held; see [The updater pilot](#the-updater-pilot) |
 | Before 3 | `gpui-host` split from `ui`, and the [decisions](#decided-before-steps-3-to-6) for steps 3 to 6 |
+| 3 | Done. `session` is free of GPUI and checked: `Readings` is a handle, the sign-in procedure is `session::Accounts`, and GPUI's HTTP client and the globals for covers and readings are in `ui` (`ui::init_network`, `ui::readings`, `ui::set_cover_capacity`, `ui::on_readings_changed`) |
+| 4 | Done. The settings models are handles in `hiphile_core::settings`; the `settings` crate keeps the window, its fields and applying the appearance. The seven `*Changed` events are gone |
 
 ## Where things stand
 
@@ -96,7 +98,11 @@ gave `Recommendations` a `new`, and `History` a `Default`.
    lock and then sends the new snapshot on a `tokio::sync::watch` (the core's `cx.notify()`). One-off notices
    go on a channel (`async_channel`, as `audio` does, or `tokio::sync::broadcast`). `tokio::sync` needs no
    tokio runtime. No lock is held across an `.await`. Changing state synchronously keeps what views and
-   tests rely on today: a call's effect is visible when it returns.
+   tests rely on today: a call's effect is visible when it returns. `executor::Published<S>` is that lock
+   and `watch`: `update` publishes `S`'s snapshot before it lets go of the lock.
+   A result applies only to the work it was started for. On GPUI's foreground a replaced task never ran
+   again; on background threads one may finish after it was replaced, so a handle numbers its work and
+   drops the result of work that was replaced (`Readings` keeps a `work_id`).
 4. **Tasks and time come from an injected executor.** The core defines a small trait (spawn, spawn blocking
    work, a timer); the task handle cancels on drop, as GPUI's `Task` does. GPUI hosts pass GPUI's
    `BackgroundExecutor`, so the 30 test files that use `run_until_parked` and the 5 that use `advance_clock`
@@ -124,7 +130,10 @@ gave `Recommendations` a `new`, and `History` a `Default`.
    It is `executor::Saver<T>`: `save(value)` replaces the value still waiting, and `save_with(|waiting| …)`
    builds on it, for `AudioSettings`, which writes only the fields that changed. The write runs on a
    blocking thread and reports through the owner's closure, and what was given is written even if the
-   saver is dropped first. `Readings::save_choice` is not serial today.
+   saver is dropped first. `Readings::save_choice` is not serial today. `take_waiting` hands the host the
+   value still waiting, for a write before quitting: the settings window's `cx.on_app_quit` calls
+   `save_before_quitting()` on the handles that hold a typed value not yet committed, as it calls
+   `shutdown()` for the player.
 10. **Constructors take their stores.** `Player::new` uses the user's real config store today, so a test that
     changes the volume changes the user's saved volume. Core constructors take the config store (and the
     catalog, the caches), and tests give them temporary ones.
@@ -144,8 +153,8 @@ Everything else goes into one new crate, apart from the executor.
 | The player's state machine, queue operations, preparing the next song, scrobbling, Discord and media controls, the volume | `player/src/player.rs` | `playback`, whose description is already "Play queue and playback orchestration. No GPUI." |
 | The format text, `is_instrumental` and the skip setting | `player/src/format.rs`, `actions/src/instrumentals.rs` | `playback` |
 | Fetching the current song's lyrics, their cache, the line and word timing | `player/src/lyrics_view/current.rs`, `lyrics_view/lines.rs` | `lyrics` |
-| `Session`, cover URLs, `describe`, `Readings` | `session` | `session`, made free of GPUI. `NetHttpClient` and the `Global`s move to the GPUI side (`ui`) |
-| The sign-in procedure | `account/src/sign_in.rs` | `session`. `account` keeps the form |
+| `Session`, cover URLs, `describe`, `Readings` | `session` | `session`, made free of GPUI (done in step 3). `NetHttpClient` and the `Global`s are in `ui` |
+| The sign-in procedure | `account/src/sign_in.rs` | `session::Accounts` (done in step 3). `account` keeps the form |
 | The update check, automatic installs, the saved choice | `updater` | `updater`, made free of GPUI. The app makes it and hands it to the settings window and the shell, so `GlobalUpdater` is gone; the views call `cx.restart()` |
 | The app and the signed-in workspace, routing between them, the settings models, the library sync and its activity, favorites, playlists, the search index, home recommendations, the sort and filter modules, navigation history | `hiphile`, `settings`, `library`, `favorites`, `playlists`, `search`, `home`, `songs`, `artists` | New `hiphile-core` |
 
@@ -224,6 +233,16 @@ Step 2 tried the design rules on `updater`. They held, with these details settle
   from them: read later, a view would show the defaults first and the user's first change could race
   the read. Everything else that can block still goes through blocking work (rule 5), the keychain
   above all, as it can show a system prompt.
+- **What runs at startup.** Besides reading the saved settings, opening the cover cache
+  (`session::open_covers`) stays on the UI thread at startup, as it was before step 3.
+- **Following a snapshot.** A snapshot is published when any part of it changes, so whoever followed one
+  event before compares the part it used and passes it on only when that part changed, as `app_shell.rs`
+  does for the output, the transitions and the cache limits.
+- **Counting changes in tests.** A `watch` keeps only the last value, so a test that counted events
+  cannot count publishes. `AudioSettings` keeps a `#[cfg(test)]` counter where it emitted its two events;
+  later steps should assert on the state reached rather than add such counters.
+- **Not yet injected.** `Readings` finds the dictionaries' folder itself (the user's cache) and removes
+  them when the choice is off, so no test makes one. It should take the folder as it takes its store.
 - **Release.** `executor`, `gpui-host` and `hiphile-core` are kept out of release-plz (`git_only =
   false`) until a `v*` tag contains them. Remove those entries after the next release.
 

@@ -1,8 +1,11 @@
 use gpui_kit::component::input::{InputEvent, InputState};
-use gpui_kit::{App, AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
+use gpui_kit::{AppContext as _, Context, Entity, IntoElement, Render, Subscription, Window};
+use hiphile_core::settings::{CacheKind, CacheLimit};
 
-use crate::cache_limit::{CacheLimit, MAX_GIB};
 use crate::number_field::{NumberField, NumberRange};
+
+/// The most the field accepts, far beyond any disk.
+const MAX_GIB: f64 = (1u32 << 20) as f64;
 
 const RANGE: NumberRange = NumberRange {
     min: 0.,
@@ -14,18 +17,14 @@ const RANGE: NumberRange = NumberRange {
 /// Only this field changes the limit, so what it shows never has to follow the settings, and
 /// they cannot replace what is being typed.
 pub(crate) struct CacheLimitField {
-    settings: Entity<CacheLimit>,
+    settings: CacheLimit,
     input: Entity<InputState>,
     _input_events: Subscription,
 }
 
 impl CacheLimitField {
-    pub(crate) fn new(
-        settings: Entity<CacheLimit>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let text = settings.read(cx).gib().to_string();
+    pub(crate) fn new(settings: CacheLimit, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let text = settings.snapshot().gib().to_string();
         let input = cx.new(|cx| RANGE.state(window, cx).default_value(text));
         Self {
             settings,
@@ -43,17 +42,14 @@ impl CacheLimitField {
     ) {
         let value = input.read(cx).value();
         match event {
-            InputEvent::Change => {
-                self.settings
-                    .update(cx, |settings, cx| match RANGE.parse(&value) {
-                        Some(gib) => settings.set_gib(gib, cx),
-                        None => settings.revert(cx),
-                    })
-            }
+            InputEvent::Change => match RANGE.parse(&value) {
+                Some(gib) => self.settings.set_gib(gib),
+                None => self.settings.revert(),
+            },
             // Leaving the field shows the number as it counts: text that is no number gives
             // way to the limit, and `007` becomes `7`.
             InputEvent::Blur => {
-                let text = self.settings.read(cx).gib().to_string();
+                let text = self.settings.snapshot().gib().to_string();
                 if value.as_ref() != text {
                     input.update(cx, |input, cx| input.set_value(text, window, cx));
                 }
@@ -62,14 +58,14 @@ impl CacheLimitField {
         }
     }
 
-    pub(crate) fn is_resettable(&self, cx: &App) -> bool {
-        let settings = self.settings.read(cx);
+    pub(crate) fn is_resettable(&self) -> bool {
+        let settings = self.settings.snapshot();
         settings.gib() != settings.kind().default_gib()
     }
 
     /// Goes back to the default limit, reporting the change as typing would.
     pub(crate) fn reset(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let default = self.settings.read(cx).kind().default_gib();
+        let default = self.settings.snapshot().kind().default_gib();
         self.input.update(cx, |input, cx| {
             input.replace_all(default.to_string(), window, cx)
         });
@@ -77,8 +73,11 @@ impl CacheLimitField {
 }
 
 impl Render for CacheLimitField {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let name = self.settings.read(cx).kind().field_name();
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let name = match self.settings.snapshot().kind() {
+            CacheKind::Songs => "Song cache limit",
+            CacheKind::Covers => "Cover cache limit",
+        };
         NumberField::new(&self.input, RANGE, name, "GiB")
     }
 }

@@ -4,10 +4,10 @@ use gpui_kit::component::{
     radio::{Radio, RadioGroup},
     setting::{SettingField, SettingGroup, SettingItem},
 };
-use gpui_kit::{App, Entity, SharedString, Window};
+use gpui_kit::{App, SharedString, Window};
+use hiphile_core::settings::{AudioSettings, AudioSnapshot};
 
 use crate::audio_options::dropdown;
-use crate::audio_settings::AudioSettings;
 
 const FORMATS: [&str; 2] = ["PCM", "DSD (DoP)"];
 const DSD_FORMAT_IX: usize = 1;
@@ -15,11 +15,11 @@ const BASE_RATES: [&str; 2] = ["44.1 kHz", "Match each song"];
 const MATCHING_BASE_RATE_IX: usize = 1;
 
 /// The Audio page's DSD groups, which stay out of the way until it is on.
-pub(crate) fn dsd_groups(audio: &Entity<AudioSettings>, cx: &App) -> Vec<SettingGroup> {
+pub(crate) fn dsd_groups(audio: &AudioSettings) -> Vec<SettingGroup> {
     if !AudioSettings::is_dsd_offered() {
         return Vec::new();
     }
-    let settings = audio.read(cx);
+    let settings = audio.snapshot();
     let mut format = SettingItem::new("Output format", format_field(audio))
         .keywords(["dsd", "dop", "pcm"])
         .disabled(settings.dsd_obstacle().is_some());
@@ -37,7 +37,7 @@ pub(crate) fn dsd_groups(audio: &Entity<AudioSettings>, cx: &App) -> Vec<Setting
                 dropdown(
                     audio,
                     settings.dsd_rate_options(),
-                    AudioSettings::dsd_rate_value,
+                    AudioSnapshot::dsd_rate_value,
                     AudioSettings::set_dsd_rate,
                 ),
             )
@@ -56,22 +56,22 @@ pub(crate) fn dsd_groups(audio: &Entity<AudioSettings>, cx: &App) -> Vec<Setting
                 dropdown(
                     audio,
                     settings.dsd_quality_options(),
-                    AudioSettings::dsd_quality_value,
+                    AudioSnapshot::dsd_quality_value,
                     AudioSettings::set_dsd_quality,
                 ),
             )
             .description("Higher settings use more CPU. Changing a value below makes this Custom.")
             .keywords(["dsd"]),
         ]),
-        filter_group(audio, cx),
-        modulator_group(audio, cx),
+        filter_group(audio),
+        modulator_group(audio),
     ]
 }
 
-fn format_field(audio: &Entity<AudioSettings>) -> SettingField<SharedString> {
+fn format_field(audio: &AudioSettings) -> SettingField<SharedString> {
     let audio = audio.clone();
-    SettingField::render(move |_, _, cx| {
-        let settings = audio.read(cx);
+    SettingField::render(move |_, _, _| {
+        let settings = audio.snapshot();
         let is_on = settings.is_dsd_on();
         let is_blocked = settings.dsd_obstacle().is_some();
         let audio = audio.clone();
@@ -92,7 +92,7 @@ fn format_field(audio: &Entity<AudioSettings>) -> SettingField<SharedString> {
                 if is_dsd {
                     confirm_dsd(&audio, window, cx);
                 } else {
-                    audio.update(cx, |audio, cx| audio.turn_dsd_off(cx));
+                    audio.turn_dsd_off();
                 }
             })
     })
@@ -100,8 +100,8 @@ fn format_field(audio: &Entity<AudioSettings>) -> SettingField<SharedString> {
 
 /// A device that cannot decode DoP plays it as noise at full level, whatever
 /// the app's volume was, and nothing the device reports can tell beforehand.
-fn confirm_dsd(audio: &Entity<AudioSettings>, window: &mut Window, cx: &mut App) {
-    let name = audio.read(cx).dsd_device_name();
+fn confirm_dsd(audio: &AudioSettings, window: &mut Window, cx: &mut App) {
+    let name = audio.snapshot().dsd_device_name();
     let title = SharedString::from(format!("Turn on DSD for “{name}”?"));
     let audio = audio.clone();
     window.open_alert_dialog(cx, move |alert, _, _| {
@@ -115,17 +115,17 @@ fn confirm_dsd(audio: &Entity<AudioSettings>, window: &mut Window, cx: &mut App)
             .ok_text("Turn on")
             .ok_variant(ButtonVariant::Danger)
             .show_cancel(true)
-            .on_ok(move |_, _, cx| {
-                audio.update(cx, |audio, cx| audio.turn_dsd_on(cx));
+            .on_ok(move |_, _, _| {
+                audio.turn_dsd_on();
                 true
             })
     });
 }
 
-fn base_rate_field(audio: &Entity<AudioSettings>) -> SettingField<SharedString> {
+fn base_rate_field(audio: &AudioSettings) -> SettingField<SharedString> {
     let audio = audio.clone();
-    SettingField::render(move |_, _, cx| {
-        let matches = audio.read(cx).matches_song_family();
+    SettingField::render(move |_, _, _| {
+        let matches = audio.snapshot().matches_song_family();
         let audio = audio.clone();
         RadioGroup::horizontal("dsd-base-rate")
             .selected_index(Some(usize::from(matches)))
@@ -143,7 +143,7 @@ fn base_rate_field(audio: &Entity<AudioSettings>) -> SettingField<SharedString> 
                 if wants_matching {
                     confirm_matching_base_rate(&audio, window, cx);
                 } else {
-                    audio.update(cx, |audio, cx| audio.set_matches_song_family(false, cx));
+                    audio.set_matches_song_family(false);
                 }
             })
     })
@@ -151,7 +151,7 @@ fn base_rate_field(audio: &Entity<AudioSettings>) -> SettingField<SharedString> 
 
 /// A DAC can decode the standard DSD rates and still take the 48 kHz family's
 /// for PCM, which a song already playing would turn into noise at once.
-fn confirm_matching_base_rate(audio: &Entity<AudioSettings>, window: &mut Window, cx: &mut App) {
+fn confirm_matching_base_rate(audio: &AudioSettings, window: &mut Window, cx: &mut App) {
     let audio = audio.clone();
     window.open_alert_dialog(cx, move |alert, _, _| {
         let audio = audio.clone();
@@ -164,37 +164,37 @@ fn confirm_matching_base_rate(audio: &Entity<AudioSettings>, window: &mut Window
             .ok_text("Match")
             .ok_variant(ButtonVariant::Danger)
             .show_cancel(true)
-            .on_ok(move |_, _, cx| {
-                audio.update(cx, |audio, cx| audio.set_matches_song_family(true, cx));
+            .on_ok(move |_, _, _| {
+                audio.set_matches_song_family(true);
                 true
             })
     });
 }
 
-fn fade_in_field(audio: &Entity<AudioSettings>) -> SettingField<bool> {
+fn fade_in_field(audio: &AudioSettings) -> SettingField<bool> {
     SettingField::switch(
         {
             let audio = audio.clone();
-            move |cx| audio.read(cx).fades_dsd_in()
+            move |_| audio.snapshot().fades_dsd_in()
         },
         {
             let audio = audio.clone();
-            move |is_on, cx| {
-                audio.update(cx, |audio, cx| audio.set_fades_dsd_in(is_on, cx));
+            move |is_on, _| {
+                audio.set_fades_dsd_in(is_on);
             }
         },
     )
 }
 
-fn filter_group(audio: &Entity<AudioSettings>, cx: &App) -> SettingGroup {
-    let settings = audio.read(cx);
+fn filter_group(audio: &AudioSettings) -> SettingGroup {
+    let settings = audio.snapshot();
     let mut items =
         vec![SettingItem::new(
         "Filter",
         dropdown(
             audio,
             settings.dsd_filter_options(),
-            AudioSettings::dsd_filter_value,
+            AudioSnapshot::dsd_filter_value,
             AudioSettings::set_dsd_filter,
         ),
     )
@@ -209,7 +209,7 @@ fn filter_group(audio: &Entity<AudioSettings>, cx: &App) -> SettingGroup {
                 dropdown(
                     audio,
                     settings.dsd_sinc_length_options(),
-                    AudioSettings::dsd_sinc_length_value,
+                    AudioSnapshot::dsd_sinc_length_value,
                     AudioSettings::set_dsd_sinc_length,
                 ),
             )
@@ -222,7 +222,7 @@ fn filter_group(audio: &Entity<AudioSettings>, cx: &App) -> SettingGroup {
                 dropdown(
                     audio,
                     settings.dsd_fft_size_options(),
-                    AudioSettings::dsd_fft_size_value,
+                    AudioSnapshot::dsd_fft_size_value,
                     AudioSettings::set_dsd_fft_size,
                 ),
             )
@@ -234,7 +234,7 @@ fn filter_group(audio: &Entity<AudioSettings>, cx: &App) -> SettingGroup {
         dropdown(
             audio,
             settings.window_options(),
-            AudioSettings::dsd_window_value,
+            AudioSnapshot::dsd_window_value,
             AudioSettings::set_dsd_window,
         ),
     )
@@ -248,7 +248,7 @@ fn filter_group(audio: &Entity<AudioSettings>, cx: &App) -> SettingGroup {
             dropdown(
                 audio,
                 settings.dsd_cutoff_options(),
-                AudioSettings::dsd_cutoff_value,
+                AudioSnapshot::dsd_cutoff_value,
                 AudioSettings::set_dsd_cutoff,
             ),
         )
@@ -262,17 +262,17 @@ fn filter_group(audio: &Entity<AudioSettings>, cx: &App) -> SettingGroup {
         .items(items.into_iter().map(|item| item.keywords(["dsd"])))
 }
 
-fn modulator_group(audio: &Entity<AudioSettings>, cx: &App) -> SettingGroup {
-    let settings = audio.read(cx);
+fn modulator_group(audio: &AudioSettings) -> SettingGroup {
+    let settings = audio.snapshot();
     let zeros = SettingField::switch(
         {
             let audio = audio.clone();
-            move |cx| audio.read(cx).has_optimized_dsd_zeros()
+            move |_| audio.snapshot().has_optimized_dsd_zeros()
         },
         {
             let audio = audio.clone();
-            move |is_on, cx| {
-                audio.update(cx, |audio, cx| audio.set_optimized_dsd_zeros(is_on, cx));
+            move |is_on, _| {
+                audio.set_optimized_dsd_zeros(is_on);
             }
         },
     );
@@ -283,7 +283,7 @@ fn modulator_group(audio: &Entity<AudioSettings>, cx: &App) -> SettingGroup {
                 dropdown(
                     audio,
                     settings.dsd_order_options(),
-                    AudioSettings::dsd_order_value,
+                    AudioSnapshot::dsd_order_value,
                     AudioSettings::set_dsd_order,
                 ),
             )
@@ -296,7 +296,7 @@ fn modulator_group(audio: &Entity<AudioSettings>, cx: &App) -> SettingGroup {
                 dropdown(
                     audio,
                     settings.dsd_noise_gain_options(),
-                    AudioSettings::dsd_noise_gain_value,
+                    AudioSnapshot::dsd_noise_gain_value,
                     AudioSettings::set_dsd_noise_gain,
                 ),
             )
@@ -309,7 +309,7 @@ fn modulator_group(audio: &Entity<AudioSettings>, cx: &App) -> SettingGroup {
                 dropdown(
                     audio,
                     settings.dsd_noise_band_options(),
-                    AudioSettings::dsd_noise_band_value,
+                    AudioSnapshot::dsd_noise_band_value,
                     AudioSettings::set_dsd_noise_band,
                 ),
             )
@@ -317,7 +317,7 @@ fn modulator_group(audio: &Entity<AudioSettings>, cx: &App) -> SettingGroup {
                 "The range kept quiet, with the noise moved above it. Widening it to 48 kHz adds \
                  noise below 20 kHz, too much at rates under DSD256.",
             )
-            .disabled(!settings.can_widen_dsd_noise_band()),
+            .disabled(!settings.is_dsd_noise_band_widenable()),
             SettingItem::new("Optimized zeros", zeros).description(
                 "Spreads the quietest points across that range instead of stacking them at its \
                  low end, which lowers the noise overall.",
@@ -327,7 +327,7 @@ fn modulator_group(audio: &Entity<AudioSettings>, cx: &App) -> SettingGroup {
                 dropdown(
                     audio,
                     settings.dsd_dither_options(),
-                    AudioSettings::dsd_dither_value,
+                    AudioSnapshot::dsd_dither_value,
                     AudioSettings::set_dsd_dither,
                 ),
             )
@@ -340,7 +340,7 @@ fn modulator_group(audio: &Entity<AudioSettings>, cx: &App) -> SettingGroup {
                 dropdown(
                     audio,
                     settings.dsd_input_level_options(),
-                    AudioSettings::dsd_input_level_value,
+                    AudioSnapshot::dsd_input_level_value,
                     AudioSettings::set_dsd_input_level,
                 ),
             )
@@ -352,7 +352,7 @@ fn modulator_group(audio: &Entity<AudioSettings>, cx: &App) -> SettingGroup {
                 dropdown(
                     audio,
                     settings.dsd_limiter_options(),
-                    AudioSettings::dsd_limiter_value,
+                    AudioSnapshot::dsd_limiter_value,
                     AudioSettings::set_dsd_limiter,
                 ),
             )
