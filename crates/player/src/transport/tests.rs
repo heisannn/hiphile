@@ -1,14 +1,13 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use audio::OutputSettings;
 use gpui_kit::component::v_flex;
 use gpui_kit::{
     AppContext as _, Bounds, Context, FocusHandle, Modifiers, Pixels, Render, TestAppContext,
     VisualTestContext, point, px, size,
 };
 use serde_json::json;
-use subsonic::{Credentials, Song};
+use subsonic::Song;
 
 use super::*;
 use crate::Panels;
@@ -49,22 +48,12 @@ fn song() -> Song {
 
 fn stand(with_song: bool, cx: &mut TestAppContext) -> (Entity<Stand>, &mut VisualTestContext) {
     cx.update(gpui_kit::init);
-    let net = net::Client::new("hiphile-test").unwrap();
-    let server = client::Server::new("http://127.0.0.1:9", Credentials::api_key("k")).unwrap();
-    let info = serde_json::from_value(json!({ "version": "1.16.1" })).unwrap();
-    let session = session::Session::new(
-        client::Client::new(net, server),
-        "alice".to_owned(),
-        info,
-        None,
-        None,
-    );
     let (stand, cx) = cx.add_window_view(|window, cx: &mut Context<Stand>| {
         let stand = cx.weak_entity();
         let player = cx.new(|cx| {
-            let mut player = Player::new(session, OutputSettings::default(), window, cx);
+            let mut player = crate::testing::idle_player(window, cx);
             if with_song {
-                player.fill_queue(&[song()], 0);
+                player.core().fill_queue(&[song()], 0);
             }
             player.set_panels(move |_, cx| {
                 stand

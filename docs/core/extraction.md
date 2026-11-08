@@ -24,6 +24,7 @@ it happen (see the [NSH evaluation](../nsh/evaluation.md)), and the logic can be
 | 4 | Done. The settings models are handles in `hiphile_core::settings`; the `settings` crate keeps the window, its fields and applying the appearance. The seven `*Changed` events are gone |
 | 5 | Done. `FavoritesState` and `PlaylistsState` in `hiphile-core` load, keep and write the favorites and the playlists; `is_instrumental` and what is skipped are in `playback`. The `actions` globals hold copies the shell feeds from the handles. See [Found in steps 5 and 6](#found-in-steps-5-and-6) |
 | 6 | Done. `LibrarySync`, `LibraryActivity`, `SearchIndex` and `DailyRecommendations` in `hiphile-core`; `LibraryEvent` keeps only `LeftAlbum`, the rest are `LibraryNotice`s |
+| 7 | Done. `playback::Player` holds the queue, the states, the engine, scrobbling and the volume; `hiphile_core::desktop` (`DiscordStatus`, `SystemMediaControls`) follows it; the current song's lyrics and their timing are `lyrics::CurrentLyrics` and `lyrics::timing`. See [Found in step 7](#found-in-step-7) |
 
 ## Where things stand
 
@@ -318,6 +319,35 @@ Step 2 tried the design rules on `updater`. They held, with these details settle
   takes the store from the host. The dictionaries' and caches' folders come from `dirs`, which a mobile
   app should give instead.
 
+## Found in step 7
+
+- **A lock, not a task.** The player keeps its state in `Published` like the other handles: a command's
+  effect is visible when it returns, as the views and their tests expect. One task owning the state was
+  not needed.
+- **Parts 1 and 2 are one commit.** Moving the states and commands without preparing the next song left a
+  gap between songs, so they went in together to keep every commit releasable.
+- **Dropping the player.** The core drops the task that reads the engine's events before the engine: the
+  engine's thread closes the channel as it ends, which would wake the task while GPUI's test scheduler
+  tears down ("Detected activity on thread hiphile-audio").
+- **Stores.** `playback::Player::new` takes `Result<config::Store, config::Error>`; the volume is saved
+  through `Saver`, and `shutdown()` writes a volume still waiting. Tests no longer write the user's
+  config.
+- **Covers for the followers** come through the cover cache: the rule for a kept cover is
+  `session::answer_cover` (GPUI's image loads use it too), and `session::cover_image` gives a follower the
+  image; the app passes the cache it opened (`ui::covers`).
+- **Dependencies.** `playback` takes `config`; `lyrics` takes `config` (for `LyricsHighlight`),
+  `executor`, `subsonic` and tokio's `sync`; the `desktop` feature takes `presence`, `media-controls`,
+  `net`, `url` and `async-channel`. `media_controls::MediaControls` is `Send`, so a follower can hold it.
+- **Behaviour that changed.** souvlaki is called from a background thread rather than the main one; on
+  macOS it only writes `MPNowPlayingInfoCenter`, but the real app has yet to show it. A seek from the
+  system's controls moves the slider at the view's next refresh (250 ms). `set_volume` does nothing while
+  the volume is locked (the slider was already disabled). The lyrics' lines start over on the next turn
+  after the lookup changes, and also when the song goes.
+- **Still in the `player` crate.** What is drawn: the scrub, the position as a fraction, the lines'
+  position and colours, the opening and closing animation, the highlight's refresh, the cover URLs, and
+  closing the mini player at the end of the queue; also `player::song_cache(cx)`, which reads the cache
+  limit from the user's store.
+
 ## Done when
 
 - Only view crates depend on gpui-kit, and they hold only view state.
@@ -331,7 +361,5 @@ Step 2 tried the design rules on `updater`. They held, with these details settle
 
 - The crate split above, in particular whether `hiphile-core` should be split per domain later for build
   times.
-- Whether a service with many writers (the player) is better as one task that owns the state and takes
-  commands than as a lock. The lock is the default because it keeps today's synchronous semantics.
 - A UniFFI pilot after step 8: a binding crate that wraps signing in, the library and playing, with
   Swift bindings generated in a test, to find what the handles' shapes still lack.

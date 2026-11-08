@@ -2,6 +2,8 @@
 //! can share it. Views keep only what is theirs: focus, selection, scroll, drags and animation.
 
 pub mod artists;
+#[cfg(feature = "desktop")]
+pub mod desktop;
 pub mod favorites;
 mod follow;
 pub mod home;

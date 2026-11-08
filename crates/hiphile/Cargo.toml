@@ -14,13 +14,16 @@ config.workspace = true
 favorites.workspace = true
 gpui-host.workspace = true
 gpui-kit.workspace = true
-hiphile-core.workspace = true
+hiphile-core = { workspace = true, features = ["desktop"] }
 home.workspace = true
 library.workspace = true
 lyrics.workspace = true
+media-controls.workspace = true
 net.workspace = true
+playback.workspace = true
 player.workspace = true
 playlists.workspace = true
+presence.workspace = true
 search.workspace = true
 session.workspace = true
 settings.workspace = true

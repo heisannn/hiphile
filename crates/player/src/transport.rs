@@ -52,11 +52,12 @@ impl TransportControls {
 
 impl RenderOnce for TransportControls {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        let player = self.player.read(cx);
-        let has_song = player.has_song();
-        let playing = player.is_playing();
-        let shuffled = player.is_shuffled();
-        let repeat = player.repeat();
+        let core = self.player.read(cx).core().clone();
+        let snapshot = core.snapshot();
+        let has_song = snapshot.has_song();
+        let playing = snapshot.is_playing();
+        let shuffled = snapshot.is_shuffled();
+        let repeat = snapshot.repeat();
         let (icon, label) = if playing {
             (PAUSE_ICON, "Pause")
         } else {
@@ -72,11 +73,9 @@ impl RenderOnce for TransportControls {
         } else {
             Size::Medium
         };
-        let on_click = |update: fn(&mut Player, &mut gpui_kit::Context<Player>)| {
-            let player = self.player.clone();
-            move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut App| {
-                player.update(cx, update);
-            }
+        let on_click = |command: fn(&playback::Player)| {
+            let core = core.clone();
+            move |_: &gpui_kit::ClickEvent, _: &mut Window, _: &mut App| command(&core)
         };
         h_flex()
             .when(self.roomy, |this| this.w_full().justify_between())
@@ -94,7 +93,7 @@ impl RenderOnce for TransportControls {
                     .tooltip_with_action("Shuffle", &ToggleShuffle, None)
                     .selected(shuffled)
                     .toggled(shuffled)
-                    .on_click(on_click(Player::toggle_shuffle)),
+                    .on_click(on_click(playback::Player::toggle_shuffle)),
             )
             .child(
                 Button::new("previous-song")
@@ -104,7 +103,7 @@ impl RenderOnce for TransportControls {
                     .accessibility_label("Previous")
                     .tooltip_with_action("Previous", &PreviousSong, None)
                     .disabled(!has_song)
-                    .on_click(on_click(Player::previous)),
+                    .on_click(on_click(playback::Player::previous)),
             )
             .child(
                 Button::new("toggle-playback")
@@ -114,7 +113,7 @@ impl RenderOnce for TransportControls {
                     .accessibility_label(label)
                     .tooltip_with_action(label, &TogglePlayback, None)
                     .disabled(!has_song)
-                    .on_click(on_click(Player::toggle_playback)),
+                    .on_click(on_click(playback::Player::toggle_playback)),
             )
             .child(
                 Button::new("next-song")
@@ -124,7 +123,7 @@ impl RenderOnce for TransportControls {
                     .accessibility_label("Next")
                     .tooltip_with_action("Next", &NextSong, None)
                     .disabled(!has_song)
-                    .on_click(on_click(Player::next)),
+                    .on_click(on_click(playback::Player::next)),
             )
             .child(
                 Button::new("cycle-repeat")
@@ -134,7 +133,7 @@ impl RenderOnce for TransportControls {
                     .accessibility_label(repeat_label)
                     .tooltip_with_action(repeat_label, &CycleRepeat, None)
                     .selected(repeat != RepeatMode::Off)
-                    .on_click(on_click(Player::cycle_repeat)),
+                    .on_click(on_click(playback::Player::cycle_repeat)),
             )
     }
 }
@@ -179,10 +178,11 @@ impl PositionLine {
 impl RenderOnce for PositionLine {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let player = self.player.read(cx);
-        let duration = player.duration();
-        let seekable = player.is_started() && duration.is_some();
+        let snapshot = player.snapshot();
+        let duration = snapshot.duration();
+        let seekable = snapshot.is_started() && duration.is_some();
         let position = player.shown_position();
-        let buffering = player.is_buffering();
+        let buffering = snapshot.is_buffering();
         let slider = self
             .slider
             .unwrap_or_else(|| player.position_state().clone());
@@ -196,7 +196,7 @@ impl RenderOnce for PositionLine {
             .gap_2()
             .text_xs()
             .text_color(cx.theme().muted_foreground)
-            .when(player.has_song(), |this| {
+            .when(snapshot.has_song(), |this| {
                 this.child(
                     h_flex()
                         .flex_none()
@@ -246,7 +246,7 @@ impl PanelToggles {
 impl RenderOnce for PanelToggles {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let player = self.player.read(cx);
-        let has_song = player.has_song();
+        let has_song = player.snapshot().has_song();
         let panels = player.panels(window, cx);
         let is_queue_selected =
             panels.is_queue_shown && panels.queue_fits && !panels.is_lyrics_open;
@@ -315,8 +315,9 @@ impl VolumeControl {
 impl RenderOnce for VolumeControl {
     fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
         let player = self.player.read(cx);
-        let level = player.level(cx);
-        let (icon, label) = if player.is_muted() || level == 0.0 {
+        let shown = player.snapshot();
+        let level = shown.volume();
+        let (icon, label) = if shown.is_muted() || level == 0.0 {
             (IconName::VolumeX, "Unmute")
         } else if level < 0.5 {
             (IconName::Volume1, "Mute")
@@ -324,7 +325,7 @@ impl RenderOnce for VolumeControl {
             (IconName::Volume2, "Mute")
         };
         let slider = player.volume_state().clone();
-        let is_locked = player.is_volume_locked();
+        let is_locked = shown.is_volume_locked();
         let owner = self.player.clone();
         h_flex()
             .debug_selector(|| "volume-control".to_owned())
@@ -345,7 +346,7 @@ impl RenderOnce for VolumeControl {
                         }
                     })
                     .on_click(move |_, _, cx| {
-                        owner.update(cx, |player, cx| player.toggle_mute(cx));
+                        owner.read(cx).core().toggle_mute();
                     }),
             )
             .child(

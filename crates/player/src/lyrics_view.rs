@@ -1,4 +1,3 @@
-mod current;
 mod lines;
 
 use std::ops::Range;
@@ -15,6 +14,7 @@ use gpui_kit::{
     Subscription, Task, Window, div, img, point, prelude::FluentBuilder as _, px, size,
 };
 use hiphile_core::favorites::Favorite;
+use lyrics::CurrentLyrics;
 use subsonic::Song;
 use ui::CoverArt;
 use ui::list_navigation::CONTROL_CONTEXT;
@@ -23,9 +23,6 @@ use crate::ToggleLyrics;
 use crate::player::{Player, cover_hover};
 use crate::transport::{PanelToggles, PositionLine, TransportControls, VolumeControl};
 
-pub use current::CurrentLyrics;
-#[cfg(test)]
-pub(crate) use current::FindLyrics;
 pub(crate) use lines::{LinesFit, LinesType, LyricsLines};
 
 pub const LYRICS_CONTEXT: &str = "Lyrics";
@@ -299,11 +296,7 @@ pub struct LyricsView {
 }
 
 impl LyricsView {
-    pub fn new(
-        player: Entity<Player>,
-        lyrics: Entity<CurrentLyrics>,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(player: Entity<Player>, lyrics: CurrentLyrics, cx: &mut Context<Self>) -> Self {
         let lines = cx.new(|cx| LyricsLines::new(player.clone(), lyrics, lines_fit, cx));
         let player_changes = cx.observe(&player, |_, _, cx| cx.notify());
         Self {
@@ -372,8 +365,7 @@ impl LyricsView {
     }
 
     fn render_details(&self, song: &Song, cx: &mut Context<Self>) -> Div {
-        let player = self.player.read(cx);
-        let format = player.format_text();
+        let format = self.player.read(cx).snapshot().format_text();
         let color = cx.theme().muted_foreground;
         v_flex()
             .debug_selector(|| "lyrics-details".to_owned())
@@ -444,7 +436,6 @@ impl LyricsView {
         let bounds = stage.cover_at(moved);
         let radius = cover_radius(moved, cx);
         let (small, large) = self.player.read(cx).cover_urls();
-        let (small, large) = (small.cloned(), large.cloned());
         div()
             .id("lyrics-cover")
             .debug_selector(|| "lyrics-cover".to_owned())
@@ -493,7 +484,7 @@ impl Render for LyricsView {
         let shown = self.opening.shown(motion, now);
         let background = cx.theme().background;
 
-        let song = self.player.read(cx).current_song().cloned();
+        let song = self.player.read(cx).snapshot().current_song().cloned();
         let details = song.map(|song| self.render_details(&song, cx));
         let cover = self.render_cover(&stage, shown.cover, cx);
         div()

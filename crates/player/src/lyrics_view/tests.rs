@@ -1,22 +1,15 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use audio::OutputSettings;
 use gpui_kit::{Modifiers, ScrollDelta, ScrollEvent, TestAppContext, VisualTestContext, point};
 use serde_json::json;
-use subsonic::Credentials;
 
 use config::LyricsHighlight;
 use futures::FutureExt as _;
 use hiphile_core::favorites::Favorite;
-use lyrics::{Lyrics, TimedLine, TrackQuery};
-use subsonic::SongId;
+use lyrics::{FindLyrics, Lookup, Lyrics, TimedLine};
 
-use super::current::{FindLyrics, Lookup, describe, query_for};
-use super::lines::{
-    CURRENT_LINE_AT, ELEMENT_FADE, LINE_FADE, Lit, SCROLL_DURATION, SEEK_ROUNDING, emphasis,
-    line_runs,
-};
+use super::lines::{CURRENT_LINE_AT, SCROLL_DURATION, line_runs};
 use super::*;
 use crate::CloseLyrics;
 
@@ -144,24 +137,14 @@ fn stand(
     cx: &mut TestAppContext,
 ) -> (Entity<Stand>, &mut VisualTestContext) {
     cx.update(gpui_kit::init);
-    let net = net::Client::new("hiphile-test").unwrap();
-    let server = client::Server::new("http://127.0.0.1:9", Credentials::api_key("k")).unwrap();
-    let info = serde_json::from_value(json!({ "version": "1.16.1" })).unwrap();
-    let session = session::Session::new(
-        client::Client::new(net, server),
-        "alice".to_owned(),
-        info,
-        None,
-        None,
-    );
     let finds = Finds::default();
     let (stand, cx) = cx.add_window_view(|window, cx| {
         let player = cx.new(|cx| {
-            let mut player = Player::new(session, OutputSettings::default(), window, cx);
+            let mut player = crate::testing::idle_player(window, cx);
             player.fill_queue(&[song("a"), song("b")], 0);
             player
         });
-        let lyrics = cx.new(|_| CurrentLyrics::with_find_lyrics(player.clone(), finds.source()));
+        let lyrics = CurrentLyrics::with_find_lyrics(gpui_host::executor(cx), finds.source());
         let view = cx.new(|cx| LyricsView::new(player.clone(), lyrics, cx));
         let focus = cx.focus_handle();
         focus.focus(window, cx);
@@ -185,8 +168,8 @@ fn lines<'a>(view: &Entity<LyricsView>, cx: &'a App) -> &'a LyricsLines {
     view.read(cx).lines.read(cx)
 }
 
-fn lookup<'a>(view: &Entity<LyricsView>, cx: &'a App) -> &'a Lookup {
-    &lines(view, cx).lyrics.read(cx).lookup
+fn lookup(view: &Entity<LyricsView>, cx: &App) -> Lookup {
+    lines(view, cx).lyrics.snapshot().lookup().clone()
 }
 
 fn update_lines<R>(
@@ -196,15 +179,6 @@ fn update_lines<R>(
 ) -> R {
     let lines = cx.read(|cx| view.read(cx).lines.clone());
     lines.update(cx, update)
-}
-
-fn update_current<R>(
-    view: &Entity<LyricsView>,
-    cx: &mut VisualTestContext,
-    update: impl FnOnce(&mut CurrentLyrics, &mut Context<CurrentLyrics>) -> R,
-) -> R {
-    let current = cx.read(|cx| lines(view, cx).lyrics.clone());
-    current.update(cx, update)
 }
 
 fn draw(cx: &mut VisualTestContext) {
@@ -600,45 +574,6 @@ fn opening_looks_for_the_current_song_once(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn a_new_song_starts_over_and_found_lyrics_are_kept(cx: &mut TestAppContext) {
-    let (stand, cx) = stand(1200., 760., cx);
-    let view = view(&stand, cx);
-    let finds = cx.read(|cx| stand.read(cx).finds.clone());
-    open_with(&stand, lyrics(3), cx);
-    let player = cx.read(|cx| stand.read(cx).player.clone());
-
-    player.update(cx, |player, _| {
-        player.fill_queue(&[song("b"), song("a")], 0)
-    });
-    update_lines(&view, cx, |lines, _| lines.is_following = false);
-    update_current(&view, cx, |current, cx| current.look_up_current(cx));
-    cx.read(|cx| {
-        assert!(matches!(lookup(&view, cx), Lookup::Loading(song) if song.to_string() == "b"));
-        assert!(lines(&view, cx).is_following);
-    });
-    assert_eq!(finds.asked().len(), 2);
-
-    // An answer about the song before is out of date
-    update_current(&view, cx, |current, cx| {
-        current.finish_lookup(SongId::new("a"), Ok(Lyrics::NotFound), cx);
-    });
-    cx.read(|cx| {
-        assert!(matches!(lookup(&view, cx), Lookup::Loading(_)));
-        assert_eq!(lines(&view, cx).lyrics.read(cx).found.len(), 1);
-    });
-
-    // Back to the first song, whose lyrics are at hand
-    player.update(cx, |player, _| {
-        player.fill_queue(&[song("a"), song("b")], 0)
-    });
-    update_current(&view, cx, |current, cx| current.look_up_current(cx));
-    cx.read(|cx| {
-        assert!(matches!(lookup(&view, cx), Lookup::Done(song, _) if song.to_string() == "a"));
-    });
-    assert_eq!(finds.asked().len(), 2);
-}
-
-#[gpui_kit::test]
 fn all_that_show_the_lyrics_share_one_lookup(cx: &mut TestAppContext) {
     let (stand, cx) = stand(1200., 760., cx);
     let view = view(&stand, cx);
@@ -705,33 +640,6 @@ fn pausing_or_resuming_does_not_look_again_but_a_new_song_does(cx: &mut TestAppC
         player.pretend_playing(true, cx);
     });
     draw(cx);
-    assert_eq!(finds.asked().len(), 2);
-}
-
-#[gpui_kit::test]
-fn an_answer_after_the_song_changed_is_kept_for_going_back(cx: &mut TestAppContext) {
-    let (stand, cx) = stand(1200., 760., cx);
-    let view = view(&stand, cx);
-    let finds = cx.read(|cx| stand.read(cx).finds.clone());
-    let player = cx.read(|cx| stand.read(cx).player.clone());
-    set_open(&stand, true, cx);
-    player.update(cx, |player, cx| {
-        player.fill_queue(&[song("b"), song("a")], 0);
-        player.pretend_playing(true, cx);
-    });
-    draw(cx);
-
-    update_current(&view, cx, |current, cx| {
-        current.finish_lookup(SongId::new("a"), Ok(lyrics(2)), cx);
-    });
-    cx.read(|cx| assert!(matches!(lookup(&view, cx), Lookup::Loading(s) if s.to_string() == "b")));
-
-    player.update(cx, |player, cx| {
-        player.fill_queue(&[song("a"), song("b")], 0);
-        player.pretend_playing(true, cx);
-    });
-    draw(cx);
-    cx.read(|cx| assert!(matches!(lookup(&view, cx), Lookup::Done(..))));
     assert_eq!(finds.asked().len(), 2);
 }
 
@@ -968,46 +876,6 @@ fn first_timed_line(found: &Lyrics) -> &TimedLine {
 }
 
 #[test]
-fn a_part_of_a_line_lights_as_it_starts_and_dims_as_the_line_ends() {
-    let found = lyrics(2);
-    let line = first_timed_line(&found);
-    let second = line.elements()[1].start();
-    assert_eq!(second, secs(12.));
-    let end = line.end().unwrap();
-    assert_eq!(end, secs(15.));
-
-    assert_eq!(emphasis(line, second, secs(11.), true), 0.);
-    assert_eq!(emphasis(line, second, secs(12.), true), 0.);
-    assert!((emphasis(line, second, second + ELEMENT_FADE / 2, true) - 0.5).abs() < 1e-3);
-    assert_eq!(emphasis(line, second, secs(13.), true), 1.);
-    assert!((emphasis(line, second, end + LINE_FADE / 2, true) - 0.5).abs() < 1e-3);
-    assert_eq!(emphasis(line, second, end + LINE_FADE, true), 0.);
-}
-
-#[test]
-fn a_paused_song_holds_no_part_of_a_line_partway() {
-    let found = lyrics(2);
-    let line = first_timed_line(&found);
-    let second = line.elements()[1].start();
-    let end = line.end().unwrap();
-
-    assert_eq!(emphasis(line, second, second - secs(0.1), false), 0.);
-    assert_eq!(emphasis(line, second, second, false), 1.);
-    assert_eq!(emphasis(line, second, end + LINE_FADE / 2, false), 0.);
-}
-
-#[test]
-fn a_line_chosen_lights_though_seeking_lands_just_before_it() {
-    let found = lyrics(3);
-    let Lyrics::Timed(lyrics) = &found else {
-        panic!("timed lyrics");
-    };
-    let start = lyrics.lines()[1].start();
-    let landed = start - Duration::from_micros(20);
-    assert_eq!(lyrics.line_at(landed + SEEK_ROUNDING), Some(1));
-}
-
-#[test]
 fn only_the_parts_begun_are_colored_and_fading_is_noticed() {
     let found = lyrics(2);
     let line = first_timed_line(&found);
@@ -1036,43 +904,6 @@ fn only_the_parts_begun_are_colored_and_fading_is_noticed() {
     assert_eq!(runs.len(), 2);
     assert_eq!(runs[1].0, "line ".len().."line 0".len());
     assert!(is_fading);
-}
-
-#[test]
-fn what_is_lit_changes_with_each_part_and_end() {
-    let found = lyrics(2);
-    let Lyrics::Timed(found) = &found else {
-        unreachable!()
-    };
-    let lit = |seconds| Lit::of(found, secs(seconds), LyricsHighlight::ByWord);
-
-    assert_eq!(lit(5.), Lit::default());
-    assert_eq!(lit(10.), lit(11.));
-    assert_ne!(lit(11.), lit(12.));
-    assert_eq!(
-        lit(14.),
-        Lit {
-            line: Some(0),
-            elements: 2,
-            has_ended: false
-        }
-    );
-    assert_eq!(
-        lit(15.),
-        Lit {
-            line: Some(1),
-            elements: 1,
-            has_ended: false
-        }
-    );
-    assert_eq!(
-        lit(19.5),
-        Lit {
-            line: Some(1),
-            elements: 2,
-            has_ended: true
-        }
-    );
 }
 
 #[test]
@@ -1109,28 +940,6 @@ fn by_line_the_whole_line_lights_as_one() {
     assert!(!is_fading);
 }
 
-#[test]
-fn by_line_a_part_starting_is_no_cause_to_redraw() {
-    let found = lyrics(2);
-    let Lyrics::Timed(found) = &found else {
-        panic!("timed lyrics");
-    };
-    let lit = |seconds, highlight| Lit::of(found, secs(seconds), highlight);
-
-    assert_ne!(
-        lit(11., LyricsHighlight::ByWord),
-        lit(12.5, LyricsHighlight::ByWord)
-    );
-    assert_eq!(
-        lit(11., LyricsHighlight::ByLine),
-        lit(12.5, LyricsHighlight::ByLine)
-    );
-    assert_ne!(
-        lit(11., LyricsHighlight::ByLine),
-        lit(16., LyricsHighlight::ByLine)
-    );
-}
-
 #[gpui_kit::test]
 fn the_view_lights_as_it_is_told(cx: &mut TestAppContext) {
     let (stand, cx) = stand(1200., 760., cx);
@@ -1142,50 +951,8 @@ fn the_view_lights_as_it_is_told(cx: &mut TestAppContext) {
     let lit_elements = |cx: &mut VisualTestContext| cx.read(|cx| lines(&view, cx).lit.elements);
     assert_eq!(lit_elements(cx), 2);
 
-    update_current(&view, cx, |current, cx| {
-        current.set_highlight(LyricsHighlight::ByLine, cx);
-    });
+    cx.read(|cx| lines(&view, cx).lyrics.clone())
+        .set_highlight(LyricsHighlight::ByLine);
     draw(cx);
     assert_eq!(lit_elements(cx), 0);
-}
-
-#[test]
-fn a_song_asks_for_what_it_knows() {
-    let asked = query_for(&song("a"));
-    assert_eq!(
-        asked,
-        TrackQuery::new("Title of a")
-            .artist(Some("Artist"))
-            .album(Some("Album"))
-    );
-
-    let song: Song = serde_json::from_value(json!({
-        "id": "b",
-        "title": "A Title",
-        "artist": "An Artist",
-        "displayAlbumArtist": "An Album Artist",
-        "duration": 200,
-    }))
-    .unwrap();
-    assert_eq!(
-        query_for(&song),
-        TrackQuery::new("A Title")
-            .artist(Some("An Artist"))
-            .album_artist(Some("An Album Artist"))
-            .duration(Some(secs(200.)))
-    );
-}
-
-#[test]
-fn a_length_of_zero_is_no_length() {
-    let song: Song =
-        serde_json::from_value(json!({ "id": "a", "title": "A Title", "duration": 0 })).unwrap();
-    assert_eq!(query_for(&song), TrackQuery::new("A Title"));
-}
-
-#[test]
-fn errors_say_what_to_try() {
-    let net = net::Error::Canceled;
-    assert!(describe(&lyrics::Error::Network(net)).contains("connection"));
-    assert!(describe(&lyrics::Error::InvalidResponse).contains("later"));
 }

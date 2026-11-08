@@ -13,22 +13,19 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled as _, StyledText, Subscription, Task, Window, div,
     point, prelude::FluentBuilder as _, px, rems,
 };
-use lyrics::{Lyrics, TimedLine, TimedLyrics};
+use lyrics::timing::{Lit, SEEK_ROUNDING, emphasis};
+use lyrics::{CurrentLyrics, Lookup, Lyrics, TimedLine, TimedLyrics};
+use playback::PlayerSnapshot;
+use subsonic::Song;
 use ui::list_navigation::CONTROL_CONTEXT;
 use ui::{centered, muted_text, section_failure, section_loading};
 
-use super::current::{CurrentLyrics, Lookup, NewLines};
-use crate::player::{Player, PlayerEvent};
+use crate::player::Player;
 
-pub(super) const ELEMENT_FADE: Duration = Duration::from_millis(120);
-pub(super) const LINE_FADE: Duration = Duration::from_millis(180);
 pub(super) const SCROLL_DURATION: Duration = Duration::from_millis(460);
 /// How often to check whether the lines should change, as the player's own
 /// refresh is too slow for parts of a line.
 const HIGHLIGHT_REFRESH: Duration = Duration::from_millis(50);
-/// Added to where the song is for lighting the lines. Seeking lands on the frame
-/// before the time asked for, and a line chosen should be the one that lights.
-pub(super) const SEEK_ROUNDING: Duration = Duration::from_millis(1);
 /// How far down the lines the current one rests, as a part of their height.
 pub(super) const CURRENT_LINE_AT: f32 = 0.36;
 /// How much room follows the last line, as a part of the height of the lines,
@@ -55,7 +52,7 @@ pub(crate) struct LinesFit {
 /// instead of them. One for each place that shows them, as each scrolls apart.
 pub(crate) struct LyricsLines {
     player: Entity<Player>,
-    pub(super) lyrics: Entity<CurrentLyrics>,
+    pub(super) lyrics: CurrentLyrics,
     fit: fn(&Window) -> LinesFit,
     /// Whether they are on show, and so need looking up and keeping current.
     is_active: bool,
@@ -67,33 +64,46 @@ pub(crate) struct LyricsLines {
     /// Which line and how much of it the last frame lit.
     pub(super) lit: Lit,
     pub(super) refresh: Option<Task<()>>,
-    _subscriptions: [Subscription; 4],
+    _player_changes: Task<()>,
+    _lyrics_changes: Task<()>,
+    _subscription: Subscription,
 }
 
 impl LyricsLines {
     pub(crate) fn new(
         player: Entity<Player>,
-        lyrics: Entity<CurrentLyrics>,
+        lyrics: CurrentLyrics,
         fit: fn(&Window) -> LinesFit,
         cx: &mut Context<Self>,
     ) -> Self {
-        let subscriptions = [
-            cx.observe(&player, |_, _, cx| cx.notify()),
-            cx.observe(&lyrics, |_, _, cx| cx.notify()),
-            cx.subscribe(&lyrics, |this, _, _: &NewLines, cx| {
+        let subscription = cx.observe(&player, |_, _, cx| cx.notify());
+        let changes = lyrics.subscribe();
+        let mut shown = changes.borrow().lookup().clone();
+        // Another lookup brings another set of lines, or what stands in for them
+        let lyrics_changes = gpui_host::observe(changes, cx, move |this, lyrics, cx| {
+            if *lyrics.lookup() != shown {
+                shown = lyrics.lookup().clone();
                 this.show_new_lines();
-                cx.notify();
-            }),
-            cx.subscribe(&player, |this, _, event, cx| {
-                if matches!(event, PlayerEvent::NowPlaying { .. }) {
-                    this.sync_refresh(cx);
-                    // It says so for pausing too, which is no cause to look again
-                    if this.is_active && !this.lyrics.read(cx).is_current_song_looked_up(cx) {
-                        this.look_up_current(cx);
-                    }
-                }
-            }),
-        ];
+            }
+            cx.notify();
+        });
+        let changes = player.read(cx).core().subscribe();
+        let now_playing = |shown: &PlayerSnapshot| {
+            let song = shown.current_song().map(|song| song.id().clone());
+            (song, shown.is_playing())
+        };
+        let mut followed = now_playing(&changes.borrow());
+        let player_changes = gpui_host::observe(changes, cx, move |this, shown, cx| {
+            if now_playing(&shown) == followed {
+                return;
+            }
+            followed = now_playing(&shown);
+            this.sync_refresh(cx);
+            // Pausing is no cause to look again
+            if this.is_active && !this.is_current_song_looked_up(cx) {
+                this.look_up_current(cx);
+            }
+        });
         Self {
             player,
             lyrics,
@@ -104,7 +114,9 @@ impl LyricsLines {
             scroll_key: 0,
             lit: Lit::default(),
             refresh: None,
-            _subscriptions: subscriptions,
+            _player_changes: player_changes,
+            _lyrics_changes: lyrics_changes,
+            _subscription: subscription,
         }
     }
 
@@ -116,15 +128,20 @@ impl LyricsLines {
         self.sync_refresh(cx);
     }
 
-    fn look_up_current(&self, cx: &mut Context<Self>) {
+    fn look_up_current(&self, cx: &App) {
         self.lyrics
-            .update(cx, |lyrics, cx| lyrics.look_up_current(cx));
+            .look_up(self.player.read(cx).snapshot().current_song());
+    }
+
+    fn is_current_song_looked_up(&self, cx: &App) -> bool {
+        self.lyrics.snapshot().lookup().song()
+            == self.player.read(cx).snapshot().current_song().map(Song::id)
     }
 
     /// Checks whether the lines should change for as long as the view is open
     /// and the song moving. Otherwise only the player's own changes move them.
     fn sync_refresh(&mut self, cx: &mut Context<Self>) {
-        if !self.is_active || !self.player.read(cx).is_playing() {
+        if !self.is_active || !self.player.read(cx).snapshot().is_playing() {
             self.refresh = None;
         } else if self.refresh.is_none() {
             self.refresh = Some(cx.spawn(async move |this, cx| {
@@ -140,8 +157,8 @@ impl LyricsLines {
     }
 
     fn refresh_lit(&mut self, cx: &mut Context<Self>) {
-        let current = self.lyrics.read(cx);
-        let Lookup::Done(_, lyrics) = &current.lookup else {
+        let current = self.lyrics.snapshot();
+        let Lookup::Done(_, lyrics) = current.lookup() else {
             return;
         };
         let Lyrics::Timed(lyrics) = &**lyrics else {
@@ -228,8 +245,8 @@ impl LyricsLines {
     ) -> AnyElement {
         let player = self.player.read(cx);
         let position = lines_position(player);
-        let is_playing = player.is_playing();
-        let highlight = self.lyrics.read(cx).highlight();
+        let is_playing = player.snapshot().is_playing();
+        let highlight = self.lyrics.snapshot().highlight();
         self.lit = Lit::of(lyrics, position, highlight);
         self.follow_current_line(lyrics, position, window, cx);
 
@@ -371,7 +388,8 @@ impl Render for LyricsLines {
         let fit = (self.fit)(window);
         let empty =
             |text: &'static str, cx: &App| centered(muted_text(text, cx)).into_any_element();
-        match &self.lyrics.read(cx).lookup {
+        let shown = self.lyrics.snapshot();
+        match shown.lookup() {
             Lookup::Nothing => div().into_any_element(),
             Lookup::Loading(_) => {
                 centered(section_loading("Loading lyrics", cx)).into_any_element()
@@ -384,7 +402,7 @@ impl Render for LyricsLines {
                     .size_full()
                     .justify_center()
                     .child(section_failure(
-                        reason.clone(),
+                        SharedString::from(reason.clone()),
                         retry.debug_selector(|| "lyrics-retry".to_owned()),
                         cx,
                     ))
@@ -408,59 +426,8 @@ impl Render for LyricsLines {
     }
 }
 
-/// Which line a position lights and how much of it, for telling when that
-/// changes.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(super) struct Lit {
-    pub(super) line: Option<usize>,
-    pub(super) elements: usize,
-    pub(super) has_ended: bool,
-}
-
-impl Lit {
-    pub(super) fn of(lyrics: &TimedLyrics, position: Duration, highlight: LyricsHighlight) -> Self {
-        let Some(ix) = lyrics.line_at(position) else {
-            return Self::default();
-        };
-        let line = &lyrics.lines()[ix];
-        Self {
-            line: Some(ix),
-            elements: match highlight {
-                LyricsHighlight::ByWord => line
-                    .elements()
-                    .partition_point(|element| element.start() <= position),
-                LyricsHighlight::ByLine => 0,
-            },
-            has_ended: line.end().is_some_and(|end| end <= position),
-        }
-    }
-}
-
 fn lines_position(player: &Player) -> Duration {
     player.shown_position() + SEEK_ROUNDING
-}
-
-/// How lit a part of a line starting at `start` is at `position`, from `0.0` to
-/// `1.0`. It lights up as it starts and dims when its line ends, over time if the
-/// song is playing. A song standing still would hold it partway.
-pub(super) fn emphasis(
-    line: &TimedLine,
-    start: Duration,
-    position: Duration,
-    is_playing: bool,
-) -> f32 {
-    let Some(lit_for) = position.checked_sub(start) else {
-        return 0.;
-    };
-    let ended_for = line.end().and_then(|end| position.checked_sub(end));
-    if !is_playing {
-        return if ended_for.is_some() { 0. } else { 1. };
-    }
-    let rise = (lit_for.as_secs_f32() / ELEMENT_FADE.as_secs_f32()).min(1.);
-    let fall = ended_for.map_or(0., |ended_for| {
-        (ended_for.as_secs_f32() / LINE_FADE.as_secs_f32()).min(1.)
-    });
-    rise * (1. - fall)
 }
 
 /// The colors of the lit parts of `line`, and whether any is changing.

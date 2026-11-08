@@ -28,6 +28,13 @@ pub fn init_network(net: net::Client, cx: &mut App) {
     cx.set_http_client(Arc::new(NetHttpClient::new(net, covers)));
 }
 
+/// Where covers are kept on disk, once [`init_network`] has run and if the system has a cache
+/// directory.
+pub fn covers(cx: &App) -> Option<catalog::CoverStore> {
+    cx.try_global::<GlobalCovers>()
+        .map(|covers| covers.0.clone())
+}
+
 /// Keeps at most about `capacity` bytes of covers from the next one on, or the
 /// default amount for `None`.
 pub fn set_cover_capacity(capacity: Option<u64>, cx: &App) {

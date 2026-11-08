@@ -130,7 +130,7 @@ struct Shown {
 /// sending commands.
 pub struct MediaControls {
     /// `None` when there are no media controls to reach.
-    surface: Option<Box<dyn Surface>>,
+    surface: Option<Box<dyn Surface + Send>>,
     shown: Option<Shown>,
     cover: Option<(CoverArtId, CoverFile)>,
     resends_position: bool,
@@ -148,7 +148,7 @@ impl MediaControls {
             .and_then(|handle| attach(hwnd(handle.as_raw()), commands));
         (
             Self {
-                surface: surface.map(|surface| Box::new(surface) as Box<dyn Surface>),
+                surface: surface.map(|surface| Box::new(surface) as Box<dyn Surface + Send>),
                 shown: None,
                 cover: None,
                 resends_position: !cfg!(target_os = "macos"),
@@ -317,8 +317,8 @@ fn attach(
 
 #[cfg(test)]
 mod tests {
-    use std::cell::{Cell, RefCell};
-    use std::rc::Rc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
 
     use super::*;
 
@@ -333,33 +333,33 @@ mod tests {
     }
 
     #[derive(Clone, Default)]
-    struct Recording(Rc<RefCell<Vec<Told>>>, Rc<Cell<bool>>);
+    struct Recording(Arc<Mutex<Vec<Told>>>, Arc<AtomicBool>);
 
     impl Recording {
         fn take(&self) -> Vec<Told> {
-            self.0.take()
+            std::mem::take(&mut self.0.lock().unwrap())
         }
 
         /// Fails metadata with a cover from now on, as Windows does when it
         /// cannot open the file.
         fn reject_covers(&self) {
-            self.1.set(true);
+            self.1.store(true, Ordering::SeqCst);
         }
     }
 
     impl Surface for Recording {
         fn set_metadata(&mut self, metadata: MediaMetadata<'_>) -> bool {
             let has_cover = metadata.cover_url.is_some();
-            self.0.borrow_mut().push(Told::Metadata {
+            self.0.lock().unwrap().push(Told::Metadata {
                 title: metadata.title.unwrap_or_default().to_owned(),
                 artist: metadata.artist.unwrap_or_default().to_owned(),
                 has_cover,
             });
-            !(has_cover && self.1.get())
+            !(has_cover && self.1.load(Ordering::SeqCst))
         }
 
         fn set_playback(&mut self, playback: MediaPlayback) {
-            self.0.borrow_mut().push(Told::Playback(playback));
+            self.0.lock().unwrap().push(Told::Playback(playback));
         }
     }
 

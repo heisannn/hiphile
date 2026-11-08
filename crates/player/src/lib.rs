@@ -3,6 +3,8 @@ mod lyrics_view;
 mod mini_player;
 mod player;
 mod queue_view;
+#[cfg(test)]
+mod testing;
 mod transport;
 
 use gpui_kit::{Action, App, Global, KeyBinding, actions};
@@ -10,10 +12,10 @@ use ui::list_navigation::bind_list_navigation;
 
 use mini_player::MINI_PLAYER_CONTEXT;
 
-pub use lyrics_view::{CurrentLyrics, LYRICS_CONTEXT, LyricsReveal, LyricsView};
+pub use lyrics_view::{LYRICS_CONTEXT, LyricsReveal, LyricsView};
 pub use mini_player::MiniPlayer;
 pub use playback::{Placement, RepeatMode};
-pub use player::{Panels, Player, PlayerEvent};
+pub use player::{Panels, Player};
 pub use queue_view::{QUEUE_CONTEXT, QueueView};
 
 actions!(
@@ -177,8 +179,14 @@ fn bind_commands(context: &'static str, cx: &mut App) {
 }
 
 /// Keeps at most about `capacity` bytes of songs from now on, or the default
-/// amount for `None`. A download still arriving is not kept. Without the cache
-/// every song comes from the server, so failing to open it raises no error.
+/// amount for `None`, in the cache [`song_cache`] gives. A download still arriving is not kept.
+/// Without the cache every song comes from the server, so failing to open it raises no error.
 pub fn set_song_capacity(capacity: Option<u64>, cx: &mut App) {
     cx.set_global(GlobalSongCache(playback::SongCache::user(capacity).ok()));
+}
+
+/// Where the songs downloaded are kept, if anywhere.
+pub fn song_cache(cx: &App) -> Option<playback::SongCache> {
+    cx.try_global::<GlobalSongCache>()
+        .and_then(|song_cache| song_cache.0.clone())
 }

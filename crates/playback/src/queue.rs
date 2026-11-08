@@ -60,7 +60,7 @@ pub struct Queue<T> {
     current_ix: Option<usize>,
     repeat: RepeatMode,
     /// While shuffled, every entry in the order to go back to.
-    unshuffled: Option<Vec<EntryId>>,
+    unshuffled: Option<Arc<Vec<EntryId>>>,
     /// Goes from the queue once it is no longer current, and until then is
     /// never gone back to on its own, whatever the repeat.
     leaving: Option<EntryId>,
@@ -125,6 +125,20 @@ impl<T> Queue<T> {
 
     pub fn set_repeat(&mut self, repeat: RepeatMode) {
         self.repeat = repeat;
+    }
+
+    /// Whether `other` is this queue as it was, unchanged since. A copy that was changed and
+    /// changed back is not the same.
+    pub(crate) fn is_same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.entries, &other.entries)
+            && self.current_ix == other.current_ix
+            && self.repeat == other.repeat
+            && self.leaving == other.leaving
+            && self.next_id == other.next_id
+            && match (&self.unshuffled, &other.unshuffled) {
+                (Some(order), Some(other)) => Arc::ptr_eq(order, other),
+                (order, other) => order.is_none() && other.is_none(),
+            }
     }
 
     pub fn is_shuffled(&self) -> bool {
@@ -194,11 +208,11 @@ impl<T: Clone> Queue<T> {
             return;
         }
         if shuffled {
-            self.unshuffled = Some(self.entries.iter().map(Entry::id).collect());
+            self.unshuffled = Some(Arc::new(self.entries.iter().map(Entry::id).collect()));
             self.shuffle_upcoming();
         } else if let Some(order) = self.unshuffled.take() {
             let current = self.current_id();
-            let ranks: HashMap<_, _> = order.into_iter().zip(0_usize..).collect();
+            let ranks: HashMap<_, _> = order.iter().copied().zip(0_usize..).collect();
             Arc::make_mut(&mut self.entries).sort_by_key(|entry| ranks[&entry.id]);
             self.current_ix = current.and_then(|id| self.position(id));
         }
@@ -240,7 +254,7 @@ impl<T: Clone> Queue<T> {
         self.current_ix = (!entries.is_empty()).then(|| start_ix.min(entries.len() - 1));
         self.entries = Arc::new(entries);
         if self.is_shuffled() {
-            self.unshuffled = Some(self.entries.iter().map(Entry::id).collect());
+            self.unshuffled = Some(Arc::new(self.entries.iter().map(Entry::id).collect()));
             if let Some(ix) = self.current_ix {
                 Arc::make_mut(&mut self.entries).swap(0, ix);
                 self.current_ix = Some(0);
@@ -273,6 +287,7 @@ impl<T: Clone> Queue<T> {
         };
         let current = self.current_id();
         if let Some(order) = &mut self.unshuffled {
+            let order = Arc::make_mut(order);
             let unshuffled_at = match placement {
                 Placement::Next => current
                     .and_then(|current| order.iter().position(|id| *id == current))
@@ -310,7 +325,7 @@ impl<T: Clone> Queue<T> {
         };
         Arc::make_mut(&mut self.entries).remove(ix);
         if let Some(order) = &mut self.unshuffled {
-            order.retain(|other| *other != id);
+            Arc::make_mut(order).retain(|other| *other != id);
         }
         if let Some(current) = &mut self.current_ix
             && ix < *current
@@ -367,7 +382,7 @@ impl<T: Clone> Queue<T> {
             .collect();
         self.current_ix = (!kept.is_empty()).then_some(0);
         if self.is_shuffled() {
-            self.unshuffled = Some(kept.iter().map(Entry::id).collect());
+            self.unshuffled = Some(Arc::new(kept.iter().map(Entry::id).collect()));
         }
         self.entries = Arc::new(kept);
     }

@@ -1,16 +1,19 @@
+mod current;
 mod matching;
 mod model;
 pub mod musixmatch;
 pub mod petitlyrics;
+pub mod timing;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
 
+pub use current::{CurrentLyrics, FindLyrics, Lookup, LyricsSnapshot};
 use matching::says_who;
 pub use model::{Lyrics, PlainLyrics, TimedLine, TimedLyrics, TimedTextElement};
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub use musixmatch::lyrics_from_richsync_body;
 
 const ARTIST_SEPARATORS: [char; 5] = [',', '&', '，', '＆', '、'];

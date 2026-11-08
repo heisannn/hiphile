@@ -5,15 +5,17 @@ use gpui_kit::component::{ActiveTheme as _, StyledExt as _, TitleBar, h_flex, v_
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, Bounds, Context, DisplayId, Entity, FocusHandle, Global,
     InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Render, SharedString,
-    Styled as _, Subscription, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowId,
+    Styled as _, Subscription, Task, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowId,
     WindowKind, WindowOptions, div, point, px, size,
 };
 use subsonic::Song;
 use ui::list_navigation::CONTROL_CONTEXT;
 use ui::{CoverArt, CoverCache};
 
-use crate::lyrics_view::{CurrentLyrics, LinesFit, LinesType, LyricsLines};
-use crate::player::{Player, PlayerEvent};
+use lyrics::CurrentLyrics;
+
+use crate::lyrics_view::{LinesFit, LinesType, LyricsLines};
+use crate::player::Player;
 use crate::transport::{PositionLine, TransportControls};
 use crate::{
     CloseMiniPlayer, CycleRepeat, NextSong, PreviousSong, SeekBackward, SeekForward, SetRepeat,
@@ -54,20 +56,20 @@ pub(crate) fn init(cx: &mut App) {
 /// runs out, or when the window it was made for closes.
 pub struct MiniPlayer {
     player: Entity<Player>,
-    lyrics: Entity<CurrentLyrics>,
+    lyrics: CurrentLyrics,
     window: Option<AnyWindowHandle>,
     /// Where the window last was, for it to return there. The window reports it
     /// while this may be in use, opening it, so it is not reached through this.
     placement: Rc<Cell<Option<Placement>>>,
     _windows_closed: Subscription,
     _released: Subscription,
-    _player_events: Subscription,
+    _player_changes: Task<()>,
 }
 
 impl MiniPlayer {
     pub fn new(
         player: Entity<Player>,
-        lyrics: Entity<CurrentLyrics>,
+        lyrics: CurrentLyrics,
         main_window: &Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -80,8 +82,9 @@ impl MiniPlayer {
             .ok();
         });
         let released = cx.on_release(|this, cx| this.close_window(cx));
-        let player_events = cx.subscribe(&player, |this, _, event, cx| {
-            if matches!(event, PlayerEvent::NowPlaying { song: None, .. }) {
+        let changes = player.read(cx).core().subscribe();
+        let player_changes = gpui_host::observe(changes, cx, |this, shown, cx| {
+            if !shown.has_song() {
                 this.close(cx);
             }
         });
@@ -94,7 +97,7 @@ impl MiniPlayer {
             placement: Rc::default(),
             _windows_closed: windows_closed,
             _released: released,
-            _player_events: player_events,
+            _player_changes: player_changes,
         }
     }
 
@@ -205,7 +208,7 @@ struct MiniPlayerView {
 impl MiniPlayerView {
     fn new(
         player: Entity<Player>,
-        lyrics: Entity<CurrentLyrics>,
+        lyrics: CurrentLyrics,
         last_placement: Rc<Cell<Option<Placement>>>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -241,14 +244,14 @@ impl MiniPlayerView {
 
     fn render_song(&self, song: &Song, cx: &Context<Self>) -> impl IntoElement + use<> {
         let player = self.player.read(cx);
-        let cover = player.cover_urls().0.cloned();
+        let cover = player.cover_urls().0;
         let theme = cx.theme();
         // No links as in the bar: where they lead is in the other window
-        let status = match player.error() {
+        let status = match player.snapshot().error() {
             Some(error) => div()
                 .debug_selector(|| "mini-player-error".to_owned())
                 .text_color(theme.danger)
-                .child(error.clone()),
+                .child(SharedString::from(error.to_owned())),
             None => div()
                 .text_color(theme.muted_foreground)
                 .child(song_details(song)),
@@ -282,7 +285,7 @@ impl MiniPlayerView {
 
 impl Render for MiniPlayerView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let song = self.player.read(cx).current_song().cloned();
+        let song = self.player.read(cx).snapshot().current_song().cloned();
         let song = song.map(|song| self.render_song(&song, cx));
         let position = self.player.read(cx).mini_position_state().clone();
         v_flex()
@@ -300,26 +303,25 @@ impl Render for MiniPlayerView {
                 close_mini_window(&this.player, window.window_handle(), cx);
             }))
             .on_action(cx.listener(|this, _: &TogglePlayback, _, cx| {
-                this.player.update(cx, Player::toggle_playback);
+                this.player.read(cx).core().toggle_playback();
             }))
             .on_action(cx.listener(|this, _: &NextSong, _, cx| {
-                this.player.update(cx, Player::next);
+                this.player.read(cx).core().next();
             }))
             .on_action(cx.listener(|this, _: &PreviousSong, _, cx| {
-                this.player.update(cx, Player::previous);
+                this.player.read(cx).core().previous();
             }))
             .on_action(cx.listener(|this, _: &ToggleMute, _, cx| {
-                this.player.update(cx, Player::toggle_mute);
+                this.player.read(cx).core().toggle_mute();
             }))
             .on_action(cx.listener(|this, _: &ToggleShuffle, _, cx| {
-                this.player.update(cx, Player::toggle_shuffle);
+                this.player.read(cx).core().toggle_shuffle();
             }))
             .on_action(cx.listener(|this, _: &CycleRepeat, _, cx| {
-                this.player.update(cx, Player::cycle_repeat);
+                this.player.read(cx).core().cycle_repeat();
             }))
             .on_action(cx.listener(|this, action: &SetRepeat, _, cx| {
-                this.player
-                    .update(cx, |player, cx| player.set_repeat(action.repeat(), cx));
+                this.player.read(cx).core().set_repeat(action.repeat());
             }))
             .on_action(cx.listener(|this, _: &SeekForward, window, cx| {
                 this.player
@@ -329,13 +331,11 @@ impl Render for MiniPlayerView {
                 this.player
                     .update(cx, |player, cx| player.seek_backward(window, cx));
             }))
-            .on_action(cx.listener(|this, _: &VolumeUp, window, cx| {
-                this.player
-                    .update(cx, |player, cx| player.volume_up(window, cx));
+            .on_action(cx.listener(|this, _: &VolumeUp, _, cx| {
+                this.player.read(cx).core().volume_up();
             }))
-            .on_action(cx.listener(|this, _: &VolumeDown, window, cx| {
-                this.player
-                    .update(cx, |player, cx| player.volume_down(window, cx));
+            .on_action(cx.listener(|this, _: &VolumeDown, _, cx| {
+                this.player.read(cx).core().volume_down();
             }))
             .child(TitleBar::new())
             .children(song)

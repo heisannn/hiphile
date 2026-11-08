@@ -1,6 +1,6 @@
 [package]
 name = "lyrics"
-description = "Finds a song's lyrics over net, from one provider after another. No GPUI."
+description = "Finds a song's lyrics over net, from one provider after another, keeps those of the song on show, and times their lines. No GPUI."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -12,15 +12,23 @@ test-support = []
 [dependencies]
 base64.workspace = true
 bytes.workspace = true
+config.workspace = true
 dirs.workspace = true
+executor.workspace = true
 futures.workspace = true
 net.workspace = true
 roxmltree.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+subsonic.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 url.workspace = true
+
+[dev-dependencies]
+gpui-host.workspace = true
+gpui-kit = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

@@ -3988,9 +3988,12 @@ dependencies = [
  "home",
  "library",
  "lyrics",
+ "media-controls",
  "net",
+ "playback",
  "player",
  "playlists",
+ "presence",
  "search",
  "session",
  "settings",
@@ -4021,6 +4024,7 @@ dependencies = [
 name = "hiphile-core"
 version = "0.4.0"
 dependencies = [
+ "async-channel",
  "audio",
  "catalog",
  "chrono",
@@ -4031,13 +4035,17 @@ dependencies = [
  "fuzzy",
  "gpui-host",
  "gpui-kit",
+ "media-controls",
  "net",
  "playback",
+ "presence",
+ "raw-window-handle",
  "serde_json",
  "session",
  "subsonic",
  "tempfile",
  "tokio",
+ "url",
 ]
 
 [[package]]
@@ -5023,14 +5031,20 @@ version = "0.4.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
+ "config 0.4.0",
  "dirs 7.0.0",
+ "executor",
  "futures",
+ "gpui-host",
+ "gpui-kit",
  "net",
  "roxmltree 0.21.2",
  "serde",
  "serde_json",
+ "subsonic",
  "tempfile",
  "thiserror 2.0.21",
+ "tokio",
  "url",
 ]
 
@@ -6379,12 +6393,18 @@ dependencies = [
  "audio",
  "catalog",
  "client",
+ "config 0.4.0",
+ "executor",
  "futures",
+ "gpui-host",
+ "gpui-kit",
  "net",
  "rand 0.10.3",
  "serde_json",
+ "session",
  "subsonic",
  "tempfile",
+ "tokio",
  "url",
 ]
 
@@ -6397,13 +6417,12 @@ dependencies = [
  "client",
  "config 0.4.0",
  "futures",
+ "gpui-host",
  "gpui-kit",
  "hiphile-core",
  "lyrics",
- "media-controls",
  "net",
  "playback",
- "presence",
  "serde_json",
  "session",
  "subsonic",
@@ -7996,6 +8015,7 @@ dependencies = [
 name = "session"
 version = "0.4.0"
 dependencies = [
+ "bytes",
  "catalog",
  "client",
  "config 0.4.0",

@@ -2,6 +2,7 @@
 //! reads kanji. No GPUI.
 
 mod accounts;
+mod covers;
 mod reading_book;
 mod readings;
 
@@ -11,6 +12,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use subsonic::{AlbumId, AlbumWithSongs, CoverArtId, ServerInfo};
 
 pub use accounts::{Accounts, Invalid, SignInField, SignedIn};
+pub use covers::{answer_cover, cover_image};
 pub use reading_book::ReadingBook;
 pub use readings::{Readings, ReadingsFailed, ReadingsState, ReadingsStatus};
 

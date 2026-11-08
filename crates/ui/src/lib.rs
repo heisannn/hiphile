@@ -33,7 +33,7 @@ pub use load_state::{LoadFailure, Shelf, centered, muted_text, no_matches};
 pub use master_detail::{
     DetailHeader, ListFilter, ListPaneHeader, MasterDetail, RefreshFailure, filter_input,
 };
-pub use network::{init_network, on_readings_changed, readings, set_cover_capacity};
+pub use network::{covers, init_network, on_readings_changed, readings, set_cover_capacity};
 pub use now_playing::{NowPlaying, PlayState, PlayStateIcon};
 pub use reorder::ReorderExt;
 pub use row_list::row_list;

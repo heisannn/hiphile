@@ -18,9 +18,10 @@ use gpui_kit::component::{
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Div, Entity, FocusHandle, Focusable as _,
     InteractiveElement as _, IntoElement, MouseButton, NavigationDirection, ParentElement as _,
-    Pixels, Render, Stateful, Styled as _, Subscription, Task, Window, div,
+    Pixels, Render, Stateful, Styled as _, Subscription, Task, WeakEntity, Window, div,
     prelude::FluentBuilder as _, px,
 };
+use hiphile_core::desktop::{DiscordNotice, DiscordStatus, MediaNotice, SystemMediaControls};
 use hiphile_core::favorites::{FavoritesNotice, FavoritesState};
 use hiphile_core::home::DailyRecommendations;
 use hiphile_core::library::{LibraryActivity, LibraryNotice, LibrarySync};
@@ -30,18 +31,19 @@ use hiphile_core::search::SearchIndex;
 use hiphile_core::settings::{AudioSettings, CacheLimit, CacheLimitSnapshot, DiscordSettings};
 use home::Home;
 use library::{Library, LibraryEvent, Refresh};
+use playback::{PlayerNotice, PlayerSnapshot};
 use player::{
-    CloseLyrics, CurrentLyrics, CycleRepeat, LyricsView, MiniPlayer, NextSong, Panels, Player,
-    PlayerEvent, PreviousSong, QueueView, RepeatMode, SaveQueue, SeekBackward, SeekForward,
-    SetRepeat, ToggleLyrics, ToggleMiniPlayer, ToggleMute, TogglePlayback, ToggleQueue,
-    ToggleShuffle, VolumeDown, VolumeUp,
+    CloseLyrics, CycleRepeat, LyricsView, MiniPlayer, NextSong, Panels, Player, PreviousSong,
+    QueueView, RepeatMode, SaveQueue, SeekBackward, SeekForward, SetRepeat, ToggleLyrics,
+    ToggleMiniPlayer, ToggleMute, TogglePlayback, ToggleQueue, ToggleShuffle, VolumeDown, VolumeUp,
 };
 use playlists::{Playlists, PlaylistsEvent};
+use presence::Presence;
 use search::{OpenSearch, Search, SearchEvent};
 use session::{Accounts, ReadingsFailed, ReadingsState, Session};
 use settings::OpenSettings;
 use songs::Songs;
-use subsonic::{AlbumId, ArtistId};
+use subsonic::{AlbumId, ArtistId, SongId};
 use ui::CoverCache;
 use updater::{UpdateState, Updater};
 
@@ -119,7 +121,13 @@ struct Workspace {
     panes: Entity<ResizableState>,
     /// Holds the session's decoded covers, so signing out frees them.
     covers: Entity<CoverCache>,
-    _player_events: Subscription,
+    _discord: DiscordStatus,
+    _discord_notices: Task<()>,
+    _media: SystemMediaControls,
+    _media_notices: Task<()>,
+    _quit: Subscription,
+    _player_changes: Task<()>,
+    _player_notices: Task<()>,
     _library_events: Subscription,
     _library_notices: Task<()>,
     _artists_events: Subscription,
@@ -205,14 +213,23 @@ impl AppShell {
         let screen = Self::sign_in(&accounts, Start::Resume, window, cx);
         let queue_shown = true;
         crate::set_menus(queue_shown, false, false, None, false, RepeatMode::Off, cx);
-        let song_cache_changes =
-            follow_cache_limit(&settings::song_cache_settings(cx), cx, |capacity, cx| {
+        let song_cache_changes = follow_cache_limit(
+            &settings::song_cache_settings(cx),
+            cx,
+            |this, capacity, cx| {
                 player::set_song_capacity(capacity, cx);
-            });
-        let cover_cache_changes =
-            follow_cache_limit(&settings::cover_cache_settings(cx), cx, |capacity, cx| {
+                if let Some(core) = this.core(cx) {
+                    core.set_song_cache(player::song_cache(cx));
+                }
+            },
+        );
+        let cover_cache_changes = follow_cache_limit(
+            &settings::cover_cache_settings(cx),
+            cx,
+            |_, capacity, cx| {
                 ui::set_cover_capacity(capacity, cx);
-            });
+            },
+        );
         let readings_failures = readings.map(|readings| {
             let notices = readings.notices();
             // What failed before there was a window to say so in. A failure since then is told
@@ -293,70 +310,63 @@ impl AppShell {
         let activity = LibraryActivity::new(executor, session.clone(), &sync);
         let activity_changes = follow_library_activity(activity, window, cx);
         let player = new_player(&session, window, cx);
-        let queue = cx.new(|cx| QueueView::new(player.clone(), window, cx));
+        let core = player.read(cx).core().clone();
+        let queue = cx.new(|cx| QueueView::new(core.clone(), window, cx));
         let (lyrics, mini_player, lyrics_changes) = lyrics_views(&session, &player, window, cx);
         let covers = CoverCache::new(cx);
-        // Every screen marks the song the player is on; the shell also
-        // re-renders, which updates which commands are available.
-        let player_events = cx.subscribe(&player, {
-            let home = home.downgrade();
-            let library = library.downgrade();
-            let artists = artists.downgrade();
-            let songs = songs.downgrade();
-            let playlists = playlists.downgrade();
-            let favorites = favorites.downgrade();
-            move |this, _, event, cx| {
-                match event {
-                    PlayerEvent::NowPlaying { song, playing } => {
-                        // With no song the lyrics have nothing to show. Focus
-                        // follows once they are gone, as the view holds it.
-                        if song.is_none() {
-                            this.close_lyrics(cx);
-                        }
-                        home.update(cx, |home, cx| {
-                            home.set_now_playing(song.clone(), *playing, cx)
-                        })
-                        .ok();
-                        library
-                            .update(cx, |library, cx| {
-                                library.set_now_playing(song.clone(), *playing, cx)
-                            })
-                            .ok();
-                        artists
-                            .update(cx, |artists, cx| {
-                                artists.set_now_playing(song.clone(), *playing, cx)
-                            })
-                            .ok();
-                        songs
-                            .update(cx, |songs, cx| {
-                                songs.set_now_playing(song.clone(), *playing, cx)
-                            })
-                            .ok();
-                        playlists
-                            .update(cx, |playlists, cx| {
-                                playlists.set_now_playing(song.clone(), *playing, cx)
-                            })
-                            .ok();
-                        favorites
-                            .update(cx, |favorites, cx| {
-                                favorites.set_now_playing(song.clone(), *playing, cx)
-                            })
-                            .ok();
-                    }
-                    PlayerEvent::Played => {
-                        home.update(cx, |home, cx| home.song_played(cx)).ok();
-                    }
-                    PlayerEvent::CoverSought { error } => {
-                        settings::discord_settings(cx).set_upload_error(error.as_deref());
-                    }
-                    PlayerEvent::ShuffleChanged | PlayerEvent::RepeatChanged => {
-                        this.update_menus(cx);
-                    }
-                    PlayerEvent::QueueChanged => {}
+        let discord = discord_status(&core, &session, cx);
+        let discord_notices =
+            gpui_host::subscribe(discord.notices(), cx, |_, notice, cx| match notice {
+                DiscordNotice::CoverSought { error } => {
+                    settings::discord_settings(cx).set_upload_error(error.as_deref());
                 }
-                cx.notify();
+            });
+        let media = SystemMediaControls::new(
+            gpui_host::executor(cx),
+            core.clone(),
+            session.clone(),
+            ui::covers(cx),
+            media_controls::MediaControls::connect(window),
+        );
+        let media_notices =
+            gpui_host::subscribe_in(media.notices(), window, cx, |_, notice, window, cx| {
+                match notice {
+                    MediaNotice::Raise => {
+                        cx.activate(true);
+                        window.activate_window();
+                    }
+                }
+            });
+        // Quitting may not drop the workspace, and dropping the player does not wait for the
+        // engine, so it is shut down here, while the process still runs
+        let quit = cx.on_app_quit({
+            let (core, media) = (core.clone(), media.clone());
+            move |_, _| {
+                core.shutdown();
+                media.clear();
+                async {}
             }
         });
+        let player_notices = gpui_host::subscribe(core.notices(), cx, {
+            let home = home.downgrade();
+            move |_, notice, cx| match notice {
+                PlayerNotice::Played => {
+                    home.update(cx, |home, cx| home.song_played(cx)).ok();
+                }
+            }
+        });
+        let player_changes = follow_player(
+            &core,
+            NowPlayingScreens {
+                home: home.downgrade(),
+                library: library.downgrade(),
+                artists: artists.downgrade(),
+                songs: songs.downgrade(),
+                playlists: playlists.downgrade(),
+                favorites: favorites.downgrade(),
+            },
+            cx,
+        );
         let library_events = cx.subscribe(&library, Self::on_library_event);
         let library_notices =
             follow_library(&sync, &home, &artists, &songs, search_index, window, cx);
@@ -366,9 +376,10 @@ impl AppShell {
             }
         });
         let playlists_events = cx.subscribe_in(&playlists, window, Self::on_playlists_event);
-        let audio_changes = follow_audio_settings(&settings::audio_settings(cx), &player, cx);
-        let discord_changes = follow_discord_settings(&settings::discord_settings(cx), &player, cx);
-        let queue_changes = follow_queue_settings(&player, cx);
+        let audio_changes = follow_audio_settings(&settings::audio_settings(cx), &core, cx);
+        let discord_changes =
+            follow_discord_settings(&settings::discord_settings(cx), &discord, cx);
+        let queue_changes = follow_queue_settings(&core, cx);
         // A focused control that goes away, such as Retry once loading starts,
         // would leave no focus and no working shortcuts.
         let focus_lost = cx.on_focus_lost(window, |this, window, cx| {
@@ -396,7 +407,13 @@ impl AppShell {
             mini_player,
             panes: cx.new(|_| ResizableState::default()),
             covers,
-            _player_events: player_events,
+            _discord: discord,
+            _discord_notices: discord_notices,
+            _media: media,
+            _media_notices: media_notices,
+            _quit: quit,
+            _player_changes: player_changes,
+            _player_notices: player_notices,
             _library_events: library_events,
             _library_notices: library_notices,
             _artists_events: artists_events,
@@ -428,12 +445,11 @@ impl AppShell {
             SearchEvent::ShowArtist(artist) => self.show_artist(artist, window, cx),
             SearchEvent::ShowAlbum(album) => self.show_album(album, window, cx),
             SearchEvent::PlaySong(song) => {
-                let songs = [song.clone()];
-                self.update_player(window, cx, |player, window, cx| {
-                    if !player.play(&songs, 0, cx) {
-                        notify_skipped(window, cx);
-                    }
-                });
+                if let Some(core) = self.core(cx)
+                    && !core.play(std::slice::from_ref(song), 0)
+                {
+                    notify_skipped(window, cx);
+                }
             }
         }
     }
@@ -523,9 +539,9 @@ impl AppShell {
     }
 
     fn update_menus(&self, cx: &mut App) {
-        let (shuffled, repeat) = self.player().map_or((false, RepeatMode::Off), |player| {
-            let player = player.read(cx);
-            (player.is_shuffled(), player.repeat())
+        let (shuffled, repeat) = self.core(cx).map_or((false, RepeatMode::Off), |core| {
+            let shown = core.snapshot();
+            (shown.is_shuffled(), shown.repeat())
         });
         let is_lyrics_open = self.is_lyrics_open(cx);
         crate::set_menus(
@@ -742,16 +758,22 @@ impl AppShell {
         }
     }
 
+    /// The player's core, which plays what the player shows.
+    fn core(&self, cx: &App) -> Option<playback::Player> {
+        self.player().map(|player| player.read(cx).core().clone())
+    }
+
     fn play_songs(&mut self, action: &PlaySongs, window: &mut Window, cx: &mut Context<Self>) {
-        self.update_player(window, cx, |player, window, cx| {
-            let is_queued = match action.start_ix() {
-                Some(start_ix) => player.play(action.songs(), start_ix, cx),
-                None => player.play_whole(action.songs(), cx),
-            };
-            if !is_queued {
-                notify_skipped(window, cx);
-            }
-        });
+        let Some(core) = self.core(cx) else {
+            return;
+        };
+        let is_queued = match action.start_ix() {
+            Some(start_ix) => core.play(action.songs(), start_ix),
+            None => core.play_whole(action.songs()),
+        };
+        if !is_queued {
+            notify_skipped(window, cx);
+        }
     }
 
     fn enqueue_songs(
@@ -764,11 +786,11 @@ impl AppShell {
             actions::Placement::Next => player::Placement::Next,
             actions::Placement::Last => player::Placement::Last,
         };
-        self.update_player(window, cx, |player, window, cx| {
-            if !player.enqueue(action.songs(), placement, cx) {
-                notify_skipped(window, cx);
-            }
-        });
+        if let Some(core) = self.core(cx)
+            && !core.enqueue(action.songs(), placement)
+        {
+            notify_skipped(window, cx);
+        }
     }
 
     fn update_player(
@@ -885,9 +907,7 @@ impl AppShell {
 
     fn handle_song_commands(&self, root: Stateful<Div>, cx: &mut Context<Self>) -> Stateful<Div> {
         let lyrics_open = self.is_lyrics_open(cx);
-        let has_song = self
-            .player()
-            .is_some_and(|player| player.read(cx).has_song());
+        let has_song = self.core(cx).is_some_and(|core| core.snapshot().has_song());
         root.when(lyrics_open, |this| {
             this.on_action(cx.listener(|this, _: &CloseLyrics, window, cx| {
                 this.set_lyrics_open(false, window, cx);
@@ -905,14 +925,14 @@ impl AppShell {
                         .update(cx, |mini_player, cx| mini_player.toggle(window, cx));
                 }
             }))
-            .on_action(cx.listener(|this, _: &TogglePlayback, window, cx| {
-                this.update_player(window, cx, |player, _, cx| player.toggle_playback(cx));
+            .on_action(cx.listener(|this, _: &TogglePlayback, _, cx| {
+                this.core(cx).inspect(playback::Player::toggle_playback);
             }))
-            .on_action(cx.listener(|this, _: &NextSong, window, cx| {
-                this.update_player(window, cx, |player, _, cx| player.next(cx));
+            .on_action(cx.listener(|this, _: &NextSong, _, cx| {
+                this.core(cx).inspect(playback::Player::next);
             }))
-            .on_action(cx.listener(|this, _: &PreviousSong, window, cx| {
-                this.update_player(window, cx, |player, _, cx| player.previous(cx));
+            .on_action(cx.listener(|this, _: &PreviousSong, _, cx| {
+                this.core(cx).inspect(playback::Player::previous);
             }))
             .on_action(cx.listener(|this, _: &SeekForward, window, cx| {
                 this.update_player(window, cx, Player::seek_forward);
@@ -1168,15 +1188,15 @@ fn follow_library(
 fn follow_cache_limit(
     limit: &CacheLimit,
     cx: &mut Context<AppShell>,
-    set_capacity: impl Fn(Option<u64>, &mut App) + 'static,
+    set_capacity: impl Fn(&AppShell, Option<u64>, &mut App) + 'static,
 ) -> Task<()> {
     let in_effect = |limit: &CacheLimitSnapshot| (limit.capacity(), limit.is_keeping_none());
     let changes = limit.subscribe();
     let mut passed_on = in_effect(&changes.borrow());
-    gpui_host::observe(changes, cx, move |_, limit, cx| {
+    gpui_host::observe(changes, cx, move |this, limit, cx| {
         if in_effect(&limit) != passed_on {
             passed_on = in_effect(&limit);
-            set_capacity(limit.capacity(), cx);
+            set_capacity(this, limit.capacity(), cx);
         }
     })
 }
@@ -1185,7 +1205,7 @@ fn follow_cache_limit(
 /// `player` hears nothing of.
 fn follow_audio_settings(
     audio_settings: &AudioSettings,
-    player: &Entity<Player>,
+    core: &playback::Player,
     cx: &mut Context<AppShell>,
 ) -> Task<()> {
     let changes = audio_settings.subscribe();
@@ -1193,38 +1213,115 @@ fn follow_audio_settings(
         let audio = changes.borrow();
         (audio.output().clone(), audio.transitions())
     };
-    let player = player.downgrade();
-    gpui_host::observe(changes, cx, move |_, audio, cx| {
+    let core = core.clone();
+    gpui_host::observe(changes, cx, move |_, audio, _| {
         if *audio.output() != output {
             output = audio.output().clone();
-            let output = output.clone();
-            player
-                .update(cx, |player, cx| player.set_output(output, cx))
-                .ok();
+            core.set_output(output.clone());
         }
         if audio.transitions() != transitions {
             transitions = audio.transitions();
-            player
-                .update(cx, |player, _| player.set_transitions(transitions))
-                .ok();
+            core.set_transitions(transitions);
         }
     })
 }
 
-fn follow_queue_settings(player: &Entity<Player>, cx: &mut Context<AppShell>) -> Task<()> {
+fn follow_queue_settings(core: &playback::Player, cx: &mut Context<AppShell>) -> Task<()> {
     let changes = settings::queue_settings(cx).subscribe();
     let mut is_on = changes.borrow().is_skip_instrumentals_on();
     actions::set_skip_instrumentals(is_on, cx);
-    let player = player.downgrade();
+    core.set_skip_instrumentals(is_on);
+    let core = core.clone();
     gpui_host::observe(changes, cx, move |_, queue, cx| {
         if queue.is_skip_instrumentals_on() == is_on {
             return;
         }
         is_on = queue.is_skip_instrumentals_on();
         actions::set_skip_instrumentals(is_on, cx);
-        player
-            .update(cx, |player, cx| player.apply_skipping(cx))
+        core.set_skip_instrumentals(is_on);
+    })
+}
+
+/// The screens that mark the song the player is on.
+struct NowPlayingScreens {
+    home: WeakEntity<Home>,
+    library: WeakEntity<Library>,
+    artists: WeakEntity<Artists>,
+    songs: WeakEntity<Songs>,
+    playlists: WeakEntity<Playlists>,
+    favorites: WeakEntity<Favorites>,
+}
+
+impl NowPlayingScreens {
+    fn set_now_playing(&self, song: Option<&SongId>, playing: bool, cx: &mut App) {
+        let song = || song.cloned();
+        self.home
+            .update(cx, |home, cx| home.set_now_playing(song(), playing, cx))
             .ok();
+        self.library
+            .update(cx, |library, cx| {
+                library.set_now_playing(song(), playing, cx)
+            })
+            .ok();
+        self.artists
+            .update(cx, |artists, cx| {
+                artists.set_now_playing(song(), playing, cx)
+            })
+            .ok();
+        self.songs
+            .update(cx, |songs, cx| songs.set_now_playing(song(), playing, cx))
+            .ok();
+        self.playlists
+            .update(cx, |playlists, cx| {
+                playlists.set_now_playing(song(), playing, cx)
+            })
+            .ok();
+        self.favorites
+            .update(cx, |favorites, cx| {
+                favorites.set_now_playing(song(), playing, cx)
+            })
+            .ok();
+    }
+}
+
+/// Every screen marks the song the player is on; the shell's menus show the shuffle and the
+/// repeat, and it draws again for which commands are available.
+fn follow_player(
+    core: &playback::Player,
+    screens: NowPlayingScreens,
+    cx: &mut Context<AppShell>,
+) -> Task<()> {
+    let now_playing = |shown: &PlayerSnapshot| {
+        let song = shown.current_song().map(|song| song.id().clone());
+        (song, shown.is_playing())
+    };
+    let order = |shown: &PlayerSnapshot| (shown.is_shuffled(), shown.repeat());
+    let commands = |shown: &PlayerSnapshot| (shown.has_song(), shown.has_queued_songs());
+    let changes = core.subscribe();
+    let (mut playing, mut ordered, mut commanded) = {
+        let shown = changes.borrow();
+        (now_playing(&shown), order(&shown), commands(&shown))
+    };
+    gpui_host::observe(changes, cx, move |this, shown, cx| {
+        if now_playing(&shown) != playing {
+            playing = now_playing(&shown);
+            // With no song the lyrics have nothing to show. Focus follows once they are
+            // gone, as the view holds it.
+            if playing.0.is_none() {
+                this.close_lyrics(cx);
+            }
+            screens.set_now_playing(playing.0.as_ref(), playing.1, cx);
+            cx.notify();
+        }
+        if order(&shown) != ordered {
+            ordered = order(&shown);
+            this.update_menus(cx);
+            cx.notify();
+        }
+        if commands(&shown) != commanded {
+            commanded = commands(&shown);
+            cx.notify();
+        }
     })
 }
 
@@ -1261,9 +1358,34 @@ fn notify_skipped(window: &mut Window, cx: &mut App) {
     window.push_notification((NotificationType::Info, message), cx);
 }
 
+/// Shows what `core` plays as the user's Discord status, as the settings have it.
+fn discord_status(
+    core: &playback::Player,
+    session: &Session,
+    cx: &mut Context<AppShell>,
+) -> DiscordStatus {
+    // Tests play made-up songs, which must not reach the user's status
+    let presence = if cfg!(test) {
+        Presence::disconnected()
+    } else {
+        Presence::spawn()
+    };
+    let status = DiscordStatus::new(
+        gpui_host::executor(cx),
+        core.clone(),
+        session.clone(),
+        ui::covers(cx),
+        presence,
+    );
+    let discord = settings::discord_settings(cx).snapshot();
+    status.set_cover_key(discord.imgbb_key());
+    status.set_on(discord.is_presence_on());
+    status
+}
+
 fn follow_discord_settings(
     discord_settings: &DiscordSettings,
-    player: &Entity<Player>,
+    status: &DiscordStatus,
     cx: &mut Context<AppShell>,
 ) -> Task<()> {
     let changes = discord_settings.subscribe();
@@ -1274,19 +1396,15 @@ fn follow_discord_settings(
             discord.is_presence_on(),
         )
     };
-    let player = player.downgrade();
-    gpui_host::observe(changes, cx, move |_, discord, cx| {
+    let status = status.clone();
+    gpui_host::observe(changes, cx, move |_, discord, _| {
         if discord.imgbb_key() != key.as_deref() {
             key = discord.imgbb_key().map(str::to_owned);
-            player
-                .update(cx, |player, _| player.set_cover_key(key.as_deref()))
-                .ok();
+            status.set_cover_key(key.as_deref());
         }
         if discord.is_presence_on() != is_presence_on {
             is_presence_on = discord.is_presence_on();
-            player
-                .update(cx, |player, _| player.set_presence_on(is_presence_on))
-                .ok();
+            status.set_on(is_presence_on);
         }
     })
 }
@@ -1306,15 +1424,17 @@ fn new_player(
 ) -> Entity<Player> {
     let audio = settings::audio_settings(cx).snapshot();
     let (output, transitions) = (audio.output().clone(), audio.transitions());
-    let discord = settings::discord_settings(cx).snapshot();
-    let cover_key = discord.imgbb_key().map(str::to_owned);
-    let is_presence_on = discord.is_presence_on();
     let shell = cx.weak_entity();
+    let core = playback::Player::new(
+        gpui_host::executor(cx),
+        session.clone(),
+        config::Store::user(),
+        output,
+        player::song_cache(cx),
+    );
+    core.set_transitions(transitions);
     cx.new(|cx| {
-        let mut player = Player::new(session.clone(), output, window, cx);
-        player.set_transitions(transitions);
-        player.set_cover_key(cover_key.as_deref());
-        player.set_presence_on(is_presence_on);
+        let mut player = Player::new(core, session.clone(), window, cx);
         player.set_panels(move |window, cx| {
             shell
                 .upgrade()
@@ -1339,21 +1459,16 @@ fn lyrics_views(
     let finder = lyrics::Finder::user(session.client().net().clone());
     let changes = settings::lyrics_settings(cx).subscribe();
     let mut highlight = changes.borrow().highlight();
-    let current = cx.new(|cx| {
-        let mut current = CurrentLyrics::new(player.clone(), finder);
-        current.set_highlight(highlight, cx);
-        current
-    });
+    let current = lyrics::CurrentLyrics::new(gpui_host::executor(cx), finder);
+    current.set_highlight(highlight);
     let highlight_changes = gpui_host::observe(changes, cx, {
-        let current = current.downgrade();
-        move |_, lyrics, cx| {
+        let current = current.clone();
+        move |_, lyrics, _| {
             if lyrics.highlight() == highlight {
                 return;
             }
             highlight = lyrics.highlight();
-            current
-                .update(cx, |current, cx| current.set_highlight(highlight, cx))
-                .ok();
+            current.set_highlight(highlight);
         }
     });
     let view = cx.new(|cx| LyricsView::new(player.clone(), current.clone(), cx));
@@ -1381,8 +1496,8 @@ impl Render for AppShell {
         };
         let signed_in = matches!(self.screen, Screen::Workspace(_));
         let has_queue = self
-            .player()
-            .is_some_and(|player| player.read(cx).has_queued_songs());
+            .core(cx)
+            .is_some_and(|core| core.snapshot().has_queued_songs());
         let chooser = match &self.screen {
             Screen::Workspace(workspace) => workspace.playlists.read(cx).render_chooser(window),
             Screen::SignIn { .. } => None,
@@ -1461,25 +1576,25 @@ impl Render for AppShell {
                 }))
                 .on_action(cx.listener(Self::play_songs))
                 .on_action(cx.listener(Self::enqueue_songs))
-                .on_action(cx.listener(|this, _: &VolumeUp, window, cx| {
-                    this.update_player(window, cx, Player::volume_up);
+                .on_action(cx.listener(|this, _: &VolumeUp, _, cx| {
+                    this.core(cx).inspect(playback::Player::volume_up);
                 }))
-                .on_action(cx.listener(|this, _: &VolumeDown, window, cx| {
-                    this.update_player(window, cx, Player::volume_down);
+                .on_action(cx.listener(|this, _: &VolumeDown, _, cx| {
+                    this.core(cx).inspect(playback::Player::volume_down);
                 }))
-                .on_action(cx.listener(|this, _: &ToggleMute, window, cx| {
-                    this.update_player(window, cx, |player, _, cx| player.toggle_mute(cx));
+                .on_action(cx.listener(|this, _: &ToggleMute, _, cx| {
+                    this.core(cx).inspect(playback::Player::toggle_mute);
                 }))
-                .on_action(cx.listener(|this, _: &ToggleShuffle, window, cx| {
-                    this.update_player(window, cx, |player, _, cx| player.toggle_shuffle(cx));
+                .on_action(cx.listener(|this, _: &ToggleShuffle, _, cx| {
+                    this.core(cx).inspect(playback::Player::toggle_shuffle);
                 }))
-                .on_action(cx.listener(|this, _: &CycleRepeat, window, cx| {
-                    this.update_player(window, cx, |player, _, cx| player.cycle_repeat(cx));
+                .on_action(cx.listener(|this, _: &CycleRepeat, _, cx| {
+                    this.core(cx).inspect(playback::Player::cycle_repeat);
                 }))
-                .on_action(cx.listener(|this, action: &SetRepeat, window, cx| {
-                    this.update_player(window, cx, |player, _, cx| {
-                        player.set_repeat(action.repeat(), cx)
-                    });
+                .on_action(cx.listener(|this, action: &SetRepeat, _, cx| {
+                    if let Some(core) = this.core(cx) {
+                        core.set_repeat(action.repeat());
+                    }
                 }))
             })
             .when(queue_fits, |this| {
@@ -1489,7 +1604,7 @@ impl Render for AppShell {
             })
             .when(has_queue, |this| {
                 this.on_action(cx.listener(|this, _: &SaveQueue, window, cx| {
-                    let Some(songs) = this.player().map(|player| player.read(cx).queued_songs())
+                    let Some(songs) = this.core(cx).map(|core| core.snapshot().queued_songs())
                     else {
                         return;
                     };

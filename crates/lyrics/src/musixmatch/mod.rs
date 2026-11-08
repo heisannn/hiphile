@@ -151,7 +151,7 @@ impl Provider for Client {
     }
 }
 
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub fn lyrics_from_richsync_body(body: &str) -> Lyrics {
     let answer = serde_json::json!({ "message": {
         "header": { "status_code": 200 },

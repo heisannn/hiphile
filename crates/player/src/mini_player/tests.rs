@@ -1,15 +1,13 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use audio::OutputSettings;
 use futures::FutureExt as _;
 use gpui_kit::{Modifiers, MouseButton, TestAppContext, VisualTestContext};
 use lyrics::Lyrics;
 use serde_json::json;
-use subsonic::{Credentials, SongId};
 
 use super::*;
-use crate::lyrics_view::FindLyrics;
+use lyrics::FindLyrics;
 
 fn song(id: &str) -> Song {
     serde_json::from_value(json!({
@@ -52,24 +50,13 @@ fn main_window_answering(
         ui::list_navigation::bind_control_keys(cx);
         crate::bind_commands("Workspace", cx);
     });
-    let net = net::Client::new("hiphile-test").unwrap();
-    let server = client::Server::new("http://127.0.0.1:9", Credentials::api_key("k")).unwrap();
-    let info = serde_json::from_value(json!({ "version": "1.16.1" })).unwrap();
-    let session = session::Session::new(
-        client::Client::new(net, server),
-        "alice".to_owned(),
-        info,
-        None,
-        None,
-    );
     cx.add_window_view(|window, cx| {
         let player = cx.new(|cx| {
-            let mut player = Player::new(session, OutputSettings::default(), window, cx);
+            let mut player = crate::testing::idle_player(window, cx);
             player.fill_queue(&[song("a")], 0);
             player
         });
-        let lyrics =
-            cx.new(|_| CurrentLyrics::with_find_lyrics(player.clone(), find_from(answers)));
+        let lyrics = CurrentLyrics::with_find_lyrics(gpui_host::executor(cx), find_from(answers));
         let mini_player = cx.new(|cx| MiniPlayer::new(player, lyrics, window, cx));
         Main {
             mini_player: Some(mini_player),
@@ -117,7 +104,7 @@ fn draw(cx: &mut VisualTestContext) {
 }
 
 fn is_playing(player: &Entity<Player>, cx: &mut VisualTestContext) -> bool {
-    cx.read(|cx| player.read(cx).is_playing())
+    cx.read(|cx| player.read(cx).snapshot().is_playing())
 }
 
 fn secondary(cx: &mut VisualTestContext) -> &'static str {
@@ -194,17 +181,14 @@ fn letting_it_go_closes_it_and_all_that_holds_on_to_the_player(cx: &mut TestAppC
     let (main, cx) = main_window(cx);
     let mini = mini_player(&main, cx);
     toggle(&mini, cx);
-    // Dropping it would have the audio thread wake a task, which tests do not allow.
-    // The lyrics stand in for it, being held by the same owners, and hold it.
-    std::mem::forget(player(&mini, cx));
-    let lyrics = cx.read(|cx| mini.read(cx).lyrics.downgrade());
+    let player = player(&mini, cx).downgrade();
     drop(mini);
 
     main.update(cx, |main, _| main.mini_player = None);
     cx.run_until_parked();
 
     assert_eq!(window_count(cx), 1);
-    assert!(lyrics.upgrade().is_none(), "playback would go on");
+    assert!(player.upgrade().is_none(), "playback would go on");
 }
 
 #[gpui_kit::test]
@@ -212,23 +196,15 @@ fn it_closes_when_the_song_runs_out(cx: &mut TestAppContext) {
     let (main, cx) = main_window(cx);
     let mini = mini_player(&main, cx);
     let player = player(&mini, cx);
+    let core = cx.read(|cx| player.read(cx).core().clone());
     toggle(&mini, cx);
 
-    player.update(cx, |_, cx| {
-        cx.emit(PlayerEvent::NowPlaying {
-            song: Some(SongId::new("b")),
-            playing: false,
-        });
-    });
+    core.fill_queue(&[song("a"), song("b")], 0);
+    core.next();
     cx.run_until_parked();
     assert!(is_open(&mini, cx), "another song is no cause to close");
 
-    player.update(cx, |_, cx| {
-        cx.emit(PlayerEvent::NowPlaying {
-            song: None,
-            playing: false,
-        });
-    });
+    core.next();
     cx.run_until_parked();
     assert!(!is_open(&mini, cx));
     assert_eq!(window_count(cx), 1);
@@ -318,7 +294,7 @@ fn its_shortcuts_work_in_its_window(cx: &mut TestAppContext) {
 
     mini_cx.simulate_keystrokes(&format!("{secondary}-alt-s"));
     mini_cx.run_until_parked();
-    assert!(cx.read(|cx| player.read(cx).is_shuffled()));
+    assert!(cx.read(|cx| player.read(cx).snapshot().is_shuffled()));
 }
 
 #[gpui_kit::test]
@@ -381,7 +357,8 @@ fn focus_comes_back_when_the_focused_button_goes(cx: &mut TestAppContext) {
     assert_ne!(mini_cx.update(|window, cx| window.focused(cx)), view_focus);
 
     let lyrics = cx.read(|cx| mini.read(cx).lyrics.clone());
-    lyrics.update(cx, |lyrics, cx| lyrics.look_up_current(cx));
+    let song = player.read_with(cx, |player, _| player.snapshot().current_song().cloned());
+    lyrics.look_up(song.as_ref());
     draw(&mut mini_cx);
     assert!(mini_cx.debug_bounds("lyrics-retry").is_none());
 

@@ -1,10 +1,8 @@
-use audio::OutputSettings;
 use gpui_kit::{
-    AppContext as _, Modifiers, MouseButton, Pixels, Point, TestAppContext, VisualTestContext,
-    point,
+    AppContext as _, Entity, Modifiers, MouseButton, Pixels, Point, TestAppContext,
+    VisualTestContext, point,
 };
 use serde_json::json;
-use subsonic::Credentials;
 use ui::list_navigation::{bind_control_keys, bind_list_navigation};
 
 use super::*;
@@ -27,27 +25,14 @@ fn queue<'a>(
         bind_list_navigation(QUEUE_CONTEXT, cx);
         actions::bind_toggle_favorite(QUEUE_CONTEXT, cx);
     });
-    let net = net::Client::new("hiphile-test").unwrap();
-    let server = client::Server::new("http://127.0.0.1:9", Credentials::api_key("k")).unwrap();
-    let info = serde_json::from_value(json!({ "version": "1.16.1" })).unwrap();
-    let session = session::Session::new(
-        client::Client::new(net, server),
-        "alice".to_owned(),
-        info,
-        None,
-        None,
-    );
     let songs: Vec<Song> = ids.iter().copied().map(song).collect();
     // The list takes its height from the window's root, as in the app
     let (handle, view) = cx
         .update(|cx| {
             gpui_kit::open_window(gpui_kit::WindowOptions::default(), cx, |window, cx| {
-                let player = cx.new(|cx| {
-                    let mut player = Player::new(session, OutputSettings::default(), window, cx);
-                    player.fill_queue(&songs, current_ix);
-                    player
-                });
-                cx.new(|cx| QueueView::new(player, window, cx))
+                let core = crate::testing::idle_core(cx);
+                core.fill_queue(&songs, current_ix);
+                cx.new(|cx| QueueView::new(core, window, cx))
             })
         })
         .unwrap();
@@ -58,8 +43,7 @@ fn queue<'a>(
 
 fn song_ids(view: &Entity<QueueView>, cx: &mut VisualTestContext) -> Vec<String> {
     cx.update(|_, cx| {
-        let player = view.read(cx).player.read(cx);
-        player
+        view.read(cx)
             .queue()
             .entries()
             .iter()
@@ -69,13 +53,13 @@ fn song_ids(view: &Entity<QueueView>, cx: &mut VisualTestContext) -> Vec<String>
 }
 
 fn entry_id(view: &Entity<QueueView>, ix: usize, cx: &mut VisualTestContext) -> EntryId {
-    cx.update(|_, cx| view.read(cx).player.read(cx).queue().entries()[ix].id())
+    cx.update(|_, cx| view.read(cx).queue().entries()[ix].id())
 }
 
 fn selected_ix(view: &Entity<QueueView>, cx: &mut VisualTestContext) -> Option<usize> {
     cx.update(|_, cx| {
         let this = view.read(cx);
-        this.player.read(cx).queue().position(this.selected?)
+        this.queue().position(this.selected?)
     })
 }
 
@@ -90,7 +74,7 @@ fn focus(view: &Entity<QueueView>, cx: &mut VisualTestContext) {
 fn row(view: &Entity<QueueView>, ix: usize, cx: &mut VisualTestContext) -> Point<Pixels> {
     cx.update(|_, cx| {
         let this = view.read(cx);
-        let len = this.player.read(cx).queue().len();
+        let len = this.queue().len();
         let state = this.scroll.0.borrow();
         let list = state.base_handle.bounds();
         let height = state.last_item_size.unwrap().contents.height / len as f32;
@@ -180,7 +164,7 @@ fn a_menus_commands_follow_where_the_entry_is(cx: &mut TestAppContext) {
     );
 
     let commands =
-        |id, cx: &mut VisualTestContext| cx.update(|_, cx| view.read(cx).entry_commands(id, cx));
+        |id, cx: &mut VisualTestContext| cx.update(|_, cx| view.read(cx).entry_commands(id));
     let of_first = commands(first, cx);
     assert!(of_first.play_next && of_first.remove && of_first.move_down);
     assert!(!of_first.move_up);
@@ -229,8 +213,7 @@ fn the_selection_stays_on_its_entry_through_a_shuffle(cx: &mut TestAppContext) {
 
     let toggle = |cx: &mut VisualTestContext| {
         cx.update(|_, cx| {
-            let player = view.read(cx).player.clone();
-            player.update(cx, |player, cx| player.toggle_shuffle(cx));
+            view.read(cx).core.toggle_shuffle();
         });
         cx.run_until_parked();
     };
@@ -254,12 +237,10 @@ fn going_back_in_order_brings_the_current_entry_into_view(cx: &mut TestAppContex
     let (view, cx) = queue(&ids, 0, cx);
     let songs: Vec<Song> = ids.iter().copied().map(song).collect();
     cx.update(|_, cx| {
-        let player = view.read(cx).player.clone();
-        player.update(cx, |player, cx| {
-            player.toggle_shuffle(cx);
-            // Shuffled, the song chosen comes first, wherever it was
-            player.fill_queue(&songs, 80);
-        });
+        let core = &view.read(cx).core;
+        core.toggle_shuffle();
+        // Shuffled, the song chosen comes first, wherever it was
+        core.fill_queue(&songs, 80);
     });
     cx.run_until_parked();
     let offset = |cx: &mut VisualTestContext| {
@@ -268,8 +249,7 @@ fn going_back_in_order_brings_the_current_entry_into_view(cx: &mut TestAppContex
     assert_eq!(offset(cx), gpui_kit::px(0.));
 
     cx.update(|_, cx| {
-        let player = view.read(cx).player.clone();
-        player.update(cx, |player, cx| player.toggle_shuffle(cx));
+        view.read(cx).core.toggle_shuffle();
     });
     cx.run_until_parked();
     assert!(offset(cx) < gpui_kit::px(0.));
@@ -278,14 +258,14 @@ fn going_back_in_order_brings_the_current_entry_into_view(cx: &mut TestAppContex
 #[gpui_kit::test]
 fn repeat_goes_on_from_off_to_all_to_one_and_back(cx: &mut TestAppContext) {
     let (view, cx) = queue(&["a"], 0, cx);
-    let player = cx.update(|_, cx| view.read(cx).player.clone());
+    let core = cx.update(|_, cx| view.read(cx).core.clone());
     for expected in [
         playback::RepeatMode::All,
         playback::RepeatMode::One,
         playback::RepeatMode::Off,
     ] {
-        player.update(cx, |player, cx| player.cycle_repeat(cx));
-        assert_eq!(player.read_with(cx, |player, _| player.repeat()), expected);
+        core.cycle_repeat();
+        assert_eq!(core.snapshot().repeat(), expected);
     }
 }
 

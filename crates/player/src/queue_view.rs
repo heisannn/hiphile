@@ -9,13 +9,13 @@ use gpui_kit::component::{
 use std::sync::Arc;
 
 use gpui_kit::{
-    AnyElement, App, Context, ElementId, Entity, FocusHandle, InteractiveElement as _, IntoElement,
+    AnyElement, App, Context, ElementId, FocusHandle, InteractiveElement as _, IntoElement,
     MouseButton, ParentElement as _, Render, RenderOnce, ScrollStrategy, SharedString, Styled as _,
-    Subscription, UniformListScrollHandle, WeakEntity, Window, actions, div,
+    Subscription, Task, UniformListScrollHandle, WeakEntity, Window, actions, div,
     prelude::FluentBuilder as _,
 };
 use hiphile_core::favorites::Favorite;
-use playback::EntryId;
+use playback::{EntryId, Queue};
 use subsonic::{Song, StarTarget};
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
 use ui::{
@@ -23,7 +23,7 @@ use ui::{
     song_artist_link,
 };
 
-use crate::{Player, PlayerEvent, SaveQueue};
+use crate::SaveQueue;
 
 pub const QUEUE_CONTEXT: &str = "Queue";
 
@@ -32,49 +32,58 @@ actions!(
     [Play, PlayNext, Remove, MoveUp, MoveDown, AddToPlaylist]
 );
 
-/// The [`Player`] owns the queue, and this view the selection, focus, and scrolling.
+/// The [`playback::Player`] owns the queue, and this view the selection, focus, and scrolling.
 pub struct QueueView {
-    player: Entity<Player>,
+    core: playback::Player,
+    /// Whether the queue was shuffled, as the last snapshot showed it.
+    was_shuffled: bool,
     /// Kept by entry, so it follows the entry as entries move.
     selected: Option<EntryId>,
     /// The current entry the list last scrolled to.
     followed: Option<EntryId>,
     focus: FocusHandle,
     scroll: UniformListScrollHandle,
+    _changes: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl QueueView {
-    pub fn new(player: Entity<Player>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(core: playback::Player, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle().tab_stop(true);
+        let changes = gpui_host::observe(core.subscribe(), cx, |this, shown, cx| {
+            this.on_queue_changed(cx);
+            // Back in order, the current entry may be far from where it was
+            if std::mem::replace(&mut this.was_shuffled, shown.is_shuffled()) != shown.is_shuffled()
+                && let Some(ix) = shown.queue().current_ix()
+            {
+                this.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
+            }
+        });
         let subscriptions = vec![
-            cx.subscribe(&player, |this, _, event, cx| {
-                this.on_queue_changed(cx);
-                // Back in order, the current entry may be far from where it was
-                if matches!(event, PlayerEvent::ShuffleChanged)
-                    && let Some(ix) = this.player.read(cx).queue().current_ix()
-                {
-                    this.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
-                }
-            }),
             // Focus changes the selection treatment of the rows
             cx.on_focus(&focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&focus, window, |_, _, cx| cx.notify()),
         ];
         let mut this = Self {
-            player,
+            was_shuffled: core.snapshot().is_shuffled(),
+            core,
             selected: None,
             followed: None,
             focus,
             scroll: UniformListScrollHandle::new(),
+            _changes: changes,
             _subscriptions: subscriptions,
         };
         this.on_queue_changed(cx);
         this
     }
 
+    fn queue(&self) -> Queue<Song> {
+        self.core.snapshot().queue().clone()
+    }
+
     fn on_queue_changed(&mut self, cx: &mut Context<Self>) {
-        let queue = self.player.read(cx).queue();
+        let queue = self.queue();
         if self
             .selected
             .is_some_and(|selected| queue.position(selected).is_none())
@@ -91,20 +100,20 @@ impl QueueView {
         cx.notify();
     }
 
-    fn selected_ix(&self, cx: &Context<Self>) -> Option<usize> {
-        self.player.read(cx).queue().position(self.selected?)
+    fn selected_ix(&self) -> Option<usize> {
+        self.queue().position(self.selected?)
     }
 
     /// Selects the entry wherever it is now, as a click on its row does:
     /// the row's position may be from before the queue last changed.
     fn select_entry(&mut self, id: EntryId, cx: &mut Context<Self>) {
-        if let Some(ix) = self.player.read(cx).queue().position(id) {
+        if let Some(ix) = self.queue().position(id) {
             self.select(ix, cx);
         }
     }
 
-    fn entry_commands(&self, id: EntryId, cx: &App) -> EntryCommands {
-        let queue = self.player.read(cx).queue();
+    fn entry_commands(&self, id: EntryId) -> EntryCommands {
+        let queue = self.queue();
         let (Some(ix), current_ix) = (queue.position(id), queue.current_ix()) else {
             return EntryCommands::default();
         };
@@ -118,14 +127,7 @@ impl QueueView {
     }
 
     fn select(&mut self, ix: usize, cx: &mut Context<Self>) {
-        let Some(id) = self
-            .player
-            .read(cx)
-            .queue()
-            .entries()
-            .get(ix)
-            .map(|entry| entry.id())
-        else {
+        let Some(id) = self.queue().entries().get(ix).map(|entry| entry.id()) else {
             return;
         };
         self.selected = Some(id);
@@ -134,9 +136,9 @@ impl QueueView {
     }
 
     fn move_selection(&mut self, motion: Motion, cx: &mut Context<Self>) {
-        let queue = self.player.read(cx).queue();
+        let queue = self.queue();
         let (len, current_ix) = (queue.len(), queue.current_ix());
-        let selected_ix = self.selected_ix(cx);
+        let selected_ix = self.selected_ix();
         // A step from no selection lands on the current entry, where a
         // look at the queue usually starts.
         let target = match (selected_ix, current_ix, motion) {
@@ -148,30 +150,27 @@ impl QueueView {
         }
     }
 
-    fn play_selected(&mut self, cx: &mut Context<Self>) {
+    fn play_selected(&self) {
         if let Some(id) = self.selected {
-            self.player
-                .update(cx, |player, cx| player.play_entry(id, cx));
+            self.core.play_entry(id);
         }
     }
 
-    fn play_selected_next(&mut self, cx: &mut Context<Self>) {
+    fn play_selected_next(&mut self) {
         if let Some(id) = self.selected {
-            self.player
-                .update(cx, |player, cx| player.move_entry_to_next(id, cx));
-            self.reveal_selected(cx);
+            self.core.move_entry_to_next(id);
+            self.reveal_selected();
         }
     }
 
     /// Removes the selected entry and selects the one that took its place,
     /// so that repeated removals work down the list.
     fn remove_selected(&mut self, cx: &mut Context<Self>) {
-        let (Some(id), Some(ix)) = (self.selected, self.selected_ix(cx)) else {
+        let (Some(id), Some(ix)) = (self.selected, self.selected_ix()) else {
             return;
         };
-        self.player
-            .update(cx, |player, cx| player.remove_entry(id, cx));
-        let queue = self.player.read(cx).queue();
+        self.core.remove_entry(id);
+        let queue = self.queue();
         if queue.position(id).is_some() {
             return;
         }
@@ -182,30 +181,27 @@ impl QueueView {
     }
 
     fn go_to_selected_artist(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let artist = self.selected_ix(cx).and_then(|ix| {
-            let entries = self.player.read(cx).queue().entries();
-            entries.get(ix)?.item().artist_id().cloned()
-        });
+        let artist = self
+            .selected_ix()
+            .and_then(|ix| self.queue().entries().get(ix)?.item().artist_id().cloned());
         if let Some(artist) = artist {
             window.dispatch_action(Box::new(actions::ShowArtist::new(artist)), cx);
         }
     }
 
     fn toggle_selected_favorite(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let song = self.selected_ix(cx).and_then(|ix| {
-            let entries = self.player.read(cx).queue().entries();
-            Some(entries.get(ix)?.item().clone())
-        });
+        let song = self
+            .selected_ix()
+            .and_then(|ix| Some(self.queue().entries().get(ix)?.item().clone()));
         if let Some(song) = song {
             actions::toggle_favorite(Favorite::Song(song), window, cx);
         }
     }
 
     fn choose_playlist_for_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let song = self.selected_ix(cx).and_then(|ix| {
-            let entries = self.player.read(cx).queue().entries();
-            Some(entries.get(ix)?.item().clone())
-        });
+        let song = self
+            .selected_ix()
+            .and_then(|ix| Some(self.queue().entries().get(ix)?.item().clone()));
         if let Some(song) = song {
             window.dispatch_action(
                 Box::new(actions::ChoosePlaylist::new(Arc::from([song]))),
@@ -214,16 +210,15 @@ impl QueueView {
         }
     }
 
-    fn move_selected(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let (Some(id), Some(ix)) = (self.selected, self.selected_ix(cx)) else {
+    fn move_selected(&mut self, delta: isize) {
+        let (Some(id), Some(ix)) = (self.selected, self.selected_ix()) else {
             return;
         };
         let Some(to_ix) = ix.checked_add_signed(delta) else {
             return;
         };
-        self.player
-            .update(cx, |player, cx| player.move_entry(id, to_ix, cx));
-        self.reveal_selected(cx);
+        self.core.move_entry(id, to_ix);
+        self.reveal_selected();
     }
 
     /// Moves the dragged entry to where `target` is: after it when dragged
@@ -235,25 +230,24 @@ impl QueueView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(to_ix) = self.player.read(cx).queue().position(target) else {
+        let Some(to_ix) = self.queue().position(target) else {
             return;
         };
         self.focus.focus(window, cx);
         self.selected = Some(dragged);
-        self.player
-            .update(cx, |player, cx| player.move_entry(dragged, to_ix, cx));
-        self.reveal_selected(cx);
+        self.core.move_entry(dragged, to_ix);
+        self.reveal_selected();
         cx.notify();
     }
 
-    fn reveal_selected(&mut self, cx: &mut Context<Self>) {
-        if let Some(ix) = self.selected_ix(cx) {
+    fn reveal_selected(&mut self) {
+        if let Some(ix) = self.selected_ix() {
             self.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
         }
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
-        let queue = self.player.read(cx).queue();
+        let queue = self.queue();
         let len = queue.len();
         // Clear keeps the current entry, so only more than that clears
         let clearable = len > usize::from(queue.current_ix().is_some());
@@ -288,9 +282,7 @@ impl QueueView {
                     .xsmall()
                     .label("Clear")
                     .disabled(!clearable)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.player.update(cx, |player, cx| player.clear_queue(cx));
-                    })),
+                    .on_click(cx.listener(|this, _, _, _| this.core.clear_queue())),
             )
             .into_any_element()
     }
@@ -309,11 +301,11 @@ impl QueueView {
             .track_focus(&self.focus)
             .key_context(QUEUE_CONTEXT)
             .on_list_navigation(|this, motion, _, cx| this.move_selection(motion, cx), cx)
-            .on_action(cx.listener(|this, _: &Play, _, cx| this.play_selected(cx)))
-            .on_action(cx.listener(|this, _: &PlayNext, _, cx| this.play_selected_next(cx)))
+            .on_action(cx.listener(|this, _: &Play, _, _| this.play_selected()))
+            .on_action(cx.listener(|this, _: &PlayNext, _, _| this.play_selected_next()))
             .on_action(cx.listener(|this, _: &Remove, _, cx| this.remove_selected(cx)))
-            .on_action(cx.listener(|this, _: &MoveUp, _, cx| this.move_selected(-1, cx)))
-            .on_action(cx.listener(|this, _: &MoveDown, _, cx| this.move_selected(1, cx)))
+            .on_action(cx.listener(|this, _: &MoveUp, _, _| this.move_selected(-1)))
+            .on_action(cx.listener(|this, _: &MoveDown, _, _| this.move_selected(1)))
             .on_action(cx.listener(|this, _: &AddToPlaylist, window, cx| {
                 this.choose_playlist_for_selected(window, cx)
             }))
@@ -330,8 +322,8 @@ impl QueueView {
     }
 
     fn render_rows(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let player = self.player.read(cx);
-        let queue = player.queue();
+        let snapshot = self.core.snapshot();
+        let queue = snapshot.queue();
         if queue.is_empty() {
             return div()
                 .p_4()
@@ -342,7 +334,7 @@ impl QueueView {
         }
         let entries = queue.snapshot();
         let current_ix = queue.current_ix();
-        let playing = player.is_playing();
+        let playing = snapshot.is_playing();
         let selected = self.selected;
         let is_focused = self.focus.is_focused(window);
         let focus = self.focus.clone();
@@ -465,7 +457,7 @@ impl RenderOnce for EntryRow {
                         this.focus.focus(window, cx);
                         this.select_entry(id, cx);
                         if event.click_count() >= 2 {
-                            this.play_selected(cx);
+                            this.play_selected();
                         }
                     })
                     .ok();
@@ -489,7 +481,7 @@ impl RenderOnce for EntryRow {
             .context_menu(move |menu, window, cx| {
                 let commands = owner
                     .upgrade()
-                    .map(|this| this.read(cx).entry_commands(id, cx))
+                    .map(|this| this.read(cx).entry_commands(id))
                     .unwrap_or_default();
                 let menu = menu
                     .action_context(focus.clone())
