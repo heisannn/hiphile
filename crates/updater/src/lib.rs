@@ -1,35 +1,11 @@
 //! Only the builds that CI compiles with `HIPHILE_SELF_UPDATE` set update themselves, so
 //! neither `cargo run` nor a build of someone's own is replaced by a release. [`Updater`]
-//! installs a new version while the app runs, and it takes over at the next launch, or at
-//! [`restart`].
+//! installs a new version while the app runs, and it takes over when the app next starts,
+//! which the host may do at once by restarting it.
 
 mod install;
 mod updater;
 
-use std::sync::Arc;
-
-use gpui_kit::{App, AppContext as _, Entity, Global};
-
-pub use updater::{UpdateState, Updater};
+pub use updater::{Status, UpdateState, Updater};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-struct GlobalUpdater(Option<Entity<Updater>>);
-
-impl Global for GlobalUpdater {}
-
-pub fn init(cx: &mut App) {
-    let updater = option_env!("HIPHILE_SELF_UPDATE")
-        .and_then(|_| install::Installation::of_this_app())
-        .map(|installation| cx.new(|cx| Updater::new(Arc::new(installation), cx)));
-    cx.set_global(GlobalUpdater(updater));
-}
-
-/// `None` in a build that does not update itself.
-pub fn updater(cx: &App) -> Option<Entity<Updater>> {
-    cx.try_global::<GlobalUpdater>()?.0.clone()
-}
-
-pub fn restart(cx: &mut App) {
-    cx.restart();
-}

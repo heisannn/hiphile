@@ -9267,6 +9267,7 @@ dependencies = [
  "gpui-kit",
  "hiphile-core",
  "subsonic",
+ "tokio",
 ]
 
 [[package]]
@@ -9367,11 +9368,14 @@ name = "updater"
 version = "0.4.0"
 dependencies = [
  "config 0.4.0",
+ "executor",
  "gpui-kit",
  "hex",
  "self_update",
  "sha2 0.11.1",
  "tempfile",
+ "tokio",
+ "ui",
 ]
 
 [[package]]

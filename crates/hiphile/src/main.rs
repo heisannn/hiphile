@@ -54,8 +54,8 @@ fn main() {
             playlists::init(cx);
             favorites::init(cx);
             search::init(WORKSPACE_CONTEXT, cx);
-            updater::init(cx);
-            settings::init(cx);
+            let updater = updater::Updater::of_this_app(ui::executor(cx), config::Store::user());
+            settings::init(updater.clone(), cx);
             install_app_commands(cx);
 
             // Window geometry is a platform boundary, so it is given in pixels
@@ -66,7 +66,7 @@ fn main() {
                 ..TitleBar::window_options()
             };
             let (main_window, _) = gpui_kit::open_window(options, cx, |window, cx| {
-                cx.new(|cx| AppShell::new(net, window, cx))
+                cx.new(|cx| AppShell::new(net, updater, window, cx))
             })
             .expect("failed to open the main window");
             // A window left open such as Settings must not keep the app alive without this one

@@ -3,7 +3,7 @@ set -euo pipefail
 
 crates=(
   subsonic net client audio playback presence catalog config fuzzy lyrics media-controls dsd r8brain
-  soxr executor hiphile-core hiphile-cli
+  soxr executor updater hiphile-core hiphile-cli
 )
 root="$(cd "$(dirname "$0")/.." && pwd)"
 status=0

@@ -36,6 +36,7 @@ pub use queue_settings::{QueueSettings, SkipInstrumentalsChanged};
 
 use appearance_settings::AppearanceSettings;
 use settings_view::SettingsView;
+use updater::Updater;
 
 const SETTINGS_CONTEXT: &str = "Settings";
 
@@ -49,6 +50,8 @@ struct GlobalSettings {
     discord: Entity<DiscordSettings>,
     lyrics: Entity<LyricsSettings>,
     queue: Entity<QueueSettings>,
+    /// `None` in a build that does not update itself.
+    updater: Option<Updater>,
     /// It may have been closed since.
     window: Option<AnyWindowHandle>,
 }
@@ -56,7 +59,7 @@ struct GlobalSettings {
 impl Global for GlobalSettings {}
 
 /// Call before building the menu bar.
-pub fn init(cx: &mut App) {
+pub fn init(updater: Option<Updater>, cx: &mut App) {
     number_field::init(cx);
     let appearance = cx.new(AppearanceSettings::new);
     let audio = cx.new(AudioSettings::new);
@@ -73,6 +76,7 @@ pub fn init(cx: &mut App) {
         discord,
         lyrics,
         queue,
+        updater,
         window: None,
     });
     // Deferred because an action reaches this handler while its window is being
@@ -104,6 +108,10 @@ pub fn lyrics_settings(cx: &App) -> Entity<LyricsSettings> {
 
 pub fn queue_settings(cx: &App) -> Entity<QueueSettings> {
     cx.global::<GlobalSettings>().queue.clone()
+}
+
+fn updater(cx: &App) -> Option<Updater> {
+    cx.global::<GlobalSettings>().updater.clone()
 }
 
 pub fn song_cache_settings(cx: &App) -> Entity<CacheLimit> {

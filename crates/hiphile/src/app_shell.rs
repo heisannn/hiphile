@@ -18,8 +18,8 @@ use gpui_kit::component::{
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Div, Entity, FocusHandle, Focusable as _,
     InteractiveElement as _, IntoElement, MouseButton, NavigationDirection, ParentElement as _,
-    Pixels, Render, Stateful, Styled as _, Subscription, Window, div, prelude::FluentBuilder as _,
-    px,
+    Pixels, Render, Stateful, Styled as _, Subscription, Task, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 use hiphile_core::navigation::{Destination, History, Location};
 use home::Home;
@@ -37,7 +37,7 @@ use settings::OpenSettings;
 use songs::Songs;
 use subsonic::{AlbumId, ArtistId};
 use ui::CoverCache;
-use updater::UpdateState;
+use updater::{UpdateState, Updater};
 
 use crate::library_activity::{ActivityChanged, LibraryActivity, NoticeChange};
 use crate::{
@@ -56,6 +56,8 @@ pub const WORKSPACE_CONTEXT: &str = "Workspace";
 /// Routes commands between features and owns no feature state.
 pub struct AppShell {
     net: net::Client,
+    /// `None` in a build that does not update itself.
+    updater: Option<Updater>,
     /// `None` where the system has no credential store; signing in then
     /// always asks for the password.
     keychain: Option<config::Keychain>,
@@ -72,7 +74,7 @@ pub struct AppShell {
     _song_cache_changes: Subscription,
     _cover_cache_changes: Subscription,
     _system_appearance_changes: Subscription,
-    _updater_changes: Option<Subscription>,
+    _updater_changes: Option<Task<()>>,
 }
 
 enum Screen {
@@ -178,7 +180,12 @@ fn tell_readings_failed(error: &str, window: &mut Window, cx: &mut App) {
 }
 
 impl AppShell {
-    pub fn new(net: net::Client, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        net: net::Client,
+        updater: Option<Updater>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         window.set_window_title("hiphile");
         let focus = cx.focus_handle();
         let keychain = config::Keychain::system().ok();
@@ -223,8 +230,10 @@ impl AppShell {
             _song_cache_changes: song_cache_changes,
             _cover_cache_changes: cover_cache_changes,
             _system_appearance_changes: settings::follow_system_appearance(window),
-            _updater_changes: updater::updater(cx)
-                .map(|updater| cx.observe(&updater, |_, _, cx| cx.notify())),
+            _updater_changes: updater
+                .as_ref()
+                .map(|updater| ui::notify_on_change(updater.subscribe(), cx)),
+            updater,
         }
     }
 
@@ -1057,8 +1066,10 @@ impl AppShell {
             .destination()
             .and_then(|current| Destination::ALL.iter().position(|d| *d == current));
         let (can_go_back, can_go_forward) = self.history_available(cx);
-        let update_ready = updater::updater(cx)
-            .is_some_and(|updater| matches!(updater.read(cx).state(), UpdateState::Ready(_)));
+        let update_ready = self
+            .updater
+            .as_ref()
+            .is_some_and(|updater| matches!(updater.status().state(), UpdateState::Ready(_)));
         TitleBar::new()
             .when(cfg!(target_os = "macos"), |this| {
                 this.pl(MACOS_TITLE_BAR_INSET)
@@ -1125,7 +1136,7 @@ impl AppShell {
                                     .outline()
                                     .small()
                                     .label("Restart to update")
-                                    .on_click(|_, _, cx| updater::restart(cx)),
+                                    .on_click(|_, _, cx| cx.restart()),
                             ),
                         )
                     })

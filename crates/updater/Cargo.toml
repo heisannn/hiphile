@@ -1,6 +1,6 @@
 [package]
 name = "updater"
-description = "Feature: installing new versions of the app from its GitHub releases."
+description = "Installing new versions of the app from its GitHub releases. No GPUI."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -8,8 +8,9 @@ license.workspace = true
 
 [dependencies]
 config.workspace = true
-gpui-kit.workspace = true
+executor.workspace = true
 self_update.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 
 [lints]
 workspace = true
@@ -19,3 +20,5 @@ gpui-kit = { workspace = true, features = ["test-support"] }
 hex.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "test-util"] }
+ui.workspace = true

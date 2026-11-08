@@ -1,9 +1,10 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
-use gpui_kit::{AppContext as _, Context, SharedString, Task};
+use executor::{Executor, Saver, Task};
+use tokio::sync::watch;
 
-use crate::install::{Outcome, Releases};
+use crate::install::{Installation, Outcome, Releases};
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
@@ -13,70 +14,21 @@ pub enum UpdateState {
     Checking,
     UpToDate,
     /// Found while updates are not automatic, and waits for [`Updater::install`].
-    Available(SharedString),
-    Installing(SharedString),
+    Available(String),
+    Installing(String),
     /// On disk, for the next launch. There is nothing more to look for until then.
-    Ready(SharedString),
-    Failed(SharedString),
+    Ready(String),
+    Failed(String),
 }
 
-/// The running app keeps its code until it restarts, so nothing playing stops.
-pub struct Updater {
-    releases: Arc<dyn Releases>,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Status {
     state: UpdateState,
     is_automatic: bool,
-    /// `None` without a home directory: the choice then lasts until quitting.
-    store: Option<config::Store>,
-    setting_error: Option<SharedString>,
-    /// Only a change by the user is written: the value may have come from the environment,
-    /// or from a file that could not be read.
-    unsaved: bool,
-    saving: bool,
-    _save: Task<()>,
-    _check: Task<()>,
-    _install: Task<()>,
-    _schedule: Task<()>,
+    setting_error: Option<String>,
 }
 
-impl Updater {
-    pub(crate) fn new(releases: Arc<dyn Releases>, cx: &mut Context<Self>) -> Self {
-        let (store, is_automatic, setting_error) = read_saved_choice();
-        Self::with(releases, store, is_automatic, setting_error, cx)
-    }
-
-    fn with(
-        releases: Arc<dyn Releases>,
-        store: Option<config::Store>,
-        is_automatic: bool,
-        setting_error: Option<SharedString>,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        Self {
-            releases,
-            state: UpdateState::Idle,
-            is_automatic,
-            store,
-            setting_error,
-            unsaved: false,
-            saving: false,
-            _save: Task::ready(()),
-            _check: Task::ready(()),
-            _install: Task::ready(()),
-            _schedule: cx.spawn(async move |this, cx| {
-                while this
-                    .update(cx, |this, cx| {
-                        if this.is_automatic {
-                            this.check(cx);
-                        }
-                    })
-                    .is_ok()
-                {
-                    cx.background_executor().timer(CHECK_INTERVAL).await;
-                }
-            }),
-        }
-    }
-
+impl Status {
     pub fn state(&self) -> &UpdateState {
         &self.state
     }
@@ -85,128 +37,262 @@ impl Updater {
         self.is_automatic
     }
 
-    pub fn errors(&self) -> impl Iterator<Item = &SharedString> {
+    pub fn errors(&self) -> impl Iterator<Item = &str> {
         let failure = match &self.state {
             UpdateState::Failed(error) => Some(error),
             _ => None,
         };
-        failure.into_iter().chain(&self.setting_error)
+        failure
+            .into_iter()
+            .chain(&self.setting_error)
+            .map(String::as_str)
+    }
+}
+
+/// The running app keeps its code until it restarts, so nothing playing stops. Dropping the
+/// last handle stops looking.
+#[derive(Clone)]
+pub struct Updater(Arc<Inner>);
+
+struct WeakUpdater(Weak<Inner>);
+
+struct Inner {
+    executor: Executor,
+    releases: Arc<dyn Releases>,
+    /// `None` without a home directory: the choice then lasts until quitting.
+    saver: Option<Saver<bool>>,
+    state: Mutex<State>,
+    published: watch::Sender<Status>,
+}
+
+struct State {
+    status: Status,
+    _check: Task<()>,
+    _install: Task<()>,
+    _schedule: Task<()>,
+}
+
+impl Updater {
+    /// `None` in a build that does not update itself, or on a platform with no releases.
+    pub fn of_this_app(
+        executor: Executor,
+        store: Result<config::Store, config::Error>,
+    ) -> Option<Self> {
+        option_env!("HIPHILE_SELF_UPDATE")?;
+        let installation = Installation::of_this_app()?;
+        let (store, is_automatic, setting_error) = read_saved_choice(store);
+        Some(Self::with(
+            executor,
+            Arc::new(installation),
+            store,
+            is_automatic,
+            setting_error,
+        ))
+    }
+
+    fn with(
+        executor: Executor,
+        releases: Arc<dyn Releases>,
+        store: Option<config::Store>,
+        is_automatic: bool,
+        setting_error: Option<String>,
+    ) -> Self {
+        let status = Status {
+            state: UpdateState::Idle,
+            is_automatic,
+            setting_error,
+        };
+        let inner = Arc::new_cyclic(|this: &Weak<Inner>| Inner {
+            saver: store.map(|store| {
+                let this = WeakUpdater(this.clone());
+                Saver::new(executor.clone(), move |is_on| {
+                    let saved = store.save_auto_update(is_on);
+                    if let Some(this) = this.upgrade() {
+                        this.0.update(|state| {
+                            state.status.setting_error = saved
+                                .err()
+                                .map(|error| format!("Couldn't save the choice: {error}."));
+                        });
+                    }
+                })
+            }),
+            executor,
+            releases,
+            published: watch::Sender::new(status.clone()),
+            state: Mutex::new(State {
+                status,
+                _check: Task::ready(()),
+                _install: Task::ready(()),
+                _schedule: Task::ready(()),
+            }),
+        });
+        let this = Self(inner);
+        this.schedule();
+        this
+    }
+
+    pub fn status(&self) -> Status {
+        lock(&self.0.state).status.clone()
+    }
+
+    /// Sees each new status. A borrow of it must not be held while calling the updater, which
+    /// publishes under its own lock.
+    pub fn subscribe(&self) -> watch::Receiver<Status> {
+        self.0.published.subscribe()
     }
 
     /// Installs what it finds only if updates are automatic by the time it has looked.
-    pub fn check(&mut self, cx: &mut Context<Self>) {
-        if matches!(
-            self.state,
-            UpdateState::Checking | UpdateState::Installing(_) | UpdateState::Ready(_)
-        ) {
-            return;
-        }
-        self.state = UpdateState::Checking;
-        cx.notify();
-        let releases = self.releases.clone();
-        self._check = cx.spawn(async move |this, cx| {
-            let found = cx
-                .background_spawn(async move { releases.newer_version() })
-                .await;
-            this.update(cx, |this, cx| {
-                this.state = match found {
-                    Ok(None) => UpdateState::UpToDate,
-                    Ok(Some(version)) => UpdateState::Available(version.into()),
-                    Err(error) => UpdateState::Failed(error.into()),
-                };
-                if this.is_automatic {
-                    this.install(cx);
-                }
-                cx.notify();
-            })
-            .ok();
-        });
+    pub fn check(&self) {
+        self.0.update(|state| self.start_check(state));
     }
 
-    pub fn install(&mut self, cx: &mut Context<Self>) {
-        let UpdateState::Available(version) = &self.state else {
-            return;
-        };
-        self.state = UpdateState::Installing(version.clone());
-        cx.notify();
-        let releases = self.releases.clone();
-        self._install = cx.spawn(async move |this, cx| {
-            let outcome = cx.background_spawn(async move { releases.install() }).await;
-            this.update(cx, |this, cx| {
-                this.state = match outcome {
-                    Ok(Outcome::UpToDate) => UpdateState::UpToDate,
-                    Ok(Outcome::Installed(version)) => UpdateState::Ready(version.into()),
-                    Err(error) => UpdateState::Failed(error.into()),
-                };
-                cx.notify();
-            })
-            .ok();
-        });
+    pub fn install(&self) {
+        self.0.update(|state| self.start_install(state));
     }
 
     /// Turning this on looks for a new version right away. Turning it off does not stop an
     /// install already under way, which may be replacing the app.
-    pub fn set_automatic(&mut self, is_on: bool, cx: &mut Context<Self>) {
-        if self.is_automatic == is_on {
-            return;
-        }
-        self.is_automatic = is_on;
-        self.unsaved = true;
-        self.save(cx);
-        if is_on {
-            if matches!(self.state, UpdateState::Available(_)) {
-                self.install(cx);
-            } else {
-                self.check(cx);
+    pub fn set_automatic(&self, is_on: bool) {
+        self.0.update(|state| {
+            if state.status.is_automatic == is_on {
+                return;
             }
-        }
-        cx.notify();
-    }
-
-    /// One write at a time, so the last choice is the one that stays.
-    fn save(&mut self, cx: &mut Context<Self>) {
-        let Some(store) = self.store.clone() else {
-            return;
-        };
-        if self.saving {
-            return;
-        }
-        self.saving = true;
-        self._save = cx.spawn(async move |this, cx| {
-            while let Ok(Some(is_on)) = this.update(cx, |this, _| {
-                this.saving = std::mem::take(&mut this.unsaved);
-                this.saving.then_some(this.is_automatic)
-            }) {
-                let store = store.clone();
-                let saved = cx
-                    .background_spawn(async move { store.save_auto_update(is_on) })
-                    .await;
-                this.update(cx, |this, cx| {
-                    this.setting_error = saved
-                        .err()
-                        .map(|error| format!("Couldn't save the choice: {error}.").into());
-                    cx.notify();
-                })
-                .ok();
+            state.status.is_automatic = is_on;
+            // Under the lock, so that the choices reach the saver in the order they were made
+            if let Some(saver) = &self.0.saver {
+                saver.save(is_on);
+            }
+            if is_on {
+                if matches!(state.status.state, UpdateState::Available(_)) {
+                    self.start_install(state);
+                } else {
+                    self.start_check(state);
+                }
             }
         });
     }
+
+    fn start_check(&self, state: &mut State) {
+        if matches!(
+            state.status.state,
+            UpdateState::Checking | UpdateState::Installing(_) | UpdateState::Ready(_)
+        ) {
+            return;
+        }
+        state.status.state = UpdateState::Checking;
+        let this = self.downgrade();
+        let releases = self.0.releases.clone();
+        let executor = self.0.executor.clone();
+        state._check = self.0.executor.spawn(async move {
+            let found = executor
+                .spawn_blocking(move || releases.newer_version())
+                .await;
+            let Some(this) = this.upgrade() else {
+                return;
+            };
+            this.0.update(|state| {
+                state.status.state = match found {
+                    Ok(None) => UpdateState::UpToDate,
+                    Ok(Some(version)) => UpdateState::Available(version),
+                    Err(error) => UpdateState::Failed(error),
+                };
+                if state.status.is_automatic {
+                    this.start_install(state);
+                }
+            });
+        });
+    }
+
+    fn start_install(&self, state: &mut State) {
+        let UpdateState::Available(version) = &state.status.state else {
+            return;
+        };
+        state.status.state = UpdateState::Installing(version.clone());
+        let this = self.downgrade();
+        let releases = self.0.releases.clone();
+        let executor = self.0.executor.clone();
+        state._install = self.0.executor.spawn(async move {
+            let outcome = executor.spawn_blocking(move || releases.install()).await;
+            let Some(this) = this.upgrade() else {
+                return;
+            };
+            this.0.update(|state| {
+                state.status.state = match outcome {
+                    Ok(Outcome::UpToDate) => UpdateState::UpToDate,
+                    Ok(Outcome::Installed(version)) => UpdateState::Ready(version),
+                    Err(error) => UpdateState::Failed(error),
+                };
+            });
+        });
+    }
+
+    fn schedule(&self) {
+        let this = self.downgrade();
+        let executor = self.0.executor.clone();
+        let schedule = self.0.executor.spawn(async move {
+            loop {
+                match this.upgrade() {
+                    Some(this) => this.0.update(|state| {
+                        if state.status.is_automatic {
+                            this.start_check(state);
+                        }
+                    }),
+                    None => return,
+                }
+                executor.timer(CHECK_INTERVAL).await;
+            }
+        });
+        self.0.update(|state| state._schedule = schedule);
+    }
+
+    fn downgrade(&self) -> WeakUpdater {
+        WeakUpdater(Arc::downgrade(&self.0))
+    }
+}
+
+impl WeakUpdater {
+    fn upgrade(&self) -> Option<Updater> {
+        self.0.upgrade().map(Updater)
+    }
+}
+
+impl Inner {
+    /// Publishes before letting go of the lock, so that an older status cannot follow a newer
+    /// one.
+    fn update<R>(&self, change: impl FnOnce(&mut State) -> R) -> R {
+        let mut state = lock(&self.state);
+        let result = change(&mut state);
+        self.published.send_if_modified(|published| {
+            let is_new = *published != state.status;
+            if is_new {
+                published.clone_from(&state.status);
+            }
+            is_new
+        });
+        result
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Not automatic when the choice cannot be read, as it may have been turned off.
-fn read_saved_choice() -> (Option<config::Store>, bool, Option<SharedString>) {
-    let store = match config::Store::user() {
+fn read_saved_choice(
+    store: Result<config::Store, config::Error>,
+) -> (Option<config::Store>, bool, Option<String>) {
+    let store = match store {
         Ok(store) => store,
         Err(error) => {
             let error = format!("The update choice won't be saved: {error}.");
-            return (None, true, Some(error.into()));
+            return (None, true, Some(error));
         }
     };
     match store.auto_update() {
         Ok(is_on) => (Some(store), is_on, None),
         Err(error) => {
             let error = format!("Couldn't read the update choice: {error}.");
-            (Some(store), false, Some(error.into()))
+            (Some(store), false, Some(error))
         }
     }
 }

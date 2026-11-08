@@ -1,6 +1,7 @@
 mod album_link;
 mod artist_link;
 pub mod card_grid;
+mod changes;
 mod cover_art;
 mod cover_cache;
 mod details;
@@ -22,6 +23,7 @@ mod sort_menu;
 
 pub use album_link::AlbumLink;
 pub use artist_link::{ArtistLine, ArtistLink, album_artist_link, song_artist_link};
+pub use changes::notify_on_change;
 pub use cover_art::CoverArt;
 pub use cover_cache::CoverCache;
 pub use details::{format_album_count, format_song_count, join_details};

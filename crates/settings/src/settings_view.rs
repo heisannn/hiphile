@@ -57,7 +57,7 @@ pub(crate) struct SettingsView {
     queue: Entity<QueueSettings>,
     readings: Option<Entity<Readings>>,
     /// `None` in a build that does not update itself.
-    updater: Option<Entity<Updater>>,
+    updater: Option<Updater>,
     focus: FocusHandle,
     _appearance_changes: Subscription,
     _system_appearance_changes: Subscription,
@@ -69,7 +69,7 @@ pub(crate) struct SettingsView {
     _lyrics_changes: Subscription,
     _queue_changes: Subscription,
     _readings_changes: Option<Subscription>,
-    _updater_changes: Option<Subscription>,
+    _updater_changes: Option<Task<()>>,
     _refresh: Task<()>,
 }
 
@@ -130,11 +130,11 @@ impl SettingsView {
         let lyrics = crate::lyrics_settings(cx);
         let queue = crate::queue_settings(cx);
         let readings = session::readings(cx);
-        let updater = updater::updater(cx);
+        let updater = crate::updater(cx);
         Self {
             _updater_changes: updater
                 .as_ref()
-                .map(|updater| cx.observe(updater, |_, _, cx| cx.notify())),
+                .map(|updater| ui::notify_on_change(updater.subscribe(), cx)),
             updater,
             _readings_changes: readings
                 .as_ref()
@@ -586,45 +586,46 @@ impl SettingsView {
     }
 }
 
-fn updates_page(updater: &Entity<Updater>, cx: &App) -> SettingPage {
+fn updates_page(updater: &Updater) -> SettingPage {
     let automatic = SettingField::switch(
         {
             let updater = updater.clone();
-            move |cx| updater.read(cx).is_automatic()
+            move |_| updater.status().is_automatic()
         },
         {
             let updater = updater.clone();
-            move |is_on, cx| updater.update(cx, |it, cx| it.set_automatic(is_on, cx))
+            move |is_on, _| updater.set_automatic(is_on)
         },
     );
     let action = SettingField::render({
         let updater = updater.clone();
-        move |_, _, cx| {
-            let state = updater.read(cx).state().clone();
+        move |_, _, _| {
+            let state = updater.status().state().clone();
             let updater = updater.clone();
             match state {
                 UpdateState::Ready(_) => Button::new("restart-to-update")
                     .outline()
                     .label("Restart to update")
-                    .on_click(|_, _, cx| updater::restart(cx)),
+                    .on_click(|_, _, cx| cx.restart()),
                 UpdateState::Available(ref new) | UpdateState::Installing(ref new) => {
                     let is_installing = matches!(state, UpdateState::Installing(_));
                     Button::new("install-update")
                         .outline()
                         .label(format!("Install version {new}"))
                         .loading(is_installing)
-                        .on_click(move |_, _, cx| updater.update(cx, |it, cx| it.install(cx)))
+                        .on_click(move |_, _, _| updater.install())
                 }
                 _ => Button::new("check-for-updates")
                     .outline()
                     .label("Check for updates")
                     .loading(matches!(state, UpdateState::Checking))
-                    .on_click(move |_, _, cx| updater.update(cx, |it, cx| it.check(cx))),
+                    .on_click(move |_, _, _| updater.check()),
             }
         }
     });
 
-    let state = updater.read(cx).state();
+    let status = updater.status();
+    let state = status.state();
     let mut version = SettingItem::new(format!("Version {}", updater::VERSION), action);
     match state {
         UpdateState::UpToDate => version = version.description("Up to date"),
@@ -641,7 +642,7 @@ fn updates_page(updater: &Entity<Updater>, cx: &App) -> SettingPage {
         SettingItem::new("Install updates automatically", automatic),
         version,
     ]);
-    let errors: Vec<SharedString> = updater.read(cx).errors().cloned().collect();
+    let errors: Vec<SharedString> = status.errors().map(SharedString::new).collect();
     if !errors.is_empty() {
         group = group.footer(move |_, cx| {
             v_flex()
@@ -779,7 +780,7 @@ impl Render for SettingsView {
                         .page(self.storage_page(cx))
                         .page(self.discord_page(cx))
                         .page(self.appearance_page(cx))
-                        .pages(self.updater.iter().map(|it| updates_page(it, cx))),
+                        .pages(self.updater.iter().map(updates_page)),
                 ),
             )
     }
