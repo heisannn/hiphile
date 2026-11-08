@@ -55,7 +55,7 @@ pub(crate) struct SettingsView {
     imgbb_key_field: Entity<ImgbbKeyField>,
     lyrics: Entity<LyricsSettings>,
     queue: Entity<QueueSettings>,
-    readings: Option<Entity<Readings>>,
+    readings: Option<Readings>,
     /// `None` in a build that does not update itself.
     updater: Option<Updater>,
     focus: FocusHandle,
@@ -68,7 +68,7 @@ pub(crate) struct SettingsView {
     _discord_changes: Subscription,
     _lyrics_changes: Subscription,
     _queue_changes: Subscription,
-    _readings_changes: Option<Subscription>,
+    _readings_changes: Option<Task<()>>,
     _updater_changes: Option<Task<()>>,
     _refresh: Task<()>,
 }
@@ -129,7 +129,7 @@ impl SettingsView {
         let imgbb_key_field = cx.new(|cx| ImgbbKeyField::new(discord.clone(), window, cx));
         let lyrics = crate::lyrics_settings(cx);
         let queue = crate::queue_settings(cx);
-        let readings = session::readings(cx);
+        let readings = ui::readings(cx);
         let updater = crate::updater(cx);
         Self {
             _updater_changes: updater
@@ -138,7 +138,7 @@ impl SettingsView {
             updater,
             _readings_changes: readings
                 .as_ref()
-                .map(|readings| cx.observe(readings, |_, _, cx| cx.notify())),
+                .map(|readings| gpui_host::notify_on_change(readings.subscribe(), cx)),
             readings,
             _appearance_changes: cx.observe(&appearance, |_, _, cx| cx.notify()),
             _system_appearance_changes: crate::follow_system_appearance(window),
@@ -580,7 +580,7 @@ impl SettingsView {
             .group(songs)
             .group(covers);
         if let Some(readings) = &self.readings {
-            page = page.group(romaji_search_group(readings, cx));
+            page = page.group(romaji_search_group(readings));
         }
         page
     }
@@ -656,15 +656,15 @@ fn updates_page(updater: &Updater) -> SettingPage {
         .group(group)
 }
 
-fn romaji_search_group(readings: &Entity<Readings>, cx: &App) -> SettingGroup {
+fn romaji_search_group(readings: &Readings) -> SettingGroup {
     let toggle = SettingField::switch(
         {
             let readings = readings.clone();
-            move |cx| readings.read(cx).is_on()
+            move |_| readings.status().is_on()
         },
         {
             let readings = readings.clone();
-            move |is_on, cx| readings.update(cx, |readings, cx| readings.set_on(is_on, cx))
+            move |is_on, _| readings.set_on(is_on)
         },
     );
     let description = format!(
@@ -679,16 +679,17 @@ fn romaji_search_group(readings: &Entity<Readings>, cx: &App) -> SettingGroup {
     );
 
     let readings = readings.clone();
-    let state = readings.read(cx).state().clone();
+    let status = readings.status();
+    let state = status.state();
     let errors = [
-        readings_error(&state),
-        readings.read(cx).choice_error().cloned(),
+        readings_error(state),
+        status.choice_error().map(SharedString::new),
     ];
     if matches!(
         state,
         ReadingsState::Downloading(_) | ReadingsState::Failed(_)
     ) {
-        let status = SettingField::render(move |_, _, cx| match readings.read(cx).state() {
+        let status = SettingField::render(move |_, _, _| match readings.status().state() {
             ReadingsState::Downloading(fraction) => {
                 let percent = (fraction * 100.).round();
                 h_flex()
@@ -708,7 +709,7 @@ fn romaji_search_group(readings: &Entity<Readings>, cx: &App) -> SettingGroup {
                     .outline()
                     .label("Retry")
                     .accessibility_label("Retry downloading the dictionary")
-                    .on_click(move |_, _, cx| readings.update(cx, |it, cx| it.retry(cx)))
+                    .on_click(move |_, _, _| readings.retry())
                     .into_any_element()
             }
         });
@@ -727,7 +728,7 @@ fn romaji_search_group(readings: &Entity<Readings>, cx: &App) -> SettingGroup {
 
 fn readings_error(state: &ReadingsState) -> Option<SharedString> {
     match state {
-        ReadingsState::Failed(error) => Some(error.clone()),
+        ReadingsState::Failed(error) => Some(error.into()),
         _ => None,
     }
 }

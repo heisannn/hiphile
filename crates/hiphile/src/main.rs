@@ -43,7 +43,7 @@ fn main() {
 
             let user_agent = concat!("hiphile/", env!("CARGO_PKG_VERSION"));
             let net = net::Client::new(user_agent).expect("failed to start the network runtime");
-            session::init(net.clone(), cx);
+            ui::init_network(net.clone(), cx);
 
             ui::list_navigation::bind_control_keys(cx);
             home::init(cx);

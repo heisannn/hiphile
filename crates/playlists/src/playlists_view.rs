@@ -96,6 +96,7 @@ pub struct Playlists {
     _create_task: Task<()>,
     _index_task: Task<()>,
     _subscriptions: Vec<Subscription>,
+    _readings_changes: Option<Task<()>>,
 }
 
 enum List {
@@ -173,14 +174,11 @@ impl Playlists {
             _create_task: Task::ready(()),
             _index_task: Task::ready(()),
             _subscriptions: subscriptions,
+            _readings_changes: None,
         };
-        if let Some(readings) = session::readings(cx) {
-            this._subscriptions.push(
-                cx.subscribe(&readings, |this, _, _: &session::ReadingsChanged, cx| {
-                    this.index_playlists(cx)
-                }),
-            );
-        }
+        this._readings_changes = this.session.readings().map(|readings| {
+            ui::on_readings_changed(readings, cx, |this: &mut Self, cx| this.index_playlists(cx))
+        });
         this.refresh(window, cx);
         this
     }
@@ -307,7 +305,7 @@ impl Playlists {
         self.index = Arc::new(playlist_index(&playlists, None));
         self._index_task = Task::ready(());
         self.apply_filter(cx);
-        let Some(book) = self.session.reading_book(cx) else {
+        let Some(book) = self.session.reading_book() else {
             return;
         };
         self._index_task = cx.spawn(async move |this, cx| {
@@ -443,7 +441,7 @@ impl Playlists {
         let (playlist, songs) = loaded.into_parts();
         let cover_url = playlist
             .cover_art()
-            .map(|cover_art| self.session.cover_art_url(cover_art, COVER_PIXELS));
+            .map(|cover_art| self.session.cover_art_url(cover_art, COVER_PIXELS).into());
         match &mut self.detail {
             Detail::Loaded(shown)
                 if shown.playlist.id() == playlist.id() && shown.entries.has_songs(&songs) =>
@@ -812,7 +810,7 @@ impl Playlists {
             .into_any_element();
         }
         if self.visible.is_empty() {
-            let note = session::missing_readings_note(cx);
+            let note = self.session.missing_readings_note();
             return no_matches("No playlists match the filter.", note, cx).into_any_element();
         }
 
@@ -1021,7 +1019,7 @@ impl Playlists {
                     song: song.clone(),
                     cover: song
                         .cover_art()
-                        .map(|cover_art| session.cover_art_url(cover_art, ROW_COVER_PIXELS)),
+                        .map(|cover_art| session.cover_art_url(cover_art, ROW_COVER_PIXELS).into()),
                     ix,
                     len: entries.len(),
                     state: now_playing.as_ref().and_then(|now| now.state_of(song.id())),

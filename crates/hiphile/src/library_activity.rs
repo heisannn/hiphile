@@ -7,10 +7,10 @@ use gpui_kit::component::progress::Progress;
 use gpui_kit::component::{ActiveTheme as _, h_flex, v_flex};
 use gpui_kit::{
     AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render,
-    Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _,
+    Styled as _, Task, Window, div, prelude::FluentBuilder as _,
 };
 use library::SyncStage;
-use session::{ReadingsState, Session};
+use session::{ReadingsState, ReadingsStatus, Session};
 
 #[cfg(test)]
 mod tests;
@@ -143,21 +143,23 @@ pub(crate) struct LibraryActivity {
     shown: Option<Status>,
     _read_task: Task<()>,
     _slow_reading_task: Task<()>,
-    _readings_changes: Vec<Subscription>,
+    _readings_changes: Vec<Task<()>>,
 }
 
 impl EventEmitter<ActivityChanged> for LibraryActivity {}
 
 impl LibraryActivity {
     pub(crate) fn new(session: Session, cx: &mut Context<Self>) -> Self {
-        let readings_changes = session::readings(cx).map_or_else(Vec::new, |readings| {
+        let readings_changes = session.readings().map_or_else(Vec::new, |readings| {
             vec![
-                cx.subscribe(&readings, |this, _, _: &session::ReadingsChanged, cx| {
-                    this.read_ahead(cx);
-                }),
-                cx.observe(&readings, |this, readings, cx| {
-                    this.download_progress(Status::of_download(readings.read(cx).state()), cx);
-                }),
+                ui::on_readings_changed(readings, cx, |this: &mut Self, cx| this.read_ahead(cx)),
+                gpui_host::observe(
+                    readings.subscribe(),
+                    cx,
+                    |this: &mut Self, status: ReadingsStatus, cx| {
+                        this.download_progress(Status::of_download(status.state()), cx);
+                    },
+                ),
             ]
         });
         Self {
@@ -205,7 +207,7 @@ impl LibraryActivity {
             self.read_again = true;
             return;
         }
-        let Some(book) = self.session.reading_book(cx) else {
+        let Some(book) = self.session.reading_book() else {
             return;
         };
         self.is_reading = true;

@@ -1183,10 +1183,12 @@ impl Player {
         self.scrub = None;
         self.cover_url = song
             .cover_art()
-            .map(|cover_art| self.session.cover_art_url(cover_art, COVER_PIXELS));
-        self.large_cover_url = song
-            .cover_art()
-            .map(|cover_art| self.session.cover_art_url(cover_art, LARGE_COVER_PIXELS));
+            .map(|cover_art| self.session.cover_art_url(cover_art, COVER_PIXELS).into());
+        self.large_cover_url = song.cover_art().map(|cover_art| {
+            self.session
+                .cover_art_url(cover_art, LARGE_COVER_PIXELS)
+                .into()
+        });
         self.set_state(State::Opening, cx);
         self.remove_left(cx);
     }
@@ -1474,7 +1476,7 @@ fn reveal(id: &'static str, shown: bool, window: &mut Window, cx: &mut Context<P
     transition(id, if shown { 1. } else { 0. }, policy, window, cx)
 }
 
-async fn fetch_image(http: Arc<dyn HttpClient>, url: SharedString) -> Option<Vec<u8>> {
+async fn fetch_image(http: Arc<dyn HttpClient>, url: Arc<str>) -> Option<Vec<u8>> {
     let mut response = http
         .get(url.as_ref(), AsyncBody::empty(), true)
         .await

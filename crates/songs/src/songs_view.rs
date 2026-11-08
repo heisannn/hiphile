@@ -65,6 +65,7 @@ pub struct Songs {
     _arrange_task: Task<()>,
     _index_task: Task<()>,
     _subscriptions: Vec<Subscription>,
+    _readings_changes: Option<Task<()>>,
 }
 
 enum SongList {
@@ -121,7 +122,7 @@ impl Songs {
     pub fn new(session: session::Session, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter songs"));
         let focus = cx.focus_handle().tab_stop(true);
-        let mut subscriptions = vec![
+        let subscriptions = vec![
             cx.subscribe_in(&filter, window, |this, _, event, window, cx| match event {
                 InputEvent::Change => this.filter_changed(cx),
                 InputEvent::PressEnter { .. } => this.focus.focus(window, cx),
@@ -131,13 +132,9 @@ impl Songs {
             cx.on_focus(&focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&focus, window, |_, _, cx| cx.notify()),
         ];
-        if let Some(readings) = session::readings(cx) {
-            subscriptions.push(
-                cx.subscribe(&readings, |this, _, _: &session::ReadingsChanged, cx| {
-                    this.read_again(cx)
-                }),
-            );
-        }
+        let readings_changes = session.readings().map(|readings| {
+            ui::on_readings_changed(readings, cx, |this: &mut Self, cx| this.read_again(cx))
+        });
         Self {
             session,
             is_activated: false,
@@ -159,6 +156,7 @@ impl Songs {
             _arrange_task: Task::ready(()),
             _index_task: Task::ready(()),
             _subscriptions: subscriptions,
+            _readings_changes: readings_changes,
         }
     }
 
@@ -189,7 +187,7 @@ impl Songs {
         let query = self.filter.read(cx).value();
         let sort = self.sort;
         let by_relevance = self.by_relevance;
-        let book = self.session.reading_book(cx);
+        let book = self.session.reading_book();
         self._load_task = cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
@@ -231,7 +229,7 @@ impl Songs {
                 self.select_first_unless_chosen();
                 // Dictionaries that came or went during the reading had no songs
                 // yet to read again.
-                if arranged.had_book != self.session.reading_book(cx).is_some() {
+                if arranged.had_book != self.session.reading_book().is_some() {
                     self.read_again(cx);
                 }
                 // The filter or the sort may have changed during the reading
@@ -314,7 +312,7 @@ impl Songs {
         let Some(songs) = self.loaded_songs().cloned() else {
             return;
         };
-        let book = self.session.reading_book(cx);
+        let book = self.session.reading_book();
         self._index_task = cx.spawn(async move |this, cx| {
             let index = cx
                 .background_spawn(async move { read_songs(&songs, book.as_ref()) })
@@ -606,7 +604,7 @@ impl Songs {
             return centered(muted_text("This server has no songs.", cx)).into_any_element();
         }
         if self.visible.is_empty() {
-            let note = session::missing_readings_note(cx);
+            let note = self.session.missing_readings_note();
             return no_matches("No songs match the filter.", note, cx).into_any_element();
         }
         let visible = self.visible.clone();

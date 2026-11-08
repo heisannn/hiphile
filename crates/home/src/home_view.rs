@@ -815,9 +815,11 @@ impl Home {
         let title = SharedString::from(song.title().to_owned());
         let details = ArtistLine::of_song(song);
         let duration = song.duration().map(format_duration).unwrap_or_default();
-        let cover = song
-            .cover_art()
-            .map(|cover_art| self.session.cover_art_url(cover_art, ROW_COVER_PIXELS));
+        let cover = song.cover_art().map(|cover_art| {
+            self.session
+                .cover_art_url(cover_art, ROW_COVER_PIXELS)
+                .into()
+        });
         let marker = self.now_playing.as_ref().and_then(|now| now.state_of(&id));
         let label = song_row_label(song, &title, marker, cx);
         let focus = self.focus.clone();
@@ -899,9 +901,11 @@ impl Home {
         let is_selected = self.selection == Some(Item::Album(shelf, id.clone()));
         let focused = self.focus.is_focused(window);
         let name = SharedString::from(album.name().to_owned());
-        let cover = album
-            .cover_art()
-            .map(|cover_art| self.session.cover_art_url(cover_art, CARD_COVER_PIXELS));
+        let cover = album.cover_art().map(|cover_art| {
+            self.session
+                .cover_art_url(cover_art, CARD_COVER_PIXELS)
+                .into()
+        });
         let focus = self.focus.clone();
         let has_artist = album.artist_id().is_some();
         let artist = ui::ArtistLine::new(ui::album_artist_link(album), None);

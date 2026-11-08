@@ -1,33 +1,23 @@
-//! Connection state for the GUI.
-//!
-//! Installs [`net`] as GPUI's HTTP client, so `img(url)` cover art shares the
-//! API's transport, and names the signed-in connection that the app shell
-//! hands to feature views.
+//! The signed-in connection that the app shell hands to feature views, signing in, and what
+//! reads kanji. No GPUI.
 
-mod http;
+mod accounts;
 mod reading_book;
 mod readings;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use gpui_kit::{App, Global, SharedString};
 use subsonic::{AlbumId, AlbumWithSongs, CoverArtId, ServerInfo};
 
+pub use accounts::{Accounts, Invalid, SignInField, SignedIn};
 pub use reading_book::ReadingBook;
-pub use readings::{
-    Readings, ReadingsChanged, ReadingsFailed, ReadingsState, missing_readings_note, readings,
-};
+pub use readings::{Readings, ReadingsFailed, ReadingsState, ReadingsStatus};
 
-struct GlobalCovers(catalog::CoverStore);
-
-impl Global for GlobalCovers {}
-
-/// Installs the shared transport, which keeps cover art on disk when the
-/// system has a cache directory, and starts fetching what reads kanji. Call
-/// once at startup, after `gpui_kit::init`.
-pub fn init(net: net::Client, cx: &mut App) {
-    let capacity = match config::Store::user() {
+/// Where cover art is kept on disk, when the system has a cache directory, holding as much as
+/// the saved setting says.
+pub fn open_covers(store: Result<config::Store, config::Error>) -> Option<catalog::CoverStore> {
+    let capacity = match store {
         Ok(store) => store.cover_cache_capacity(),
         // Without a home directory there are no settings to follow
         Err(_) => Ok(None),
@@ -35,25 +25,20 @@ pub fn init(net: net::Client, cx: &mut App) {
     // A setting that cannot be read keeps no more covers rather than the
     // default amount.
     let capacity = capacity.map_or(0, cover_capacity);
-    let covers = catalog::CoverStore::user(capacity).ok();
-    if let Some(covers) = &covers {
-        cx.set_global(GlobalCovers(covers.clone()));
-    }
-    readings::init(net.clone(), cx);
-    cx.set_http_client(Arc::new(http::NetHttpClient::new(net, covers)));
+    catalog::CoverStore::user(capacity).ok()
 }
 
 /// Keeps at most about `capacity` bytes of covers from the next one on, or the
 /// default amount for `None`.
-pub fn set_cover_capacity(capacity: Option<u64>, cx: &App) {
-    if let Some(GlobalCovers(covers)) = cx.try_global() {
-        covers.set_capacity(cover_capacity(capacity));
-    }
+pub fn set_cover_capacity(covers: &catalog::CoverStore, capacity: Option<u64>) {
+    covers.set_capacity(cover_capacity(capacity));
 }
 
 fn cover_capacity(capacity: Option<u64>) -> u64 {
     capacity.unwrap_or(catalog::COVER_CAPACITY)
 }
+
+type CoverUrls = HashMap<(CoverArtId, u32), Arc<str>>;
 
 #[derive(Clone)]
 pub struct Session {
@@ -62,7 +47,8 @@ pub struct Session {
     server: ServerInfo,
     catalog: Option<catalog::Catalog>,
     scrobbles: Option<catalog::Scrobbles>,
-    cover_urls: Arc<Mutex<HashMap<(CoverArtId, u32), SharedString>>>,
+    readings: Option<Readings>,
+    cover_urls: Arc<Mutex<CoverUrls>>,
     reading_gate: Arc<Mutex<()>>,
 }
 
@@ -83,16 +69,32 @@ impl Session {
             server,
             catalog,
             scrobbles,
+            readings: None,
             cover_urls: Arc::default(),
             reading_gate: Arc::default(),
         }
     }
 
+    /// Without them, lists find text only as written and by its kana.
+    pub fn with_readings(mut self, readings: Readings) -> Self {
+        self.readings = Some(readings);
+        self
+    }
+
+    pub fn readings(&self) -> Option<&Readings> {
+        self.readings.as_ref()
+    }
+
+    /// [`ReadingsStatus::missing_note`] of the session's dictionaries.
+    pub fn missing_readings_note(&self) -> Option<&'static str> {
+        self.readings()?.status().missing_note()
+    }
+
     /// What reads kanji for building a list's index, when the dictionaries are
     /// there. Each list asks again: they come and go.
-    pub fn reading_book(&self, cx: &App) -> Option<ReadingBook> {
+    pub fn reading_book(&self) -> Option<ReadingBook> {
         Some(ReadingBook {
-            dir: readings::readings_dir(cx)?,
+            dir: self.readings()?.status().dictionaries()?.to_owned(),
             catalog: self.catalog.clone(),
             gate: self.reading_gate.clone(),
         })
@@ -102,13 +104,13 @@ impl Session {
     /// would be a new download and a new decoded copy to an image cache, as
     /// every URL the client builds carries a fresh salt. Never log it: it
     /// carries the user's credentials.
-    pub fn cover_art_url(&self, id: &CoverArtId, size: u32) -> SharedString {
+    pub fn cover_art_url(&self, id: &CoverArtId, size: u32) -> Arc<str> {
         let mut urls = self
             .cover_urls
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         urls.entry((id.clone(), size))
-            .or_insert_with(|| self.client.cover_art_url(id, Some(size)).to_string().into())
+            .or_insert_with(|| self.client.cover_art_url(id, Some(size)).as_str().into())
             .clone()
     }
 

@@ -32,7 +32,7 @@ use player::{
 };
 use playlists::{Playlists, PlaylistsEvent};
 use search::{OpenSearch, Search, SearchEvent};
-use session::{ReadingsFailed, ReadingsState, Session};
+use session::{Accounts, ReadingsFailed, ReadingsState, Session};
 use settings::OpenSettings;
 use songs::Songs;
 use subsonic::{AlbumId, ArtistId};
@@ -55,12 +55,9 @@ pub const WORKSPACE_CONTEXT: &str = "Workspace";
 
 /// Routes commands between features and owns no feature state.
 pub struct AppShell {
-    net: net::Client,
+    accounts: Accounts,
     /// `None` in a build that does not update itself.
     updater: Option<Updater>,
-    /// `None` where the system has no credential store; signing in then
-    /// always asks for the password.
-    keychain: Option<config::Keychain>,
     /// A focus target for the sign-in screen while it has no focused field,
     /// so menu commands still reach this view. Signed in, the screen showing
     /// holds focus instead: a click on empty space then leaves focus where it
@@ -70,7 +67,7 @@ pub struct AppShell {
     /// Whether the queue shows beside the library when the window is wide
     /// enough for it.
     queue_shown: bool,
-    _readings_failures: Option<Subscription>,
+    _readings_failures: Option<Task<()>>,
     _song_cache_changes: Subscription,
     _cover_cache_changes: Subscription,
     _system_appearance_changes: Subscription,
@@ -188,8 +185,15 @@ impl AppShell {
     ) -> Self {
         window.set_window_title("hiphile");
         let focus = cx.focus_handle();
-        let keychain = config::Keychain::system().ok();
-        let screen = Self::sign_in(&net, keychain.clone(), Start::Resume, window, cx);
+        let readings = ui::readings(cx);
+        let accounts = Accounts::new(
+            gpui_host::executor(cx),
+            net,
+            config::Store::user(),
+            config::Keychain::system().ok(),
+            readings.clone(),
+        );
+        let screen = Self::sign_in(&accounts, Start::Resume, window, cx);
         let queue_shown = true;
         crate::set_menus(queue_shown, false, false, None, false, RepeatMode::Off, cx);
         let song_cache_changes = cx.subscribe(
@@ -202,27 +206,31 @@ impl AppShell {
         let cover_cache_changes = cx.subscribe(
             &settings::cover_cache_settings(cx),
             |_, cover_cache, _: &settings::CacheLimitChanged, cx| {
-                session::set_cover_capacity(cover_cache.read(cx).capacity(), cx);
+                ui::set_cover_capacity(cover_cache.read(cx).capacity(), cx);
             },
         );
-        let readings_failures = session::readings(cx).map(|readings| {
-            // What failed before there was a window to say so in
-            if let ReadingsState::Failed(error) = readings.read(cx).state().clone() {
+        let readings_failures = readings.map(|readings| {
+            let notices = readings.notices();
+            // What failed before there was a window to say so in. A failure since then is told
+            // by `notices`.
+            if let ReadingsState::Failed(error) = readings.status().state().clone()
+                && notices.is_empty()
+            {
                 cx.defer_in(window, move |_, window, cx| {
                     tell_readings_failed(&error, window, cx);
                 });
             }
-            cx.subscribe_in(
-                &readings,
+            gpui_host::subscribe_in(
+                notices,
                 window,
-                |_, _, ReadingsFailed(error), window, cx| {
-                    tell_readings_failed(error, window, cx);
+                cx,
+                |_, failed: ReadingsFailed, window, cx| {
+                    tell_readings_failed(failed.error(), window, cx);
                 },
             )
         });
         Self {
-            net,
-            keychain,
+            accounts,
             focus,
             screen,
             queue_shown,
@@ -238,13 +246,12 @@ impl AppShell {
     }
 
     fn sign_in(
-        net: &net::Client,
-        keychain: Option<config::Keychain>,
+        accounts: &Accounts,
         start: Start,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Screen {
-        let view = cx.new(|cx| SignIn::new(net.clone(), keychain, start, window, cx));
+        let view = cx.new(|cx| SignIn::new(accounts.clone(), start, window, cx));
         let subscription = cx.subscribe_in(&view, window, |_, _, event, window, cx| {
             let SignInEvent::SignedIn { session, profile } = event;
             let (session, profile) = (session.clone(), profile.clone());
@@ -789,15 +796,11 @@ impl AppShell {
         let Screen::Workspace(workspace) = &self.screen else {
             return;
         };
-        if let Some(keychain) = self.keychain.clone() {
-            let profile = workspace.profile.clone();
-            cx.background_spawn(async move { keychain.delete_password(&profile) })
-                .detach();
-        }
+        self.accounts.forget_password(workspace.profile.clone());
         // The window keeps its notices, and this one would never hear the end
         window.remove_notification::<LibraryActivity>(cx);
         self.focus.focus(window, cx);
-        self.screen = Self::sign_in(&self.net, self.keychain.clone(), Start::Fresh, window, cx);
+        self.screen = Self::sign_in(&self.accounts, Start::Fresh, window, cx);
         self.update_menus(cx);
         cx.notify();
     }

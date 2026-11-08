@@ -7,10 +7,12 @@ mod details;
 mod drag_preview;
 mod duration;
 mod favorite_button;
+mod http;
 pub mod list_navigation;
 mod load_state;
 mod master_detail;
 mod name_link;
+mod network;
 mod now_playing;
 mod reorder;
 mod row_list;
@@ -31,6 +33,7 @@ pub use load_state::{LoadFailure, Shelf, centered, muted_text, no_matches};
 pub use master_detail::{
     DetailHeader, ListFilter, ListPaneHeader, MasterDetail, RefreshFailure, filter_input,
 };
+pub use network::{init_network, on_readings_changed, readings, set_cover_capacity};
 pub use now_playing::{NowPlaying, PlayState, PlayStateIcon};
 pub use reorder::ReorderExt;
 pub use row_list::row_list;

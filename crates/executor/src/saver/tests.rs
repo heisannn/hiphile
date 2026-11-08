@@ -103,3 +103,22 @@ fn what_was_given_is_written_after_the_saver_is_dropped() {
     assert_eq!(writing.recv_timeout(WAIT), Ok(2));
     open.send(()).unwrap();
 }
+
+#[test]
+fn a_value_taken_while_waiting_is_not_written() {
+    let runtime = runtime();
+    let Gated {
+        saver,
+        open,
+        writing,
+    } = gated(&runtime);
+
+    saver.save(1);
+    assert_eq!(writing.recv_timeout(WAIT), Ok(1));
+    saver.save(2);
+    assert_eq!(saver.take_waiting(), Some(2));
+    assert_eq!(saver.take_waiting(), None);
+
+    open.send(()).unwrap();
+    assert!(writing.recv_timeout(NOTHING_MORE).is_err());
+}

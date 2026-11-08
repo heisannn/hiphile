@@ -9,8 +9,7 @@ use gpui_kit::{
     AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render,
     SharedString, Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _,
 };
-use session::Session;
-use subsonic::Credentials;
+use session::{Accounts, Session, SignInField, SignedIn};
 
 pub enum SignInEvent {
     SignedIn {
@@ -27,9 +26,7 @@ pub enum Start {
 }
 
 pub struct SignIn {
-    net: net::Client,
-    store: Option<config::Store>,
-    keychain: Option<config::Keychain>,
+    accounts: Accounts,
     server: Entity<InputState>,
     username: Entity<InputState>,
     password: Entity<InputState>,
@@ -43,31 +40,20 @@ pub struct SignIn {
 enum Status {
     Idle,
     SigningIn,
-    Invalid(InputField, SharedString),
+    Invalid(SignInField, SharedString),
     Failed(SharedString),
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum InputField {
-    Server,
-    Username,
-    Password,
 }
 
 impl EventEmitter<SignInEvent> for SignIn {}
 
 impl SignIn {
     pub fn new(
-        net: net::Client,
-        keychain: Option<config::Keychain>,
+        accounts: Accounts,
         start: Start,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let store = config::Store::user().ok();
-        let profile = store
-            .as_ref()
-            .and_then(|store| store.last_profile().ok().flatten());
+        let profile = accounts.last_profile();
         let server = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("https://music.example.com")
@@ -111,9 +97,7 @@ impl SignIn {
         first_empty.update(cx, |input, cx| input.focus(window, cx));
 
         let mut this = Self {
-            net,
-            store,
-            keychain,
+            accounts,
             server,
             username,
             password,
@@ -132,12 +116,7 @@ impl SignIn {
 
     /// Without a saved password, or if the keychain fails, the form waits for the user.
     fn resume(&mut self, profile: config::Profile, window: &mut Window, cx: &mut Context<Self>) {
-        let store = self.store.clone();
-        let keychain = self.keychain.clone();
-        let lookup = cx.background_spawn(async move {
-            password_in_file(store.as_ref(), &profile)
-                .or_else(|| keychain?.password(&profile).ok().flatten())
-        });
+        let lookup = self.accounts.saved_password(profile);
         self._resume = cx.spawn_in(window, async move |this, cx| {
             let Some(password) = lookup.await else {
                 return;
@@ -158,73 +137,35 @@ impl SignIn {
         if self.status == Status::SigningIn {
             return;
         }
-        let address = self.server.read(cx).value().trim().to_owned();
-        let username = self.username.read(cx).value().trim().to_owned();
-        let password = self.password.read(cx).value().to_string();
-
-        let invalid = if address.is_empty() {
-            Some((InputField::Server, "Enter the server address."))
-        } else if username.is_empty() {
-            Some((InputField::Username, "Enter your username."))
-        } else if password.is_empty() {
-            Some((InputField::Password, "Enter your password."))
-        } else {
-            None
-        };
-        if let Some((field, message)) = invalid {
-            self.status = Status::Invalid(field, message.into());
-            self.input(field)
-                .update(cx, |input, cx| input.focus(window, cx));
-            cx.notify();
-            return;
-        }
-
-        let credentials = Credentials::password(username.clone(), password.clone());
-        let server = match client::Server::new(&address, credentials) {
-            Ok(server) => server,
-            Err(error) => {
-                self.status = Status::Invalid(InputField::Server, format!("{error}.").into());
-                self.server.update(cx, |input, cx| input.focus(window, cx));
+        let attempt = self.accounts.sign_in(
+            &self.server.read(cx).value(),
+            &self.username.read(cx).value(),
+            &self.password.read(cx).value(),
+        );
+        let attempt = match attempt {
+            Ok(attempt) => attempt,
+            Err(invalid) => {
+                self.status = Status::Invalid(invalid.field(), invalid.message().to_owned().into());
+                self.input(invalid.field())
+                    .update(cx, |input, cx| input.focus(window, cx));
                 cx.notify();
                 return;
             }
         };
-        let client = client::Client::new(self.net.clone(), server);
         self.status = Status::SigningIn;
         cx.notify();
 
         self._attempt = cx.spawn(async move |this, cx| {
-            let result = client.ping().await;
-            // Without its cached library the workspace loads everything
-            // from the server, and without somewhere to keep plays it sends
-            // them right away, so failing to open either is not shown.
-            let (catalog, scrobbles) = match &result {
-                Ok(_) => {
-                    let server = client.server().base_url().clone();
-                    let username = username.clone();
-                    cx.background_spawn(async move {
-                        (
-                            catalog::Catalog::open_server(&server).ok(),
-                            catalog::Scrobbles::user(&server, &username).ok(),
-                        )
-                    })
-                    .await
-                }
-                Err(_) => (None, None),
-            };
+            let result = attempt.await;
             this.update(cx, |this, cx| {
                 match result {
-                    Ok(info) => {
+                    Ok(SignedIn {
+                        session, profile, ..
+                    }) => {
                         this.status = Status::Idle;
-                        let session_user = username.clone();
-                        let profile = config::Profile::new(address, username);
-                        this.remember(&profile, password, cx);
-                        cx.emit(SignInEvent::SignedIn {
-                            session: Session::new(client, session_user, info, catalog, scrobbles),
-                            profile,
-                        });
+                        cx.emit(SignInEvent::SignedIn { session, profile });
                     }
-                    Err(error) => this.status = Status::Failed(describe(&error).into()),
+                    Err(error) => this.status = Status::Failed(error.into()),
                 }
                 cx.notify();
             })
@@ -232,63 +173,18 @@ impl SignIn {
         });
     }
 
-    /// A failure only means the user types more next time, so it is not shown.
-    fn remember(&self, profile: &config::Profile, password: String, cx: &mut Context<Self>) {
-        if let Some(store) = &self.store {
-            store.save_profile(profile).ok();
-        }
-        if let Some(keychain) = self.keychain.clone() {
-            let profile = profile.clone();
-            let store = self.store.clone();
-            cx.background_spawn(async move {
-                if password_in_file(store.as_ref(), &profile).is_none() {
-                    keychain.set_password(&profile, &password).ok();
-                }
-            })
-            .detach();
-        }
-    }
-
-    fn input(&self, field: InputField) -> &Entity<InputState> {
+    fn input(&self, field: SignInField) -> &Entity<InputState> {
         match field {
-            InputField::Server => &self.server,
-            InputField::Username => &self.username,
-            InputField::Password => &self.password,
+            SignInField::Server => &self.server,
+            SignInField::Username => &self.username,
+            SignInField::Password => &self.password,
         }
     }
 
-    fn field_error(&self, field: InputField) -> Option<SharedString> {
+    fn field_error(&self, field: SignInField) -> Option<SharedString> {
         match &self.status {
             Status::Invalid(invalid, message) if *invalid == field => Some(message.clone()),
             _ => None,
-        }
-    }
-}
-
-fn password_in_file(store: Option<&config::Store>, profile: &config::Profile) -> Option<String> {
-    store?.password(profile).ok().flatten()
-}
-
-fn describe(error: &client::Error) -> String {
-    match error {
-        client::Error::Protocol(subsonic::Error::Server { code, .. })
-            if code.is_authentication() =>
-        {
-            "Wrong username or password.".to_owned()
-        }
-        client::Error::Protocol(subsonic::Error::Server { message, .. }) => {
-            format!("The server refused to sign in: {message}")
-        }
-        client::Error::Protocol(subsonic::Error::InvalidResponse(_))
-        | client::Error::HttpStatus(_)
-        | client::Error::NotAudio(_) => {
-            "No Subsonic server answered at this address. Check the address.".to_owned()
-        }
-        client::Error::Network(_) => {
-            "Couldn't reach the server. Check the address and your connection.".to_owned()
-        }
-        client::Error::InvalidServerUrl(_) | client::Error::ServerUrlHasExtras(_) => {
-            format!("{error}.")
         }
     }
 }
@@ -300,7 +196,7 @@ impl Render for SignIn {
             Status::Failed(message) => Some(message.clone()),
             _ => None,
         };
-        let field = |label: &'static str, field: InputField, input: Input, cx: &Context<Self>| {
+        let field = |label: &'static str, field: SignInField, input: Input, cx: &Context<Self>| {
             Field::new()
                 .label(label)
                 .child(input.disabled(signing_in))
@@ -332,19 +228,19 @@ impl Render for SignIn {
                         Form::new()
                             .child(field(
                                 "Server",
-                                InputField::Server,
+                                SignInField::Server,
                                 Input::new(&self.server),
                                 cx,
                             ))
                             .child(field(
                                 "Username",
-                                InputField::Username,
+                                SignInField::Username,
                                 Input::new(&self.username),
                                 cx,
                             ))
                             .child(field(
                                 "Password",
-                                InputField::Password,
+                                SignInField::Password,
                                 Input::new(&self.password).mask_toggle(),
                                 cx,
                             ))

@@ -86,13 +86,9 @@ dependencies = [
 name = "account"
 version = "0.4.0"
 dependencies = [
- "catalog",
- "client",
  "config 0.4.0",
  "gpui-kit",
- "net",
  "session",
- "subsonic",
 ]
 
 [[package]]
@@ -7991,16 +7987,18 @@ dependencies = [
 name = "session"
 version = "0.4.0"
 dependencies = [
- "bytes",
  "catalog",
  "client",
  "config 0.4.0",
+ "executor",
  "futures",
  "fuzzy",
+ "gpui-host",
  "gpui-kit",
  "net",
  "subsonic",
  "tempfile",
+ "tokio",
  "url",
 ]
 
@@ -9274,9 +9272,18 @@ name = "ui"
 version = "0.4.0"
 dependencies = [
  "actions",
+ "bytes",
+ "catalog",
+ "config 0.4.0",
+ "futures",
+ "gpui-host",
  "gpui-kit",
  "hiphile-core",
+ "net",
+ "session",
  "subsonic",
+ "tempfile",
+ "url",
 ]
 
 [[package]]

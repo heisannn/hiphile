@@ -8,12 +8,21 @@ license.workspace = true
 
 [dependencies]
 actions.workspace = true
+bytes.workspace = true
+catalog.workspace = true
+config.workspace = true
+futures.workspace = true
+gpui-host.workspace = true
 gpui-kit.workspace = true
 hiphile-core.workspace = true
+net.workspace = true
+session.workspace = true
 subsonic.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 gpui-kit = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
 
 [lints]
 workspace = true

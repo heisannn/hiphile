@@ -102,6 +102,7 @@ pub struct Library {
     _album_action_task: Task<()>,
     _index_task: Task<()>,
     _subscriptions: Vec<Subscription>,
+    _readings_changes: Option<Task<()>>,
 }
 
 enum Albums {
@@ -180,15 +181,11 @@ impl Library {
             _album_action_task: Task::ready(()),
             _index_task: Task::ready(()),
             _subscriptions: subscriptions,
+            _readings_changes: None,
         };
-        if let Some(readings) = session::readings(cx) {
-            this._subscriptions.push(cx.subscribe(
-                &readings,
-                |this, _, _: &session::ReadingsChanged, cx| {
-                    this.index_albums(cx);
-                },
-            ));
-        }
+        this._readings_changes = this.session.readings().map(|readings| {
+            ui::on_readings_changed(readings, cx, |this: &mut Self, cx| this.index_albums(cx))
+        });
         this.sync_library(Mode::IfStale, cx);
         this
     }
@@ -324,7 +321,7 @@ impl Library {
         self.index = Arc::new(album_index(&albums, None));
         self._index_task = Task::ready(());
         self.apply_filter(cx);
-        let Some(book) = self.session.reading_book(cx) else {
+        let Some(book) = self.session.reading_book() else {
             return;
         };
         self._index_task = cx.spawn(async move |this, cx| {
@@ -435,7 +432,7 @@ impl Library {
         let (album, songs) = loaded.into_parts();
         let cover_url = album
             .cover_art()
-            .map(|cover_art| self.session.cover_art_url(cover_art, COVER_PIXELS));
+            .map(|cover_art| self.session.cover_art_url(cover_art, COVER_PIXELS).into());
         self.detail = Detail::Loaded(Box::new(LoadedAlbum {
             album,
             songs: songs.into(),
@@ -762,7 +759,7 @@ impl Library {
             return centered(muted_text("This server has no albums.", cx)).into_any_element();
         }
         if self.visible.is_empty() {
-            let note = session::missing_readings_note(cx);
+            let note = self.session.missing_readings_note();
             return no_matches("No albums match the filter.", note, cx).into_any_element();
         }
 

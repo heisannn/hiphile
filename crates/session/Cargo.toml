@@ -1,24 +1,25 @@
 [package]
 name = "session"
-description = "GPUI-side connection state: the active client and the GPUI HTTP adapter."
+description = "The signed-in connection, signing in, and the dictionaries that read kanji. No GPUI."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 license.workspace = true
 
 [dependencies]
-bytes.workspace = true
 catalog.workspace = true
 client.workspace = true
 config.workspace = true
+executor.workspace = true
 futures.workspace = true
 fuzzy.workspace = true
-gpui-kit.workspace = true
 net.workspace = true
 subsonic.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 url.workspace = true
 
 [dev-dependencies]
+gpui-host.workspace = true
 gpui-kit = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
 

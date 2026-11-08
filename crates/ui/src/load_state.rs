@@ -58,7 +58,7 @@ pub fn muted_text(text: &'static str, cx: &App) -> impl IntoElement {
         .child(text)
 }
 
-/// `note` is what `session::missing_readings_note` gives.
+/// `note` is what `Session::missing_readings_note` gives.
 pub fn no_matches(
     message: &'static str,
     note: Option<&'static str>,

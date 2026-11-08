@@ -7,7 +7,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, AsyncApp, Context, Entity, EventEmitter, IntoElement,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, Task, Window, div,
+    ParentElement as _, Render, SharedString, Styled as _, Task, Window, div,
     prelude::FluentBuilder as _, rems,
 };
 use hiphile_core::search::{Hit, Results, SearchLibrary};
@@ -53,13 +53,16 @@ pub struct Search {
     has_query: bool,
     _load_task: Task<()>,
     _search_task: Task<()>,
-    _readings_changes: Option<Subscription>,
+    _readings_changes: Option<Task<()>>,
 }
 
 impl EventEmitter<SearchEvent> for Search {}
 
 impl Search {
     pub fn new(session: session::Session, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let readings_changes = session.readings().map(|readings| {
+            ui::on_readings_changed(readings, cx, |this: &mut Self, cx| this.library_changed(cx))
+        });
         Self {
             session,
             state: cx.new(|cx| CommandState::new(window, cx)),
@@ -71,11 +74,7 @@ impl Search {
             has_query: false,
             _load_task: Task::ready(()),
             _search_task: Task::ready(()),
-            _readings_changes: session::readings(cx).map(|readings| {
-                cx.subscribe(&readings, |this, _, _: &session::ReadingsChanged, cx| {
-                    this.library_changed(cx);
-                })
-            }),
+            _readings_changes: readings_changes,
         }
     }
 
@@ -119,7 +118,7 @@ impl Search {
             return;
         };
         self.is_reading = true;
-        let book = self.session.reading_book(cx);
+        let book = self.session.reading_book();
         let state = self.state.clone();
         let window = self.window;
         let shows_spinner = !matches!(self.library, SavedLibrary::Read(_));
@@ -218,7 +217,7 @@ impl Search {
             .p_4()
             .child(no_matches(
                 "Nothing matches.",
-                session::missing_readings_note(cx),
+                self.session.missing_readings_note(),
                 cx,
             ))
             .into_any_element()

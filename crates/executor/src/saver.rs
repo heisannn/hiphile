@@ -53,6 +53,12 @@ impl<T: Send + 'static> Saver<T> {
             })
             .detach();
     }
+
+    /// The value still waiting for its turn, which is then not written. For a host about to quit,
+    /// whose blocking threads may not get to it, to write it itself. A write under way goes on.
+    pub fn take_waiting(&self) -> Option<T> {
+        lock(&self.queue).waiting.take()
+    }
 }
 
 fn next<T>(queue: &Mutex<Queue<T>>) -> Option<T> {

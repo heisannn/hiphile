@@ -678,7 +678,11 @@ impl Artists {
             .as_ref()
             .or_else(|| albums.first().and_then(Album::cover_art))
             .or_else(|| detail.top_songs.items().first().and_then(Song::cover_art))
-            .map(|cover_art| self.session.cover_art_url(cover_art, CARD_COVER_PIXELS));
+            .map(|cover_art| {
+                self.session
+                    .cover_art_url(cover_art, CARD_COVER_PIXELS)
+                    .into()
+            });
         let songs: Option<u32> = albums.iter().map(Album::song_count).sum();
         let summary = match &detail.albums {
             _ if detail.is_only_on_songs => {
@@ -838,9 +842,11 @@ impl Artists {
         let artist = song_artist_link(song).filter(|_| song.artist_id() != Some(&detail.id));
         let details = ArtistLine::of_song_by(artist, song);
         let duration = song.duration().map(format_duration).unwrap_or_default();
-        let cover = song
-            .cover_art()
-            .map(|cover_art| self.session.cover_art_url(cover_art, ROW_COVER_PIXELS));
+        let cover = song.cover_art().map(|cover_art| {
+            self.session
+                .cover_art_url(cover_art, ROW_COVER_PIXELS)
+                .into()
+        });
         let state = self.now_playing.as_ref().and_then(|now| now.state_of(&id));
         let label = song_row_label(song, &title, state, cx);
         let focus = self.detail_focus.clone();
@@ -905,9 +911,11 @@ impl Artists {
         let target = StarTarget::Album(id.clone());
         let item = Item::Album(id.clone());
         let is_selected = self.selection.as_ref() == Some(&item);
-        let cover = album
-            .cover_art()
-            .map(|cover_art| self.session.cover_art_url(cover_art, CARD_COVER_PIXELS));
+        let cover = album.cover_art().map(|cover_art| {
+            self.session
+                .cover_art_url(cover_art, CARD_COVER_PIXELS)
+                .into()
+        });
         let year = album
             .year()
             .map(|year| year.to_string())
@@ -964,9 +972,11 @@ impl Artists {
         let target = StarTarget::Artist(id.clone());
         let item = Item::Artist(id.clone());
         let is_selected = self.selection.as_ref() == Some(&item);
-        let cover = artist
-            .cover_art()
-            .map(|cover_art| self.session.cover_art_url(cover_art, CARD_COVER_PIXELS));
+        let cover = artist.cover_art().map(|cover_art| {
+            self.session
+                .cover_art_url(cover_art, CARD_COVER_PIXELS)
+                .into()
+        });
         // Zero says nothing of an artist the server knows for their songs
         let albums = artist
             .album_count()

@@ -96,6 +96,7 @@ pub struct Artists {
     _action_task: Task<()>,
     _index_task: Task<()>,
     _subscriptions: Vec<Subscription>,
+    _readings_changes: Option<Task<()>>,
 }
 
 enum ArtistList {
@@ -124,7 +125,7 @@ impl Artists {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter artists"));
         let list_focus = cx.focus_handle().tab_stop(true);
         let detail_focus = cx.focus_handle().tab_stop(true);
-        let mut subscriptions = vec![
+        let subscriptions = vec![
             // The artist on show has a star that says
             actions::observe_favorites(cx),
             cx.subscribe_in(&filter, window, |this, _, event, window, cx| match event {
@@ -138,13 +139,9 @@ impl Artists {
             cx.on_focus(&detail_focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&detail_focus, window, |_, _, cx| cx.notify()),
         ];
-        if let Some(readings) = session::readings(cx) {
-            subscriptions.push(
-                cx.subscribe(&readings, |this, _, _: &session::ReadingsChanged, cx| {
-                    this.index_artists(cx)
-                }),
-            );
-        }
+        let readings_changes = session.readings().map(|readings| {
+            ui::on_readings_changed(readings, cx, |this: &mut Self, cx| this.index_artists(cx))
+        });
         Self {
             session,
             is_activated: false,
@@ -178,6 +175,7 @@ impl Artists {
             _action_task: Task::ready(()),
             _index_task: Task::ready(()),
             _subscriptions: subscriptions,
+            _readings_changes: readings_changes,
         }
     }
 
@@ -366,7 +364,7 @@ impl Artists {
         self.index = Arc::new(artist_index(&artists, None));
         self._index_task = Task::ready(());
         self.apply_filter(cx);
-        let Some(book) = self.session.reading_book(cx) else {
+        let Some(book) = self.session.reading_book() else {
             return;
         };
         self._index_task = cx.spawn(async move |this, cx| {
@@ -854,7 +852,7 @@ impl Artists {
             return centered(muted_text("This server has no artists.", cx)).into_any_element();
         }
         if self.visible.is_empty() {
-            let note = session::missing_readings_note(cx);
+            let note = self.session.missing_readings_note();
             return no_matches("No artists match the filter.", note, cx).into_any_element();
         }
         let visible = self.visible.clone();

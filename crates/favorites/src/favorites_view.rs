@@ -602,7 +602,7 @@ impl Favorites {
             focus: focus.clone(),
         };
         let cover = move |cover_art: Option<&CoverArtId>| {
-            cover_art.map(|cover_art| session.cover_art_url(cover_art, ROW_COVER_PIXELS))
+            cover_art.map(|cover_art| session.cover_art_url(cover_art, ROW_COVER_PIXELS).into())
         };
         let scroll = &self.scrolls[self.section.ix()];
         match self.section {
