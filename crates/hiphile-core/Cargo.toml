@@ -16,8 +16,9 @@ config.workspace = true
 executor.workspace = true
 futures.workspace = true
 fuzzy.workspace = true
+lyrics.workspace = true
 media-controls = { workspace = true, optional = true }
-net = { workspace = true, optional = true }
+net.workspace = true
 playback.workspace = true
 presence = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
@@ -31,16 +32,14 @@ url = { workspace = true, optional = true }
 desktop = [
   "dep:async-channel",
   "dep:media-controls",
-  "dep:net",
   "dep:presence",
   "dep:url",
 ]
-test-support = ["dep:net", "dep:serde_json"]
+test-support = ["dep:serde_json"]
 
 [dev-dependencies]
 gpui-host.workspace = true
 gpui-kit = { workspace = true, features = ["test-support"] }
-net.workspace = true
 playback = { workspace = true, features = ["test-support"] }
 raw-window-handle.workspace = true
 serde_json.workspace = true

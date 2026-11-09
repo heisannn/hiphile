@@ -1,52 +1,16 @@
 use std::mem;
 use std::sync::Arc;
 
-use gpui_kit::{App, Context, Global, Task};
+use gpui_kit::{App, Context, Task};
 use session::{Readings, ReadingsStatus};
 
 use crate::http::NetHttpClient;
 
-struct GlobalCovers(catalog::CoverStore);
-
-impl Global for GlobalCovers {}
-
-struct GlobalReadings(Readings);
-
-impl Global for GlobalReadings {}
-
-/// Installs `net` as GPUI's HTTP client, so `img(url)` cover art shares the
-/// API's transport and is kept on disk when the system has a cache directory,
-/// and starts fetching what reads kanji. Call once at startup, after
+/// Installs `net` as GPUI's HTTP client, so `img(url)` cover art shares the API's transport and
+/// is kept in `covers`, when there is somewhere to keep it. Call once at startup, after
 /// `gpui_kit::init`.
-pub fn init_network(net: net::Client, cx: &mut App) {
-    let covers = session::open_covers(config::Store::user());
-    if let Some(covers) = &covers {
-        cx.set_global(GlobalCovers(covers.clone()));
-    }
-    let readings = Readings::new(gpui_host::executor(cx), net.clone(), config::Store::user());
-    cx.set_global(GlobalReadings(readings));
+pub fn set_http_client(net: net::Client, covers: Option<catalog::CoverStore>, cx: &mut App) {
     cx.set_http_client(Arc::new(NetHttpClient::new(net, covers)));
-}
-
-/// Where covers are kept on disk, once [`init_network`] has run and if the system has a cache
-/// directory.
-pub fn covers(cx: &App) -> Option<catalog::CoverStore> {
-    cx.try_global::<GlobalCovers>()
-        .map(|covers| covers.0.clone())
-}
-
-/// Keeps at most about `capacity` bytes of covers from the next one on, or the
-/// default amount for `None`.
-pub fn set_cover_capacity(capacity: Option<u64>, cx: &App) {
-    if let Some(GlobalCovers(covers)) = cx.try_global() {
-        session::set_cover_capacity(covers, capacity);
-    }
-}
-
-/// The dictionaries that read kanji, once [`init_network`] has run.
-pub fn readings(cx: &App) -> Option<Readings> {
-    cx.try_global::<GlobalReadings>()
-        .map(|readings| readings.0.clone())
 }
 
 /// Calls `on_change` each time the dictionaries come or go, for as long as the task is kept:

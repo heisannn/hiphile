@@ -3,14 +3,12 @@
 use gpui_kit::component::{WindowExt as _, button::Button, notification::Notification};
 use gpui_kit::{Context, Window};
 use hiphile_core::playlists::EntryId;
-use subsonic::{PlaylistId, Song};
 
 use super::Playlists;
 
 /// Identifies the notification of the last removal, which replaces the one
 /// before: only the last removal can be undone.
 pub(super) struct SongRemoved;
-struct SongsAdded;
 
 impl Playlists {
     fn move_entry(
@@ -108,34 +106,5 @@ impl Playlists {
         if let Some(id) = put_back {
             self.select_entry(id, cx);
         }
-    }
-
-    /// Adds `songs` after those already in `playlist`, and says so: the
-    /// playlist is usually not on show.
-    pub fn add_songs(
-        &mut self,
-        playlist: &PlaylistId,
-        songs: &[Song],
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if songs.is_empty() {
-            return;
-        }
-        self.playlists.add_songs(playlist, songs);
-        self.sync(window, cx);
-        let name = self
-            .loaded_list()
-            .and_then(|list| list.iter().find(|listed| listed.id() == playlist))
-            .map_or_else(
-                || "the playlist".to_owned(),
-                |listed| listed.name().to_owned(),
-            );
-        window.push_notification(
-            Notification::new()
-                .id::<SongsAdded>()
-                .message(format!("Added to {name}")),
-            cx,
-        );
     }
 }

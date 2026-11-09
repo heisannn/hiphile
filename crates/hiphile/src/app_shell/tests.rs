@@ -141,3 +141,22 @@ fn a_new_session_forgets_the_favorites_of_whoever_came_before(cx: &mut TestAppCo
         assert_eq!(actions::is_favorite(&a, cx), Some(true));
     });
 }
+
+#[gpui_kit::test]
+fn a_sync_that_failed_before_the_screens_followed_it_is_still_found(cx: &mut TestAppContext) {
+    // The failure comes from the network's own thread
+    cx.executor().allow_parking();
+    let sync = LibrarySync::new(
+        cx.update(|cx| gpui_host::executor(cx)),
+        test_support::session("http://127.0.0.1:9"),
+    );
+    assert_eq!(failed_sync(&sync.status()), None);
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while sync.status().is_running() {
+        assert!(Instant::now() < deadline, "the sync never ended");
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(failed_sync(&sync.status()).is_some());
+}

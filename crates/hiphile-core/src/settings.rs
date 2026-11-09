@@ -5,6 +5,7 @@ mod appearance;
 mod audio;
 mod cache_limit;
 mod discord;
+mod handles;
 mod lyrics;
 mod queue;
 mod song_cache_usage;
@@ -16,6 +17,7 @@ pub use audio::{
 };
 pub use cache_limit::{CacheKind, CacheLimit, CacheLimitSnapshot};
 pub use discord::{DiscordSettings, DiscordSnapshot};
+pub use handles::Settings;
 pub use lyrics::{LYRICS_HIGHLIGHTS, LyricsSettings, LyricsSnapshot};
 pub use queue::{QueueSettings, QueueSnapshot};
 pub use song_cache_usage::{SongCacheSnapshot, SongCacheUsage, format_size};

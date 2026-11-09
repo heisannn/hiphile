@@ -3,8 +3,12 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use clap::{Args, Parser, Subcommand};
+use executor::Executor;
 use futures::executor::block_on;
+use hiphile_core::library::{Albums, LibraryNotice, LibrarySync, Outcome, SyncStage, SyncStatus};
+use hiphile_core::{Caches, Hiphile};
 use subsonic::{Credentials, Song, SongId};
+use tokio::sync::broadcast::error::RecvError;
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -76,62 +80,95 @@ struct ServerArgs {
     api_key: Option<String>,
 }
 
-fn last_profile() -> Option<config::Profile> {
-    config::Store::user()
-        .ok()
-        .and_then(|store| store.last_profile().ok().flatten())
+/// The app's core on a runtime of this process, as a binding crate would run it. Only what
+/// `block_on` waits for runs on it, so nothing the core sends is missed before it is listened to.
+struct Core {
+    hiphile: Hiphile,
+    runtime: tokio::runtime::Runtime,
+    /// Dropped last, outside the runtime: the last client must not be dropped inside one.
+    _net: net::Client,
+}
+
+impl Core {
+    /// Covers, songs and the dictionaries have no use here, so nothing is kept of them.
+    fn new() -> anyhow::Result<Self> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let user_agent = concat!("hiphile-cli/", env!("CARGO_PKG_VERSION"));
+        let net = net::Client::new(user_agent)?;
+        let hiphile = Hiphile::new(
+            Executor::tokio(runtime.handle().clone()),
+            net.clone(),
+            config::Store::user(),
+            config::Keychain::system().ok(),
+            Caches::None,
+        );
+        Ok(Self {
+            hiphile,
+            runtime,
+            _net: net,
+        })
+    }
+
+    fn executor(&self) -> Executor {
+        Executor::tokio(self.runtime.handle().clone())
+    }
+
+    fn block_on<F: Future>(&self, future: F) -> F::Output {
+        self.runtime.block_on(future)
+    }
 }
 
 impl ServerArgs {
-    fn address(&self) -> anyhow::Result<String> {
+    fn address(&self, core: &Core) -> anyhow::Result<String> {
         self.server
             .clone()
-            .or_else(|| last_profile().map(|profile| profile.server().to_owned()))
+            .or_else(|| {
+                let profile = core.hiphile.last_profile()?;
+                Some(profile.server().to_owned())
+            })
             .context("pass --server (or set HIPHILE_SERVER), or sign in once in the app")
     }
 
-    fn catalog(&self) -> anyhow::Result<catalog::Catalog> {
-        let url = client::server_url(&self.address()?)?;
+    fn catalog(&self, core: &Core) -> anyhow::Result<catalog::Catalog> {
+        let url = client::server_url(&self.address(core)?)?;
         Ok(catalog::Catalog::open_server(&url)?)
     }
 
-    fn client(self) -> anyhow::Result<client::Client> {
-        let profile = last_profile();
-        let address = self.address()?;
+    /// A session through the core, which remembers nothing of it.
+    fn connect(self, core: &Core) -> anyhow::Result<session::Session> {
+        let address = self.address(core)?;
         let credentials = match self.api_key {
             Some(key) => Credentials::api_key(key),
             None => {
                 let username = self
                     .username
                     .or_else(|| {
-                        profile
+                        core.hiphile
+                            .last_profile()
                             .filter(|profile| profile.server() == address)
                             .map(|profile| profile.username().to_owned())
                     })
                     .context("pass --username (or set HIPHILE_USERNAME)")?;
                 let password = match self.password {
                     Some(password) => password,
-                    None => saved_password(&address, &username)?,
+                    None => saved_password(core, &address, &username)?,
                 };
                 Credentials::password(username, password)
             }
         };
-        let server = client::Server::new(&address, credentials)?;
-        let user_agent = concat!("hiphile-cli/", env!("CARGO_PKG_VERSION"));
-        Ok(client::Client::new(net::Client::new(user_agent)?, server))
+        let connecting = core
+            .hiphile
+            .connect(&address, credentials)
+            .map_err(|invalid| anyhow::anyhow!("{}", invalid.message()))?;
+        core.block_on(connecting).map_err(anyhow::Error::msg)
     }
 }
 
-fn saved_password(server: &str, username: &str) -> anyhow::Result<String> {
+fn saved_password(core: &Core, server: &str, username: &str) -> anyhow::Result<String> {
     let profile = config::Profile::new(server, username);
-    let in_file = config::Store::user()
-        .ok()
-        .and_then(|store| store.password(&profile).ok().flatten());
-    if let Some(password) = in_file {
-        return Ok(password);
-    }
-    config::Keychain::system()?
-        .password(&profile)?
+    core.block_on(core.hiphile.saved_password(profile))
         .with_context(|| {
             format!(
                 "no password for {username} on {server} in the keychain; \
@@ -141,8 +178,6 @@ fn saved_password(server: &str, username: &str) -> anyhow::Result<String> {
 }
 
 fn main() -> anyhow::Result<()> {
-    // The CLI drives runtime-agnostic futures itself; `net` owns the tokio
-    // runtime, so this must not run inside another tokio runtime.
     match Cli::parse().command {
         Command::Ping(args) => ping(args),
         Command::Devices => devices(),
@@ -166,9 +201,9 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn ping(args: ServerArgs) -> anyhow::Result<()> {
-    let client = args.client()?;
-    let server = block_on(client.ping())
-        .with_context(|| format!("ping {} failed", client.server().base_url()))?;
+    let core = Core::new()?;
+    let session = args.connect(&core)?;
+    let server = session.server();
     let software = match (server.server_type(), server.server_version()) {
         (Some(name), Some(version)) => format!("{name} {version}"),
         (Some(name), None) => name.to_owned(),
@@ -199,57 +234,91 @@ fn devices() -> anyhow::Result<()> {
 }
 
 fn sync(args: ServerArgs) -> anyhow::Result<()> {
-    let catalog = args.catalog()?;
-    let client = args.client()?;
-    let albums = block_on(catalog::sync_albums(
-        &catalog,
-        &client,
-        catalog::Mode::Always,
-    ))?;
-    report("albums", albums)?;
-    let artists = block_on(catalog::sync_artists(
-        &catalog,
-        &client,
-        catalog::Mode::Always,
-    ))?;
-    report("artists", artists)?;
-    let songs = block_on(catalog::sync_songs(
-        &catalog,
-        &client,
-        catalog::Mode::Always,
-    ))?;
-    report("songs", songs)?;
-    println!("saved in {}", catalog.dir().display());
+    let core = Core::new()?;
+    let session = args.connect(&core)?;
+    let dir = session
+        .catalog()
+        .context("the library can't be kept on this computer")?
+        .dir()
+        .to_owned();
+    let library = LibrarySync::refreshing(core.executor(), session);
+    let mut notices = library.notices();
+    core.block_on(async {
+        loop {
+            match notices.recv().await {
+                Ok(LibraryNotice::StageSynced(stage, outcome)) => report(stage, outcome)?,
+                Ok(LibraryNotice::SyncFinished) => return Ok(()),
+                Ok(_) | Err(RecvError::Lagged(_)) => {}
+                Err(RecvError::Closed) => anyhow::bail!("the sync stopped"),
+            }
+        }
+    })?;
+    failure(&library.status())?;
+    println!("saved in {}", dir.display());
     Ok(())
 }
 
-fn report(items: &str, outcome: catalog::Outcome) -> anyhow::Result<()> {
+fn report(stage: SyncStage, outcome: Outcome) -> anyhow::Result<()> {
+    let items = match stage {
+        SyncStage::Albums => "albums",
+        SyncStage::Artists => "artists",
+        SyncStage::Songs => "songs",
+    };
     match outcome {
-        catalog::Outcome::Synced { count } => println!("{count} {items}"),
-        catalog::Outcome::Unsettled { count } => println!(
+        Outcome::Synced { count } => println!("{count} {items}"),
+        Outcome::Unsettled { count } => println!(
             "{count} {items}; the server was scanning, so {items} it removed are kept until the next sync"
         ),
-        catalog::Outcome::UpToDate => println!("{items} are up to date"),
-        catalog::Outcome::Busy => {
+        Outcome::UpToDate => println!("{items} are up to date"),
+        Outcome::Busy => {
             anyhow::bail!("another hiphile is updating this library; try again when it is done")
         }
     }
     Ok(())
 }
 
-fn albums(args: ServerArgs, refresh: bool, offline: bool) -> anyhow::Result<()> {
-    let catalog = args.catalog()?;
-    if !offline {
-        let mode = if refresh {
-            catalog::Mode::Always
-        } else {
-            catalog::Mode::IfStale
-        };
-        let client = args.client()?;
-        // Another process updating the copy leaves it as it is for now
-        block_on(catalog::sync_albums(&catalog, &client, mode))?;
+/// Why the sync that ended failed, if it did.
+fn failure(status: &SyncStatus) -> anyhow::Result<()> {
+    match (status.albums(), status.failure()) {
+        (Albums::Failed(error), _) => anyhow::bail!("{error}"),
+        (_, Some(error)) => anyhow::bail!("{error}"),
+        _ => Ok(()),
     }
-    for album in catalog.albums()? {
+}
+
+fn albums(args: ServerArgs, refresh: bool, offline: bool) -> anyhow::Result<()> {
+    let core = Core::new()?;
+    let albums = if offline {
+        args.catalog(&core)?.albums()?.into()
+    } else {
+        let session = args.connect(&core)?;
+        let library = if refresh {
+            LibrarySync::refreshing(core.executor(), session)
+        } else {
+            LibrarySync::new(core.executor(), session)
+        };
+        let mut notices = library.notices();
+        // The artists and songs that follow are no concern here
+        core.block_on(async {
+            loop {
+                match notices.recv().await {
+                    Ok(
+                        LibraryNotice::StageSynced(SyncStage::Albums, _)
+                        | LibraryNotice::SyncFinished,
+                    )
+                    | Err(RecvError::Closed) => return,
+                    Ok(_) | Err(RecvError::Lagged(_)) => {}
+                }
+            }
+        });
+        let status = library.status();
+        failure(&status)?;
+        match status.albums() {
+            Albums::Loaded(albums) => albums.clone(),
+            Albums::Loading | Albums::Failed(_) => anyhow::bail!("the albums never came"),
+        }
+    };
+    for album in albums.iter() {
         let details = match (album.artist(), album.year()) {
             (Some(artist), Some(year)) => format!("{artist} - {} ({year})", album.name()),
             (Some(artist), None) => format!("{artist} - {}", album.name()),
@@ -261,16 +330,20 @@ fn albums(args: ServerArgs, refresh: bool, offline: bool) -> anyhow::Result<()> 
     Ok(())
 }
 
+/// Asks the server, which knows songs the saved library may not have yet.
 fn search(args: ServerArgs, query: &str, count: u32) -> anyhow::Result<()> {
-    let client = args.client()?;
-    for song in block_on(client.search_songs(query, count))? {
+    let core = Core::new()?;
+    let session = args.connect(&core)?;
+    for song in core.block_on(session.client().search_songs(query, count))? {
         println!("{}\t{}", song.id(), describe(&song));
     }
     Ok(())
 }
 
 fn play(args: ServerArgs, ids: Vec<String>, query: Option<String>) -> anyhow::Result<()> {
-    let client = args.client()?;
+    let core = Core::new()?;
+    let session = args.connect(&core)?;
+    let client = session.client();
     let songs: Vec<SongId> = match query {
         Some(query) => block_on(client.search_songs(&query, 50))?
             .into_iter()
@@ -288,7 +361,7 @@ fn play(args: ServerArgs, ids: Vec<String>, query: Option<String>) -> anyhow::Re
     let song_cache = song_cache();
     let mut failures = 0;
     while let Some(song) = queue.current().cloned() {
-        if let Err(error) = play_song(&client, song_cache.as_ref(), &engine, &events, &song) {
+        if let Err(error) = play_song(client, song_cache.as_ref(), &engine, &events, &song) {
             eprintln!("{song}: {error:#}");
             failures += 1;
         }

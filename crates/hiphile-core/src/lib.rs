@@ -6,6 +6,7 @@ pub mod artists;
 pub mod desktop;
 pub mod favorites;
 mod follow;
+mod hiphile;
 pub mod home;
 pub mod library;
 pub mod navigation;
@@ -17,3 +18,7 @@ pub mod songs;
 pub mod test_support;
 #[cfg(test)]
 mod testing;
+mod workspace;
+
+pub use hiphile::{Caches, Hiphile, HiphileSnapshot};
+pub use workspace::Workspace;

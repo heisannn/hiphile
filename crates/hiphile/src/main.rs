@@ -11,6 +11,7 @@ use gpui_kit::{
     size,
 };
 use hiphile_core::navigation::Destination;
+use hiphile_core::{Caches, Hiphile};
 use player::{
     NextSong, PreviousSong, RepeatMode, SaveQueue, SeekBackward, SeekForward, SetRepeat,
     ToggleLyrics, ToggleMiniPlayer, ToggleMute, TogglePlayback, ToggleQueue, ToggleShuffle,
@@ -43,7 +44,22 @@ fn main() {
 
             let user_agent = concat!("hiphile/", env!("CARGO_PKG_VERSION"));
             let net = net::Client::new(user_agent).expect("failed to start the network runtime");
-            ui::init_network(net.clone(), cx);
+            let hiphile = Hiphile::new(
+                gpui_host::executor(cx),
+                net.clone(),
+                config::Store::user(),
+                config::Keychain::system().ok(),
+                Caches::User,
+            );
+            ui::set_http_client(net, hiphile.covers().cloned(), cx);
+            cx.on_app_quit({
+                let hiphile = hiphile.clone();
+                move |_| {
+                    hiphile.shutdown();
+                    async {}
+                }
+            })
+            .detach();
 
             ui::list_navigation::bind_control_keys(cx);
             home::init(cx);
@@ -56,7 +72,7 @@ fn main() {
             search::init(WORKSPACE_CONTEXT, cx);
             let updater =
                 updater::Updater::of_this_app(gpui_host::executor(cx), config::Store::user());
-            settings::init(updater.clone(), cx);
+            settings::init(hiphile.clone(), updater.clone(), cx);
             install_app_commands(cx);
 
             // Window geometry is a platform boundary, so it is given in pixels
@@ -67,7 +83,7 @@ fn main() {
                 ..TitleBar::window_options()
             };
             let (main_window, _) = gpui_kit::open_window(options, cx, |window, cx| {
-                cx.new(|cx| AppShell::new(net, updater, window, cx))
+                cx.new(|cx| AppShell::new(hiphile, updater, window, cx))
             })
             .expect("failed to open the main window");
             // A window left open such as Settings must not keep the app alive without this one

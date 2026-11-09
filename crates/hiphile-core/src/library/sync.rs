@@ -88,6 +88,9 @@ pub enum LibraryNotice {
     SyncFinished,
     /// A sync the user asked for failed, for why.
     SyncFailed(String),
+    /// A stage of a sync through the saved library ended so, the albums it brought already in
+    /// the status.
+    StageSynced(SyncStage, Outcome),
 }
 
 /// Keeps the saved library up to date with the server, and the albums it holds. The first sync
@@ -119,6 +122,15 @@ struct State {
 
 impl LibrarySync {
     pub fn new(executor: Executor, session: Session) -> Self {
+        Self::starting(executor, session, Mode::IfStale)
+    }
+
+    /// Starts by fetching the whole library from the server, whatever the age of the saved one.
+    pub fn refreshing(executor: Executor, session: Session) -> Self {
+        Self::starting(executor, session, Mode::Always)
+    }
+
+    fn starting(executor: Executor, session: Session, mode: Mode) -> Self {
         let this = Self(Arc::new(Inner {
             executor,
             session,
@@ -136,9 +148,7 @@ impl LibrarySync {
             }),
             notices: broadcast::Sender::new(NOTICES),
         }));
-        this.0
-            .state
-            .update(|state| this.start(state, Mode::IfStale));
+        this.0.state.update(|state| this.start(state, mode));
         this
     }
 
@@ -303,25 +313,36 @@ async fn run(
         Outcome::Busy if !shown => Some(client.albums_by_name().await.map_err(describe)?),
         Outcome::UpToDate | Outcome::Busy => None,
     };
-    if let Some(albums) = albums {
-        this.change(work_id, |this, state| {
+    this.change(work_id, |this, state| {
+        if let Some(albums) = albums {
             state.set_albums(albums);
             if is_changed(outcome) {
                 this.notify(LibraryNotice::AlbumsSynced);
             }
-        });
-    }
+        }
+        this.notify(LibraryNotice::StageSynced(SyncStage::Albums, outcome));
+    });
 
     // The songs do not depend on the artists, so the sync goes on to them and reports the
     // failure at the end
     let artists = sync(SyncStage::Artists).await.map_err(describe_catalog);
-    if matches!(artists, Ok(outcome) if is_changed(outcome)) {
-        this.change(work_id, |this, _| this.notify(LibraryNotice::ArtistsSynced));
+    if let Ok(outcome) = artists {
+        this.change(work_id, |this, _| {
+            if is_changed(outcome) {
+                this.notify(LibraryNotice::ArtistsSynced);
+            }
+            this.notify(LibraryNotice::StageSynced(SyncStage::Artists, outcome));
+        });
     }
 
     let songs = sync(SyncStage::Songs).await.map_err(describe_catalog);
-    if matches!(songs, Ok(outcome) if is_changed(outcome)) {
-        this.change(work_id, |this, _| this.notify(LibraryNotice::SongsSynced));
+    if let Ok(outcome) = songs {
+        this.change(work_id, |this, _| {
+            if is_changed(outcome) {
+                this.notify(LibraryNotice::SongsSynced);
+            }
+            this.notify(LibraryNotice::StageSynced(SyncStage::Songs, outcome));
+        });
     }
     artists.and(songs).map(|_| ())
 }

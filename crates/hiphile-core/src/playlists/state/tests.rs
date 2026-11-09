@@ -157,6 +157,26 @@ fn songs_added_to_another_playlist_leave_the_one_on_show(cx: &mut TestAppContext
 }
 
 #[gpui_kit::test]
+fn adding_songs_says_to_which_playlist(cx: &mut TestAppContext) {
+    let server = two_playlists();
+    let playlists = loaded_from(&server, cx);
+    let mut notices = playlists.notices();
+
+    playlists.add_songs(&PlaylistId::new("b"), &[song("9")]);
+    playlists.add_songs(&PlaylistId::new("gone"), &[song("9")]);
+
+    assert_eq!(
+        notices.try_recv().unwrap(),
+        PlaylistsNotice::SongsAdded(Some("Beta".into()))
+    );
+    assert_eq!(
+        notices.try_recv().unwrap(),
+        PlaylistsNotice::SongsAdded(None)
+    );
+    wait_for_saving(&playlists, cx);
+}
+
+#[gpui_kit::test]
 fn renaming_shows_at_once_in_the_list_and_the_detail(cx: &mut TestAppContext) {
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);

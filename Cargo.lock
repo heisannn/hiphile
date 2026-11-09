@@ -88,6 +88,7 @@ version = "0.4.0"
 dependencies = [
  "config 0.4.0",
  "gpui-kit",
+ "hiphile-core",
  "session",
 ]
 
@@ -3987,7 +3988,6 @@ dependencies = [
  "hiphile-core",
  "home",
  "library",
- "lyrics",
  "media-controls",
  "net",
  "playback",
@@ -4014,10 +4014,14 @@ dependencies = [
  "clap",
  "client",
  "config 0.4.0",
+ "executor",
  "futures",
+ "hiphile-core",
  "net",
  "playback",
+ "session",
  "subsonic",
+ "tokio",
 ]
 
 [[package]]
@@ -4035,6 +4039,7 @@ dependencies = [
  "fuzzy",
  "gpui-host",
  "gpui-kit",
+ "lyrics",
  "media-controls",
  "net",
  "playback",
@@ -8043,7 +8048,6 @@ dependencies = [
  "hiphile-core",
  "session",
  "tempfile",
- "ui",
  "updater",
 ]
 
@@ -9302,7 +9306,6 @@ dependencies = [
  "actions",
  "bytes",
  "catalog",
- "config 0.4.0",
  "futures",
  "gpui-host",
  "gpui-kit",

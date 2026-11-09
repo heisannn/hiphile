@@ -53,7 +53,7 @@ pub(crate) struct SettingsView {
     imgbb_key_field: Entity<ImgbbKeyField>,
     lyrics: LyricsSettings,
     queue: QueueSettings,
-    readings: Option<Readings>,
+    readings: Readings,
     /// `None` in a build that does not update itself.
     updater: Option<Updater>,
     focus: FocusHandle,
@@ -66,7 +66,7 @@ pub(crate) struct SettingsView {
     _discord_changes: Task<()>,
     _lyrics_changes: Task<()>,
     _queue_changes: Task<()>,
-    _readings_changes: Option<Task<()>>,
+    _readings_changes: Task<()>,
     _updater_changes: Option<Task<()>>,
     _refresh: Task<()>,
 }
@@ -92,14 +92,19 @@ fn exclusive_item(audio: &AudioSettings, is_dsd_on: bool) -> SettingItem {
 
 impl SettingsView {
     pub(crate) fn new(
-        appearance: AppearanceSettings,
-        audio: AudioSettings,
-        song_cache: CacheLimit,
-        cover_cache: CacheLimit,
-        discord: DiscordSettings,
+        settings: hiphile_core::settings::Settings,
+        readings: Readings,
+        updater: Option<Updater>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let appearance = settings.appearance().clone();
+        let audio = settings.audio().clone();
+        let song_cache = settings.song_cache().clone();
+        let cover_cache = settings.cover_cache().clone();
+        let discord = settings.discord().clone();
+        let lyrics = settings.lyrics().clone();
+        let queue = settings.queue().clone();
         // Holds focus so the window's commands work before anything is clicked
         let focus = cx.focus_handle();
         focus.focus(window, cx);
@@ -122,21 +127,15 @@ impl SettingsView {
         let song_cache_field = cx.new(|cx| CacheLimitField::new(song_cache.clone(), window, cx));
         let cover_cache_field = cx.new(|cx| CacheLimitField::new(cover_cache.clone(), window, cx));
         let imgbb_key_field = cx.new(|cx| ImgbbKeyField::new(discord.clone(), window, cx));
-        let lyrics = crate::lyrics_settings(cx);
-        let queue = crate::queue_settings(cx);
-        let readings = ui::readings(cx);
-        let updater = crate::updater(cx);
         Self {
             _updater_changes: updater
                 .as_ref()
                 .map(|updater| gpui_host::notify_on_change(updater.subscribe(), cx)),
             updater,
-            _readings_changes: readings
-                .as_ref()
-                .map(|readings| gpui_host::notify_on_change(readings.subscribe(), cx)),
+            _readings_changes: gpui_host::notify_on_change(readings.subscribe(), cx),
             readings,
             _appearance_changes: gpui_host::notify_on_change(appearance.subscribe(), cx),
-            _system_appearance_changes: crate::follow_system_appearance(window),
+            _system_appearance_changes: crate::follow_system_appearance(appearance.clone(), window),
             appearance,
             _audio_changes: gpui_host::notify_on_change(audio.subscribe(), cx),
             _song_cache_changes: gpui_host::notify_on_change(song_cache.subscribe(), cx),
@@ -529,14 +528,11 @@ impl SettingsView {
             covers = covers
                 .footer(move |_, cx| div().text_color(cx.theme().danger).child(error.clone()));
         }
-        let mut page = SettingPage::new("Storage")
+        SettingPage::new("Storage")
             .icon(IconName::HardDrive)
             .group(songs)
-            .group(covers);
-        if let Some(readings) = &self.readings {
-            page = page.group(romaji_search_group(readings));
-        }
-        page
+            .group(covers)
+            .group(romaji_search_group(&self.readings))
     }
 }
 

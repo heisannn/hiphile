@@ -174,12 +174,10 @@ impl Home {
         self.recommendations.renew();
     }
 
-    /// Asks again what the server has after a library sync, which may also
-    /// give a library that had nothing to pick from something to recommend.
+    /// Asks again what the server has after a library sync.
     pub fn library_synced(&mut self, cx: &mut Context<Self>) {
         self.reload_most_played(cx);
         self.reload_new_albums(cx);
-        self.recommendations.library_synced();
     }
 
     /// A recommendation is something the other album shelves do not show,
@@ -204,7 +202,6 @@ impl Home {
     pub fn song_played(&mut self, cx: &mut Context<Self>) {
         self.reload_recently_played(cx);
         self.reload_most_played(cx);
-        self.renew_recommended();
     }
 
     fn reload_most_played(&mut self, cx: &mut Context<Self>) {

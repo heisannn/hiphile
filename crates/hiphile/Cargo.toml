@@ -17,7 +17,6 @@ gpui-kit.workspace = true
 hiphile-core = { workspace = true, features = ["desktop"] }
 home.workspace = true
 library.workspace = true
-lyrics.workspace = true
 media-controls.workspace = true
 net.workspace = true
 playback.workspace = true

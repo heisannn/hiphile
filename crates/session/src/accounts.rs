@@ -115,43 +115,72 @@ impl Accounts {
             return Err(invalid(SignInField::Password, "Enter your password."));
         }
         let credentials = Credentials::password(username.clone(), password.clone());
-        let server = client::Server::new(&address, credentials)
-            .map_err(|error| invalid(SignInField::Server, &format!("{error}.")))?;
-        let client = client::Client::new(self.0.net.clone(), server);
+        let connecting = self.connect(&address, credentials)?;
         let this = self.clone();
         Ok(self.0.executor.spawn(async move {
-            let info = client.ping().await.map_err(|error| describe(&error))?;
-            let profile = config::Profile::new(address, username.clone());
-            let (catalog, scrobbles) = this
-                .0
+            let session = connecting.await?;
+            let profile = config::Profile::new(address, username);
+            let store = this.0.store.clone();
+            this.0
                 .executor
                 .spawn_blocking({
-                    let server = client.server().base_url().clone();
-                    let username = username.clone();
-                    let store = this.0.store.clone();
                     let profile = profile.clone();
-                    move || {
-                        // A failure only means the user types more next time
-                        if let Some(store) = store {
-                            store.save_profile(&profile).ok();
-                        }
-                        // Without its cached library the workspace loads everything from the
-                        // server, and without somewhere to keep plays it sends them right away,
-                        // so failing to open either is not shown.
-                        (
-                            catalog::Catalog::open_server(&server).ok(),
-                            catalog::Scrobbles::user(&server, &username).ok(),
-                        )
-                    }
+                    // A failure only means the user types more next time
+                    move || store.map(|store| store.save_profile(&profile).ok())
                 })
                 .await;
             this.remember_password(&profile, password);
             *lock(&this.0.last_profile) = Some(profile.clone());
-            let mut session = Session::new(client, username, info, catalog, scrobbles);
+            Ok(SignedIn { session, profile })
+        }))
+    }
+
+    /// Opens a session on the server at `address` with `credentials`, remembering nothing, as a
+    /// command line does. The error says what went wrong for the user.
+    pub fn connect(
+        &self,
+        address: &str,
+        credentials: Credentials,
+    ) -> Result<Task<Result<Session, String>>, Invalid> {
+        let username = match &credentials {
+            Credentials::Password { username, .. } => Some(username.clone()),
+            Credentials::ApiKey(_) => None,
+        };
+        let server = client::Server::new(address, credentials).map_err(|error| Invalid {
+            field: SignInField::Server,
+            message: format!("{error}."),
+        })?;
+        let client = client::Client::new(self.0.net.clone(), server);
+        let this = self.clone();
+        Ok(self.0.executor.spawn(async move {
+            let info = client.ping().await.map_err(|error| describe(&error))?;
+            let server = client.server().base_url().clone();
+            let (catalog, scrobbles) = this
+                .0
+                .executor
+                .spawn_blocking({
+                    let username = username.clone();
+                    // Without its cached library the workspace loads everything from the server,
+                    // and without somewhere to keep plays it sends them right away, so failing to
+                    // open either is not shown.
+                    move || {
+                        let scrobbles = username
+                            .and_then(|username| catalog::Scrobbles::user(&server, &username).ok());
+                        (catalog::Catalog::open_server(&server).ok(), scrobbles)
+                    }
+                })
+                .await;
+            let mut session = Session::new(
+                client,
+                username.unwrap_or_default(),
+                info,
+                catalog,
+                scrobbles,
+            );
             if let Some(readings) = &this.0.readings {
                 session = session.with_readings(readings.clone());
             }
-            Ok(SignedIn { session, profile })
+            Ok(session)
         }))
     }
 

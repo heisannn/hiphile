@@ -7,7 +7,7 @@ mod queue_view;
 mod testing;
 mod transport;
 
-use gpui_kit::{Action, App, Global, KeyBinding, actions};
+use gpui_kit::{Action, App, KeyBinding, actions};
 use ui::list_navigation::bind_list_navigation;
 
 use mini_player::MINI_PLAYER_CONTEXT;
@@ -60,28 +60,11 @@ impl SetRepeat {
     }
 }
 
-/// `None` when there is nowhere to keep them or the settings cannot be read.
-struct GlobalSongCache(Option<playback::SongCache>);
-
-impl Global for GlobalSongCache {}
-
 /// Call before building the menu bar.
 ///
 /// `context` is the app shell's key context: the commands work anywhere in
 /// its window, while a focused text field keeps its own use of these keys.
 pub fn init(context: &'static str, cx: &mut App) {
-    let capacity = match config::Store::user() {
-        Ok(store) => store.song_cache_capacity(),
-        // Without a home directory there are no settings to follow
-        Err(_) => Ok(None),
-    };
-    // A setting that cannot be read keeps no songs rather than the default
-    // amount.
-    match capacity {
-        Ok(capacity) => set_song_capacity(capacity, cx),
-        Err(_) => cx.set_global(GlobalSongCache(None)),
-    }
-
     bind_commands(context, cx);
 }
 
@@ -176,17 +159,4 @@ fn bind_commands(context: &'static str, cx: &mut App) {
     actions::bind_go_to_artist(QUEUE_CONTEXT, cx);
     actions::bind_toggle_favorite(QUEUE_CONTEXT, cx);
     mini_player::init(cx);
-}
-
-/// Keeps at most about `capacity` bytes of songs from now on, or the default
-/// amount for `None`, in the cache [`song_cache`] gives. A download still arriving is not kept.
-/// Without the cache every song comes from the server, so failing to open it raises no error.
-pub fn set_song_capacity(capacity: Option<u64>, cx: &mut App) {
-    cx.set_global(GlobalSongCache(playback::SongCache::user(capacity).ok()));
-}
-
-/// Where the songs downloaded are kept, if anywhere.
-pub fn song_cache(cx: &App) -> Option<playback::SongCache> {
-    cx.try_global::<GlobalSongCache>()
-        .and_then(|song_cache| song_cache.0.clone())
 }

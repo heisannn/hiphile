@@ -25,6 +25,7 @@ it happen (see the [NSH evaluation](../nsh/evaluation.md)), and the logic can be
 | 5 | Done. `FavoritesState` and `PlaylistsState` in `hiphile-core` load, keep and write the favorites and the playlists; `is_instrumental` and what is skipped are in `playback`. The `actions` globals hold copies the shell feeds from the handles. See [Found in steps 5 and 6](#found-in-steps-5-and-6) |
 | 6 | Done. `LibrarySync`, `LibraryActivity`, `SearchIndex` and `DailyRecommendations` in `hiphile-core`; `LibraryEvent` keeps only `LeftAlbum`, the rest are `LibraryNotice`s |
 | 7 | Done. `playback::Player` holds the queue, the states, the engine, scrobbling and the volume; `hiphile_core::desktop` (`DiscordStatus`, `SystemMediaControls`) follows it; the current song's lyrics and their timing are `lyrics::CurrentLyrics` and `lyrics::timing`. See [Found in step 7](#found-in-step-7) |
+| 8 | Done. `hiphile_core::Hiphile` is the app's core: the settings, `Readings`, the cover cache, signing in and the signed-in `hiphile_core::Workspace`, which makes the handles and routes between them. `hiphile-cli` signs in, syncs and lists through it on tokio. See [Found in step 8](#found-in-step-8) |
 
 ## Where things stand
 
@@ -251,8 +252,8 @@ Step 2 tried the design rules on `updater`. They held, with these details settle
 - **Counting changes in tests.** A `watch` keeps only the last value, so a test that counted events
   cannot count publishes. `AudioSettings` keeps a `#[cfg(test)]` counter where it emitted its two events;
   later steps should assert on the state reached rather than add such counters.
-- **Not yet injected.** `Readings` finds the dictionaries' folder itself (the user's cache) and removes
-  them when the choice is off, so no test makes one. It should take the folder as it takes its store.
+- **Not yet injected** until step 8, which gave `Readings` its folder (`Readings::at`): `Readings` found
+  the dictionaries' folder itself (the user's cache) and removed them when the choice was off.
 - **Release.** `executor`, `gpui-host` and `hiphile-core` are kept out of release-plz (`git_only =
   false`) until a `v*` tag contains them. Remove those entries after the next release.
 
@@ -286,8 +287,9 @@ Step 2 tried the design rules on `updater`. They held, with these details settle
 - **Still in GPUI crates.** The album detail and its catalog cache (`select_album`) and the `act_on_album`
   helpers; home's recently played, most played and new albums shelves; the filter indexes of the albums
   and the playlists, which only the view's filter uses; the confirmations ("Added to …"), with
-  `AddToPlaylist` routed through the playlists view for them; `actions::toggle_favorite` deciding the
-  direction from its copy. The routing in `app_shell.rs` is step 8.
+  `AddToPlaylist` routed through the playlists view for them (a notice since step 8);
+  `actions::toggle_favorite` deciding the direction from its copy. The routing in `app_shell.rs` is
+  step 8.
 
 ## Decided before steps 7 and 8
 
@@ -317,7 +319,8 @@ Step 2 tried the design rules on `updater`. They held, with these details settle
 - **Still to do for mobile, outside these steps.** `config` picks the Linux secret service as the
   keychain on iOS (any Unix but macOS); a mobile app keeps the password in its own keychain or the core
   takes the store from the host. The dictionaries' and caches' folders come from `dirs`, which a mobile
-  app should give instead.
+  app should give instead. Since step 8 a host chooses between the user's caches and none
+  (`hiphile_core::Caches`); a folder of the host's own is still missing.
 
 ## Found in step 7
 
@@ -345,8 +348,41 @@ Step 2 tried the design rules on `updater`. They held, with these details settle
   after the lookup changes, and also when the song goes.
 - **Still in the `player` crate.** What is drawn: the scrub, the position as a fraction, the lines'
   position and colours, the opening and closing animation, the highlight's refresh, the cover URLs, and
-  closing the mini player at the end of the queue; also `player::song_cache(cx)`, which reads the cache
-  limit from the user's store.
+  closing the mini player at the end of the queue; also `player::song_cache(cx)`, which read the cache
+  limit from the user's store until step 8 gave the workspace the song cache.
+
+## Found in step 8
+
+- **One core object.** `Hiphile::new(executor, net, store, keychain, caches)` is all a host makes. It
+  holds the seven settings handles (`hiphile_core::settings::Settings`), `Readings`, the cover cache and
+  `session::Accounts`; `subscribe()` publishes who is signed in, `sign_in` opens the workspace and
+  remembers the profile and the password, `sign_out` closes it and forgets the password, and `shutdown()`
+  writes what waits and stops the player. `connect` signs in without remembering anything or opening a
+  workspace, for the CLI. The desktop app adds the updater and, with the `desktop` feature,
+  `Workspace::show_on_discord` and `Workspace::connect_media_controls`.
+- **The store is read once.** `config::Error::Shared(Arc<Error>)` lets each handle take its own
+  `Result<config::Store, config::Error>` from one `Store::user()`, and each still words its own failure.
+- **Caches.** `Caches::User` keeps covers, songs and the dictionaries in the user's caches, `Caches::None`
+  keeps none, for tests and the CLI.
+- **The workspace starts before its host follows it.** Signing in makes the workspace and starts its
+  first sync on the executor, and the shell makes the screens on a later turn, when it sees the new
+  snapshot. A notice sent in between reaches no one, so a host reads the state when it starts following:
+  the shell tells a sync failure it finds there, and the screens read what a sync already brought when
+  they load. A binding layer has to do the same. The routing between the handles runs on executor tasks,
+  and the workspace and the player are made on a background thread.
+- **Navigation stays in the shell.** Where the user is comes from the views' selection, so in the core it
+  would take the views' state at every step.
+- **The CLI does not open a workspace**, which would start syncing, loading the favorites, the playlists
+  and the recommendations, scrobbling and the audio engine for a ping. It connects and uses the handles
+  it needs on `Executor::tokio`: `LibrarySync` (its `StageSynced` notices report each stage) for `sync`
+  and `albums`. `search` still asks the server, which `SearchIndex` would limit to the saved library, and
+  `play` still uses `playback`'s pieces directly, so the core's player has not run without a window yet.
+- **Behaviour that changed.** "Added to …" is a notice (`PlaylistsNotice::SongsAdded`) and shows a turn
+  later. The CLI words its failures as the core does, goes on to the songs when the artists fail, and
+  opens the catalog and the scrobbles for every command.
+- **Still in GPUI crates.** The settings window opens the song cache itself to count what it keeps
+  (`SongCacheUsage`), and `musixmatch::Client::user` keeps its token in the `dirs` cache; the rest is
+  listed under steps 5 to 7.
 
 ## Done when
 

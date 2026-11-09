@@ -20,6 +20,7 @@ pub use profile::{
 };
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -51,4 +52,7 @@ pub enum Error {
     },
     #[error("the system keychain failed: {0}")]
     Keychain(#[source] keyring_core::Error),
+    /// One failure handed to several owners, as the others cannot be cloned.
+    #[error(transparent)]
+    Shared(Arc<Error>),
 }

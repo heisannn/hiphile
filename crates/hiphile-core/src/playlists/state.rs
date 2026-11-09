@@ -117,6 +117,9 @@ impl PlaylistsSnapshot {
 pub enum PlaylistsNotice {
     /// A change the server refused or never heard of, with what and why.
     WriteFailed(String),
+    /// Songs were added to a playlist, usually not the one on show, named here when it is
+    /// listed.
+    SongsAdded(Option<Arc<str>>),
 }
 
 /// The last song removed, which undoing puts back.
@@ -387,7 +390,7 @@ impl PlaylistsState {
         })
     }
 
-    /// Adds `songs` after those already in `playlist`.
+    /// Adds `songs` after those already in `playlist`, and says so.
     pub fn add_songs(&self, playlist: &PlaylistId, songs: &[Song]) {
         if songs.is_empty() {
             return;
@@ -404,6 +407,12 @@ impl PlaylistsState {
                 songs: songs.iter().map(|song| song.id().clone()).collect(),
             };
             self.write(state, write);
+            let name = state.playlists.loaded_list().and_then(|list| {
+                let listed = list.iter().find(|listed| listed.id() == playlist)?;
+                Some(Arc::from(listed.name()))
+            });
+            // Fails only when nobody listens
+            self.0.notices.send(PlaylistsNotice::SongsAdded(name)).ok();
         });
     }
 

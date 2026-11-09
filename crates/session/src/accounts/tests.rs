@@ -58,6 +58,20 @@ fn an_unusable_address_is_told_as_a_sentence(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn connecting_to_an_unusable_address_is_told_as_a_sentence(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let accounts = accounts(&dir, &config::Keychain::in_memory(), cx);
+
+    let invalid = accounts
+        .connect("ftp://music.example.com", Credentials::api_key("k"))
+        .err()
+        .unwrap();
+
+    assert_eq!(invalid.field(), SignInField::Server);
+    assert!(invalid.message().ends_with('.'));
+}
+
+#[gpui_kit::test]
 fn the_last_profile_is_read_when_made(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     config::Store::at(dir.path())

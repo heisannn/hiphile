@@ -8,7 +8,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     input::{InputEvent, InputState},
     menu::DropdownMenu as _,
-    notification::NotificationType,
+    notification::{Notification, NotificationType},
     resizable::ResizableState,
     spinner::Spinner,
     v_flex,
@@ -47,6 +47,9 @@ use crate::{
     AddToPlaylist, AddToQueue, Back, Delete, FocusFilter, MoveDown, MoveUp, Open,
     PLAYLISTS_CONTEXT, Play, PlayNext, ROOT_CONTEXT, Remove, Rename, SONGS_CONTEXT, ShowAlbum,
 };
+
+/// Identifies the confirmation of songs added, which replaces the one before.
+struct SongsAdded;
 
 /// The renderer aliases an image drawn at less than half its size, so this stays
 /// close to the on-screen size.
@@ -123,11 +126,7 @@ impl Playlists {
             cx.on_blur(&songs_focus, window, |_, _, cx| cx.notify()),
         ];
         let changes = gpui_host::observe_in(playlists.subscribe(), window, cx, Self::show);
-        let notices =
-            gpui_host::subscribe_in(playlists.notices(), window, cx, |_, notice, window, cx| {
-                let PlaylistsNotice::WriteFailed(message) = notice;
-                window.push_notification((NotificationType::Error, message), cx);
-            });
+        let notices = gpui_host::subscribe_in(playlists.notices(), window, cx, Self::tell);
         let mut this = Self {
             session,
             shown: playlists.snapshot(),
@@ -159,6 +158,24 @@ impl Playlists {
             this.list_changed(window, cx);
         }
         this
+    }
+
+    /// Says what the playlists could not do, and what they did elsewhere than on show.
+    fn tell(&mut self, notice: PlaylistsNotice, window: &mut Window, cx: &mut Context<Self>) {
+        match notice {
+            PlaylistsNotice::WriteFailed(message) => {
+                window.push_notification((NotificationType::Error, message), cx);
+            }
+            PlaylistsNotice::SongsAdded(name) => {
+                let name = name.as_deref().unwrap_or("the playlist");
+                window.push_notification(
+                    Notification::new()
+                        .id::<SongsAdded>()
+                        .message(format!("Added to {name}")),
+                    cx,
+                );
+            }
+        }
     }
 
     /// Brings what is on show up to date with the playlists, after a change made here or one

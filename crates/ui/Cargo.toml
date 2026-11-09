@@ -10,7 +10,6 @@ license.workspace = true
 actions.workspace = true
 bytes.workspace = true
 catalog.workspace = true
-config.workspace = true
 futures.workspace = true
 gpui-host.workspace = true
 gpui-kit.workspace = true

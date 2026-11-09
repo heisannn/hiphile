@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 config.workspace = true
 gpui-kit.workspace = true
+hiphile-core.workspace = true
 session.workspace = true
 
 [lints]

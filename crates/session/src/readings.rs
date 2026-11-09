@@ -111,20 +111,25 @@ struct State {
 }
 
 impl Readings {
+    /// Keeps the dictionaries in the user's cache.
     pub fn new(
         executor: Executor,
         net: net::Client,
         store: Result<config::Store, config::Error>,
     ) -> Self {
+        Self::at(executor, net, store, bundle::root().ok())
+    }
+
+    /// Keeps the dictionaries under `root`, removing them from there when they are turned off.
+    /// Without a `root` they cannot be had.
+    pub fn at(
+        executor: Executor,
+        net: net::Client,
+        store: Result<config::Store, config::Error>,
+        root: Option<PathBuf>,
+    ) -> Self {
         let (store, is_on, choice_error) = read_saved_choice(store);
-        Self::with(
-            executor,
-            net,
-            store,
-            bundle::root().ok(),
-            is_on,
-            choice_error,
-        )
+        Self::with(executor, net, store, root, is_on, choice_error)
     }
 
     fn with(

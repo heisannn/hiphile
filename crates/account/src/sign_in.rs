@@ -6,17 +6,11 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render,
-    SharedString, Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _,
+    AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString,
+    Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _,
 };
-use session::{Accounts, Session, SignInField, SignedIn};
-
-pub enum SignInEvent {
-    SignedIn {
-        session: Session,
-        profile: config::Profile,
-    },
-}
+use hiphile_core::Hiphile;
+use session::SignInField;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Start {
@@ -25,8 +19,9 @@ pub enum Start {
     Fresh,
 }
 
+/// Signs in to `hiphile`, which then opens the workspace.
 pub struct SignIn {
-    accounts: Accounts,
+    hiphile: Hiphile,
     server: Entity<InputState>,
     username: Entity<InputState>,
     password: Entity<InputState>,
@@ -44,16 +39,14 @@ enum Status {
     Failed(SharedString),
 }
 
-impl EventEmitter<SignInEvent> for SignIn {}
-
 impl SignIn {
     pub fn new(
-        accounts: Accounts,
+        hiphile: Hiphile,
         start: Start,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let profile = accounts.last_profile();
+        let profile = hiphile.last_profile();
         let server = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("https://music.example.com")
@@ -97,7 +90,7 @@ impl SignIn {
         first_empty.update(cx, |input, cx| input.focus(window, cx));
 
         let mut this = Self {
-            accounts,
+            hiphile,
             server,
             username,
             password,
@@ -116,7 +109,7 @@ impl SignIn {
 
     /// Without a saved password, or if the keychain fails, the form waits for the user.
     fn resume(&mut self, profile: config::Profile, window: &mut Window, cx: &mut Context<Self>) {
-        let lookup = self.accounts.saved_password(profile);
+        let lookup = self.hiphile.saved_password(profile);
         self._resume = cx.spawn_in(window, async move |this, cx| {
             let Some(password) = lookup.await else {
                 return;
@@ -137,7 +130,7 @@ impl SignIn {
         if self.status == Status::SigningIn {
             return;
         }
-        let attempt = self.accounts.sign_in(
+        let attempt = self.hiphile.sign_in(
             &self.server.read(cx).value(),
             &self.username.read(cx).value(),
             &self.password.read(cx).value(),
@@ -158,15 +151,10 @@ impl SignIn {
         self._attempt = cx.spawn(async move |this, cx| {
             let result = attempt.await;
             this.update(cx, |this, cx| {
-                match result {
-                    Ok(SignedIn {
-                        session, profile, ..
-                    }) => {
-                        this.status = Status::Idle;
-                        cx.emit(SignInEvent::SignedIn { session, profile });
-                    }
-                    Err(error) => this.status = Status::Failed(error.into()),
-                }
+                this.status = match result {
+                    Ok(()) => Status::Idle,
+                    Err(error) => Status::Failed(error.into()),
+                };
                 cx.notify();
             })
             .ok();

@@ -26,7 +26,9 @@ fn count(notices: &mut broadcast::Receiver<LibraryNotice>, counts: &mut [usize; 
             LibraryNotice::AlbumsSynced => 0,
             LibraryNotice::SongsSynced => 1,
             LibraryNotice::SyncFailed(_) => 2,
-            LibraryNotice::ArtistsSynced | LibraryNotice::SyncFinished => continue,
+            LibraryNotice::ArtistsSynced
+            | LibraryNotice::SyncFinished
+            | LibraryNotice::StageSynced(..) => continue,
         };
         counts[ix] += 1;
     }
@@ -153,6 +155,43 @@ fn albums_on_show_stay_when_a_refresh_fails(cx: &mut TestAppContext) {
             .failure()
             .is_some_and(|error| error.starts_with("Couldn't reach"))
     );
+}
+
+#[gpui_kit::test]
+fn a_refreshing_sync_says_how_each_stage_ended(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let catalog = catalog::Catalog::open(dir.path()).unwrap();
+    let url = server_answering(json!({
+        "albumList2": { "album": [] },
+        "artists": { "index": [] },
+        "searchResult3": { "song": [] },
+        "scanStatus": { "scanning": false },
+    }));
+    cx.executor().allow_parking();
+    let executor = cx.update(|cx| gpui_host::executor(cx));
+    let sync = LibrarySync::refreshing(executor, session_saving_into(Some(catalog), &url));
+    let mut notices = sync.notices();
+    let mut stages = Vec::new();
+
+    wait_for(cx, || {
+        for notice in std::iter::from_fn(|| notices.try_recv().ok()) {
+            if let LibraryNotice::StageSynced(stage, outcome) = notice {
+                stages.push((stage, outcome));
+            }
+        }
+        stages.len() == 3
+    });
+
+    let synced = Outcome::Synced { count: 0 };
+    assert_eq!(
+        stages,
+        [
+            (SyncStage::Albums, synced),
+            (SyncStage::Artists, synced),
+            (SyncStage::Songs, synced),
+        ]
+    );
+    assert_eq!(*sync.status().albums(), Albums::Loaded(Arc::from([])));
 }
 
 #[gpui_kit::test]
