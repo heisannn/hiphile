@@ -97,6 +97,28 @@ fn the_skipping_on_at_signing_in_holds_from_the_start(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn the_player_plays_with_the_dsp_settings_from_the_start_and_as_they_change(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    let settings = settings(cx);
+    settings.dsp().set_crossfeed(true);
+    let workspace = workspace(&settings, cx);
+    assert_eq!(
+        workspace.player().dsp(),
+        settings.dsp().snapshot().settings()
+    );
+    assert!(workspace.player().dsp().crossfeed().is_some());
+
+    settings.dsp().set_balance(-3.0);
+    cx.run_until_parked();
+    assert_eq!(
+        workspace.player().dsp().balance(),
+        audio::Balance::from_db(-3.0)
+    );
+}
+
+#[gpui_kit::test]
 fn the_lyrics_keep_to_the_chosen_highlight(cx: &mut TestAppContext) {
     cx.executor().allow_parking();
     let settings = settings(cx);

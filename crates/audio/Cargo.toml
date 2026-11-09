@@ -11,6 +11,7 @@ async-channel.workspace = true
 config.workspace = true
 cpal.workspace = true
 dsd.workspace = true
+dsp.workspace = true
 r8brain.workspace = true
 rtrb.workspace = true
 rubato.workspace = true

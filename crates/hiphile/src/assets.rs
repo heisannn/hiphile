@@ -20,6 +20,7 @@ gpui_kit::assets::icon_assets!(
         Shuffle,
         SkipBack,
         SkipForward,
+        SlidersHorizontal,
         User,
         Volume1,
         Volume2,

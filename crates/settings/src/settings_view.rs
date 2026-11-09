@@ -16,15 +16,17 @@ use gpui_kit::{
 };
 use hiphile_core::settings::{
     APPEARANCES, AppearanceSettings, AudioSettings, AudioSnapshot, CacheLimit, DiscordSettings,
-    Freshness, LYRICS_HIGHLIGHTS, LyricsSettings, MATCH_SONG, PcmSetting, QueueSettings,
-    RESAMPLERS, RUBATO_QUALITIES, SYSTEM_DEFAULT, SongCacheUsage, format_size,
+    DspSettings, Freshness, LYRICS_HIGHLIGHTS, LyricsSettings, MATCH_SONG, PcmSetting,
+    QueueSettings, RESAMPLERS, RUBATO_QUALITIES, SYSTEM_DEFAULT, SongCacheUsage, format_size,
 };
 use session::{Readings, ReadingsState};
 use updater::{UpdateState, Updater};
 
 use crate::audio_options::dropdown;
+use crate::balance_slider::BalanceSlider;
 use crate::cache_limit_field::CacheLimitField;
 use crate::dsd_section::dsd_groups;
+use crate::dsp_page::dsp_page;
 use crate::imgbb_key_field::ImgbbKeyField;
 use crate::r8brain_section::{R8brainFields, r8brain_groups, r8brain_quality_item};
 use crate::soxr_section::{soxr_groups, soxr_quality_item};
@@ -34,6 +36,8 @@ pub(crate) struct SettingsView {
     appearance: AppearanceSettings,
     audio: AudioSettings,
     r8brain_fields: R8brainFields,
+    dsp: DspSettings,
+    balance_slider: Entity<BalanceSlider>,
     song_cache: CacheLimit,
     song_cache_field: Entity<CacheLimitField>,
     cover_cache: CacheLimit,
@@ -50,6 +54,7 @@ pub(crate) struct SettingsView {
     _appearance_changes: Task<()>,
     _system_appearance_changes: Subscription,
     _audio_changes: Task<()>,
+    _dsp_changes: Task<()>,
     _song_cache_changes: Task<()>,
     _cover_cache_changes: Task<()>,
     _song_cache_usage_changes: Task<()>,
@@ -91,6 +96,7 @@ impl SettingsView {
     ) -> Self {
         let appearance = settings.appearance().clone();
         let audio = settings.audio().clone();
+        let dsp = settings.dsp().clone();
         let song_cache = settings.song_cache().clone();
         let cover_cache = settings.cover_cache().clone();
         let discord = settings.discord().clone();
@@ -101,6 +107,7 @@ impl SettingsView {
         focus.focus(window, cx);
         let fresh = [audio.keep_fresh(), song_cache_usage.keep_fresh()];
         let r8brain_fields = R8brainFields::new(&audio, window, cx);
+        let balance_slider = cx.new(|cx| BalanceSlider::new(dsp.clone(), cx));
         let song_cache_field = cx.new(|cx| CacheLimitField::new(song_cache.clone(), window, cx));
         let cover_cache_field = cx.new(|cx| CacheLimitField::new(cover_cache.clone(), window, cx));
         let imgbb_key_field = cx.new(|cx| ImgbbKeyField::new(discord.clone(), window, cx));
@@ -115,6 +122,9 @@ impl SettingsView {
             _system_appearance_changes: crate::follow_system_appearance(appearance.clone(), window),
             appearance,
             _audio_changes: gpui_host::notify_on_change(audio.subscribe(), cx),
+            _dsp_changes: gpui_host::notify_on_change(dsp.subscribe(), cx),
+            dsp,
+            balance_slider,
             _song_cache_changes: gpui_host::notify_on_change(song_cache.subscribe(), cx),
             _cover_cache_changes: gpui_host::notify_on_change(cover_cache.subscribe(), cx),
             _song_cache_usage_changes: gpui_host::notify_on_change(
@@ -702,6 +712,7 @@ impl Render for SettingsView {
                     Settings::new("settings")
                         .with_group_variant(GroupBoxVariant::Outline)
                         .page(self.audio_page())
+                        .page(dsp_page(&self.dsp, &self.balance_slider))
                         .page(self.queue_page())
                         .page(self.lyrics_page())
                         .page(self.storage_page())

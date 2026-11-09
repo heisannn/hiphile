@@ -332,18 +332,20 @@ impl Hiphile {
     }
 
     /// A player on `session` for a host that opens no workspace, such as a command line. It plays
-    /// on the output and with the transitions that the settings hold now, at the saved volume,
-    /// and keeps songs as the workspace's player does, but follows no later change of the
+    /// on the output and with the transitions and DSP that the settings hold now, at the saved
+    /// volume, and keeps songs as the workspace's player does, but follows no later change of the
     /// settings. The host calls [`playback::Player::shutdown`] once it is done with it.
     pub fn player(&self, session: Session) -> playback::Player {
         let song_cache = self.0.state.read(|state| state.song_cache.clone());
-        workspace::new_player(
+        let player = workspace::new_player(
             &self.0.executor,
             session,
             share(&self.0.store),
             &self.0.settings.audio().snapshot(),
             song_cache,
-        )
+        );
+        player.set_dsp(self.0.settings.dsp().snapshot().settings());
+        player
     }
 
     /// Closes the workspace, which stops playing, and forgets the saved password, so that signing

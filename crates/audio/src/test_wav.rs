@@ -20,6 +20,16 @@ pub(crate) fn wav_with(
     frames: u32,
     sample: impl Fn(u32) -> i16,
 ) -> Vec<u8> {
+    wav_by_channel(rate, channels, frames, |frame, _| sample(frame))
+}
+
+/// As [`wav_with`], with `sample` taking the frame and the channel.
+pub(crate) fn wav_by_channel(
+    rate: u32,
+    channels: u16,
+    frames: u32,
+    sample: impl Fn(u32, u16) -> i16,
+) -> Vec<u8> {
     let data_len = frames * u32::from(channels) * 2;
     let mut bytes = Vec::with_capacity(44 + data_len as usize);
     bytes.extend_from_slice(b"RIFF");
@@ -35,8 +45,8 @@ pub(crate) fn wav_with(
     bytes.extend_from_slice(b"data");
     bytes.extend_from_slice(&data_len.to_le_bytes());
     for frame in 0..frames {
-        for _ in 0..channels {
-            bytes.extend_from_slice(&sample(frame).to_le_bytes());
+        for channel in 0..channels {
+            bytes.extend_from_slice(&sample(frame, channel).to_le_bytes());
         }
     }
     bytes

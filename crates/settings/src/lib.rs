@@ -3,8 +3,10 @@
 
 mod appearance_settings;
 mod audio_options;
+mod balance_slider;
 mod cache_limit_field;
 mod dsd_section;
+mod dsp_page;
 mod imgbb_key_field;
 mod number_field;
 mod r8brain_number_field;
@@ -35,6 +37,7 @@ actions!(settings, [OpenSettings, CloseWindow]);
 /// building the menu bar.
 pub fn init(hiphile: Hiphile, updater: Option<Updater>, cx: &mut App) {
     number_field::init(cx);
+    balance_slider::bind_keys(cx);
     let settings = hiphile.settings();
     appearance_settings::apply(settings.appearance(), cx);
     settings.audio().list_devices();

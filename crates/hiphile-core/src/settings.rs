@@ -4,7 +4,9 @@
 mod appearance;
 mod audio;
 mod cache_limit;
+mod choices;
 mod discord;
+mod dsp;
 mod freshness;
 mod handles;
 mod lyrics;
@@ -14,12 +16,14 @@ mod song_cache_usage;
 
 pub use appearance::{APPEARANCES, AppearanceSettings, AppearanceSnapshot};
 pub use audio::{
-    AudioSettings, AudioSnapshot, Choice, DsdWarning, MATCH_SONG, PcmSetting, R8BRAIN_PHASES,
+    AudioSettings, AudioSnapshot, DsdWarning, MATCH_SONG, PcmSetting, R8BRAIN_PHASES,
     R8BRAIN_QUALITIES, R8brainNumber, R8brainSetting, RESAMPLERS, RUBATO_QUALITIES,
     SOXR_INTERPOLATIONS, SOXR_PHASES, SOXR_QUALITIES, SYSTEM_DEFAULT, SoxrSetting,
 };
 pub use cache_limit::{CacheKind, CacheLimit, CacheLimitSnapshot};
+pub use choices::Choice;
 pub use discord::{DiscordSettings, DiscordSnapshot};
+pub use dsp::{CROSSFEED_PRESETS, DspSettings, DspSnapshot};
 pub use freshness::Freshness;
 pub use handles::Settings;
 pub use lyrics::{LYRICS_HIGHLIGHTS, LyricsSettings, LyricsSnapshot};

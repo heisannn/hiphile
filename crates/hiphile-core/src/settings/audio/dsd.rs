@@ -4,8 +4,8 @@ use config::{
     RESAMPLING_FFT_SIZES, ResamplingWindow,
 };
 
-use super::choices::{Choice, number_value, numbers, same_labels};
 use super::{AudioSettings, AudioSnapshot, MATCH_SONG, State, window_label};
+use crate::settings::choices::{Choice, number_value, numbers, same_labels};
 
 const DSD_QUALITIES: [&str; 5] = ["Low", "Medium", "High", "Max", "Custom"];
 

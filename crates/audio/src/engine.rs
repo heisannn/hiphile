@@ -199,6 +199,8 @@ struct Shared {
     fades_play_and_pause: AtomicBool,
     play_fade: PlayFade,
     is_dop: AtomicBool,
+    /// [`dsp::Settings::to_bits`], which every converter loads for each packet
+    dsp: Arc<AtomicU64>,
     /// What decoding threads go by: [`Self::wants_trim_silence`], except on DoP.
     trim_silence: Arc<AtomicBool>,
     issued: AtomicU64,
@@ -225,6 +227,7 @@ impl Shared {
             fades_play_and_pause: AtomicBool::new(false),
             play_fade: PlayFade::new(),
             is_dop: AtomicBool::new(false),
+            dsp: Arc::default(),
             trim_silence: Arc::new(AtomicBool::new(false)),
             issued: AtomicU64::new(0),
             generation: AtomicU64::new(0),
@@ -457,6 +460,19 @@ impl Engine {
         self.shared
             .volume
             .store(volume.to_bits(), Ordering::Relaxed);
+    }
+
+    /// From now on, including for the track playing and the one set to follow,
+    /// at each track's own rate before it is resampled or encoded. It is heard
+    /// once what the ring buffer holds has played, about half a second later,
+    /// and moves there over 20 ms.
+    pub fn set_dsp(&self, settings: dsp::Settings) {
+        self.shared.dsp.store(settings.to_bits(), Ordering::Relaxed);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn dsp(&self) -> dsp::Settings {
+        dsp::Settings::from_bits(self.shared.dsp.load(Ordering::Relaxed))
     }
 
     /// From now on, including for the track playing and the one set to follow.
@@ -1565,7 +1581,7 @@ impl Playback {
         drop(setup);
 
         Ok(Self {
-            converter: Converter::for_settings(source, output, settings)?,
+            converter: Converter::for_settings(source, output, settings, &shared.dsp)?,
             format: PlaybackFormat {
                 device: device_name(&device),
                 source_rate: source.rate,
@@ -4192,6 +4208,142 @@ mod tests {
         let (engine, events) = Engine::spawn();
         engine.load(Track::new(Cursor::new(b"not audio".to_vec())));
         assert!(matches!(next_event(&events).kind, EventKind::Failed(_)));
+    }
+
+    fn bs2b() -> dsp::Settings {
+        dsp::Settings::new(dsp::Crossfeed::new(700, 4.5), dsp::Balance::CENTER)
+    }
+
+    /// 16-bit stereo WAV of `seconds` of a half-scale 50 Hz sine on the left only
+    fn left_tone_wav(rate: u32, seconds: u32) -> Vec<u8> {
+        crate::test_wav::wav_by_channel(rate, 2, rate * seconds, |frame, channel| {
+            let phase = f64::from(frame) * 50.0 * std::f64::consts::TAU / f64::from(rate);
+            if channel == 0 {
+                (phase.sin() * f64::from(i16::MAX / 2)) as i16
+            } else {
+                0
+            }
+        })
+    }
+
+    /// The amplitude of 50 Hz in `samples` at `rate`, over a whole number of periods
+    fn amplitude_at_50_hz(samples: impl ExactSizeIterator<Item = f64>, rate: u32) -> f64 {
+        let len = samples.len();
+        let (mut re, mut im) = (0.0, 0.0);
+        for (n, sample) in samples.enumerate() {
+            let (sin, cos) = (std::f64::consts::TAU * 50.0 * n as f64 / f64::from(rate)).sin_cos();
+            re += sample * cos;
+            im += sample * sin;
+        }
+        2.0 * re.hypot(im) / len as f64
+    }
+
+    fn record_stereo(
+        device: &cpal::Device,
+        rate: u32,
+    ) -> (cpal::Stream, Arc<Mutex<Vec<[f32; 2]>>>) {
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let config = cpal::StreamConfig {
+            channels: 2,
+            sample_rate: rate,
+            buffer_size: cpal::BufferSize::Default,
+        };
+        let stream = device
+            .build_input_stream(
+                config,
+                {
+                    let heard = heard.clone();
+                    move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                        heard
+                            .lock()
+                            .unwrap()
+                            .extend_from_slice(data.as_chunks::<2>().0);
+                    }
+                },
+                |_| {},
+                Some(RATE_SWITCH_TIMEOUT),
+            )
+            .unwrap();
+        stream.play().unwrap();
+        (stream, heard)
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn crossfeed_reaches_the_device_on_pcm() {
+        let (device, id) = loopback_device();
+        let (stream, heard) = record_stereo(&device, LOOPBACK_RATE);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(OutputSettings::new(Some(id), None));
+        engine.set_dsp(bs2b());
+        engine.load(Track::new(Cursor::new(left_tone_wav(LOOPBACK_RATE, 3))));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::Ended { next: None }
+        ));
+        thread::sleep(Duration::from_millis(300));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let start = heard
+            .iter()
+            .position(|frame| frame[0].abs() > 0.01)
+            .unwrap();
+        let second = LOOPBACK_RATE as usize;
+        let middle = &heard[start + second..start + 2 * second];
+        let [left, right] = [0, 1].map(|channel| {
+            amplitude_at_50_hz(
+                middle.iter().map(|frame| f64::from(frame[channel])),
+                LOOPBACK_RATE,
+            )
+        });
+        let fed = 20.0 * (right / left).log10();
+        assert!((fed + 4.5).abs() < 0.3, "{fed}");
+    }
+
+    #[test]
+    #[ignore = "needs a loopback device named in HIPHILE_TEST_DEVICE"]
+    fn crossfeed_reaches_the_device_on_dop() {
+        let (device, id) = loopback_device();
+        let frame_rate = 176_400;
+        let (stream, heard) = record_dop(&device, frame_rate);
+        let (mut engine, events) = Engine::spawn();
+        engine.set_output(dop_settings(id, dsd::DopRate::Dsd64));
+        engine.set_dsp(bs2b());
+        engine.load(Track::new(Cursor::new(left_tone_wav(44_100, 3))));
+        assert!(matches!(next_event(&events).kind, EventKind::Started(_)));
+        assert!(matches!(
+            next_event(&events).kind,
+            EventKind::Ended { next: None }
+        ));
+        thread::sleep(Duration::from_millis(300));
+        drop(stream);
+        engine.shutdown();
+
+        let heard = heard.lock().unwrap();
+        let frames = stream_run(&heard);
+        dop_words(frames);
+        let bit_rate = frame_rate * 16;
+        // After the lead-in, the second second of the track
+        let second = frame_rate as usize;
+        let middle = &frames[2 * second..3 * second];
+        let [left, right] = [0, 1].map(|channel| {
+            let bits: Vec<f64> = middle
+                .iter()
+                .flat_map(|frame| {
+                    let [_, high, low, _] = frame[channel].to_be_bytes();
+                    let word = u16::from_be_bytes([high, low]);
+                    (0..16)
+                        .rev()
+                        .map(move |bit| if word >> bit & 1 == 1 { 1.0 } else { -1.0 })
+                })
+                .collect();
+            amplitude_at_50_hz(bits.into_iter(), bit_rate)
+        });
+        let fed = 20.0 * (right / left).log10();
+        assert!((fed + 4.5).abs() < 0.3, "{fed}");
     }
 
     fn dop_settings(id: String, rate: dsd::DopRate) -> OutputSettings {

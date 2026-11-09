@@ -9,8 +9,8 @@ use config::{
 };
 use executor::Task;
 
-use super::choices::Choice;
 use super::{AudioSettings, AudioSnapshot, State};
+use crate::settings::Choice;
 use crate::settings::NumberRange;
 
 /// A field reports every keystroke, and each change restarts the resampling of what is playing.

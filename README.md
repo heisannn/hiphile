@@ -17,6 +17,7 @@ Hiphile is developed on macOS. Windows and Linux are not regularly tested.
 - **Library:** Browse albums, artists and songs, get daily recommendations on the home screen, edit playlists, and keep favorites.
 - **Playback:** Gapless playback, on PCM trimming the silence around songs, crossfade and fading on play and pause, repeat, shuffle and an editable queue.
 - **Audio output:** Choose an output device, and switch its sample rate automatically to match each file or a multiple of it. On macOS and Windows, keep other apps off the device with exclusive mode. On macOS, play as DSD up to DSD256 through DoP, with the filter and the modulator adjustable. See [how DSD output works](docs/dsd/implementation.md). Resample with Rubato, with a built-in port of r8brain-free-src, or with a built-in resampler that has the functions of libsoxr. See how [Rubato](docs/resampler/rubato.md), [r8brain](docs/resampler/r8brain.md) and [soxr](docs/resampler/soxr.md) work.
+- **DSP:** Crossfeed for headphones, with the presets of Boris Mikhaylov's [bs2b](https://bs2b.sourceforge.net/) or values of your own, and balance between the channels, on PCM and DSD alike. See [how they work](docs/dsp/design.md).
 - **Lyrics:** Synced lyrics, highlighted word by word or line by line.
 - **Mini player:** A small window above all others, with the controls and the lyrics.
 - **Local cache:** Library data, cover art and songs are cached on disk, and library data syncs in the background.
@@ -103,6 +104,11 @@ Change settings in the app under **hiphile > Settings…**. They are saved to
 | `dsd_dither_db` (with `custom`: `-160` to `-20`) | `HIPHILE_DSD_DITHER_DB` | None |
 | `dsd_input_level_db` (with `custom`: `-24` to `6`) | `HIPHILE_DSD_INPUT_LEVEL_DB` | `0` |
 | `dsd_limiter_ceiling_db` (with `custom`: `off`, or `-6` to `3`) | `HIPHILE_DSD_LIMITER_CEILING_DB` | `1` |
+| `crossfeed` (`true` feeds part of each channel into the other, as speakers do, and lowers the level by 3 dB so that loud songs don't clip) | `HIPHILE_CROSSFEED` | `false` |
+| `crossfeed_preset` (`bs2b`, `chu-moy`, `jan-meier` or `custom`; the first three cut off at 700, 700 and 650 Hz and separate by 4.5, 6 and 9.5 dB) | `HIPHILE_CROSSFEED_PRESET` | `bs2b` |
+| `crossfeed_cutoff_hz` (with `custom`: where what each channel feeds into the other starts to fall away, from 300 to 2000) | `HIPHILE_CROSSFEED_CUTOFF_HZ` | `700` |
+| `crossfeed_separation_db` (with `custom`: how much quieter each channel's low end is in the other, from 1 to 15, read in tenths) | `HIPHILE_CROSSFEED_SEPARATION_DB` | `4.5` |
+| `balance_db` (from `-12` to `12`; a negative value lowers the right channel and a positive one the left) | `HIPHILE_BALANCE_DB` | `0` |
 | `skip_instrumentals` (grey out songs whose titles mark them as instrumental, and keep them out of the queue; the app only, not `hiphile-cli`) | `HIPHILE_SKIP_INSTRUMENTALS` | `false` |
 | `song_cache_gib` (`0` for no limit) | `HIPHILE_SONG_CACHE_GIB` | `8` |
 | `cover_cache_gib` (`0` for no limit) | `HIPHILE_COVER_CACHE_GIB` | `8` |

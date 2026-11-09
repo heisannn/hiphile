@@ -117,6 +117,7 @@ impl Workspace {
             this.follow_plays(),
             this.follow_audio_settings(audio_changes, &audio),
             this.follow_queue_settings(),
+            this.follow_dsp_settings(),
             this.follow_lyrics_settings(),
             this.follow_songs_for_lyrics(),
         ];
@@ -349,6 +350,19 @@ impl Workspace {
             if queue.is_skip_instrumentals_on() != is_on {
                 is_on = queue.is_skip_instrumentals_on();
                 player.set_skip_instrumentals(is_on);
+            }
+        })
+    }
+
+    fn follow_dsp_settings(&self) -> Task<()> {
+        let changes = self.0.settings.dsp().subscribe();
+        let mut settings = changes.borrow().settings();
+        self.0.player.set_dsp(settings);
+        let player = self.0.player.clone();
+        follow::observe(&self.0.executor, changes, move |dsp| {
+            if dsp.settings() != settings {
+                settings = dsp.settings();
+                player.set_dsp(settings);
             }
         })
     }

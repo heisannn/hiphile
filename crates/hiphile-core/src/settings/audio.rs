@@ -1,4 +1,3 @@
-mod choices;
 mod dsd;
 mod r8brain;
 mod soxr;
@@ -21,7 +20,8 @@ use executor::{Publish, Published};
 use super::Freshness;
 use r8brain::PerNumber;
 
-pub use choices::Choice;
+use super::Choice;
+use super::choices;
 pub use dsd::{DsdWarning, PcmSetting};
 pub use r8brain::{R8BRAIN_PHASES, R8BRAIN_QUALITIES, R8brainNumber, R8brainSetting};
 pub use soxr::{SOXR_INTERPOLATIONS, SOXR_PHASES, SOXR_QUALITIES, SoxrSetting};

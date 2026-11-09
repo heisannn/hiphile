@@ -575,6 +575,63 @@ impl Default for DsdOutput {
 
 pub const LONGEST_CROSSFADE_SECONDS: u32 = 12;
 
+pub const CROSSFEED_CUTOFFS_HZ: std::ops::RangeInclusive<u32> = 300..=2000;
+/// In dB
+pub const CROSSFEED_SEPARATIONS_DB: std::ops::RangeInclusive<f64> = 1.0..=15.0;
+/// In dB. A negative value lowers the right channel and a positive one the left.
+pub const BALANCE_DBS: std::ops::RangeInclusive<f64> = -12.0..=12.0;
+
+/// What decides the sound of bs2b's crossfeed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct CrossfeedFilter {
+    pub cutoff_hz: u32,
+    /// How much lower the bass fed to the other channel is than the channel's own, in dB
+    pub separation_db: f64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum CrossfeedPreset {
+    /// bs2b's default
+    #[default]
+    Bs2b,
+    ChuMoy,
+    JanMeier,
+    Custom(CrossfeedFilter),
+}
+
+impl CrossfeedPreset {
+    pub fn filter(self) -> CrossfeedFilter {
+        let preset = |cutoff_hz, separation_db| CrossfeedFilter {
+            cutoff_hz,
+            separation_db,
+        };
+        match self {
+            Self::Bs2b => preset(700, 4.5),
+            Self::ChuMoy => preset(700, 6.0),
+            Self::JanMeier => preset(650, 9.5),
+            Self::Custom(filter) => filter,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Bs2b => "bs2b",
+            Self::ChuMoy => "chu-moy",
+            Self::JanMeier => "jan-meier",
+            Self::Custom(_) => "custom",
+        }
+    }
+}
+
+/// What the file says about crossfeed. The preset stays while it is off, to come back to.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct Crossfeed {
+    pub is_on: bool,
+    pub preset: CrossfeedPreset,
+}
+
 /// The keys of `config.toml` this crate reads. Others are left alone.
 #[derive(Deserialize)]
 struct Settings {
@@ -589,6 +646,11 @@ struct Settings {
     exclusive_mode: Option<bool>,
     trim_silence: Option<bool>,
     crossfade_seconds: Option<u32>,
+    crossfeed: Option<bool>,
+    crossfeed_preset: Option<String>,
+    crossfeed_cutoff_hz: Option<u32>,
+    crossfeed_separation_db: Option<f64>,
+    balance_db: Option<f64>,
     play_pause_fade: Option<bool>,
     skip_instrumentals: Option<bool>,
     resampling: Option<String>,
@@ -729,6 +791,57 @@ fn save_dsd_parameters(
             }
         }
     }
+}
+
+const CROSSFEED_FILTER_KEYS: [&str; 2] = ["crossfeed_cutoff_hz", "crossfeed_separation_db"];
+
+const CROSSFEED_KEYS: ParameterKeys = ParameterKeys {
+    quality: "crossfeed_preset",
+    filter: &CROSSFEED_FILTER_KEYS,
+};
+
+fn write_crossfeed_changes(
+    document: &mut toml_edit::DocumentMut,
+    before: Crossfeed,
+    after: Crossfeed,
+) {
+    let is_custom = |crossfeed: Crossfeed| matches!(crossfeed.preset, CrossfeedPreset::Custom(_));
+    write_changes(
+        document,
+        &CROSSFEED_KEYS,
+        (crossfeed_items(before).into(), is_custom(before)),
+        (crossfeed_items(after).into(), is_custom(after)),
+        before.preset != after.preset,
+    );
+}
+
+/// Only what the preset uses. What is at its default has no key.
+fn crossfeed_items(crossfeed: Crossfeed) -> [(&'static str, Option<toml_edit::Item>); 4] {
+    let preset = crossfeed.preset;
+    let bs2b = CrossfeedPreset::Bs2b.filter();
+    let custom = match preset {
+        CrossfeedPreset::Custom(filter) => Some(filter),
+        _ => None,
+    };
+    [
+        ("crossfeed", crossfeed.is_on.then(|| toml_edit::value(true))),
+        (
+            "crossfeed_preset",
+            (preset != CrossfeedPreset::Bs2b).then(|| toml_edit::value(preset.name())),
+        ),
+        (
+            "crossfeed_cutoff_hz",
+            custom
+                .filter(|filter| filter.cutoff_hz != bs2b.cutoff_hz)
+                .map(|filter| toml_edit::value(i64::from(filter.cutoff_hz))),
+        ),
+        (
+            "crossfeed_separation_db",
+            custom
+                .filter(|filter| filter.separation_db != bs2b.separation_db)
+                .map(|filter| toml_edit::value(filter.separation_db)),
+        ),
+    ]
 }
 
 const R8BRAIN_FILTER_KEYS: [&str; 5] = [
@@ -976,6 +1089,11 @@ fn soxr_items(parameters: SoxrParameters) -> [(&'static str, Option<toml_edit::I
 /// exclusive_mode = true
 /// trim_silence = true
 /// crossfade_seconds = 5
+/// crossfeed = true
+/// crossfeed_preset = "custom"
+/// crossfeed_cutoff_hz = 650
+/// crossfeed_separation_db = 9.5
+/// balance_db = -1.5 # Lowers the right channel; a positive value lowers the left
 /// play_pause_fade = true
 /// skip_instrumentals = true
 /// resampling = "custom"
@@ -1156,6 +1274,62 @@ impl Store {
             return Err(self.invalid("crossfade_seconds", "whole seconds from 0 to 12"));
         }
         Ok(seconds)
+    }
+
+    /// Off unless the file says otherwise. The preset is read either way, so that turning
+    /// crossfeed on comes back to it. The cutoff and separation are only read for `custom`, and
+    /// default to those of `bs2b`.
+    pub fn crossfeed(&self) -> Result<Crossfeed, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        self.parse_crossfeed(&settings)
+    }
+
+    fn parse_crossfeed(&self, settings: &Settings) -> Result<Crossfeed, Error> {
+        let preset = match settings.crossfeed_preset.as_deref() {
+            None | Some("bs2b") => CrossfeedPreset::Bs2b,
+            Some("chu-moy") => CrossfeedPreset::ChuMoy,
+            Some("jan-meier") => CrossfeedPreset::JanMeier,
+            Some("custom") => CrossfeedPreset::Custom(self.parse_crossfeed_filter(settings)?),
+            Some(_) => {
+                return Err(self.invalid(
+                    "crossfeed_preset",
+                    "\"bs2b\", \"chu-moy\", \"jan-meier\" or \"custom\"",
+                ));
+            }
+        };
+        Ok(Crossfeed {
+            is_on: settings.crossfeed.unwrap_or(false),
+            preset,
+        })
+    }
+
+    fn parse_crossfeed_filter(&self, settings: &Settings) -> Result<CrossfeedFilter, Error> {
+        let bs2b = CrossfeedPreset::Bs2b.filter();
+        let cutoff_hz = settings.crossfeed_cutoff_hz.unwrap_or(bs2b.cutoff_hz);
+        if !CROSSFEED_CUTOFFS_HZ.contains(&cutoff_hz) {
+            return Err(self.invalid("crossfeed_cutoff_hz", "a whole number from 300 to 2000"));
+        }
+        // Tenths are what plays and what Settings shows
+        let separation_db = settings
+            .crossfeed_separation_db
+            .map_or(bs2b.separation_db, |db| (db * 10.0).round() / 10.0);
+        if !CROSSFEED_SEPARATIONS_DB.contains(&separation_db) {
+            return Err(self.invalid("crossfeed_separation_db", "a number from 1 to 15"));
+        }
+        Ok(CrossfeedFilter {
+            cutoff_hz,
+            separation_db,
+        })
+    }
+
+    /// `0` unless the file says otherwise. See [`BALANCE_DBS`].
+    pub fn balance_db(&self) -> Result<f64, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        let db = settings.balance_db.unwrap_or(0.0);
+        if !BALANCE_DBS.contains(&db) {
+            return Err(self.invalid("balance_db", "a number from -12 to 12"));
+        }
+        Ok(db)
     }
 
     /// Medium unless the file says otherwise. The FFT size and window are only read for
@@ -1743,6 +1917,22 @@ impl Store {
         })
     }
 
+    /// Writes only what differs from `before`, the values in use until now: the rest may have
+    /// come from the environment.
+    pub fn save_crossfeed_changes(&self, before: Crossfeed, after: Crossfeed) -> Result<(), Error> {
+        self.edit(|document| write_crossfeed_changes(document, before, after))
+    }
+
+    pub fn save_balance_db(&self, db: f64) -> Result<(), Error> {
+        self.edit(|document| {
+            if db == 0.0 {
+                document.remove("balance_db");
+            } else {
+                document["balance_db"] = toml_edit::value(db);
+            }
+        })
+    }
+
     pub fn save_resampling_quality(&self, quality: ResamplingQuality) -> Result<(), Error> {
         self.edit(|document| {
             document["resampling"] = toml_edit::value(quality.name());
@@ -2201,6 +2391,240 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    fn custom_crossfeed() -> Crossfeed {
+        Crossfeed {
+            is_on: true,
+            preset: CrossfeedPreset::Custom(CrossfeedFilter {
+                cutoff_hz: 900,
+                separation_db: 8.0,
+            }),
+        }
+    }
+
+    fn written(store: &Store) -> String {
+        std::fs::read_to_string(store.config_path()).unwrap_or_default()
+    }
+
+    #[test]
+    fn crossfeed_is_off_and_bs2b_unless_told_otherwise() {
+        let store = temporary_store("crossfeed-default");
+        assert_eq!(store.crossfeed().unwrap(), Crossfeed::default());
+        assert!(!Crossfeed::default().is_on);
+        assert_eq!(Crossfeed::default().preset, CrossfeedPreset::Bs2b);
+    }
+
+    #[test]
+    fn crossfeed_round_trips_and_its_defaults_take_no_keys() {
+        let store = temporary_store("crossfeed-round-trip");
+        let on = Crossfeed {
+            is_on: true,
+            ..Crossfeed::default()
+        };
+        store
+            .save_crossfeed_changes(Crossfeed::default(), on)
+            .unwrap();
+        assert_eq!(store.crossfeed().unwrap(), on);
+        assert_eq!(written(&store).trim(), "crossfeed = true");
+
+        store
+            .save_crossfeed_changes(on, custom_crossfeed())
+            .unwrap();
+        assert_eq!(store.crossfeed().unwrap(), custom_crossfeed());
+        let text = written(&store);
+        assert!(text.contains("crossfeed_preset = \"custom\""), "{text}");
+        assert!(text.contains("crossfeed_cutoff_hz = 900"), "{text}");
+        assert!(text.contains("crossfeed_separation_db = 8.0"), "{text}");
+    }
+
+    #[test]
+    fn crossfeed_presets_are_saved_by_name_without_what_custom_leaves_behind() {
+        let store = temporary_store("crossfeed-presets");
+        let mut saved = custom_crossfeed();
+        store
+            .save_crossfeed_changes(Crossfeed::default(), saved)
+            .unwrap();
+        for (preset, name) in [
+            (CrossfeedPreset::ChuMoy, "chu-moy"),
+            (CrossfeedPreset::JanMeier, "jan-meier"),
+        ] {
+            let crossfeed = Crossfeed {
+                preset,
+                ..custom_crossfeed()
+            };
+            store.save_crossfeed_changes(saved, crossfeed).unwrap();
+            saved = crossfeed;
+            assert_eq!(store.crossfeed().unwrap(), crossfeed);
+            let text = written(&store);
+            assert!(
+                text.contains(&format!("crossfeed_preset = \"{name}\"")),
+                "{text}"
+            );
+            for key in CROSSFEED_FILTER_KEYS {
+                assert!(!text.contains(key), "{text}");
+            }
+        }
+        let bs2b = Crossfeed {
+            preset: CrossfeedPreset::Bs2b,
+            ..saved
+        };
+        store.save_crossfeed_changes(saved, bs2b).unwrap();
+        assert!(!written(&store).contains("crossfeed_preset"));
+    }
+
+    #[test]
+    fn the_preset_stays_while_crossfeed_is_off() {
+        let store = temporary_store("crossfeed-off");
+        let jan_meier = Crossfeed {
+            is_on: true,
+            preset: CrossfeedPreset::JanMeier,
+        };
+        store
+            .save_crossfeed_changes(Crossfeed::default(), jan_meier)
+            .unwrap();
+        let off = Crossfeed {
+            is_on: false,
+            ..jan_meier
+        };
+        store.save_crossfeed_changes(jan_meier, off).unwrap();
+        assert_eq!(store.crossfeed().unwrap(), off);
+        let text = written(&store);
+        assert!(!text.contains("crossfeed ="), "{text}");
+        assert!(text.contains("crossfeed_preset = \"jan-meier\""), "{text}");
+    }
+
+    #[test]
+    fn only_what_changed_of_the_crossfeed_is_saved() {
+        let store = temporary_store("crossfeed-changes");
+        let from_environment = Crossfeed {
+            is_on: false,
+            ..custom_crossfeed()
+        };
+        store
+            .save_crossfeed_changes(from_environment, custom_crossfeed())
+            .unwrap();
+        assert_eq!(written(&store).trim(), "crossfeed = true");
+
+        let mut filter = custom_crossfeed().preset.filter();
+        filter.cutoff_hz = 1000;
+        let wider = Crossfeed {
+            preset: CrossfeedPreset::Custom(filter),
+            ..custom_crossfeed()
+        };
+        store
+            .save_crossfeed_changes(custom_crossfeed(), wider)
+            .unwrap();
+        let text = written(&store);
+        assert!(text.contains("crossfeed_preset = \"custom\""), "{text}");
+        assert!(text.contains("crossfeed_cutoff_hz = 1000"), "{text}");
+        assert!(!text.contains("crossfeed_separation_db"), "{text}");
+    }
+
+    #[test]
+    fn the_environment_sets_a_saved_crossfeed_aside() {
+        let store = temporary_store("crossfeed-environment");
+        store
+            .save_crossfeed_changes(Crossfeed::default(), custom_crossfeed())
+            .unwrap();
+        let settings = read(
+            &store,
+            &[
+                ("HIPHILE_CROSSFEED", "false"),
+                ("HIPHILE_CROSSFEED_SEPARATION_DB", "12.5"),
+            ],
+        );
+        let crossfeed = store.parse_crossfeed(&settings).unwrap();
+        assert!(!crossfeed.is_on);
+        let filter = crossfeed.preset.filter();
+        assert_eq!(filter.separation_db, 12.5);
+        assert_eq!(filter.cutoff_hz, 900);
+
+        let settings = read(&store, &[("HIPHILE_CROSSFEED_PRESET", "chu-moy")]);
+        assert_eq!(
+            store.parse_crossfeed(&settings).unwrap().preset,
+            CrossfeedPreset::ChuMoy
+        );
+    }
+
+    #[test]
+    fn a_custom_separation_is_read_in_tenths() {
+        let store = temporary_store("crossfeed-tenths");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        for (written, read) in [(4.53, 4.5), (12.47, 12.5), (0.96, 1.0)] {
+            std::fs::write(
+                store.config_path(),
+                format!("crossfeed_preset = \"custom\"\ncrossfeed_separation_db = {written}\n"),
+            )
+            .unwrap();
+            let filter = store.crossfeed().unwrap().preset.filter();
+            assert_eq!(filter.separation_db, read, "{written}");
+        }
+    }
+
+    #[test]
+    fn crossfeed_values_outside_their_ranges_are_named_and_ignored_for_presets() {
+        let store = temporary_store("crossfeed-invalid");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        let key = |text: &str| {
+            std::fs::write(store.config_path(), text).unwrap();
+            match store.crossfeed() {
+                Err(Error::InvalidSetting { key, .. }) => Some(key),
+                Err(error) => panic!("{error}"),
+                Ok(_) => None,
+            }
+        };
+        for (line, expected) in [
+            ("crossfeed_cutoff_hz = 299", "crossfeed_cutoff_hz"),
+            ("crossfeed_cutoff_hz = 2001", "crossfeed_cutoff_hz"),
+            ("crossfeed_separation_db = 0.5", "crossfeed_separation_db"),
+            ("crossfeed_separation_db = 15.5", "crossfeed_separation_db"),
+        ] {
+            assert_eq!(
+                key(&format!("crossfeed_preset = \"custom\"\n{line}\n")),
+                Some(expected)
+            );
+            assert_eq!(key(&format!("crossfeed_preset = \"bs2b\"\n{line}\n")), None);
+        }
+        assert_eq!(
+            key("crossfeed_preset = \"strong\"\n"),
+            Some("crossfeed_preset")
+        );
+        assert_eq!(
+            key(
+                "crossfeed_preset = \"custom\"\ncrossfeed_cutoff_hz = 2000\n\
+                 crossfeed_separation_db = 1\n"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn balance_round_trips_and_is_centered_unless_told_otherwise() {
+        let store = temporary_store("balance");
+        assert_eq!(store.balance_db().unwrap(), 0.0);
+        store.save_balance_db(-1.5).unwrap();
+        assert_eq!(store.balance_db().unwrap(), -1.5);
+        store.save_balance_db(0.0).unwrap();
+        assert_eq!(store.balance_db().unwrap(), 0.0);
+        assert!(!written(&store).contains("balance_db"));
+    }
+
+    #[test]
+    fn a_balance_beyond_12_db_is_reported() {
+        let store = temporary_store("balance-invalid");
+        store.save_balance_db(12.0).unwrap();
+        assert!(store.balance_db().is_ok());
+        for db in [12.5, -13.0] {
+            store.save_balance_db(db).unwrap();
+            assert!(matches!(
+                store.balance_db(),
+                Err(Error::InvalidSetting {
+                    key: "balance_db",
+                    ..
+                })
+            ));
+        }
     }
 
     #[test]

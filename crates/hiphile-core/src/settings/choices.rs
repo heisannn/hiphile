@@ -29,13 +29,17 @@ pub(super) fn same_labels(values: impl Iterator<Item = String>) -> Vec<Choice> {
         .collect()
 }
 
-pub(super) fn number_value(number: f64) -> String {
+pub(in crate::settings) fn number_value(number: f64) -> String {
     number.to_string()
 }
 
 /// The values, and `current` too if the file holds one that is not among them, so that the
 /// choice stays visible.
-pub(super) fn numbers(values: &[f64], current: f64, label: impl Fn(f64) -> String) -> Vec<Choice> {
+pub(in crate::settings) fn numbers(
+    values: &[f64],
+    current: f64,
+    label: impl Fn(f64) -> String,
+) -> Vec<Choice> {
     let mut choices: Vec<Choice> = values
         .iter()
         .map(|number| Choice::new(number_value(*number), label(*number)))

@@ -3,8 +3,8 @@ use config::{
     SoxrPerformance, SoxrPhase, SoxrQuality,
 };
 
-use super::choices::{Choice, number_value, numbers, same_labels};
 use super::{AudioSettings, AudioSnapshot, State};
+use crate::settings::choices::{Choice, number_value, numbers, same_labels};
 
 pub const SOXR_QUALITIES: [&str; 5] = ["LQ", "MQ", "HQ", "VHQ", "Custom"];
 pub const SOXR_PHASES: [&str; 3] = ["Linear", "Intermediate", "Minimum"];

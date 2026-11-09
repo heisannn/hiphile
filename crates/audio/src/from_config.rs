@@ -1,5 +1,5 @@
 use config::{
-    DsdFilter, DsdOutput, DsdParameters, DsdRate, R8brainParameters, R8brainPhase,
+    Crossfeed, DsdFilter, DsdOutput, DsdParameters, DsdRate, R8brainParameters, R8brainPhase,
     ResamplingQuality, SampleRate, SoxrInterpolation, SoxrParameters, SoxrPhase,
 };
 
@@ -29,6 +29,21 @@ impl OutputSettings {
             .with_dop(dop)
             .with_dop_fade_in(dsd.fades_in)
     }
+}
+
+/// What the crossfeed and balance in `config.toml` come to. A value the
+/// processor cannot take, which the file's ranges keep out, counts as off.
+pub fn dsp_from_config(crossfeed: Crossfeed, balance_db: f64) -> dsp::Settings {
+    let filter = crossfeed.preset.filter();
+    let crossfeed = crossfeed
+        .is_on
+        .then(|| {
+            u16::try_from(filter.cutoff_hz)
+                .ok()
+                .and_then(|cutoff_hz| dsp::Crossfeed::new(cutoff_hz, filter.separation_db as f32))
+        })
+        .flatten();
+    dsp::Settings::new(crossfeed, dsp::Balance::from_db(balance_db as f32))
 }
 
 fn r8brain_settings(parameters: R8brainParameters) -> R8brainSettings {
@@ -152,7 +167,7 @@ fn window_of(window: config::ResamplingWindow) -> ResamplingWindow {
 
 #[cfg(test)]
 mod tests {
-    use config::{R8brainQuality, SoxrQuality};
+    use config::{CrossfeedPreset, R8brainQuality, SoxrQuality};
 
     use super::*;
 
@@ -161,6 +176,26 @@ mod tests {
         dsd.is_on = true;
         dsd.device = Some(device.to_owned());
         dsd
+    }
+
+    #[test]
+    fn crossfeed_follows_its_preset_and_only_while_on() {
+        for (preset, cutoff_hz, separation_db) in [
+            (CrossfeedPreset::Bs2b, 700, 4.5),
+            (CrossfeedPreset::ChuMoy, 700, 6.0),
+            (CrossfeedPreset::JanMeier, 650, 9.5),
+        ] {
+            let mut crossfeed = Crossfeed::default();
+            crossfeed.preset = preset;
+            assert_eq!(dsp_from_config(crossfeed, 0.0), dsp::Settings::default());
+            crossfeed.is_on = true;
+            let settings = dsp_from_config(crossfeed, -1.5);
+            assert_eq!(
+                settings.crossfeed(),
+                dsp::Crossfeed::new(cutoff_hz, separation_db)
+            );
+            assert_eq!(settings.balance(), dsp::Balance::from_db(-1.5));
+        }
     }
 
     #[test]

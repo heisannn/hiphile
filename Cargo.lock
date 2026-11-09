@@ -623,6 +623,7 @@ dependencies = [
  "config 0.4.0",
  "cpal",
  "dsd",
+ "dsp",
  "objc2-core-audio",
  "objc2-core-audio-types",
  "objc2-core-foundation",
@@ -2061,6 +2062,10 @@ dependencies = [
  "rubato",
  "thiserror 2.0.21",
 ]
+
+[[package]]
+name = "dsp"
+version = "0.4.0"
 
 [[package]]
 name = "dunce"

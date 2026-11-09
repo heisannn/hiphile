@@ -19,6 +19,10 @@
 //! buffer too, mixed after each one's rate conversion, from the moment the first
 //! has only the length of the fade left.
 //!
+//! Crossfeed and balance run in the converter too, on PCM and DoP alike, at
+//! the track's own rate between the channel map and the resampler or the DSD
+//! encoder, so that rate conversion stays the last stage before the device.
+//!
 //! Also on PCM, a pause or stop can fall to silence and playing again rise from
 //! it. The callback does this to what it takes from the ring buffer, and the
 //! stream stops once it hears nothing.
@@ -47,8 +51,10 @@ mod track;
 
 pub use device::{OutputDevice, output_devices};
 pub use dsd::{DopRate, Settings as DsdSettings};
+pub use dsp::{Balance, Crossfeed, Settings as DspSettings};
 pub use engine::{Engine, Event, EventKind, LoadId, PlaybackFormat, Transitions};
 pub use error::Error;
+pub use from_config::dsp_from_config;
 pub use output::{
     OutputSettings, R8brainPhase, R8brainSettings, Resampling, ResamplingWindow, SoxrSettings,
 };

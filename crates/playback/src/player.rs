@@ -407,6 +407,11 @@ impl Player {
             .read(|core| core.engine.set_transitions(transitions));
     }
 
+    /// Crossfeed and balance, heard once what the engine has buffered has played.
+    pub fn set_dsp(&self, settings: audio::DspSettings) {
+        self.0.core.read(|core| core.engine.set_dsp(settings));
+    }
+
     /// Keeps at most what `song_cache` holds of the songs downloaded from now on.
     pub fn set_song_cache(&self, song_cache: Option<SongCache>) {
         self.change(|core| core.song_cache = song_cache);
@@ -1275,6 +1280,11 @@ impl Player {
                 paused: true,
             });
         });
+    }
+
+    /// What the engine was last given.
+    pub fn dsp(&self) -> audio::DspSettings {
+        self.0.core.read(|core| core.engine.dsp())
     }
 
     pub fn pretend_buffering(&self, buffering: bool) {

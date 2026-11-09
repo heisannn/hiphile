@@ -9,9 +9,10 @@ mod profile;
 
 pub use keychain::Keychain;
 pub use profile::{
-    Appearance, DSD_ORDERS, DSD_SINC_LENGTHS, DsdFilter, DsdOutput, DsdParameters, DsdQuality,
-    DsdRate, LONGEST_CROSSFADE_SECONDS, LyricsHighlight, Profile, R8BRAIN_ATTENUATIONS,
-    R8BRAIN_CACHE_SIZES, R8BRAIN_FILTER_FRACTIONS, R8BRAIN_MAX_INPUT_FRAMES,
+    Appearance, BALANCE_DBS, CROSSFEED_CUTOFFS_HZ, CROSSFEED_SEPARATIONS_DB, Crossfeed,
+    CrossfeedFilter, CrossfeedPreset, DSD_ORDERS, DSD_SINC_LENGTHS, DsdFilter, DsdOutput,
+    DsdParameters, DsdQuality, DsdRate, LONGEST_CROSSFADE_SECONDS, LyricsHighlight, Profile,
+    R8BRAIN_ATTENUATIONS, R8BRAIN_CACHE_SIZES, R8BRAIN_FILTER_FRACTIONS, R8BRAIN_MAX_INPUT_FRAMES,
     R8BRAIN_TRANSITION_BANDS, R8brainFilter, R8brainParameters, R8brainPerformance, R8brainPhase,
     R8brainQuality, RESAMPLING_FFT_SIZES, ResamplingQuality, ResamplingWindow,
     SAMPLE_RATE_MULTIPLES, SOXR_COEF_TABLE_KBS, SOXR_LARGE_DFT_SIZES, SOXR_MIN_DFT_SIZES,

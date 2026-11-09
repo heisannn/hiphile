@@ -1,3 +1,5 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use rubato::audioadapter_buffers::direct::InterleavedSlice;
@@ -15,6 +17,7 @@ pub(crate) struct Converter {
     source: Spec,
     output: Spec,
     stage: Stage,
+    dsp: Dsp,
     mapped: Vec<f32>,
     words: Vec<u16>,
 }
@@ -28,54 +31,96 @@ enum Stage {
     Dop(Box<dsd::Encoder>),
 }
 
-impl Converter {
-    pub(crate) fn new(source: Spec, output: Spec, resampling: Resampling) -> Result<Self, Error> {
-        let resampler = Self::resampler(source, output, resampling)?;
-        Ok(Self::around(
-            source,
-            output,
-            Stage::Pcm {
-                resampling,
-                resampler,
-            },
-        ))
+/// Applies the settings in `settings`, [`dsp::Settings::to_bits`], to the
+/// track at its own rate, after the channel map and before the resampler or
+/// the encoder. The processor has no delay, so the timing stays as it is.
+struct Dsp {
+    settings: Arc<AtomicU64>,
+    processor: dsp::Processor,
+}
+
+impl Dsp {
+    fn new(settings: Arc<AtomicU64>, source: Spec, output: Spec) -> Self {
+        let processor = dsp::Processor::new(
+            source.rate,
+            usize::from(output.channels),
+            dsp::Settings::from_bits(settings.load(Ordering::Relaxed)),
+        );
+        Self {
+            settings,
+            processor,
+        }
     }
 
-    /// As `settings` say, for `source` on a stream of `output`.
+    /// Goes on from where this one is, so that a joint has no step.
+    fn following(&self, source: Spec) -> Self {
+        Self {
+            settings: Arc::clone(&self.settings),
+            processor: self.processor.clone().at_rate(source.rate),
+        }
+    }
+
+    fn process(&mut self, samples: &mut [f32]) {
+        self.processor.follow(dsp::Settings::from_bits(
+            self.settings.load(Ordering::Relaxed),
+        ));
+        self.processor.process(samples);
+    }
+}
+
+impl Converter {
+    #[cfg(test)]
+    pub(crate) fn new(source: Spec, output: Spec, resampling: Resampling) -> Result<Self, Error> {
+        let settings = OutputSettings::default().with_resampling(resampling);
+        Self::for_settings(source, output, &settings, &Arc::default())
+    }
+
+    /// As `settings` say, for `source` on a stream of `output`, with the DSP
+    /// settings that `dsp` holds then and later.
     pub(crate) fn for_settings(
         source: Spec,
         output: Spec,
         settings: &OutputSettings,
+        dsp: &Arc<AtomicU64>,
     ) -> Result<Self, Error> {
-        match settings.dop() {
-            None => Self::new(source, output, settings.resampling()),
-            Some(dop) => {
-                let encoder = dsd::Encoder::new(source.rate, output.rate, dop)?;
-                Ok(Self::around(source, output, Stage::Dop(Box::new(encoder))))
-            }
-        }
+        let stage = Self::stage(source, output, settings)?;
+        let dsp = Dsp::new(Arc::clone(dsp), source, output);
+        Ok(Self::around(source, output, stage, dsp))
     }
 
     /// For the track that comes on after this one, on the same stream.
     pub(crate) fn following(&self, source: Spec, settings: &OutputSettings) -> Result<Self, Error> {
-        match &self.stage {
-            Stage::Pcm { .. } => Self::for_settings(source, self.output, settings),
-            Stage::Dop(encoder) => {
-                let encoder = encoder.for_next_track(source.rate)?;
-                Ok(Self::around(
-                    source,
-                    self.output,
-                    Stage::Dop(Box::new(encoder)),
-                ))
-            }
-        }
+        let stage = match &self.stage {
+            Stage::Pcm { .. } => Self::stage(source, self.output, settings)?,
+            Stage::Dop(encoder) => Stage::Dop(Box::new(encoder.for_next_track(source.rate)?)),
+        };
+        Ok(Self::around(
+            source,
+            self.output,
+            stage,
+            self.dsp.following(source),
+        ))
     }
 
-    fn around(source: Spec, output: Spec, stage: Stage) -> Self {
+    fn stage(source: Spec, output: Spec, settings: &OutputSettings) -> Result<Stage, Error> {
+        Ok(match settings.dop() {
+            None => {
+                let resampling = settings.resampling();
+                Stage::Pcm {
+                    resampling,
+                    resampler: Self::resampler(source, output, resampling)?,
+                }
+            }
+            Some(dop) => Stage::Dop(Box::new(dsd::Encoder::new(source.rate, output.rate, dop)?)),
+        })
+    }
+
+    fn around(source: Spec, output: Spec, stage: Stage, dsp: Dsp) -> Self {
         Self {
             source,
             output,
             stage,
+            dsp,
             mapped: Vec::new(),
             words: Vec::new(),
         }
@@ -127,7 +172,9 @@ impl Converter {
             Stage::Pcm {
                 resampler: None, ..
             } => {
+                let start = out.len();
                 map_channels(input, from, to, out);
+                self.dsp.process(&mut out[start..]);
                 Ok(())
             }
             Stage::Pcm {
@@ -136,11 +183,13 @@ impl Converter {
             } => {
                 self.mapped.clear();
                 map_channels(input, from, to, &mut self.mapped);
+                self.dsp.process(&mut self.mapped);
                 resampler.push(&self.mapped, out)
             }
             Stage::Dop(encoder) => {
                 self.mapped.clear();
                 map_channels(input, from, to, &mut self.mapped);
+                self.dsp.process(&mut self.mapped);
                 self.words.clear();
                 encoder.push(&self.mapped, &mut self.words)?;
                 out.extend(self.words.iter().copied().map(f32::from));
@@ -981,5 +1030,211 @@ mod tests {
             converter.finish(&mut out).unwrap();
             assert_eq!(out.len() / 2, 92);
         }
+    }
+
+    const fn stereo(rate: u32) -> Spec {
+        Spec { rate, channels: 2 }
+    }
+
+    fn crossfeed() -> dsp::Settings {
+        dsp::Settings::new(dsp::Crossfeed::new(700, 4.5), dsp::Balance::CENTER)
+    }
+
+    fn holding(settings: dsp::Settings) -> Arc<AtomicU64> {
+        Arc::new(AtomicU64::new(settings.to_bits()))
+    }
+
+    /// One second of a full-scale 50 Hz sine on the left only
+    fn left_tone(rate: u32) -> Vec<f32> {
+        (0..rate)
+            .flat_map(|frame| {
+                let at = f64::from(frame) * 50.0 * std::f64::consts::TAU / f64::from(rate);
+                [at.sin() as f32, 0.0]
+            })
+            .collect()
+    }
+
+    /// The level of 50 Hz in each of two interleaved channels, in dB against
+    /// `full`, over the half second from a quarter of a second in.
+    fn levels_at_50_hz(channels: [Vec<f64>; 2], rate: u32, full: f64) -> [f64; 2] {
+        let start = rate as usize / 4;
+        let len = rate as usize / 2;
+        channels.map(|channel| {
+            let (mut re, mut im) = (0.0, 0.0);
+            for (n, sample) in channel[start..start + len].iter().enumerate() {
+                let (sin, cos) =
+                    (std::f64::consts::TAU * 50.0 * n as f64 / f64::from(rate)).sin_cos();
+                re += sample * cos;
+                im += sample * sin;
+            }
+            20.0 * (2.0 * re.hypot(im) / len as f64 / full).log10()
+        })
+    }
+
+    fn split(samples: &[f32]) -> [Vec<f64>; 2] {
+        [0, 1].map(|channel| {
+            samples
+                .iter()
+                .skip(channel)
+                .step_by(2)
+                .map(|sample| f64::from(*sample))
+                .collect()
+        })
+    }
+
+    #[test]
+    fn crossfeed_feeds_the_left_into_the_right_with_each_resampler() {
+        let plain = OutputSettings::default();
+        let cases = std::iter::once((48_000, plain.clone())).chain(
+            each_resampling()
+                .into_iter()
+                .map(|resampling| (44_100, plain.clone().with_resampling(resampling))),
+        );
+        for (source_rate, settings) in cases {
+            let mut converter = Converter::for_settings(
+                stereo(source_rate),
+                stereo(48_000),
+                &settings,
+                &holding(crossfeed()),
+            )
+            .unwrap();
+            let mut out = Vec::new();
+            converter
+                .process(&left_tone(source_rate), &mut out)
+                .unwrap();
+            let [left, right] = levels_at_50_hz(split(&out), 48_000, 1.0);
+            assert!((right - left + 4.5).abs() < 0.2, "{left} {right}");
+        }
+    }
+
+    #[test]
+    fn crossfeed_feeds_the_left_into_the_right_before_the_dsd_encoder() {
+        let dop = dsd::Settings::new(
+            dsd::DopRate::Dsd64,
+            dsd::Filter::default(),
+            dsd::Modulation::default(),
+        );
+        let settings = OutputSettings::new(Some("dac".to_owned()), None).with_dop(Some(dop));
+        let frame_rate = 176_400;
+        for (dsp, fed) in [(crossfeed(), true), (dsp::Settings::default(), false)] {
+            let mut converter = Converter::for_settings(
+                stereo(44_100),
+                stereo(frame_rate),
+                &settings,
+                &holding(dsp),
+            )
+            .unwrap();
+            let mut out = Vec::new();
+            converter.process(&left_tone(44_100), &mut out).unwrap();
+            let bits = split(&out).map(|words| {
+                words
+                    .iter()
+                    .flat_map(|word| {
+                        let word = *word as u16;
+                        (0..16)
+                            .rev()
+                            .map(move |bit| if word >> bit & 1 == 1 { 1.0 } else { -1.0 })
+                    })
+                    .collect()
+            });
+            let [left, right] = levels_at_50_hz(bits, frame_rate * 16, 0.5);
+            if fed {
+                assert!((right - left + 4.5).abs() < 0.3, "{left} {right}");
+            } else {
+                assert!(right - left < -60.0, "{left} {right}");
+            }
+        }
+    }
+
+    #[test]
+    fn neutral_settings_leave_the_samples_as_they_are() {
+        let dsp = holding(crossfeed());
+        let settings = OutputSettings::default();
+        let mut converter =
+            Converter::for_settings(stereo(48_000), stereo(48_000), &settings, &dsp).unwrap();
+        converter
+            .process(&left_tone(48_000), &mut Vec::new())
+            .unwrap();
+        dsp.store(0, Ordering::Relaxed);
+        converter
+            .process(&left_tone(48_000), &mut Vec::new())
+            .unwrap();
+        let input: Vec<f32> = (0..9_600).map(|n| (n as f32 * 0.37).sin()).collect();
+        let mut out = Vec::new();
+        converter.process(&input, &mut out).unwrap();
+        let bits = |samples: &[f32]| {
+            samples
+                .iter()
+                .map(|sample| sample.to_bits())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(bits(&out), bits(&input));
+    }
+
+    #[test]
+    fn new_settings_apply_from_the_next_packet() {
+        let dsp = holding(dsp::Settings::default());
+        let settings = OutputSettings::default();
+        let mut converter =
+            Converter::for_settings(stereo(48_000), stereo(48_000), &settings, &dsp).unwrap();
+        let mut out = Vec::new();
+        converter.process(&[1.0; 200], &mut out).unwrap();
+        assert_eq!(out, [1.0; 200]);
+        dsp.store(
+            dsp::Settings::new(None, dsp::Balance::from_db(-6.0)).to_bits(),
+            Ordering::Relaxed,
+        );
+        out.clear();
+        converter.process(&[1.0; 4_000], &mut out).unwrap();
+        let lowered = 10f64.powf(-6.0 / 20.0) as f32;
+        assert!(out[1] < 1.0 && out[1] > lowered);
+        // 20 ms at 48 kHz
+        assert!(
+            out[2 * 959..]
+                .iter()
+                .skip(1)
+                .step_by(2)
+                .all(|right| *right == lowered)
+        );
+        assert!(out.iter().step_by(2).all(|left| *left == 1.0));
+    }
+
+    #[test]
+    fn the_next_track_follows_the_same_settings() {
+        let dsp = holding(dsp::Settings::default());
+        let settings = OutputSettings::default();
+        let converter =
+            Converter::for_settings(stereo(48_000), stereo(48_000), &settings, &dsp).unwrap();
+        let mut next = converter.following(stereo(48_000), &settings).unwrap();
+        dsp.store(
+            dsp::Settings::new(None, dsp::Balance::from_db(-6.0)).to_bits(),
+            Ordering::Relaxed,
+        );
+        let mut out = Vec::new();
+        next.process(&[1.0; 4_000], &mut out).unwrap();
+        let lowered = 10f64.powf(-6.0 / 20.0) as f32;
+        assert_eq!(out[out.len() - 2..], [1.0, lowered]);
+    }
+
+    #[test]
+    fn the_next_track_goes_on_from_where_the_processor_is() {
+        let settings = OutputSettings::default();
+        let mut converter = Converter::for_settings(
+            stereo(44_100),
+            stereo(44_100),
+            &settings,
+            &holding(crossfeed()),
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        converter
+            .process(&[0.5, 0.0].repeat(44_100), &mut out)
+            .unwrap();
+        let steady = [out[out.len() - 2], out[out.len() - 1]];
+        let mut next = converter.following(stereo(44_100), &settings).unwrap();
+        let mut first = Vec::new();
+        next.process(&[0.5, 0.0], &mut first).unwrap();
+        assert!((first[0] - steady[0]).abs() < 1e-6, "{first:?} {steady:?}");
+        assert!((first[1] - steady[1]).abs() < 1e-6, "{first:?} {steady:?}");
     }
 }

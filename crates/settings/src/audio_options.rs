@@ -1,4 +1,4 @@
-//! The Audio page's dropdowns, whose choices the settings give as values and labels
+//! The dropdowns of the Audio and DSP pages, whose choices the settings give as values and labels
 
 use gpui_kit::SharedString;
 use gpui_kit::component::setting::SettingField;
@@ -24,15 +24,26 @@ pub(crate) fn dropdown(
     value: fn(&AudioSnapshot) -> String,
     set: fn(&AudioSettings, &str),
 ) -> SettingField<SharedString> {
+    dropdown_of(audio, AudioSettings::snapshot, choices, value, set)
+}
+
+/// As [`dropdown`], for settings that `snapshot` reads.
+pub(crate) fn dropdown_of<S: Clone + 'static, T: 'static>(
+    settings: &S,
+    snapshot: fn(&S) -> T,
+    choices: Vec<Choice>,
+    value: fn(&T) -> String,
+    set: fn(&S, &str),
+) -> SettingField<SharedString> {
     SettingField::scrollable_dropdown(
         options(choices),
         {
-            let audio = audio.clone();
-            move |_| value(&audio.snapshot()).into()
+            let settings = settings.clone();
+            move |_| value(&snapshot(&settings)).into()
         },
         {
-            let audio = audio.clone();
-            move |chosen: SharedString, _| set(&audio, &chosen)
+            let settings = settings.clone();
+            move |chosen: SharedString, _| set(&settings, &chosen)
         },
     )
 }

@@ -366,8 +366,9 @@ fn play(args: ServerArgs, ids: Vec<String>, query: Option<String>) -> anyhow::Re
 
     let settings = core.hiphile.settings();
     let audio = settings.audio().snapshot();
+    let dsp = settings.dsp().snapshot();
     let song_limit = settings.song_cache().snapshot();
-    for error in audio.errors().chain(song_limit.error()) {
+    for error in audio.errors().chain(dsp.errors()).chain(song_limit.error()) {
         eprintln!("warning: {error}");
     }
     if !songs.is_empty() {

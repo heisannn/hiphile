@@ -209,6 +209,20 @@ fn a_player_without_a_workspace_plays_at_the_saved_volume(cx: &mut TestAppContex
 }
 
 #[gpui_kit::test]
+fn a_player_without_a_workspace_plays_with_the_saved_dsp(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let (_dir, store) = store_with("crossfeed = true\nbalance_db = -2.0\nromaji_search = false\n");
+    let hiphile = hiphile(Ok(store), cx);
+
+    let player = hiphile.player(crate::test_support::session(crate::testing::NOWHERE));
+
+    let dsp = player.dsp();
+    assert_eq!(dsp.crossfeed(), audio::Crossfeed::new(700, 4.5));
+    assert_eq!(dsp.balance(), audio::Balance::from_db(-2.0));
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
 fn signing_out_closes_the_workspace(cx: &mut TestAppContext) {
     cx.executor().allow_parking();
     let hiphile = hiphile(Err(config::Error::NoHomeDir), cx);

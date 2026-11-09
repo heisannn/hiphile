@@ -5,8 +5,8 @@ use executor::Executor;
 use crate::hiphile::share;
 
 use super::{
-    AppearanceSettings, AudioSettings, CacheKind, CacheLimit, DiscordSettings, LyricsSettings,
-    QueueSettings,
+    AppearanceSettings, AudioSettings, CacheKind, CacheLimit, DiscordSettings, DspSettings,
+    LyricsSettings, QueueSettings,
 };
 
 /// Every setting the app keeps, each a handle of its own that reads its part of one store.
@@ -17,6 +17,7 @@ pub struct Settings {
     song_cache: CacheLimit,
     cover_cache: CacheLimit,
     discord: DiscordSettings,
+    dsp: DspSettings,
     lyrics: LyricsSettings,
     queue: QueueSettings,
 }
@@ -30,6 +31,7 @@ impl Settings {
             song_cache: CacheLimit::new(CacheKind::Songs, executor.clone(), share(&store)),
             cover_cache: CacheLimit::new(CacheKind::Covers, executor.clone(), share(&store)),
             discord: DiscordSettings::new(executor.clone(), share(&store)),
+            dsp: DspSettings::new(executor.clone(), share(&store)),
             lyrics: LyricsSettings::new(executor.clone(), share(&store)),
             queue: QueueSettings::new(executor, share(&store)),
         }
@@ -55,6 +57,10 @@ impl Settings {
         &self.discord
     }
 
+    pub fn dsp(&self) -> &DspSettings {
+        &self.dsp
+    }
+
     pub fn lyrics(&self) -> &LyricsSettings {
         &self.lyrics
     }
@@ -70,5 +76,6 @@ impl Settings {
         self.song_cache.save_before_quitting();
         self.cover_cache.save_before_quitting();
         self.discord.save_before_quitting();
+        self.dsp.save_before_quitting();
     }
 }
