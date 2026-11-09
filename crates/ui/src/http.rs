@@ -33,7 +33,7 @@ impl HttpClient for NetHttpClient {
     fn send(
         &self,
         request: Request<AsyncBody>,
-    ) -> BoxFuture<'static, http_client::Result<Response<AsyncBody>>> {
+    ) -> BoxFuture<'static, gpui_kit::Result<Response<AsyncBody>>> {
         let net = self.net.clone();
         let covers = self.covers.clone();
         // Image loads run on GPUI's background executor, so the disk may

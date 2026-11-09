@@ -56,7 +56,7 @@ discord-rich-presence = "1.1"
 embed-resource = "3.0"
 futures = "0.3"
 http = "1.5"
-gpui-kit = { version = "0.9", features = ["gpui-fast"] }
+gpui-kit = { version = "0.9.1", features = ["gpui-fast"] }
 hex = "0.4"
 keyring-core = "1.0"
 # Pinned: a new version may read compiled dictionaries differently, and the bundle in
