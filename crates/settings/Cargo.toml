@@ -7,7 +7,6 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-catalog.workspace = true
 config.workspace = true
 fuzzy.workspace = true
 gpui-host.workspace = true

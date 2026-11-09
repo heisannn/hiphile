@@ -1,4 +1,5 @@
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 
 use executor::{Executor, Publish, Published, Task};
 use session::{Accounts, Invalid, Readings, Session, SignedIn};
@@ -6,17 +7,31 @@ use subsonic::Credentials;
 use tokio::sync::watch;
 
 use crate::follow;
-use crate::settings::{CacheLimit, CacheLimitSnapshot, Settings};
-use crate::workspace::{Parts, Workspace};
+use crate::settings::{CacheLimit, CacheLimitSnapshot, Settings, SongCacheUsage};
+use crate::workspace::{self, Parts, Workspace};
 
-/// Where this device keeps what it downloads: covers, songs and the dictionaries that read kanji.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Where this device keeps what it downloads: covers, songs, the dictionaries that read kanji
+/// and Musixmatch's token.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Caches {
-    /// The system's cache directory.
+    /// A folder of the app's in the system's cache directory.
     User,
-    /// Nowhere: covers and songs come from the server each time, and the dictionaries cannot be
-    /// had.
+    /// In a folder the host gives, such as a mobile app's caches directory.
+    At(PathBuf),
+    /// Nowhere: covers and songs come from the server each time, the dictionaries cannot be had,
+    /// and Musixmatch's token lasts until quitting.
     None,
+}
+
+impl Caches {
+    /// `None` also where the system has no cache directory.
+    fn folder(self) -> Option<PathBuf> {
+        match self {
+            Self::User => dirs::cache_dir().map(|cache| cache.join("hiphile")),
+            Self::At(folder) => Some(folder),
+            Self::None => None,
+        }
+    }
 }
 
 /// Whether someone is signed in, and as whom.
@@ -47,13 +62,22 @@ struct WeakHiphile(Weak<Inner>);
 
 struct Inner {
     executor: Executor,
+    net: net::Client,
     /// Holds the settings and the profiles; the player keeps the volume in it.
     store: Result<config::Store, Arc<config::Error>>,
-    caches: Caches,
+    /// `None` when there is nowhere to keep anything.
+    cache: Option<PathBuf>,
     settings: Settings,
-    readings: Readings,
+    /// `None` when there is nowhere to keep them.
+    dictionaries: Option<PathBuf>,
+    /// Made only when needed, so that a host that searches nothing, such as a command line,
+    /// neither fetches nor removes the dictionaries.
+    readings: OnceLock<Readings>,
     /// `None` when there is nowhere to keep them.
     covers: Option<catalog::CoverStore>,
+    /// What the player's song cache writes to, for as long as the core lives. `None` when there
+    /// is nowhere to keep them.
+    songs: Option<catalog::SongStore>,
     accounts: Accounts,
     state: Published<State>,
     follows: Mutex<Vec<Task<()>>>,
@@ -61,7 +85,7 @@ struct Inner {
 
 struct State {
     shown: HiphileSnapshot,
-    /// `None` when there is nowhere to keep them or their limit cannot be read.
+    /// `None` when there is nowhere to keep songs or their limit could not be read.
     song_cache: Option<playback::SongCache>,
 }
 
@@ -86,39 +110,35 @@ impl Hiphile {
     ) -> Self {
         let store = store.map_err(Arc::new);
         let settings = Settings::new(executor.clone(), share(&store));
-        let (covers, dictionaries) = match caches {
-            Caches::User => (
-                session::open_covers(share(&store)),
-                fuzzy::bundle::root().ok(),
-            ),
-            Caches::None => (None, None),
-        };
+        let cache = caches.folder();
+        let covers = cache
+            .as_deref()
+            .map(|cache| session::open_covers(share(&store), cache));
+        let dictionaries = cache.as_deref().map(fuzzy::bundle::root_in);
         let song_limit = settings.song_cache().snapshot();
+        let songs = cache
+            .as_deref()
+            .map(|cache| catalog::SongStore::in_cache(cache, song_capacity(song_limit.capacity())));
         // A limit that cannot be read keeps no songs rather than the default amount
-        let song_cache = if song_limit.is_keeping_none() {
-            None
-        } else {
-            open_song_cache(caches, song_limit.capacity())
-        };
-        let readings = Readings::at(executor.clone(), net.clone(), share(&store), dictionaries);
-        let accounts = Accounts::new(
-            executor.clone(),
-            net,
-            share(&store),
-            keychain,
-            Some(readings.clone()),
-        );
+        let song_cache = songs
+            .clone()
+            .filter(|_| !song_limit.is_keeping_none())
+            .map(playback::SongCache::new);
+        let accounts = Accounts::new(executor.clone(), net.clone(), share(&store), keychain);
         let this = Self(Arc::new(Inner {
             state: Published::new(State {
                 shown: HiphileSnapshot::default(),
                 song_cache,
             }),
             executor,
+            net,
             store,
-            caches,
+            cache,
             settings,
-            readings,
+            dictionaries,
+            readings: OnceLock::new(),
             covers,
+            songs,
             accounts,
             follows: Mutex::default(),
         }));
@@ -131,13 +151,27 @@ impl Hiphile {
         &self.0.settings
     }
 
+    /// The first call, or signing in, makes them, which starts fetching the dictionaries, or
+    /// removing them when they are off.
     pub fn readings(&self) -> &Readings {
-        &self.0.readings
+        self.0.readings.get_or_init(|| {
+            Readings::at(
+                self.0.executor.clone(),
+                self.0.net.clone(),
+                share(&self.0.store),
+                self.0.dictionaries.clone(),
+            )
+        })
     }
 
     /// Where covers are kept, if anywhere.
     pub fn covers(&self) -> Option<&catalog::CoverStore> {
         self.0.covers.as_ref()
+    }
+
+    /// How much the song cache keeps, counted now, and removing it. Each call counts anew.
+    pub fn song_cache_usage(&self) -> SongCacheUsage {
+        SongCacheUsage::new(self.0.executor.clone(), self.0.songs.clone())
     }
 
     pub fn snapshot(&self) -> HiphileSnapshot {
@@ -189,13 +223,29 @@ impl Hiphile {
     }
 
     /// Opens a session on the server at `address` with `credentials` without signing in: nothing
-    /// is remembered and no workspace opens, as for a command line.
+    /// is remembered, no workspace opens and the session has no dictionaries, as for a command
+    /// line.
     pub fn connect(
         &self,
         address: &str,
         credentials: Credentials,
     ) -> Result<Task<Result<Session, String>>, Invalid> {
         self.0.accounts.connect(address, credentials)
+    }
+
+    /// A player on `session` for a host that opens no workspace, such as a command line. It plays
+    /// on the output and with the transitions that the settings hold now, at the saved volume,
+    /// and keeps songs as the workspace's player does, but follows no later change of the
+    /// settings. The host calls [`playback::Player::shutdown`] once it is done with it.
+    pub fn player(&self, session: Session) -> playback::Player {
+        let song_cache = self.0.state.read(|state| state.song_cache.clone());
+        workspace::new_player(
+            &self.0.executor,
+            session,
+            share(&self.0.store),
+            &self.0.settings.audio().snapshot(),
+            song_cache,
+        )
     }
 
     /// Closes the workspace, which stops playing, and forgets the saved password, so that signing
@@ -217,11 +267,13 @@ impl Hiphile {
     }
 
     pub(crate) fn open_workspace(&self, session: Session, profile: config::Profile) {
+        let session = session.with_readings(self.readings().clone());
         self.0.state.update(|state| {
             let parts = Parts {
                 executor: self.0.executor.clone(),
                 settings: self.0.settings.clone(),
                 store: share(&self.0.store),
+                cache: self.0.cache.clone(),
                 covers: self.0.covers.clone(),
                 song_cache: state.song_cache.clone(),
             };
@@ -242,10 +294,10 @@ impl Hiphile {
         )
     }
 
-    /// The cache opens again for the new limit, which the player keeps to from its next song.
+    /// The songs keep to the new limit from the next one kept. A player that kept none, as the
+    /// limit could not be read, starts keeping them from its next song.
     fn follow_song_limit(&self) -> Task<()> {
         let this = self.downgrade();
-        let caches = self.0.caches;
         follow_limit(
             &self.0.executor,
             self.0.settings.song_cache(),
@@ -253,11 +305,18 @@ impl Hiphile {
                 let Some(this) = this.upgrade() else {
                     return;
                 };
-                let song_cache = open_song_cache(caches, capacity);
+                let Some(songs) = &this.0.songs else {
+                    return;
+                };
+                songs.set_capacity(song_capacity(capacity));
                 this.0.state.update(|state| {
-                    state.song_cache.clone_from(&song_cache);
+                    if state.song_cache.is_some() {
+                        return;
+                    }
+                    let song_cache = playback::SongCache::new(songs.clone());
+                    state.song_cache = Some(song_cache.clone());
                     if let Some(workspace) = &state.shown.workspace {
-                        workspace.set_song_cache(song_cache);
+                        workspace.set_song_cache(Some(song_cache));
                     }
                 });
             },
@@ -286,13 +345,9 @@ pub(crate) fn share(
     store.clone().map_err(config::Error::Shared)
 }
 
-/// Keeps at most about `capacity` bytes of songs, or the default amount for `None`. Without the
-/// cache every song comes from the server, so failing to open it raises no error.
-fn open_song_cache(caches: Caches, capacity: Option<u64>) -> Option<playback::SongCache> {
-    match caches {
-        Caches::User => playback::SongCache::user(capacity).ok(),
-        Caches::None => None,
-    }
+/// The default amount for `None`.
+fn song_capacity(capacity: Option<u64>) -> u64 {
+    capacity.unwrap_or(catalog::SONG_CAPACITY)
 }
 
 /// Only a change of the limit in effect reaches `set_capacity`, which reopens the cache: the

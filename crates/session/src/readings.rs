@@ -93,7 +93,7 @@ struct WeakReadings(Weak<Inner>);
 struct Inner {
     executor: Executor,
     net: net::Client,
-    /// `None` where the system has no cache directory.
+    /// `None` where there is nowhere to keep them.
     root: Option<PathBuf>,
     /// `None` without a home directory: a choice then lasts until quitting.
     saver: Option<Saver<bool>>,
@@ -111,15 +111,6 @@ struct State {
 }
 
 impl Readings {
-    /// Keeps the dictionaries in the user's cache.
-    pub fn new(
-        executor: Executor,
-        net: net::Client,
-        store: Result<config::Store, config::Error>,
-    ) -> Self {
-        Self::at(executor, net, store, bundle::root().ok())
-    }
-
     /// Keeps the dictionaries under `root`, removing them from there when they are turned off.
     /// Without a `root` they cannot be had.
     pub fn at(

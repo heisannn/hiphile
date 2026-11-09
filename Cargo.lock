@@ -96,9 +96,11 @@ dependencies = [
 name = "actions"
 version = "0.4.0"
 dependencies = [
+ "gpui-host",
  "gpui-kit",
  "hiphile-core",
  "playback",
+ "session",
  "subsonic",
 ]
 
@@ -363,9 +365,9 @@ dependencies = [
  "client",
  "futures",
  "fuzzy",
+ "gpui-host",
  "gpui-kit",
  "hiphile-core",
- "net",
  "serde_json",
  "session",
  "subsonic",
@@ -2689,7 +2691,6 @@ dependencies = [
 name = "fuzzy"
 version = "0.4.0"
 dependencies = [
- "dirs 7.0.0",
  "hex",
  "lindera",
  "nucleo-matcher",
@@ -4008,7 +4009,6 @@ name = "hiphile-cli"
 version = "0.4.0"
 dependencies = [
  "anyhow",
- "async-channel",
  "audio",
  "catalog",
  "clap",
@@ -4019,8 +4019,10 @@ dependencies = [
  "hiphile-core",
  "net",
  "playback",
+ "serde_json",
  "session",
  "subsonic",
+ "tempfile",
  "tokio",
 ]
 
@@ -4034,6 +4036,7 @@ dependencies = [
  "chrono",
  "client",
  "config 0.4.0",
+ "dirs 7.0.0",
  "executor",
  "futures",
  "fuzzy",
@@ -4095,12 +4098,9 @@ version = "0.4.0"
 dependencies = [
  "actions",
  "catalog",
- "client",
- "futures",
  "gpui-host",
  "gpui-kit",
  "hiphile-core",
- "net",
  "serde_json",
  "session",
  "subsonic",
@@ -5037,7 +5037,6 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "config 0.4.0",
- "dirs 7.0.0",
  "executor",
  "futures",
  "gpui-host",
@@ -8040,7 +8039,6 @@ dependencies = [
 name = "settings"
 version = "0.4.0"
 dependencies = [
- "catalog",
  "config 0.4.0",
  "fuzzy",
  "gpui-host",
@@ -8255,10 +8253,9 @@ dependencies = [
  "catalog",
  "client",
  "futures",
- "fuzzy",
+ "gpui-host",
  "gpui-kit",
  "hiphile-core",
- "net",
  "serde_json",
  "session",
  "subsonic",

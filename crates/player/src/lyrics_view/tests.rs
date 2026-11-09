@@ -349,7 +349,7 @@ fn the_star_ends_the_details_and_asks_for_the_song(cx: &mut TestAppContext) {
     cx.update(|_, cx| {
         actions::set_known_favorites(Some(Default::default()), cx);
         let asked = asked.clone();
-        cx.on_action(move |action: &actions::SetFavorite, _| {
+        cx.on_action(move |action: &actions::ToggleFavoriteOf, _| {
             asked.lock().unwrap().push(action.clone());
         });
     });
@@ -365,7 +365,7 @@ fn the_star_ends_the_details_and_asks_for_the_song(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(
         *asked.lock().unwrap(),
-        [actions::SetFavorite::new(Favorite::Song(song("a")), true)]
+        [actions::ToggleFavoriteOf::new(Favorite::Song(song("a")))]
     );
 }
 

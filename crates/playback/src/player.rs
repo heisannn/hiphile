@@ -129,6 +129,11 @@ impl PlayerSnapshot {
     }
 
     /// What the song plays as, once it has started.
+    pub fn format(&self) -> Option<&PlaybackFormat> {
+        self.format.as_ref()
+    }
+
+    /// What the song plays as, once it has started.
     pub fn format_text(&self) -> Option<String> {
         self.format
             .as_ref()
@@ -540,9 +545,7 @@ impl Player {
     }
 
     pub fn set_repeat(&self, repeat: RepeatMode) {
-        self.0
-            .core
-            .update(|core| core.shown.queue.set_repeat(repeat));
+        self.change(|core| core.shown.queue.set_repeat(repeat));
     }
 
     pub fn cycle_repeat(&self) {

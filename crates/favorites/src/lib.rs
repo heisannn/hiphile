@@ -1,5 +1,5 @@
 //! The screen of the favorites, which `hiphile_core::favorites::FavoritesState` keeps. Every
-//! other feature adds to them and takes from them through `actions::SetFavorite`, which the app
+//! other feature adds to them and takes from them through `actions::ToggleFavoriteOf`, which the app
 //! shell routes to the state, and reads them through `actions::is_favorite`, which the app shell
 //! keeps in step with it.
 

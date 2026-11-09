@@ -391,7 +391,7 @@ async fn watched_sync(
 /// Runs `work` on a blocking thread, as a sync blocks on the disk between its requests. It stops
 /// at its next await once the future waiting on it is dropped, which a blocking thread would not
 /// notice on its own.
-async fn on_blocking_thread<R: Send + 'static>(
+pub(crate) async fn on_blocking_thread<R: Send + 'static>(
     executor: &Executor,
     work: impl Future<Output = R> + Send + 'static,
 ) -> R {

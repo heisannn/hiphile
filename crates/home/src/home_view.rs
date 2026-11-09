@@ -2,7 +2,6 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use actions::{AlbumAction, EnqueueSongs, GoToArtist, Placement, PlaySongs, ShowAlbum, ShowArtist};
-use futures::future::join_all;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Selectable as _, Sizable as _, WindowExt as _,
@@ -14,15 +13,16 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, App, AppContext as _, ClickEvent, Context, ElementId, FocusHandle, Focusable,
+    AnyElement, App, ClickEvent, Context, ElementId, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render, Role,
     ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
     Window, div, prelude::FluentBuilder as _,
 };
+use hiphile_core::Shelf;
 use hiphile_core::favorites::Favorite;
 use hiphile_core::home::{
-    AlbumShelf, DailyRecommendations, Item, MOST_PLAYED, NEW_ALBUMS, RecommendedAlbums,
-    RecommendedStatus, ReloadFailed, most_recent,
+    AlbumShelf, DailyRecommendations, HomeShelves, Item, RecommendedStatus, ReloadFailed,
+    ShelvesStatus,
 };
 use subsonic::{Album, AlbumId, PlaylistId, Song, SongId, StarTarget};
 use ui::card_grid::{GridMotion as Motion, card_row, columns_for, media_card, step};
@@ -30,7 +30,7 @@ use ui::list_navigation::{
     SelectFirst, SelectLast, SelectNext, SelectPageDown, SelectPageUp, SelectPrevious,
 };
 use ui::{
-    ArtistLine, CoverArt, NowPlaying, Shelf, format_duration, section_failure, section_heading,
+    ArtistLine, CoverArt, NowPlaying, format_duration, section_failure, section_heading,
     section_heading_with_action, section_loading, skippable_song, song_row_label, song_with_cover,
 };
 
@@ -39,7 +39,6 @@ use crate::{
     SelectLeft, SelectRight, ShowInLibrary,
 };
 
-const RECENT_SONGS: usize = 8;
 const NEW_ALBUM_ROWS: usize = 2;
 /// The same as the library's album cover, so that opening the album needs no
 /// second image.
@@ -47,9 +46,6 @@ const CARD_COVER_PIXELS: u32 = 256;
 /// The same as the player's.
 const ROW_COVER_PIXELS: u32 = 48;
 
-/// The lists come from the server, which alone knows every play. An item stays
-/// on show while a reload that replaces it is on its way or fails.
-///
 /// The albums to try are picked again on the first occasion of another day:
 /// opening, coming back to the screen or the window, a play or a library sync.
 pub struct Home {
@@ -59,8 +55,10 @@ pub struct Home {
     recommendations: DailyRecommendations,
     /// What the recommendations showed last.
     recommended_status: RecommendedStatus,
-    /// Those of the recommendations that no other shelf shows.
     recommended: Shelf<Album>,
+    shelves: HomeShelves,
+    /// What the shelves showed last.
+    shelves_status: ShelvesStatus,
     recent: Shelf<Song>,
     most_played: Shelf<Album>,
     new_albums: Shelf<Album>,
@@ -68,13 +66,11 @@ pub struct Home {
     now_playing: Option<NowPlaying>,
     /// How many album cards fit across, from the last layout.
     columns: usize,
-    _recent_task: Task<()>,
-    _most_played_task: Task<()>,
-    _new_albums_task: Task<()>,
     _album_task: Task<()>,
     _subscriptions: Vec<Subscription>,
     _recommended_changes: Task<()>,
     _recommended_failures: Task<()>,
+    _shelves_changes: Task<()>,
 }
 
 /// One child of the scrolling list, in order. Each is a direct child so that
@@ -97,6 +93,7 @@ impl Home {
     /// A reload of `recommendations` that fails says so in `window`.
     pub fn new(
         session: session::Session,
+        shelves: HomeShelves,
         recommendations: DailyRecommendations,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -108,7 +105,7 @@ impl Home {
             cx.on_blur(&focus, window, |_, _, cx| cx.notify()),
             cx.observe_window_activation(window, |this, window, _| {
                 if window.is_window_active() {
-                    this.renew_recommended();
+                    this.recommendations.renew();
                 }
             }),
         ];
@@ -123,147 +120,52 @@ impl Home {
                 window.push_notification((NotificationType::Error, message), cx);
             },
         );
+        let shelves_changes = gpui_host::observe(shelves.subscribe(), cx, Self::follow_shelves);
         let recommended_status = recommendations.status();
-        let mut this = Self {
+        let shelves_status = shelves.status();
+        Self {
             session,
             focus,
             scroll: ScrollHandle::new(),
             recommendations,
             recommended_status: recommended_status.clone(),
-            recommended: Shelf::Loading,
-            recent: Shelf::Loading,
-            most_played: Shelf::Loading,
-            new_albums: Shelf::Loading,
+            recommended: recommended_status.albums().clone(),
+            shelves,
+            recent: shelves_status.recently_played().clone(),
+            most_played: shelves_status.most_played().clone(),
+            new_albums: shelves_status.new_albums().clone(),
+            shelves_status,
             selection: None,
             now_playing: None,
             columns: 4,
-            _recent_task: Task::ready(()),
-            _most_played_task: Task::ready(()),
-            _new_albums_task: Task::ready(()),
             _album_task: Task::ready(()),
             _subscriptions: subscriptions,
             _recommended_changes: recommended_changes,
             _recommended_failures: recommended_failures,
-        };
-        this.show_recommended(recommended_status.albums());
-        this.reload_recently_played(cx);
-        this.reload_most_played(cx);
-        this.reload_new_albums(cx);
-        this
+            _shelves_changes: shelves_changes,
+        }
     }
 
     fn follow_recommended(&mut self, status: RecommendedStatus, cx: &mut Context<Self>) {
         if status.albums() != self.recommended_status.albums() {
-            self.show_recommended(status.albums());
+            self.recommended = status.albums().clone();
         }
         self.recommended_status = status;
         cx.notify();
     }
 
-    fn show_recommended(&mut self, albums: &RecommendedAlbums) {
-        self.recommended = match albums {
-            RecommendedAlbums::Loading => Shelf::Loading,
-            RecommendedAlbums::Loaded(albums) => Shelf::Loaded(albums.clone()),
-            RecommendedAlbums::Failed(error) => Shelf::Failed(error.clone().into()),
-        };
-        self.keep_shelves_off_recommended();
-    }
-
-    /// Picks new albums to try if those on show are from another day.
-    pub fn renew_recommended(&self) {
-        self.recommendations.renew();
-    }
-
-    /// Asks again what the server has after a library sync.
-    pub fn library_synced(&mut self, cx: &mut Context<Self>) {
-        self.reload_most_played(cx);
-        self.reload_new_albums(cx);
-    }
-
-    /// A recommendation is something the other album shelves do not show,
-    /// also when an album gets there after the day's pick.
-    fn keep_shelves_off_recommended(&mut self) {
-        let is_shelved = |album: &Album| {
-            [&self.most_played, &self.new_albums]
-                .iter()
-                .flat_map(|shelf| shelf.items())
-                .any(|shelved| shelved.id() == album.id())
-        };
-        if let Shelf::Loaded(albums) = &self.recommended
-            && albums.iter().any(is_shelved)
-        {
-            let others = albums.iter().filter(|album| !is_shelved(album)).cloned();
-            self.recommended = Shelf::Loaded(others.collect());
+    fn follow_shelves(&mut self, status: ShelvesStatus, cx: &mut Context<Self>) {
+        let last = &self.shelves_status;
+        if status.recently_played() != last.recently_played() {
+            self.recent = status.recently_played().clone();
         }
-    }
-
-    /// Takes in a play the server has heard of, which can change what was
-    /// played last and most.
-    pub fn song_played(&mut self, cx: &mut Context<Self>) {
-        self.reload_recently_played(cx);
-        self.reload_most_played(cx);
-    }
-
-    fn reload_most_played(&mut self, cx: &mut Context<Self>) {
-        self.most_played.begin();
-        let client = self.session.client().clone();
-        self._most_played_task = cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_spawn(async move { client.frequent_albums(MOST_PLAYED).await })
-                .await;
-            this.update(cx, |this, cx| {
-                this.most_played
-                    .finish(result.map_err(|error| session::describe(&error).into()));
-                this.keep_shelves_off_recommended();
-                cx.notify();
-            })
-            .ok();
-        });
-        cx.notify();
-    }
-
-    fn reload_recently_played(&mut self, cx: &mut Context<Self>) {
-        self.recent.begin();
-        let client = self.session.client().clone();
-        self._recent_task = cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_spawn(async move { fetch_recently_played(&client).await })
-                .await;
-            this.update(cx, |this, cx| {
-                this.finish_recently_played(
-                    result.map_err(|error| session::describe(&error).into()),
-                );
-                cx.notify();
-            })
-            .ok();
-        });
-        cx.notify();
-    }
-
-    /// Songs on show stay there when the load missed some of the albums, as it may
-    /// have missed the latest.
-    fn finish_recently_played(&mut self, result: Result<RecentlyPlayed, SharedString>) {
-        match result {
-            Ok(found) if !found.complete && matches!(self.recent, Shelf::Loaded(_)) => {}
-            result => self.recent.finish(result.map(|found| found.songs)),
+        if status.most_played() != last.most_played() {
+            self.most_played = status.most_played().clone();
         }
-    }
-
-    fn reload_new_albums(&mut self, cx: &mut Context<Self>) {
-        self.new_albums.begin();
-        let client = self.session.client().clone();
-        self._new_albums_task = cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_spawn(async move { client.newest_albums(NEW_ALBUMS).await })
-                .await;
-            this.update(cx, |this, cx| {
-                this.new_albums
-                    .finish(result.map_err(|error| session::describe(&error).into()));
-                this.keep_shelves_off_recommended();
-                cx.notify();
-            })
-            .ok();
-        });
+        if status.new_albums() != last.new_albums() {
+            self.new_albums = status.new_albums().clone();
+        }
+        self.shelves_status = status;
         cx.notify();
     }
 
@@ -554,16 +456,7 @@ impl Home {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let session = self.session.clone();
-        self._album_task = cx.spawn_in(window, async move |_, cx| {
-            let songs = cx
-                .background_spawn(async move { session.album(&album).await })
-                .await
-                .map(|loaded| Arc::from(loaded.into_parts().1))
-                .map_err(|error| session::describe(&error));
-            cx.update(|window, cx| action.finish(songs, window, cx))
-                .ok();
-        });
+        self._album_task = action.start(album, &self.session, window, cx);
     }
 
     /// Runs while the frame is prepainted, so a change takes effect in the next one.
@@ -627,7 +520,7 @@ impl Home {
     fn render_recommended_status(&self, cx: &mut Context<Self>) -> AnyElement {
         match &self.recommended {
             Shelf::Failed(error) => section_failure(
-                error.clone(),
+                error.clone().into(),
                 Button::new("retry-recommended")
                     .label("Retry")
                     .small()
@@ -641,11 +534,11 @@ impl Home {
     fn render_recent_status(&self, cx: &mut Context<Self>) -> AnyElement {
         match &self.recent {
             Shelf::Failed(error) => section_failure(
-                error.clone(),
+                error.clone().into(),
                 Button::new("retry-recent")
                     .label("Retry")
                     .small()
-                    .on_click(cx.listener(|this, _, _, cx| this.reload_recently_played(cx))),
+                    .on_click(cx.listener(|this, _, _, _| this.shelves.reload_recently_played())),
                 cx,
             ),
             Shelf::Loading | Shelf::Loaded(_) => {
@@ -657,11 +550,11 @@ impl Home {
     fn render_most_played_status(&self, cx: &mut Context<Self>) -> AnyElement {
         match &self.most_played {
             Shelf::Failed(error) => section_failure(
-                error.clone(),
+                error.clone().into(),
                 Button::new("retry-most-played")
                     .label("Retry")
                     .small()
-                    .on_click(cx.listener(|this, _, _, cx| this.reload_most_played(cx))),
+                    .on_click(cx.listener(|this, _, _, _| this.shelves.reload_most_played())),
                 cx,
             ),
             Shelf::Loading | Shelf::Loaded(_) => section_loading("Loading most played albums", cx),
@@ -671,11 +564,11 @@ impl Home {
     fn render_new_albums_status(&self, cx: &mut Context<Self>) -> AnyElement {
         match &self.new_albums {
             Shelf::Failed(error) => section_failure(
-                error.clone(),
+                error.clone().into(),
                 Button::new("retry-new-albums")
                     .label("Retry")
                     .small()
-                    .on_click(cx.listener(|this, _, _, cx| this.reload_new_albums(cx))),
+                    .on_click(cx.listener(|this, _, _, _| this.shelves.reload_new_albums())),
                 cx,
             ),
             Shelf::Loading => section_loading("Loading new albums", cx),
@@ -933,36 +826,6 @@ fn add_selection_command(playlist: Option<&PlaylistId>) -> Box<dyn gpui_kit::Act
     Box::new(AddSelectionToPlaylist {
         playlist: playlist.cloned(),
     })
-}
-
-struct RecentlyPlayed {
-    songs: Vec<Song>,
-    /// Whether every album asked about came through.
-    complete: bool,
-}
-
-/// The songs played last. Those are in the albums played last: an album's last
-/// play is that of its latest song, so `RECENT_SONGS` songs lie within as many
-/// albums. No method returns the songs themselves. An album that fails to load
-/// only leaves out its songs.
-async fn fetch_recently_played(client: &client::Client) -> Result<RecentlyPlayed, client::Error> {
-    let albums = client.recently_played_albums(RECENT_SONGS as u32).await?;
-    let loaded = join_all(albums.iter().map(|album| client.album(album.id()))).await;
-    let mut songs = Vec::new();
-    let mut failure = None;
-    for album in loaded {
-        match album {
-            Ok(album) => songs.extend(album.into_parts().1),
-            Err(error) => failure = Some(error),
-        }
-    }
-    match failure {
-        Some(error) if songs.is_empty() => Err(error),
-        failure => Ok(RecentlyPlayed {
-            songs: most_recent(songs, RECENT_SONGS),
-            complete: failure.is_none(),
-        }),
-    }
 }
 
 #[cfg(test)]

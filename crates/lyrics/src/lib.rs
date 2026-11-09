@@ -5,6 +5,7 @@ pub mod musixmatch;
 pub mod petitlyrics;
 pub mod timing;
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -141,11 +142,12 @@ impl Finder {
     }
 
     /// The providers an app uses: PetitLyrics, which knows more Japanese songs,
-    /// and then Musixmatch.
-    pub fn user(net: net::Client) -> Self {
+    /// and then Musixmatch, which keeps its token in the app's cache folder
+    /// `cache`.
+    pub fn with_cache(net: net::Client, cache: Option<&Path>) -> Self {
         Self::new(vec![
             Box::new(petitlyrics::Client::new(net.clone())),
-            Box::new(musixmatch::Client::user(net)),
+            Box::new(musixmatch::Client::with_cache(net, cache)),
         ])
     }
 

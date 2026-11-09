@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use gpui_kit::TestAppContext;
 
 use super::*;
@@ -66,4 +68,35 @@ fn a_cover_is_looked_for_only_with_a_key_and_while_on(cx: &mut TestAppContext) {
 
     status.set_cover_key(Some("another"));
     assert_eq!(sought(), None, "a new key tries again");
+}
+
+#[gpui_kit::test]
+fn the_status_follows_the_discord_settings(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let executor = cx.update(|cx| gpui_host::executor(cx));
+    let settings = crate::settings::Settings::new(executor.clone(), Err(config::Error::NoHomeDir));
+    let parts = crate::workspace::Parts {
+        executor,
+        settings: settings.clone(),
+        store: Err(config::Error::NoHomeDir),
+        cache: None,
+        covers: None,
+        song_cache: None,
+    };
+    let workspace = crate::Workspace::new(
+        crate::test_support::session(NOWHERE),
+        config::Profile::new(NOWHERE, "alice"),
+        parts,
+    );
+    let status = workspace.show_on_discord(Presence::disconnected());
+    assert!(status.lock().presence.is_on());
+    assert_eq!(status.lock().cover_key, None);
+
+    settings.discord().set_presence_on(false);
+    settings.discord().set_typed("key");
+    cx.executor().advance_clock(Duration::from_secs(5));
+    cx.run_until_parked();
+
+    assert!(!status.lock().presence.is_on());
+    assert_eq!(status.lock().cover_key.as_deref(), Some("key"));
 }

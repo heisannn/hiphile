@@ -293,6 +293,29 @@ fn muting_keeps_the_level_and_moving_it_unmutes(cx: &mut TestAppContext) {
     assert!(player.snapshot().is_muted());
 }
 
+#[gpui_kit::test]
+fn setting_the_repeat_changes_what_follows(cx: &mut TestAppContext) {
+    let player = idle_player(cx);
+    player.fill_queue(&[named_song("a"), named_song("b")], 0);
+    player.pretend_playing(true);
+    player.set_skip_instrumentals(false);
+    let following = |player: &Player| {
+        read(player, |core| {
+            let prepared = core.following.as_ref().map(|following| following.entry);
+            (prepared, core.shown.queue.following_id())
+        })
+    };
+    let (prepared, due) = following(&player);
+    assert!(prepared.is_some());
+    assert_eq!(prepared, due);
+
+    for repeat in [RepeatMode::One, RepeatMode::Off, RepeatMode::All] {
+        player.set_repeat(repeat);
+        let (prepared, due) = following(&player);
+        assert_eq!(prepared, due, "after repeating {repeat:?}");
+    }
+}
+
 #[test]
 fn gain_follows_the_square_of_the_level() {
     assert_eq!(gain(1.0, false), 1.0);

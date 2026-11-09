@@ -56,16 +56,24 @@ fn album_a_json() -> serde_json::Value {
     })
 }
 
-/// Shows album `a` and its songs, with focus on the album list.
-fn show_album_a(library: &Entity<Library>, cx: &mut VisualTestContext) {
+/// A library whose server gives album `a` and its songs, with them on show and focus on the
+/// album list.
+fn library_showing_album_a(cx: &mut TestAppContext) -> (Entity<Library>, &mut VisualTestContext) {
+    let url = server_of_album_a();
+    let (library, cx) = library_on(&url, cx);
+    show_album(&library, "a", cx);
+    (library, cx)
+}
+
+/// Selects album `id` and waits for its songs, with focus on the album list.
+fn show_album(library: &Entity<Library>, id: &str, cx: &mut VisualTestContext) {
     cx.update(|window, cx| {
         library.update(cx, |library, cx| {
-            let album = serde_json::from_value(album_a_json()).unwrap();
-            library.show_album(&AlbumId::new("a"), album, cx);
+            library.select_album(AlbumId::new(id), cx);
             library.albums_focus.focus(window, cx);
         });
     });
-    cx.run_until_parked();
+    wait_until(library, cx, |library| library.detail.loaded().is_some());
 }
 
 fn dispatched<A: gpui_kit::Action + Clone>(
@@ -159,15 +167,23 @@ fn init_keys(cx: &mut VisualTestContext) {
 
 /// Lets a sync of the library end, as one the server cannot answer fails.
 fn wait_for_the_sync(library: &Entity<Library>, cx: &mut VisualTestContext) {
+    wait_until(library, cx, |library| !library.sync.status().is_running());
+}
+
+/// Runs what is under way until `done`, as answers from the network arrive off the executor.
+fn wait_until(
+    library: &Entity<Library>,
+    cx: &mut VisualTestContext,
+    done: impl Fn(&Library) -> bool,
+) {
     for _ in 0..500 {
         cx.run_until_parked();
-        let running = cx.update(|_, cx| library.read(cx).sync.status().is_running());
-        if !running {
+        if cx.update(|_, cx| done(library.read(cx))) {
             return;
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    panic!("the sync never ended");
+    panic!("what was waited for never happened");
 }
 
 #[gpui_kit::test]
@@ -182,9 +198,8 @@ fn space_presses_a_focused_retry(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn enter_on_the_play_button_plays_the_whole_album(cx: &mut TestAppContext) {
-    let (library, cx) = library(cx);
+    let (library, cx) = library_showing_album_a(cx);
     init_keys(cx);
-    show_album_a(&library, cx);
     cx.update(|_, cx| {
         library.update(cx, |library, cx| library.select_song(1, cx));
     });
@@ -318,8 +333,7 @@ fn song_ids(songs: &[Song]) -> Vec<&str> {
 
 #[gpui_kit::test]
 fn play_on_an_album_plays_the_whole_of_it(cx: &mut TestAppContext) {
-    let (library, cx) = library(cx);
-    show_album_a(&library, cx);
+    let (_, cx) = library_showing_album_a(cx);
 
     let plays = dispatched::<PlaySongs>(Play, cx);
 
@@ -330,8 +344,7 @@ fn play_on_an_album_plays_the_whole_of_it(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn an_album_goes_to_the_queue_where_asked(cx: &mut TestAppContext) {
-    let (library, cx) = library(cx);
-    show_album_a(&library, cx);
+    let (_, cx) = library_showing_album_a(cx);
 
     let next = dispatched::<EnqueueSongs>(PlayNext, cx);
     assert_eq!(next.len(), 1);
@@ -344,8 +357,7 @@ fn an_album_goes_to_the_queue_where_asked(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn an_album_goes_to_the_playlist_chosen_in_its_menu(cx: &mut TestAppContext) {
-    let (library, cx) = library(cx);
-    show_album_a(&library, cx);
+    let (_, cx) = library_showing_album_a(cx);
     let playlist = PlaylistId::new("p");
 
     let added = dispatched::<actions::AddToPlaylist>(
@@ -365,9 +377,8 @@ fn an_album_goes_to_the_playlist_chosen_in_its_menu(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn the_favorite_key_goes_to_the_album_or_the_song_with_focus(cx: &mut TestAppContext) {
-    let (library, cx) = library(cx);
+    let (library, cx) = library_showing_album_a(cx);
     init_keys(cx);
-    show_album_a(&library, cx);
     let asked = Rc::new(RefCell::new(Vec::new()));
     cx.update(|_, cx| {
         actions::set_known_favorites(Some(Default::default()), cx);
@@ -376,7 +387,7 @@ fn the_favorite_key_goes_to_the_album_or_the_song_with_focus(cx: &mut TestAppCon
             library.select_song(1, cx);
         });
         let asked = asked.clone();
-        cx.on_action(move |action: &actions::SetFavorite, _| {
+        cx.on_action(move |action: &actions::ToggleFavoriteOf, _| {
             asked.borrow_mut().push(action.favorite().target());
         });
     });
@@ -444,11 +455,11 @@ fn an_action_on_an_album_still_loading_waits_for_its_songs(cx: &mut TestAppConte
     cx.update(|window, cx| {
         let seen = plays.clone();
         cx.on_action(move |action: &PlaySongs, _| seen.borrow_mut().push(action.clone()));
-        library.update(cx, |library, cx| {
-            library._album_task = Task::ready(());
-            library.detail = Detail::Loading;
-            library.albums_focus.focus(window, cx);
-        });
+        library.update(cx, |library, cx| library.albums_focus.focus(window, cx));
+    });
+    cx.update(|_, cx| {
+        let detail = &library.read(cx).detail;
+        assert_eq!(detail, &AlbumDetailSnapshot::Loading(AlbumId::new("a")));
     });
 
     cx.dispatch_action(Play);
@@ -468,14 +479,9 @@ fn an_action_on_an_album_still_loading_waits_for_its_songs(cx: &mut TestAppConte
 
 #[gpui_kit::test]
 fn an_album_without_songs_is_not_played(cx: &mut TestAppContext) {
-    let (library, cx) = library(cx);
-    cx.update(|window, cx| {
-        library.update(cx, |library, cx| {
-            let empty = serde_json::from_value(json!({ "id": "a", "name": "a" })).unwrap();
-            library.show_album(&AlbumId::new("a"), empty, cx);
-            library.albums_focus.focus(window, cx);
-        });
-    });
+    let url = server_answering(json!({ "album": { "id": "a", "name": "a" } }));
+    let (library, cx) = library_on(&url, cx);
+    show_album(&library, "a", cx);
 
     assert!(dispatched::<PlaySongs>(Play, cx).is_empty());
 }

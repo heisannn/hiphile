@@ -1,10 +1,11 @@
-use std::io::Write as _;
+mod play;
+
+use std::io;
 use std::time::Duration;
 
 use anyhow::Context as _;
 use clap::{Args, Parser, Subcommand};
 use executor::Executor;
-use futures::executor::block_on;
 use hiphile_core::library::{Albums, LibraryNotice, LibrarySync, Outcome, SyncStage, SyncStatus};
 use hiphile_core::{Caches, Hiphile};
 use subsonic::{Credentials, Song, SongId};
@@ -90,8 +91,9 @@ struct Core {
 }
 
 impl Core {
-    /// Covers, songs and the dictionaries have no use here, so nothing is kept of them.
-    fn new() -> anyhow::Result<Self> {
+    /// Only `play` keeps anything, to share the songs the app keeps. That also fetches the
+    /// dictionaries while it plays, when the app's search wants them and they are not there yet.
+    fn new(caches: Caches) -> anyhow::Result<Self> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -102,7 +104,7 @@ impl Core {
             net.clone(),
             config::Store::user(),
             config::Keychain::system().ok(),
-            Caches::None,
+            caches,
         );
         Ok(Self {
             hiphile,
@@ -201,7 +203,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn ping(args: ServerArgs) -> anyhow::Result<()> {
-    let core = Core::new()?;
+    let core = Core::new(Caches::None)?;
     let session = args.connect(&core)?;
     let server = session.server();
     let software = match (server.server_type(), server.server_version()) {
@@ -234,7 +236,7 @@ fn devices() -> anyhow::Result<()> {
 }
 
 fn sync(args: ServerArgs) -> anyhow::Result<()> {
-    let core = Core::new()?;
+    let core = Core::new(Caches::None)?;
     let session = args.connect(&core)?;
     let dir = session
         .catalog()
@@ -287,7 +289,7 @@ fn failure(status: &SyncStatus) -> anyhow::Result<()> {
 }
 
 fn albums(args: ServerArgs, refresh: bool, offline: bool) -> anyhow::Result<()> {
-    let core = Core::new()?;
+    let core = Core::new(Caches::None)?;
     let albums = if offline {
         args.catalog(&core)?.albums()?.into()
     } else {
@@ -332,7 +334,7 @@ fn albums(args: ServerArgs, refresh: bool, offline: bool) -> anyhow::Result<()> 
 
 /// Asks the server, which knows songs the saved library may not have yet.
 fn search(args: ServerArgs, query: &str, count: u32) -> anyhow::Result<()> {
-    let core = Core::new()?;
+    let core = Core::new(Caches::None)?;
     let session = args.connect(&core)?;
     for song in core.block_on(session.client().search_songs(query, count))? {
         println!("{}\t{}", song.id(), describe(&song));
@@ -341,157 +343,53 @@ fn search(args: ServerArgs, query: &str, count: u32) -> anyhow::Result<()> {
 }
 
 fn play(args: ServerArgs, ids: Vec<String>, query: Option<String>) -> anyhow::Result<()> {
-    let core = Core::new()?;
+    let core = Core::new(Caches::User)?;
     let session = args.connect(&core)?;
     let client = session.client();
-    let songs: Vec<SongId> = match query {
-        Some(query) => block_on(client.search_songs(&query, 50))?
-            .into_iter()
-            .map(|song| song.id().clone())
-            .collect(),
-        None => ids.into_iter().map(SongId::new).collect(),
-    };
-    anyhow::ensure!(!songs.is_empty(), "nothing to play");
-
-    let mut queue = playback::Queue::new();
-    queue.replace(songs, 0);
-    let (engine, events) = audio::Engine::spawn();
-    engine.set_output(output_settings());
-    engine.set_transitions(transitions());
-    let song_cache = song_cache();
     let mut failures = 0;
-    while let Some(song) = queue.current().cloned() {
-        if let Err(error) = play_song(client, song_cache.as_ref(), &engine, &events, &song) {
-            eprintln!("{song}: {error:#}");
-            failures += 1;
-        }
-        queue.advance();
+    let songs: Vec<Song> = match query {
+        Some(query) => core.block_on(client.search_songs(&query, 50))?,
+        None => ids
+            .into_iter()
+            .map(SongId::new)
+            .filter_map(|id| match core.block_on(client.song(&id)) {
+                Ok(song) => Some(song),
+                Err(error) => {
+                    eprintln!("{id}: {}", session::describe(&error));
+                    failures += 1;
+                    None
+                }
+            })
+            .collect(),
+    };
+    anyhow::ensure!(!songs.is_empty() || failures > 0, "nothing to play");
+
+    let settings = core.hiphile.settings();
+    let audio = settings.audio().snapshot();
+    let song_limit = settings.song_cache().snapshot();
+    for error in audio.errors().chain(song_limit.error()) {
+        eprintln!("warning: {error}");
+    }
+    if !songs.is_empty() {
+        let player = core.hiphile.player(session);
+        // Nothing pauses here, and songs follow one another without a crossfade
+        player.set_transitions(audio::Transitions {
+            crossfade: Duration::ZERO,
+            fades_play_and_pause: false,
+            ..audio.transitions()
+        });
+        let played = core.block_on(play::play_through(
+            &player,
+            &core.executor(),
+            &songs,
+            &mut io::stdout(),
+            &mut io::stderr(),
+        ));
+        player.shutdown();
+        failures += played?;
     }
     anyhow::ensure!(failures == 0, "{failures} song(s) could not be played");
     Ok(())
-}
-
-/// Songs play one by one here and nothing pauses them, so no fade comes into it
-fn transitions() -> audio::Transitions {
-    let trim_silence = config::Store::user()
-        .ok()
-        .and_then(|store| store.trim_silence().ok());
-    audio::Transitions {
-        trim_silence: trim_silence.unwrap_or(false),
-        crossfade: Duration::ZERO,
-        fades_play_and_pause: false,
-    }
-}
-
-/// Settings that cannot be read mean the system's default device and each song's own rate.
-fn output_settings() -> audio::OutputSettings {
-    let saved = || -> anyhow::Result<audio::OutputSettings> {
-        let store = config::Store::user()?;
-        Ok(audio::OutputSettings::from_config(
-            store.output_device()?,
-            store.sample_rate()?,
-            store.resampling_quality()?,
-            &store.dsd_output()?,
-        )
-        .with_exclusive(store.exclusive_mode()?))
-    };
-    saved().unwrap_or_else(|error| {
-        eprintln!("warning: using the default audio output: {error:#}");
-        audio::OutputSettings::default()
-    })
-}
-
-/// Shared with the app. Settings that cannot be read keep none.
-fn song_cache() -> Option<playback::SongCache> {
-    let capacity = match config::Store::user() {
-        Ok(store) => store.song_cache_capacity(),
-        // Without a home directory there are no settings to follow
-        Err(_) => Ok(None),
-    };
-    let song_cache = capacity
-        .map_err(anyhow::Error::from)
-        .and_then(|capacity| Ok(playback::SongCache::user(capacity)?));
-    match song_cache {
-        Ok(song_cache) => Some(song_cache),
-        Err(error) => {
-            eprintln!("warning: songs will not be kept on this computer: {error:#}");
-            None
-        }
-    }
-}
-
-fn play_song(
-    client: &client::Client,
-    song_cache: Option<&playback::SongCache>,
-    engine: &audio::Engine,
-    events: &async_channel::Receiver<audio::Event>,
-    id: &SongId,
-) -> anyhow::Result<()> {
-    let song = block_on(client.song(id))?;
-    println!("{}", describe(&song));
-    let opened = block_on(playback::open_track(client, song_cache, &song))?;
-    let kept = opened.is_kept();
-    match play_track(engine, events, &song, opened.into_track())? {
-        // The kept file may be damaged: remove it and fetch the song again.
-        // One that cannot be removed would fail again, so the song then
-        // comes from the server uncached.
-        Err(error) if kept && error.is_track_error() => {
-            let song_cache = song_cache.filter(|song_cache| song_cache.forget(client, id).is_ok());
-            let opened = block_on(playback::open_track(client, song_cache, &song))?;
-            Ok(play_track(engine, events, &song, opened.into_track())??)
-        }
-        played => Ok(played?),
-    }
-}
-
-/// The inner result is the track's own failure; the outer one, the engine's.
-fn play_track(
-    engine: &audio::Engine,
-    events: &async_channel::Receiver<audio::Event>,
-    song: &Song,
-    track: audio::Track,
-) -> anyhow::Result<Result<(), audio::Error>> {
-    let load = engine.load(track);
-    let mut duration = song.duration();
-    loop {
-        match events.try_recv() {
-            Ok(event) if event.load != load => {}
-            Ok(audio::Event {
-                kind: audio::EventKind::Started(format) | audio::EventKind::OutputChanged(format),
-                ..
-            }) => {
-                duration = format.duration().or(duration);
-                println!("  {}", describe_format(&format));
-            }
-            Ok(audio::Event {
-                kind: audio::EventKind::Buffering(_),
-                ..
-            }) => {}
-            Ok(audio::Event {
-                kind: audio::EventKind::Ended { .. },
-                ..
-            }) => {
-                eprintln!();
-                return Ok(Ok(()));
-            }
-            Ok(audio::Event {
-                kind: audio::EventKind::Failed(error),
-                ..
-            }) => {
-                eprintln!();
-                return Ok(Err(error));
-            }
-            Err(async_channel::TryRecvError::Empty) => {
-                let total = duration.map(clock).unwrap_or_else(|| "?".to_owned());
-                eprint!("\r  {} / {total}", clock(engine.position()));
-                std::io::stderr().flush().ok();
-                std::thread::sleep(Duration::from_millis(250));
-            }
-            Err(async_channel::TryRecvError::Closed) => {
-                anyhow::bail!("the audio engine stopped")
-            }
-        }
-    }
 }
 
 fn describe(song: &Song) -> String {
@@ -500,25 +398,4 @@ fn describe(song: &Song) -> String {
         (Some(artist), None) => format!("{artist} - {}", song.title()),
         _ => song.title().to_owned(),
     }
-}
-
-fn describe_format(format: &audio::PlaybackFormat) -> String {
-    let source = format!("{} Hz {}ch", format.source_rate(), format.source_channels());
-    let output = format!(
-        "{} @ {} Hz {}ch",
-        format.device(),
-        format.output_rate(),
-        format.output_channels()
-    );
-    let conversion = match format.dop_rate() {
-        Some(rate) => format!(" ({rate} DoP)"),
-        None if format.is_resampled() => " (resampled)".to_owned(),
-        None => String::new(),
-    };
-    format!("{source} -> {output}{conversion}")
-}
-
-fn clock(duration: Duration) -> String {
-    let seconds = duration.as_secs();
-    format!("{}:{:02}", seconds / 60, seconds % 60)
 }

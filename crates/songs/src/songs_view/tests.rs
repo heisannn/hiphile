@@ -5,8 +5,9 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::{Modifiers, TestAppContext, VisualTestContext, point, px, size};
+use hiphile_core::test_support;
 use serde_json::{Value, json};
-use subsonic::{Album, AlbumId, ArtistId, Credentials, ScanStatus};
+use subsonic::{Album, AlbumId, ArtistId, ScanStatus};
 
 use super::*;
 
@@ -117,38 +118,39 @@ fn view_with<'a>(
         ui::list_navigation::bind_control_keys(cx);
         crate::init(cx);
     });
-    let net = net::Client::new("hiphile-test").unwrap();
-    let server = client::Server::new(url, Credentials::api_key("k")).unwrap();
-    let info = serde_json::from_value(json!({ "version": "1.16.1" })).unwrap();
-    let session = session::Session::new(
-        client::Client::new(net, server),
-        "alice".to_owned(),
-        info,
-        catalog,
-        None,
-    );
-    cx.add_window_view(|window, cx| Songs::new(session, window, cx))
+    let session = test_support::session_saving_into(catalog, url);
+    let executor = cx.update(|cx| gpui_host::executor(cx));
+    let songs = SongList::new(executor, session.clone());
+    cx.add_window_view(|window, cx| Songs::new(session, songs, window, cx))
 }
 
-fn table(cx: &mut TestAppContext) -> (Entity<Songs>, &mut VisualTestContext) {
-    let (view, cx) = view_on("http://127.0.0.1:9", cx);
+/// The saved `songs` on show, with the server out of reach.
+fn table_of(
+    songs: Vec<Song>,
+    cx: &mut TestAppContext,
+) -> (Entity<Songs>, &mut VisualTestContext, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let catalog = catalog_of(&dir, songs);
+    let (view, cx) = view_with("http://127.0.0.1:9", Some(catalog), cx);
     cx.simulate_resize(size(px(1000.), px(600.)));
     cx.update(|window, cx| {
         view.update(cx, |view, cx| {
-            view.is_activated = true;
-            let arranged = Arranged::new(songs(), None, "".into(), view.sort, true);
-            view.finish_loading(Ok(arranged), cx);
+            view.activate(cx);
             view.focus.focus(window, cx);
         });
     });
-    cx.run_until_parked();
-    (view, cx)
+    wait_for_songs(&view, cx);
+    (view, cx, dir)
+}
+
+fn table(cx: &mut TestAppContext) -> (Entity<Songs>, &mut VisualTestContext, tempfile::TempDir) {
+    table_of(songs(), cx)
 }
 
 fn shown(view: &Entity<Songs>, cx: &mut VisualTestContext) -> Vec<String> {
     cx.update(|_, cx| {
         let view = view.read(cx);
-        (0..view.visible.len())
+        (0..view.visible_len())
             .map(|position| view.visible_song(position).unwrap().id().to_string())
             .collect()
     })
@@ -213,12 +215,11 @@ fn set_filter(view: &Entity<Songs>, query: &str, cx: &mut VisualTestContext) {
 #[gpui_kit::test]
 fn nothing_loads_until_the_screen_shows(cx: &mut TestAppContext) {
     let (view, cx) = view_on("http://127.0.0.1:9", cx);
-    cx.update(|_, cx| view.update(cx, |view, cx| view.songs_synced(cx)));
     cx.run_until_parked();
     cx.update(|_, cx| {
         let view = view.read(cx);
-        assert!(!view.is_reloading);
-        assert!(matches!(view.songs, SongList::Loading));
+        assert!(!view.song_list.status().is_loading());
+        assert!(matches!(view.status.songs(), Shelf::Loading));
     });
 }
 
@@ -228,45 +229,26 @@ fn with_nothing_saved_the_servers_songs_show_by_title(cx: &mut TestAppContext) {
     let (view, cx) = view_on(&url, cx);
     cx.update(|_, cx| view.update(cx, |view, cx| view.activate(cx)));
 
-    for _ in 0..500 {
-        cx.run_until_parked();
-        if cx.update(|_, cx| matches!(view.read(cx).songs, SongList::Loaded(_))) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_for_songs(&view, cx);
 
     assert_eq!(shown(&view, cx), ["a", "b", "c"]);
     cx.update(|_, cx| assert_eq!(view.read(cx).selected, Some(SongId::new("a"))));
 }
 
-#[gpui_kit::test]
-fn a_failed_first_load_says_so_and_a_later_one_keeps_the_songs(cx: &mut TestAppContext) {
-    let (view, cx) = view_on("http://127.0.0.1:9", cx);
-    cx.update(|_, cx| {
-        view.update(cx, |view, cx| {
-            view.finish_loading(Err("offline".into()), cx);
-            assert!(matches!(view.songs, SongList::Failed(_)));
-            assert_eq!(view.refresh_error, None);
-            let arranged = Arranged::new(songs(), None, "".into(), view.sort, true);
-            view.finish_loading(Ok(arranged), cx);
-            view.finish_loading(Err("offline".into()), cx);
-            assert!(matches!(view.songs, SongList::Loaded(_)));
-            assert_eq!(view.refresh_error.as_deref(), Some("offline"));
-        });
-    });
+fn wait_for_songs(view: &Entity<Songs>, cx: &mut VisualTestContext) {
+    wait_until(view, cx, |view| view.shown().is_some());
 }
 
-fn wait_for_songs(view: &Entity<Songs>, cx: &mut VisualTestContext) {
+fn wait_until(view: &Entity<Songs>, cx: &mut VisualTestContext, done: impl Fn(&Songs) -> bool) {
     for _ in 0..500 {
         cx.run_until_parked();
-        if cx.update(|_, cx| matches!(view.read(cx).songs, SongList::Loaded(_))) {
+        if cx.update(|_, cx| done(view.read(cx))) {
             cx.run_until_parked();
             return;
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    panic!("the songs never arrived");
+    panic!("what was waited for never happened");
 }
 
 #[gpui_kit::test]
@@ -287,98 +269,51 @@ fn a_sort_chosen_during_the_first_load_holds_when_the_songs_arrive(cx: &mut Test
 
 #[gpui_kit::test]
 fn a_filter_typed_during_a_reload_holds_when_the_songs_arrive(cx: &mut TestAppContext) {
-    let (view, cx) = table(cx);
-    let started_with = Arranged::new(songs(), None, "".into(), Sort::DEFAULT, true);
+    let (view, cx, dir) = table(cx);
+    let mut more = songs();
+    more.push(serde_json::from_value(song_json("d", "Donna Lee", 150)).unwrap());
+    catalog_of(&dir, more);
+    cx.update(|_, cx| view.update(cx, |view, _| view.song_list.reload()));
     set_filter(&view, "blues", cx);
     assert_eq!(shown(&view, cx), ["b"]);
 
-    cx.update(|_, cx| view.update(cx, |view, cx| view.finish_loading(Ok(started_with), cx)));
-    cx.run_until_parked();
+    wait_until(&view, cx, |view| {
+        view.shown().is_some_and(|shown| shown.songs().len() == 4)
+    });
 
     assert_eq!(shown(&view, cx), ["b"]);
-}
-
-#[gpui_kit::test]
-fn an_order_worked_out_for_songs_since_replaced_is_dropped(cx: &mut TestAppContext) {
-    let (view, cx) = table(cx);
-    let one_song = songs().into_iter().take(1).collect();
-    cx.update(|_, cx| {
-        view.update(cx, |view, cx| {
-            // Still working out the order of three songs when one arrives
-            view.sort_by(Column::Time, cx);
-            let arranged = Arranged::new(one_song, None, "".into(), view.sort, true);
-            view.finish_loading(Ok(arranged), cx);
-        });
-    });
-    cx.run_until_parked();
-
-    assert_eq!(shown(&view, cx), ["c"]);
-    // Positions past the end of the songs would panic here
-    let played: Vec<PlaySongs> = dispatched_by("enter", cx);
-    assert_eq!(played.len(), 1);
-}
-
-#[gpui_kit::test]
-fn dictionaries_that_went_during_a_load_have_the_songs_read_again(cx: &mut TestAppContext) {
-    let (view, cx) = view_on("http://127.0.0.1:9", cx);
-    let index_before = cx.update(|_, cx| {
-        view.update(cx, |view, cx| {
-            let mut arranged = Arranged::new(
-                songs(),
-                None,
-                SharedString::default(),
-                view.sort,
-                view.by_relevance,
-            );
-            arranged.had_book = true;
-            view.finish_loading(Ok(arranged), cx);
-            view.index.clone()
-        })
-    });
-
-    cx.run_until_parked();
-
-    cx.update(|_, cx| assert!(!Arc::ptr_eq(&index_before, &view.read(cx).index)));
 }
 
 #[gpui_kit::test]
 fn the_saved_songs_show_without_asking_the_server(cx: &mut TestAppContext) {
-    let dir = tempfile::tempdir().unwrap();
-    let catalog = catalog_of(&dir, songs());
-    let (view, cx) = view_with("http://127.0.0.1:9", Some(catalog), cx);
-    cx.update(|_, cx| view.update(cx, |view, cx| view.activate(cx)));
-
-    wait_for_songs(&view, cx);
+    let (view, cx, _dir) = table(cx);
 
     assert_eq!(shown(&view, cx), ["a", "b", "c"]);
+    cx.update(|_, cx| assert_eq!(view.read(cx).status.failure(), None));
 }
 
 #[gpui_kit::test]
 fn a_failed_reload_keeps_the_songs_until_a_new_try_starts(cx: &mut TestAppContext) {
-    let (view, cx) = table(cx);
-    cx.update(|_, cx| view.update(cx, |view, cx| view.songs_synced(cx)));
+    let (view, cx, dir) = table(cx);
+    // With nothing saved, the server is asked, and cannot be reached
+    catalog_of(&dir, Vec::new());
+    cx.update(|_, cx| view.update(cx, |view, _| view.song_list.reload()));
 
-    for _ in 0..500 {
-        cx.run_until_parked();
-        if cx.update(|_, cx| view.read(cx).refresh_error.is_some()) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_until(&view, cx, |view| view.status.failure().is_some());
 
     assert_eq!(shown(&view, cx), ["a", "b", "c"]);
     cx.update(|_, cx| {
         view.update(cx, |view, cx| {
-            assert!(view.refresh_error.is_some());
-            view.load(cx);
-            assert_eq!(view.refresh_error, None);
+            view.song_list.reload();
+            view.sync(cx);
+            assert_eq!(view.status.failure(), None);
         });
     });
 }
 
 #[gpui_kit::test]
 fn clicking_headings_sorts_and_clicking_again_turns_it_around(cx: &mut TestAppContext) {
-    let (view, cx) = table(cx);
+    let (view, cx, _dir) = table(cx);
     assert_eq!(shown(&view, cx), ["a", "b", "c"]);
 
     let title = heading_x(Column::Title, cx);
@@ -389,18 +324,18 @@ fn clicking_headings_sorts_and_clicking_again_turns_it_around(cx: &mut TestAppCo
 
     let artist = heading_x(Column::Artist, cx);
     click_heading(artist, cx);
-    cx.update(|_, cx| assert_eq!(view.read(cx).sort.column, Column::Artist));
+    cx.update(|_, cx| assert_eq!(view.read(cx).status.sort().column, Column::Artist));
     assert_eq!(shown(&view, cx), ["a", "b", "c"]);
     click_heading(artist, cx);
     assert_eq!(shown(&view, cx), ["c", "b", "a"]);
 
     let album = heading_x(Column::Album, cx);
     click_heading(album, cx);
-    cx.update(|_, cx| assert_eq!(view.read(cx).sort.column, Column::Album));
+    cx.update(|_, cx| assert_eq!(view.read(cx).status.sort().column, Column::Album));
 
     let time = heading_x(Column::Time, cx);
     click_heading(time, cx);
-    cx.update(|_, cx| assert_eq!(view.read(cx).sort.column, Column::Time));
+    cx.update(|_, cx| assert_eq!(view.read(cx).status.sort().column, Column::Time));
     assert_eq!(shown(&view, cx), ["c", "b", "a"]);
     click_heading(time, cx);
     assert_eq!(shown(&view, cx), ["a", "b", "c"]);
@@ -410,7 +345,6 @@ fn clicking_headings_sorts_and_clicking_again_turns_it_around(cx: &mut TestAppCo
 fn a_date_from_the_menu_sorts_through_a_filter_and_a_heading_starts_from_the_top(
     cx: &mut TestAppContext,
 ) {
-    let (view, cx) = table(cx);
     let dated = songs()
         .into_iter()
         .zip([
@@ -424,18 +358,13 @@ fn a_date_from_the_menu_sorts_through_a_filter_and_a_heading_starts_from_the_top
             serde_json::from_value(fields).unwrap()
         })
         .collect();
-    cx.update(|_, cx| {
-        view.update(cx, |view, cx| {
-            let arranged = Arranged::new(dated, None, "".into(), view.sort, true);
-            view.finish_loading(Ok(arranged), cx);
-        });
-    });
+    let (view, cx, _dir) = table_of(dated, cx);
     set_filter(&view, "e", cx);
     cx.update(|_, cx| view.update(cx, |view, cx| view.choose_sort(Column::Added, cx)));
     cx.run_until_parked();
     // Cherokee went in in 2024, Airegin in 2025 and Blues in 2023
     assert_eq!(shown(&view, cx), ["a", "c", "b"]);
-    cx.update(|_, cx| assert!(!view.read(cx).is_ranked(cx)));
+    cx.update(|_, cx| assert!(!view.read(cx).is_ranked()));
 
     cx.update(|_, cx| view.update(cx, |view, cx| view.choose_direction(false, cx)));
     cx.run_until_parked();
@@ -451,7 +380,7 @@ fn a_date_from_the_menu_sorts_through_a_filter_and_a_heading_starts_from_the_top
 
 #[gpui_kit::test]
 fn clicking_an_album_in_a_row_shows_it_and_leaves_the_selection(cx: &mut TestAppContext) {
-    let (view, cx) = table(cx);
+    let (view, cx, _dir) = table(cx);
     let shown = Rc::new(RefCell::new(Vec::new()));
     cx.update(|_, cx| {
         let shown = shown.clone();
@@ -472,7 +401,7 @@ fn clicking_an_album_in_a_row_shows_it_and_leaves_the_selection(cx: &mut TestApp
 
 #[gpui_kit::test]
 fn the_first_song_stays_selected_until_one_is_chosen(cx: &mut TestAppContext) {
-    let (view, cx) = table(cx);
+    let (view, cx, _dir) = table(cx);
     cx.update(|_, cx| view.update(cx, |view, cx| view.sort_by(Column::Time, cx)));
     cx.run_until_parked();
 
@@ -491,7 +420,7 @@ fn the_first_song_stays_selected_until_one_is_chosen(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn the_selection_follows_its_song_when_the_order_changes(cx: &mut TestAppContext) {
-    let (view, cx) = table(cx);
+    let (view, cx, _dir) = table(cx);
     cx.simulate_keystrokes("down");
     cx.run_until_parked();
     cx.update(|_, cx| assert_eq!(view.read(cx).selected, Some(SongId::new("b"))));
@@ -511,7 +440,7 @@ fn the_selection_follows_its_song_when_the_order_changes(cx: &mut TestAppContext
 
 #[gpui_kit::test]
 fn a_heading_clicked_during_a_filter_holds_until_the_filter_is_emptied(cx: &mut TestAppContext) {
-    let (view, cx) = table(cx);
+    let (view, cx, _dir) = table(cx);
 
     set_filter(&view, "e", cx);
     cx.update(|_, cx| view.update(cx, |view, cx| view.sort_by(Column::Time, cx)));
@@ -522,37 +451,37 @@ fn a_heading_clicked_during_a_filter_holds_until_the_filter_is_emptied(cx: &mut 
     set_filter(&view, "ee", cx);
     set_filter(&view, "e", cx);
     assert_eq!(shown(&view, cx), ["c", "b", "a"]);
-    cx.update(|_, cx| assert!(!view.read(cx).by_relevance));
+    cx.update(|_, cx| assert!(!view.read(cx).is_ranked()));
 
     // A new filter ranks again, with the sort kept for when it is emptied
     set_filter(&view, "", cx);
     assert_eq!(shown(&view, cx), ["c", "b", "a"]);
     set_filter(&view, "e", cx);
-    cx.update(|_, cx| assert!(view.read(cx).by_relevance));
+    cx.update(|_, cx| assert!(view.read(cx).is_ranked()));
     set_filter(&view, "nobody", cx);
     assert!(shown(&view, cx).is_empty());
 }
 
 #[gpui_kit::test]
 fn a_filter_shows_no_heading_as_sorted_until_one_is_clicked(cx: &mut TestAppContext) {
-    let (view, cx) = table(cx);
+    let (view, cx, _dir) = table(cx);
     set_filter(&view, "e", cx);
-    cx.update(|_, cx| assert!(view.read(cx).is_ranked(cx)));
+    cx.update(|_, cx| assert!(view.read(cx).is_ranked()));
 
     cx.update(|_, cx| view.update(cx, |view, cx| view.sort_by(Column::Title, cx)));
     cx.run_until_parked();
 
     cx.update(|_, cx| {
         let view = view.read(cx);
-        assert!(!view.is_ranked(cx));
+        assert!(!view.is_ranked());
         // The heading was not showing as sorted, so its first click starts it
-        assert!(!view.sort.is_descending);
+        assert!(!view.status.sort().is_descending);
     });
 }
 
 #[gpui_kit::test]
 fn enter_plays_the_songs_on_show_in_their_order(cx: &mut TestAppContext) {
-    let (view, cx) = table(cx);
+    let (view, cx, _dir) = table(cx);
     cx.update(|_, cx| view.update(cx, |view, cx| view.sort_by(Column::Time, cx)));
     cx.run_until_parked();
     cx.update(|_, cx| {
@@ -569,7 +498,7 @@ fn enter_plays_the_songs_on_show_in_their_order(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn a_filter_narrows_what_plays(cx: &mut TestAppContext) {
-    let (view, cx) = table(cx);
+    let (view, cx, _dir) = table(cx);
     set_filter(&view, "blues", cx);
     cx.update(|_, cx| {
         view.update(cx, |view, cx| view.select_song(SongId::new("b"), cx));
@@ -583,7 +512,7 @@ fn a_filter_narrows_what_plays(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn a_selection_the_filter_hides_is_acted_on_by_nothing(cx: &mut TestAppContext) {
-    let (view, cx) = table(cx);
+    let (view, cx, _dir) = table(cx);
     cx.update(|_, cx| view.update(cx, |view, cx| view.select_song(SongId::new("a"), cx)));
     set_filter(&view, "blues", cx);
 
@@ -595,7 +524,7 @@ fn a_selection_the_filter_hides_is_acted_on_by_nothing(cx: &mut TestAppContext) 
 
 #[gpui_kit::test]
 fn the_keys_queue_the_selected_song_and_go_to_its_album_and_artist(cx: &mut TestAppContext) {
-    let (_view, cx) = table(cx);
+    let (_view, cx, _dir) = table(cx);
 
     let next: Vec<EnqueueSongs> = dispatched_by("alt-enter", cx);
     assert_eq!(next[0].placement(), Placement::Next);
@@ -617,34 +546,24 @@ fn the_keys_queue_the_selected_song_and_go_to_its_album_and_artist(cx: &mut Test
 }
 
 #[gpui_kit::test]
-fn the_favorite_key_goes_by_whether_the_selected_song_is_one(cx: &mut TestAppContext) {
-    let (_view, cx) = table(cx);
+fn the_favorite_key_goes_to_the_selected_song(cx: &mut TestAppContext) {
+    let (_view, cx, _dir) = table(cx);
     let key = if cfg!(target_os = "macos") {
         "cmd-d"
     } else {
         "ctrl-d"
     };
+
+    let asked: Vec<actions::ToggleFavoriteOf> = dispatched_by(key, cx);
+
     let target = subsonic::StarTarget::Song(SongId::new("a"));
-
-    // Nothing to go by until the favorites are known
-    let asked: Vec<actions::SetFavorite> = dispatched_by(key, cx);
-    assert!(asked.is_empty());
-
-    cx.update(|_, cx| actions::set_known_favorites(Some(Default::default()), cx));
-    let asked: Vec<actions::SetFavorite> = dispatched_by(key, cx);
+    assert_eq!(asked.len(), 1);
     assert_eq!(asked[0].favorite().target(), target);
-    assert!(asked[0].is_favorite());
-
-    cx.update(|_, cx| {
-        actions::set_known_favorites(Some([target.clone()].into_iter().collect()), cx);
-    });
-    let asked: Vec<actions::SetFavorite> = dispatched_by(key, cx);
-    assert!(!asked.last().unwrap().is_favorite());
 }
 
 #[gpui_kit::test]
 fn the_song_playing_is_marked_only_when_it_changes(cx: &mut TestAppContext) {
-    let (view, cx) = table(cx);
+    let (view, cx, _dir) = table(cx);
     cx.update(|_, cx| {
         view.update(cx, |view, cx| {
             view.set_now_playing(Some(SongId::new("a")), true, cx);

@@ -17,11 +17,13 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, App, AppContext as _, ClickEvent, Context, ElementId, InteractiveElement as _,
-    IntoElement, ListOffset, MouseButton, ParentElement as _, Pixels, Role, SharedString,
+    AnyElement, App, ClickEvent, Context, ElementId, InteractiveElement as _, IntoElement,
+    ListOffset, MouseButton, ParentElement as _, Pixels, Role, SharedString,
     StatefulInteractiveElement as _, Styled as _, Window, div, list, prelude::FluentBuilder as _,
     px,
 };
+use hiphile_core::Shelf;
+use hiphile_core::artists::ArtistPage;
 use hiphile_core::favorites::Favorite;
 use subsonic::{Album, AlbumId, Artist, ArtistId, Song, SongId, StarTarget};
 use ui::card_grid::{GridMotion, card_row, card_row_height, columns_for, media_card, step};
@@ -30,12 +32,12 @@ use ui::list_navigation::{
     SelectPrevious,
 };
 use ui::{
-    ArtistLine, CoverArt, DetailHeader, LoadFailure, Shelf, centered, format_album_count,
-    format_duration, format_song_count, join_details, muted_text, section_failure, section_heading,
-    section_loading, skippable_song, song_artist_link, song_row_label, song_with_cover,
+    ArtistLine, CoverArt, DetailHeader, LoadFailure, centered, format_album_count, format_duration,
+    format_song_count, join_details, muted_text, section_failure, section_heading, section_loading,
+    skippable_song, song_artist_link, song_row_label, song_with_cover,
 };
 
-use super::{Artists, ShownArtist, TOP_SONGS_COLLAPSED, add_selection_command};
+use super::{Artists, TOP_SONGS_COLLAPSED, add_selection_command};
 use crate::{
     AddSelectionToPlaylist, AddToPlaylist, AddToQueue, Back, DETAIL_CONTEXT, GoToAlbum, Open, Play,
     PlayNext, SelectLeft, SelectRight,
@@ -102,7 +104,7 @@ pub(super) fn same_place(old: &[Part], top: usize, new: &[Part]) -> usize {
 }
 
 impl Artists {
-    fn top_songs_shown(&self, detail: &ShownArtist) -> usize {
+    fn top_songs_shown(&self, detail: &ArtistPage) -> usize {
         let len = detail.top_songs.items().len();
         if self.top_songs_expanded {
             len
@@ -395,16 +397,7 @@ impl Artists {
     ) {
         self.artist_being_fetched = None;
         cx.notify();
-        let session = self.session.clone();
-        self._action_task = cx.spawn_in(window, async move |_, cx| {
-            let songs = cx
-                .background_spawn(async move { session.album(&album).await })
-                .await
-                .map(|loaded| Arc::from(loaded.into_parts().1))
-                .map_err(|error| session::describe(&error));
-            cx.update(|window, cx| action.finish(songs, window, cx))
-                .ok();
-        });
+        self._action_task = action.start(album, &self.session, window, cx);
     }
 
     fn enqueue_selection(
@@ -574,14 +567,12 @@ impl Artists {
             return match &detail.albums {
                 Shelf::Failed(error) => LoadFailure::new(
                     "Couldn't load this artist",
-                    error.clone(),
+                    error.clone().into(),
                     Button::new("retry-artist")
                         .label("Retry")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.detail_focus.focus(window, cx);
-                            if let Some(artist) = this.selected_artist.clone() {
-                                this.load_detail(artist, cx);
-                            }
+                            this.artist_detail.reload();
                         })),
                 )
                 .into_any_element(),
@@ -632,7 +623,7 @@ impl Artists {
     fn render_part(
         &self,
         part: &Part,
-        detail: &ShownArtist,
+        detail: &ArtistPage,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -671,7 +662,7 @@ impl Artists {
         }
     }
 
-    fn render_header(&self, detail: &ShownArtist, cx: &mut Context<Self>) -> AnyElement {
+    fn render_header(&self, detail: &ArtistPage, cx: &mut Context<Self>) -> AnyElement {
         let albums = detail.albums.items();
         let cover = detail
             .cover_art
@@ -694,7 +685,7 @@ impl Artists {
             ]),
             Shelf::Loading | Shelf::Failed(_) => SharedString::default(),
         };
-        let name = detail.name.clone().unwrap_or_default();
+        let name = detail.name.clone().unwrap_or_default().into();
         let has_songs = !albums.is_empty() || detail.is_only_on_songs;
         DetailHeader::new(cover, name, summary)
             .artist_picture()
@@ -740,54 +731,42 @@ impl Artists {
             })
     }
 
-    fn render_top_songs_status(&self, detail: &ShownArtist, cx: &mut Context<Self>) -> AnyElement {
+    fn render_top_songs_status(&self, detail: &ArtistPage, cx: &mut Context<Self>) -> AnyElement {
         match &detail.top_songs {
             Shelf::Failed(error) => section_failure(
-                error.clone(),
+                error.clone().into(),
                 Button::new("retry-top-songs")
                     .label("Retry")
                     .small()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(artist) = this.selected_artist.clone() {
-                            this.load_top_songs(artist, cx);
-                        }
-                    })),
+                    .on_click(cx.listener(|this, _, _, _| this.artist_detail.reload_top_songs())),
                 cx,
             ),
             Shelf::Loading | Shelf::Loaded(_) => section_loading("Loading top songs", cx),
         }
     }
 
-    fn render_similar_status(&self, detail: &ShownArtist, cx: &mut Context<Self>) -> AnyElement {
+    fn render_similar_status(&self, detail: &ArtistPage, cx: &mut Context<Self>) -> AnyElement {
         match &detail.similar {
             Shelf::Failed(error) => section_failure(
-                error.clone(),
+                error.clone().into(),
                 Button::new("retry-similar-artists")
                     .label("Retry")
                     .small()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(artist) = this.selected_artist.clone() {
-                            this.load_similar(artist, cx);
-                        }
-                    })),
+                    .on_click(cx.listener(|this, _, _, _| this.artist_detail.reload_similar())),
                 cx,
             ),
             Shelf::Loading | Shelf::Loaded(_) => section_loading("Loading similar artists", cx),
         }
     }
 
-    fn render_albums_status(&self, detail: &ShownArtist, cx: &mut Context<Self>) -> AnyElement {
+    fn render_albums_status(&self, detail: &ArtistPage, cx: &mut Context<Self>) -> AnyElement {
         match &detail.albums {
             Shelf::Failed(error) => section_failure(
-                error.clone(),
+                error.clone().into(),
                 Button::new("retry-artist-albums")
                     .label("Retry")
                     .small()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(artist) = this.selected_artist.clone() {
-                            this.load_albums(artist, cx);
-                        }
-                    })),
+                    .on_click(cx.listener(|this, _, _, _| this.artist_detail.reload_albums())),
                 cx,
             ),
             Shelf::Loading => section_loading("Loading albums", cx),
@@ -826,7 +805,7 @@ impl Artists {
     fn render_top_song(
         &self,
         ix: usize,
-        detail: &ShownArtist,
+        detail: &ArtistPage,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1026,14 +1005,14 @@ impl Artists {
     }
 }
 
-fn shown_as_artist(detail: &ShownArtist) -> Artist {
+fn shown_as_artist(detail: &ArtistPage) -> Artist {
     let albums = match &detail.albums {
         Shelf::Loaded(albums) => u32::try_from(albums.len()).ok(),
         Shelf::Loading | Shelf::Failed(_) => None,
     };
     Artist::new(
         detail.id.clone(),
-        detail.name.clone().unwrap_or_default().to_string(),
+        detail.name.clone().unwrap_or_default(),
         detail.cover_art.clone(),
         albums,
     )

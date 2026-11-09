@@ -21,9 +21,10 @@ use gpui_kit::{
 };
 use hiphile_core::favorites::Favorite;
 use hiphile_core::library::{
-    AlbumOrder, AlbumSort, Albums, LibraryNotice, LibrarySync, SyncStatus, album_index, arrange,
+    AlbumDetail, AlbumDetailSnapshot, AlbumOrder, AlbumSort, Albums, LibraryNotice, LibrarySync,
+    LoadedAlbum, SyncStatus, album_index, arrange,
 };
-use subsonic::{Album, AlbumId, AlbumWithSongs, PlaylistId, Song, SongId};
+use subsonic::{Album, AlbumId, PlaylistId, Song, SongId};
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
 use ui::{
     DetailHeader, ListFilter, ListPaneHeader, LoadFailure, MasterDetail, NowPlaying,
@@ -66,7 +67,10 @@ pub struct Library {
     /// The selected album, when it was asked to show before the list had it.
     /// It stays selected and comes into view once a sync brings it.
     revealing: Option<AlbumId>,
-    detail: Detail,
+    album: AlbumDetail,
+    /// What the album's detail showed last.
+    detail: AlbumDetailSnapshot,
+    cover_url: Option<SharedString>,
     selected_song: Option<SongId>,
     now_playing: Option<NowPlaying>,
     filter: Entity<InputState>,
@@ -75,26 +79,13 @@ pub struct Library {
     albums_scroll: UniformListScrollHandle,
     songs_scroll: UniformListScrollHandle,
     panes: Entity<ResizableState>,
-    _album_task: Task<()>,
+    _album_changes: Task<()>,
     _album_action_task: Task<()>,
     _index_task: Task<()>,
     _subscriptions: Vec<Subscription>,
     _sync_changes: Task<()>,
     _sync_notices: Task<()>,
     _readings_changes: Option<Task<()>>,
-}
-
-enum Detail {
-    None,
-    Loading,
-    Loaded(Box<LoadedAlbum>),
-    Failed(SharedString),
-}
-
-struct LoadedAlbum {
-    album: Album,
-    songs: Arc<[Song]>,
-    cover_url: Option<SharedString>,
 }
 
 impl EventEmitter<LibraryEvent> for Library {}
@@ -131,6 +122,8 @@ impl Library {
                     this.sync_finished(cx);
                 }
             });
+        let album = AlbumDetail::new(gpui_host::executor(cx), session.clone());
+        let album_changes = gpui_host::observe(album.subscribe(), cx, Self::follow_album);
         let mut this = Self {
             session,
             sync,
@@ -141,7 +134,9 @@ impl Library {
             sort: AlbumSort::default(),
             selected_album: None,
             revealing: None,
-            detail: Detail::None,
+            album,
+            detail: AlbumDetailSnapshot::None,
+            cover_url: None,
             selected_song: None,
             now_playing: None,
             filter,
@@ -150,7 +145,7 @@ impl Library {
             albums_scroll: UniformListScrollHandle::new(),
             songs_scroll: UniformListScrollHandle::new(),
             panes: cx.new(|_| ResizableState::default()),
-            _album_task: Task::ready(()),
+            _album_changes: album_changes,
             _album_action_task: Task::ready(()),
             _index_task: Task::ready(()),
             _subscriptions: subscriptions,
@@ -212,7 +207,8 @@ impl Library {
         self.index_albums(cx);
         if !keeps_selection {
             self.selected_album = None;
-            self.detail = Detail::None;
+            self.album.clear();
+            self.follow_album(self.album.snapshot(), cx);
             if let Some(first) = self.visible_album(0).map(|album| album.id().clone()) {
                 self.select_album(first, cx);
             }
@@ -323,44 +319,9 @@ impl Library {
         }
         self.selected_album = Some(album.clone());
         self.selected_song = None;
-        self.detail = Detail::Loading;
         self.songs_scroll.scroll_to_item(0, ScrollStrategy::Top);
-        let client = self.session.client().clone();
-        let catalog = self.session.catalog().cloned();
-        self._album_task = cx.spawn(async move |this, cx| {
-            // The saved songs show at once, and the server's answer replaces them
-            if let Some(catalog) = catalog.clone() {
-                let id = album.clone();
-                let cached = cx.background_spawn(async move { catalog.album(&id) }).await;
-                if let Ok(Some(cached)) = cached {
-                    this.update(cx, |this, cx| this.show_album(&album, cached, cx))
-                        .ok();
-                }
-            }
-            let result = {
-                let album = album.clone();
-                cx.background_spawn(async move { client.album(&album).await })
-                    .await
-            };
-            if let (Ok(fetched), Some(catalog)) = (&result, catalog) {
-                let fetched = fetched.clone();
-                cx.background_spawn(async move { catalog.put_album(&fetched).ok() })
-                    .detach();
-            }
-            this.update(cx, |this, cx| match result {
-                Ok(fetched) => this.show_album(&album, fetched, cx),
-                // Saved songs on show stay there
-                Err(error)
-                    if this.selected_album.as_ref() == Some(&album)
-                        && !matches!(this.detail, Detail::Loaded(_)) =>
-                {
-                    this.detail = Detail::Failed(session::describe(&error).into());
-                    cx.notify();
-                }
-                Err(_) => {}
-            })
-            .ok();
-        });
+        self.album.show(album);
+        self.follow_album(self.album.snapshot(), cx);
         cx.notify();
     }
 
@@ -382,19 +343,15 @@ impl Library {
         self.albums_focus.focus(window, cx);
     }
 
-    fn show_album(&mut self, id: &AlbumId, loaded: AlbumWithSongs, cx: &mut Context<Self>) {
-        if self.selected_album.as_ref() != Some(id) {
+    fn follow_album(&mut self, detail: AlbumDetailSnapshot, cx: &mut Context<Self>) {
+        if detail == self.detail {
             return;
         }
-        let (album, songs) = loaded.into_parts();
-        let cover_url = album
-            .cover_art()
+        self.cover_url = detail
+            .loaded()
+            .and_then(|loaded| loaded.album().cover_art())
             .map(|cover_art| self.session.cover_art_url(cover_art, COVER_PIXELS).into());
-        self.detail = Detail::Loaded(Box::new(LoadedAlbum {
-            album,
-            songs: songs.into(),
-            cover_url,
-        }));
+        self.detail = detail;
         cx.notify();
     }
 
@@ -428,10 +385,7 @@ impl Library {
     }
 
     fn loaded_songs(&self) -> Option<&Arc<[Song]>> {
-        match &self.detail {
-            Detail::Loaded(loaded) => Some(&loaded.songs),
-            _ => None,
-        }
+        self.detail.loaded().map(LoadedAlbum::songs)
     }
 
     fn selected_song_ix(&self) -> Option<usize> {
@@ -493,19 +447,9 @@ impl Library {
             }
             return;
         }
-        let Some(album) = self.selected_album.clone() else {
-            return;
-        };
-        let session = self.session.clone();
-        self._album_action_task = cx.spawn_in(window, async move |_, cx| {
-            let songs = cx
-                .background_spawn(async move { session.album(&album).await })
-                .await
-                .map(|loaded| Arc::from(loaded.into_parts().1))
-                .map_err(|error| session::describe(&error));
-            cx.update(|window, cx| action.finish(songs, window, cx))
-                .ok();
-        });
+        if let Some(album) = self.selected_album.clone() {
+            self._album_action_task = action.start(album, &self.session, window, cx);
+        }
     }
 
     fn enqueue_selected_song(
@@ -554,10 +498,11 @@ impl Library {
         let listed = self
             .loaded_albums()
             .and_then(|albums| albums.iter().find(|album| album.id() == selected));
-        listed.or(match &self.detail {
-            Detail::Loaded(loaded) if loaded.album.id() == selected => Some(&loaded.album),
-            _ => None,
-        })
+        listed.or(self
+            .detail
+            .loaded()
+            .map(LoadedAlbum::album)
+            .filter(|album| album.id() == selected))
     }
 
     fn toggle_album_favorite(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -782,12 +727,12 @@ impl Library {
 
     fn render_detail_content(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let loaded = match &self.detail {
-            Detail::None => return div().size_full().into_any_element(),
-            Detail::Loading => return centered(Spinner::new()).into_any_element(),
-            Detail::Failed(error) => {
+            AlbumDetailSnapshot::None => return div().size_full().into_any_element(),
+            AlbumDetailSnapshot::Loading(_) => return centered(Spinner::new()).into_any_element(),
+            AlbumDetailSnapshot::Failed { error, .. } => {
                 return LoadFailure::new(
                     "Couldn't load this album",
-                    error.clone(),
+                    SharedString::from(error.clone()),
                     Button::new("retry-album")
                         .label("Retry")
                         .on_click(cx.listener(|this, _, window, cx| {
@@ -797,15 +742,15 @@ impl Library {
                 )
                 .into_any_element();
             }
-            Detail::Loaded(loaded) => loaded,
+            AlbumDetailSnapshot::Loaded(loaded) => loaded,
         };
-        let album = &loaded.album;
+        let album = loaded.album();
         let total = album
             .duration()
-            .or_else(|| loaded.songs.iter().map(Song::duration).sum());
+            .or_else(|| loaded.songs().iter().map(Song::duration).sum());
         let summary = join_details([
             album.year().map(|year| year.to_string()),
-            Some(format_song_count(loaded.songs.len())),
+            Some(format_song_count(loaded.songs().len())),
             total.map(format_duration),
         ]);
 
@@ -815,7 +760,7 @@ impl Library {
             .min_h_0()
             .child(
                 DetailHeader::new(
-                    loaded.cover_url.clone(),
+                    self.cover_url.clone(),
                     album.name().to_owned().into(),
                     summary,
                 )
@@ -824,7 +769,7 @@ impl Library {
                     Button::new("play-album")
                         .icon(IconName::Play)
                         .label("Play")
-                        .disabled(loaded.songs.is_empty())
+                        .disabled(loaded.songs().is_empty())
                         .on_click(cx.listener(|this, _, window, cx| this.play_whole(window, cx))),
                 )
                 .action(ui::favorite_button(
@@ -842,12 +787,12 @@ impl Library {
     /// them there, whichever list has focus.
     fn render_album_menu(&self, loaded: &LoadedAlbum) -> impl IntoElement {
         let albums_focus = self.albums_focus.clone();
-        let songs = loaded.songs.clone();
+        let songs = loaded.songs().clone();
         Button::new("album-menu")
             .ghost()
             .icon(IconName::Ellipsis)
             .accessibility_label("More")
-            .disabled(loaded.songs.is_empty())
+            .disabled(songs.is_empty())
             .dropdown_menu(move |menu, window, cx| {
                 let menu = menu
                     .action_context(albums_focus.clone())
@@ -869,11 +814,11 @@ impl Library {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if loaded.songs.is_empty() {
+        if loaded.songs().is_empty() {
             return centered(muted_text("This album has no songs.", cx)).into_any_element();
         }
-        let songs = loaded.songs.clone();
-        let album_artist = loaded.album.artist().map(Arc::from);
+        let songs = loaded.songs().clone();
+        let album_artist = loaded.album().artist().map(Arc::from);
         let selected = self.selected_song.clone();
         let now_playing = self.now_playing.clone();
         let is_focused = self.songs_focus.is_focused(window);

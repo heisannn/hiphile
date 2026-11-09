@@ -1,6 +1,6 @@
 use std::thread;
 
-use catalog::{KeptSong, SONG_CAPACITY, SongStore};
+use catalog::{KeptSong, SongStore};
 use futures::StreamExt as _;
 use futures::channel::mpsc;
 use futures::stream::FuturesUnordered;
@@ -24,14 +24,6 @@ struct Keep {
 }
 
 impl SongCache {
-    /// Songs in the system cache directory, keeping at most about
-    /// `capacity` bytes, the default when the settings leave it unset.
-    pub fn user(capacity: Option<u64>) -> Result<Self, catalog::Error> {
-        Ok(Self::new(SongStore::user(
-            capacity.unwrap_or(SONG_CAPACITY),
-        )?))
-    }
-
     pub fn new(store: SongStore) -> Self {
         let (keeps, receiver) = mpsc::unbounded();
         thread::Builder::new()

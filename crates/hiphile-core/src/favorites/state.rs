@@ -218,35 +218,46 @@ impl FavoritesState {
     /// Adds `favorite` to the favorites or takes it out, on show at once and on the server as
     /// soon as what came before it has gone. Does nothing until the favorites have loaded.
     pub fn set_favorite(&self, favorite: Favorite, is_favorite: bool) {
+        self.0
+            .state
+            .update(|state| self.set(state, favorite, is_favorite));
+    }
+
+    /// Takes `favorite` out of the favorites when it is one, as they stand with every change
+    /// made so far, and adds it otherwise, as [`Self::set_favorite`] does.
+    pub fn toggle(&self, favorite: Favorite) {
         self.0.state.update(|state| {
-            let target = favorite.target();
-            if !state.favorites.is_loaded()
-                || state.favorites.lists.contains(&target) == is_favorite
-            {
-                return;
-            }
-            let lists = &mut state.favorites.lists;
-            let undo = if is_favorite {
-                lists.add(favorite, 0);
-                Undo::Remove
-            } else {
-                let Some((favorite, ix)) = lists.remove(&target) else {
-                    return;
-                };
-                Undo::Restore {
-                    favorite: Box::new(favorite),
-                    ix,
-                }
-            };
-            state.lists_changed();
-            state.edits += 1;
-            state.writes.push_back(Write {
-                target,
-                is_favorite,
-                undo,
-            });
-            self.send_next_write(state);
+            let is_favorite = !state.favorites.lists.contains(&favorite.target());
+            self.set(state, favorite, is_favorite);
         });
+    }
+
+    fn set(&self, state: &mut State, favorite: Favorite, is_favorite: bool) {
+        let target = favorite.target();
+        if !state.favorites.is_loaded() || state.favorites.lists.contains(&target) == is_favorite {
+            return;
+        }
+        let lists = &mut state.favorites.lists;
+        let undo = if is_favorite {
+            lists.add(favorite, 0);
+            Undo::Remove
+        } else {
+            let Some((favorite, ix)) = lists.remove(&target) else {
+                return;
+            };
+            Undo::Restore {
+                favorite: Box::new(favorite),
+                ix,
+            }
+        };
+        state.lists_changed();
+        state.edits += 1;
+        state.writes.push_back(Write {
+            target,
+            is_favorite,
+            undo,
+        });
+        self.send_next_write(state);
     }
 
     fn load(&self, state: &mut State) {

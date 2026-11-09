@@ -34,7 +34,7 @@ impl ArtistSort {
 }
 
 /// Each artist's newest album, by when it was added and by when it came out.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct ArtistDates(HashMap<ArtistId, (Option<SystemTime>, Option<ReleaseDate>)>);
 
 impl ArtistDates {

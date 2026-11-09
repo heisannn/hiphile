@@ -4,11 +4,12 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::{
-    Entity, KeyBinding, KeyUpEvent, Keystroke, TestAppContext, VisualTestContext, actions, px, size,
+    AppContext as _, Entity, KeyBinding, KeyUpEvent, Keystroke, TestAppContext, VisualTestContext,
+    actions, px, size,
 };
 use hiphile_core::home::today;
+use hiphile_core::test_support::session_saving_into;
 use serde_json::json;
-use subsonic::Credentials;
 use ui::card_grid::GridMotion;
 
 use super::*;
@@ -59,20 +60,11 @@ fn session_on(
         ui::list_navigation::bind_control_keys(cx);
         crate::init(cx);
     });
-    let net = net::Client::new("hiphile-test").unwrap();
-    let server = client::Server::new(url, Credentials::api_key("k")).unwrap();
-    let info = serde_json::from_value(json!({ "version": "1.16.1" })).unwrap();
-    session::Session::new(
-        client::Client::new(net, server),
-        "alice".to_owned(),
-        info,
-        catalog,
-        None,
-    )
+    session_saving_into(catalog, url)
 }
 
-/// A home screen once its recommendations have been read or picked, which leaves them alone
-/// until something happens.
+/// A home screen once its recommendations have been read or picked and its shelves loaded,
+/// which leaves them alone until something happens.
 fn home_with(
     catalog: Option<catalog::Catalog>,
     cx: &mut TestAppContext,
@@ -86,29 +78,44 @@ fn home_on<'a>(
     cx: &'a mut TestAppContext,
 ) -> (Entity<Home>, &'a mut VisualTestContext) {
     let session = session_on(url, catalog, cx);
-    let recommendations = recommendations_of(&session, cx);
+    let (shelves, recommendations) = core_of(&session, cx);
     let (home, cx) =
-        cx.add_window_view(|window, cx| Home::new(session, recommendations, window, cx));
+        cx.add_window_view(|window, cx| Home::new(session, shelves, recommendations, window, cx));
     settle(&home, cx);
     (home, cx)
 }
 
-fn recommendations_of(session: &session::Session, cx: &mut TestAppContext) -> DailyRecommendations {
-    DailyRecommendations::new(cx.update(|cx| gpui_host::executor(cx)), session.clone())
+fn core_of(
+    session: &session::Session,
+    cx: &mut TestAppContext,
+) -> (HomeShelves, DailyRecommendations) {
+    let executor = cx.update(|cx| gpui_host::executor(cx));
+    let recommendations = DailyRecommendations::new(executor.clone(), session.clone());
+    let shelves = HomeShelves::new(executor, session.clone(), recommendations.clone());
+    (shelves, recommendations)
 }
 
-/// Lets the recommendations being read or picked come, as they do off the executor when the
-/// server cannot be reached.
+/// Lets the recommendations being read or picked and the shelves being loaded come, as they
+/// do off the executor when the server cannot be reached.
 fn settle(home: &Entity<Home>, cx: &mut VisualTestContext) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         cx.run_until_parked();
-        if !is_recommending(home, cx) {
+        if !is_recommending(home, cx) && !is_loading_shelves(home, cx) {
             return;
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    panic!("the recommendations never came");
+    panic!("the recommendations or the shelves never came");
+}
+
+fn is_loading_shelves(home: &Entity<Home>, cx: &mut VisualTestContext) -> bool {
+    cx.update(|_, cx| {
+        let status = home.read(cx).shelves.status();
+        matches!(status.recently_played(), Shelf::Loading)
+            || matches!(status.most_played(), Shelf::Loading)
+            || matches!(status.new_albums(), Shelf::Loading)
+    })
 }
 
 fn is_recommending(home: &Entity<Home>, cx: &mut VisualTestContext) -> bool {
@@ -124,10 +131,10 @@ fn home_in_root(
     cx: &mut TestAppContext,
 ) -> (Entity<Home>, &mut VisualTestContext) {
     let session = session_with(catalog, cx);
-    let recommendations = recommendations_of(&session, cx);
+    let (shelves, recommendations) = core_of(&session, cx);
     let mut home = None;
     let (_, cx) = cx.add_window_view(|window, cx| {
-        let view = cx.new(|cx| Home::new(session, recommendations, window, cx));
+        let view = cx.new(|cx| Home::new(session, shelves, recommendations, window, cx));
         home = Some(view.clone());
         gpui_kit::base::Root::new(view, window, cx)
     });
@@ -144,14 +151,10 @@ fn update(
     cx.update(|_, cx| home.update(cx, update));
 }
 
-/// Fills the shelves, with no recommendations, cancelling the requests
-/// made on opening.
+/// Fills the shelves, with no recommendations.
 fn fill(home: &mut Home, songs: &[&str], album_count: usize) {
     home.recommended = Shelf::Loaded(Arc::from([]));
-    home._recent_task = Task::ready(());
-    home._most_played_task = Task::ready(());
     home.most_played = Shelf::Loaded(Arc::from([]));
-    home._new_albums_task = Task::ready(());
     home.recent = Shelf::Loaded(songs.iter().map(|id| song(id)).collect());
     home.new_albums = Shelf::Loaded(albums(album_count).into());
 }
@@ -175,9 +178,6 @@ fn no_plays_takes_the_song_shelf_away(cx: &mut TestAppContext) {
 fn loading_and_failing_shelves_keep_their_place(cx: &mut TestAppContext) {
     let (home, cx) = home(cx);
     update(&home, cx, |home, _| {
-        home._recent_task = Task::ready(());
-        home._most_played_task = Task::ready(());
-        home._new_albums_task = Task::ready(());
         home.recommended = Shelf::Failed("offline".into());
         home.recent = Shelf::Loading;
         home.most_played = Shelf::Failed("offline".into());
@@ -311,37 +311,6 @@ fn the_keys_pass_through_an_album_on_two_shelves(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn an_album_on_the_most_played_shelf_leaves_the_recommendations(cx: &mut TestAppContext) {
-    let (home, cx) = home(cx);
-    update(&home, cx, |home, _| {
-        fill(home, &[], 0);
-        home.recommended = Shelf::Loaded(recommended(2).into());
-        home.most_played = Shelf::Loaded(Arc::from([album("r1")]));
-
-        home.keep_shelves_off_recommended();
-
-        assert_eq!(shown(home), ["r0"]);
-    });
-}
-
-#[gpui_kit::test]
-fn a_play_reloads_the_shelves_it_changes_keeping_what_is_on_show(cx: &mut TestAppContext) {
-    let (home, cx) = home(cx);
-    update(&home, cx, |home, cx| {
-        fill(home, &["s1"], 0);
-        home.most_played = Shelf::Loaded(albums(1).into());
-
-        home.song_played(cx);
-
-        assert_eq!(home.recent.items().len(), 1);
-        assert_eq!(home.most_played.items().len(), 1);
-        // The pick on opening went wrong, and is not made again so soon
-        assert!(!home.recommendations.status().is_recommending());
-    });
-    cx.run_until_parked();
-}
-
-#[gpui_kit::test]
 fn the_arrow_keys_move_from_the_recommendations_to_the_songs(cx: &mut TestAppContext) {
     let (home, cx) = home(cx);
     update(&home, cx, |home, _| {
@@ -383,7 +352,7 @@ fn the_favorite_key_follows_the_song_or_album_selected(cx: &mut TestAppContext) 
     cx.update(|window, cx| {
         actions::set_known_favorites(Some(Default::default()), cx);
         let asked = asked.clone();
-        cx.on_action(move |action: &actions::SetFavorite, _| {
+        cx.on_action(move |action: &actions::ToggleFavoriteOf, _| {
             asked.borrow_mut().push(action.favorite().target());
         });
         let focus = home.read(cx).focus.clone();
@@ -579,26 +548,6 @@ fn coming_back_to_the_window_on_another_day_picks_again(cx: &mut TestAppContext)
 }
 
 #[gpui_kit::test]
-fn an_album_that_becomes_new_leaves_the_recommendations(cx: &mut TestAppContext) {
-    let (home, cx) = home(cx);
-    update(&home, cx, |home, _| {
-        fill(home, &[], 0);
-        home.recommended = Shelf::Loaded(recommended(2).into());
-        home.new_albums = Shelf::Loaded(Arc::from([album("r0")]));
-
-        home.keep_shelves_off_recommended();
-
-        let ids: Vec<_> = home
-            .recommended
-            .items()
-            .iter()
-            .map(|album| album.id().as_str())
-            .collect();
-        assert_eq!(ids, ["r1"]);
-    });
-}
-
-#[gpui_kit::test]
 fn the_arrow_keys_move_through_the_songs_into_the_albums(cx: &mut TestAppContext) {
     let (home, cx) = home(cx);
     update(&home, cx, |home, _| {
@@ -682,6 +631,7 @@ fn key_presses_retry(key: &str, cx: &mut TestAppContext) -> bool {
     });
 
     // Pressed, it loads again, and whatever that comes to is not this
+    cx.run_until_parked();
     cx.update(|_, cx| !matches!(&home.read(cx).recent, Shelf::Failed(error) if error == "before"))
 }
 
@@ -717,44 +667,6 @@ fn commands_ignore_a_selection_a_narrower_window_took_off_the_screen(cx: &mut Te
 }
 
 #[gpui_kit::test]
-fn a_reload_in_progress_keeps_what_is_on_show(cx: &mut TestAppContext) {
-    let (home, cx) = home(cx);
-    update(&home, cx, |home, cx| {
-        fill(home, &["s1"], 1);
-        home.reload_recently_played(cx);
-        home.reload_new_albums(cx);
-        assert_eq!(home.recent.items().len(), 1);
-        assert_eq!(home.new_albums.items().len(), 1);
-    });
-}
-
-#[gpui_kit::test]
-fn an_incomplete_reload_keeps_what_is_on_show(cx: &mut TestAppContext) {
-    let (home, cx) = home(cx);
-    update(&home, cx, |home, _| {
-        fill(home, &["s1", "s2"], 0);
-        home.finish_recently_played(Ok(RecentlyPlayed {
-            songs: vec![song("s2")],
-            complete: false,
-        }));
-        assert_eq!(home.recent.items().len(), 2);
-    });
-}
-
-#[gpui_kit::test]
-fn an_incomplete_first_load_shows_what_it_found(cx: &mut TestAppContext) {
-    let (home, cx) = home(cx);
-    update(&home, cx, |home, _| {
-        home.recent = Shelf::Loading;
-        home.finish_recently_played(Ok(RecentlyPlayed {
-            songs: vec![song("s2")],
-            complete: false,
-        }));
-        assert_eq!(home.recent.items().len(), 1);
-    });
-}
-
-#[gpui_kit::test]
 fn the_cards_across_follow_the_width_of_the_screen(cx: &mut TestAppContext) {
     let (home, cx) = home(cx);
     update(&home, cx, |home, _| fill(home, &["s1"], 24));
@@ -769,26 +681,6 @@ fn the_cards_across_follow_the_width_of_the_screen(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn a_failed_reload_keeps_what_is_on_show(cx: &mut TestAppContext) {
-    let (home, cx) = home(cx);
-    update(&home, cx, |home, _| {
-        fill(home, &["s1"], 1);
-        home.recent.finish(Err("offline".into()));
-        assert_eq!(home.recent.items().len(), 1);
-    });
-}
-
-#[gpui_kit::test]
-fn a_failure_with_nothing_on_show_says_so(cx: &mut TestAppContext) {
-    let (home, cx) = home(cx);
-    update(&home, cx, |home, _| {
-        home.recent = Shelf::Loading;
-        home.recent.finish(Err("offline".into()));
-        assert!(matches!(home.recent, Shelf::Failed(_)));
-    });
-}
-
-#[gpui_kit::test]
 fn a_reload_keeps_the_selection_of_a_song_still_there(cx: &mut TestAppContext) {
     let (home, cx) = home(cx);
     update(&home, cx, |home, _| {
@@ -796,10 +688,7 @@ fn a_reload_keeps_the_selection_of_a_song_still_there(cx: &mut TestAppContext) {
         let selection = Some(Item::Song(SongId::new("s2")));
         home.selection = selection.clone();
 
-        home.finish_recently_played(Ok(RecentlyPlayed {
-            songs: vec![song("s2"), song("s1")],
-            complete: true,
-        }));
+        home.recent = Shelf::Loaded(Arc::from([song("s2"), song("s1")]));
 
         assert_eq!(home.selection_on_screen(), selection);
         assert_eq!(home.song_ix(&SongId::new("s2")), Some(0));

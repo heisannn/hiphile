@@ -1,7 +1,7 @@
+use std::mem;
 use std::sync::Arc;
 
 use actions::{EnqueueSongs, GoToArtist, Placement, PlaySongs, ShowAlbum, ShowArtist};
-use fuzzy::Index;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, Sizable as _,
@@ -13,13 +13,12 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Div, Entity, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollStrategy, SharedString,
-    Styled as _, Subscription, Task, UniformListScrollHandle, Window, div,
-    prelude::FluentBuilder as _,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollStrategy, Styled as _,
+    Subscription, Task, UniformListScrollHandle, Window, div, prelude::FluentBuilder as _,
 };
+use hiphile_core::Shelf;
 use hiphile_core::favorites::Favorite;
-use hiphile_core::songs::{Column, Sort, arrange, song_index};
-use session::ReadingBook;
+use hiphile_core::songs::{Column, ShownSongs, SongList, SongListStatus};
 use subsonic::{Song, SongId};
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
 use ui::{
@@ -37,21 +36,9 @@ use crate::{
 
 pub struct Songs {
     session: session::Session,
-    /// Whether the screen has shown, which is when it starts loading. Reading
-    /// every song is too much to do for a screen that may never show.
-    is_activated: bool,
-    songs: SongList,
-    is_reloading: bool,
-    refresh_error: Option<SharedString>,
-    index: Arc<Index>,
-    /// Positions in the songs that match the filter, in the order they show.
-    visible: Arc<Vec<usize>>,
-    sort: Sort,
-    /// Whether a filter ranks what it finds rather than following `sort`. So it
-    /// does until a heading is clicked; the next filter from empty does again.
-    by_relevance: bool,
-    /// The filter as last arranged, to tell when a new one starts.
-    query: SharedString,
+    song_list: SongList,
+    /// What is on show, which follows `song_list`.
+    status: SongListStatus,
     /// Kept by song, so it follows the song as the order changes.
     selected: Option<SongId>,
     /// Whether the user chose the selection. Until then it is simply the first
@@ -61,65 +48,17 @@ pub struct Songs {
     filter: Entity<InputState>,
     focus: FocusHandle,
     scroll: UniformListScrollHandle,
-    _load_task: Task<()>,
-    _arrange_task: Task<()>,
-    _index_task: Task<()>,
+    _changes: Task<()>,
     _subscriptions: Vec<Subscription>,
-    _readings_changes: Option<Task<()>>,
-}
-
-enum SongList {
-    Loading,
-    Loaded(Arc<Vec<Song>>),
-    Failed(SharedString),
-}
-
-/// Songs just read, and which of them to show as `query` and `sort` had it when
-/// the reading started.
-struct Arranged {
-    songs: Vec<Song>,
-    index: Index,
-    visible: Vec<usize>,
-    query: SharedString,
-    sort: Sort,
-    by_relevance: bool,
-    /// Whether there were dictionaries to read it with.
-    had_book: bool,
-}
-
-impl Arranged {
-    fn new(
-        songs: Vec<Song>,
-        book: Option<&ReadingBook>,
-        query: SharedString,
-        sort: Sort,
-        by_relevance: bool,
-    ) -> Self {
-        let index = read_songs(&songs, book);
-        let visible = arrange(&songs, &index, &query, sort, by_relevance);
-        Self {
-            songs,
-            index,
-            visible,
-            query,
-            sort,
-            by_relevance,
-            had_book: book.is_some(),
-        }
-    }
-}
-
-/// `songs` made searchable, as far as they read without a dictionary when there
-/// is no `book` to read them with. Takes a while: call it off the UI thread.
-fn read_songs(songs: &[Song], book: Option<&ReadingBook>) -> Index {
-    match book {
-        Some(book) => book.read(|speller| song_index(songs, Some(speller))),
-        None => song_index(songs, None),
-    }
 }
 
 impl Songs {
-    pub fn new(session: session::Session, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        session: session::Session,
+        song_list: SongList,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter songs"));
         let focus = cx.focus_handle().tab_stop(true);
         let subscriptions = vec![
@@ -132,137 +71,67 @@ impl Songs {
             cx.on_focus(&focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&focus, window, |_, _, cx| cx.notify()),
         ];
-        let readings_changes = session.readings().map(|readings| {
-            ui::on_readings_changed(readings, cx, |this: &mut Self, cx| this.read_again(cx))
-        });
+        let changes = gpui_host::observe(song_list.subscribe(), cx, Self::follow);
         Self {
             session,
-            is_activated: false,
-            songs: SongList::Loading,
-            is_reloading: false,
-            refresh_error: None,
-            index: Arc::default(),
-            visible: Arc::default(),
-            sort: Sort::DEFAULT,
-            by_relevance: true,
-            query: SharedString::default(),
+            status: song_list.status(),
+            song_list,
             selected: None,
             has_chosen_selection: false,
             now_playing: None,
             filter,
             focus,
             scroll: UniformListScrollHandle::new(),
-            _load_task: Task::ready(()),
-            _arrange_task: Task::ready(()),
-            _index_task: Task::ready(()),
+            _changes: changes,
             _subscriptions: subscriptions,
-            _readings_changes: readings_changes,
         }
     }
 
+    /// Reading every song is too much to do for a screen that may never show.
     pub fn activate(&mut self, cx: &mut Context<Self>) {
-        if !self.is_activated {
-            self.is_activated = true;
-            self.load(cx);
-        }
+        self.song_list.open();
+        self.sync(cx);
     }
 
-    /// Does nothing to a screen that has yet to show.
-    pub fn songs_synced(&mut self, cx: &mut Context<Self>) {
-        if self.is_activated {
-            self.load(cx);
-        }
+    /// Takes the list's status at once after a call into it, so that what follows does not act
+    /// on the old one.
+    fn sync(&mut self, cx: &mut Context<Self>) {
+        self.follow(self.song_list.status(), cx);
     }
 
-    /// Shows the saved songs; with none saved yet, as during the first sync,
-    /// asks the server for them.
-    fn load(&mut self, cx: &mut Context<Self>) {
-        self.is_reloading = true;
-        self.refresh_error = None;
-        if !matches!(self.songs, SongList::Loaded(_)) {
-            self.songs = SongList::Loading;
-        }
-        let client = self.session.client().clone();
-        let catalog = self.session.catalog().cloned();
-        let query = self.filter.read(cx).value();
-        let sort = self.sort;
-        let by_relevance = self.by_relevance;
-        let book = self.session.reading_book();
-        self._load_task = cx.spawn(async move |this, cx| {
-            let result = cx
-                .background_spawn(async move {
-                    // A copy that can't be read is the same as none
-                    let saved = catalog.and_then(|catalog| catalog.songs().ok());
-                    let songs = match saved {
-                        Some(songs) if !songs.is_empty() => songs,
-                        _ => client
-                            .all_songs()
-                            .await
-                            .map_err(|error| SharedString::from(session::describe(&error)))?,
-                    };
-                    Ok(Arranged::new(
-                        songs,
-                        book.as_ref(),
-                        query,
-                        sort,
-                        by_relevance,
-                    ))
-                })
-                .await;
-            this.update(cx, |this, cx| this.finish_loading(result, cx))
-                .ok();
-        });
-        cx.notify();
-    }
-
-    fn finish_loading(&mut self, result: Result<Arranged, SharedString>, cx: &mut Context<Self>) {
-        self.is_reloading = false;
-        match result {
-            Ok(arranged) => {
-                // Positions worked out for the songs going away mean nothing
-                // for these: `visible` only ever indexes the songs on show.
-                self._arrange_task = Task::ready(());
-                self._index_task = Task::ready(());
-                self.songs = SongList::Loaded(Arc::new(arranged.songs));
-                self.index = Arc::new(arranged.index);
-                self.visible = Arc::new(arranged.visible);
-                self.select_first_unless_chosen();
-                // Dictionaries that came or went during the reading had no songs
-                // yet to read again.
-                if arranged.had_book != self.session.reading_book().is_some() {
-                    self.read_again(cx);
-                }
-                // The filter or the sort may have changed during the reading
-                if arranged.query != self.filter.read(cx).value()
-                    || arranged.sort != self.sort
-                    || arranged.by_relevance != self.by_relevance
-                {
-                    self.rearrange(cx);
-                }
+    /// Keeps the selection on what shows.
+    fn follow(&mut self, status: SongListStatus, cx: &mut Context<Self>) {
+        let old = mem::replace(&mut self.status, status);
+        if old.shown() != self.status.shown() {
+            self.select_first_unless_chosen();
+            // New songs leave the scroll where it was
+            let is_reordered = matches!(
+                (old.shown(), self.status.shown()),
+                (Some(old), Some(new)) if Arc::ptr_eq(old.songs(), new.songs())
+            );
+            if is_reordered {
+                self.bring_selection_into_view();
             }
-            // The songs on show stay there, with word of what went wrong
-            Err(error) if matches!(self.songs, SongList::Loaded(_)) => {
-                self.refresh_error = Some(error);
-            }
-            Err(error) => self.songs = SongList::Failed(error),
         }
         cx.notify();
     }
 
-    fn loaded_songs(&self) -> Option<&Arc<Vec<Song>>> {
-        match &self.songs {
-            SongList::Loaded(songs) => Some(songs),
-            _ => None,
-        }
+    fn shown(&self) -> Option<&ShownSongs> {
+        self.status.shown()
+    }
+
+    fn visible_len(&self) -> usize {
+        self.shown().map_or(0, |shown| shown.visible().len())
     }
 
     fn visible_song(&self, position: usize) -> Option<&Song> {
-        self.loaded_songs()?.get(*self.visible.get(position)?)
+        let shown = self.shown()?;
+        shown.songs().get(*shown.visible().get(position)?)
     }
 
     fn selected_position(&self) -> Option<usize> {
         let selected = self.selected.as_ref()?;
-        (0..self.visible.len()).find(|position| {
+        (0..self.visible_len()).find(|position| {
             self.visible_song(*position)
                 .is_some_and(|song| song.id() == selected)
         })
@@ -272,92 +141,29 @@ impl Songs {
         self.visible_song(self.selected_position()?)
     }
 
-    /// Off the UI thread: a large library takes a moment to sort. A newer change replaces one still
-    /// under way.
-    fn rearrange(&mut self, cx: &mut Context<Self>) {
-        let Some(songs) = self.loaded_songs().cloned() else {
-            return;
-        };
-        let index = self.index.clone();
-        let query = self.filter.read(cx).value();
-        let sort = self.sort;
-        let by_relevance = self.by_relevance;
-        self._arrange_task = cx.spawn(async move |this, cx| {
-            let visible = cx
-                .background_spawn(
-                    async move { arrange(&songs, &index, &query, sort, by_relevance) },
-                )
-                .await;
-            this.update(cx, |this, cx| {
-                this.visible = Arc::new(visible);
-                this.select_first_unless_chosen();
-                this.bring_selection_into_view();
-                cx.notify();
-            })
-            .ok();
-        });
-    }
-
     fn filter_changed(&mut self, cx: &mut Context<Self>) {
         let query = self.filter.read(cx).value();
-        if self.query.trim().is_empty() {
-            self.by_relevance = true;
-        }
-        self.query = query;
-        self.rearrange(cx);
+        self.song_list.set_query(&query);
+        self.sync(cx);
     }
 
-    /// The songs on show stay as they are until that is done.
-    fn read_again(&mut self, cx: &mut Context<Self>) {
-        let Some(songs) = self.loaded_songs().cloned() else {
-            return;
-        };
-        let book = self.session.reading_book();
-        self._index_task = cx.spawn(async move |this, cx| {
-            let index = cx
-                .background_spawn(async move { read_songs(&songs, book.as_ref()) })
-                .await;
-            this.update(cx, |this, cx| {
-                this.index = Arc::new(index);
-                this.rearrange(cx);
-            })
-            .ok();
-        });
-    }
-
-    /// Choosing the column already sorted by keeps its direction.
     fn choose_sort(&mut self, column: Column, cx: &mut Context<Self>) {
-        if self.is_ranked(cx) || self.sort.column != column {
-            self.sort = Sort::chosen(column);
-        }
-        self.by_relevance = false;
-        self.rearrange(cx);
-        cx.notify();
+        self.song_list.choose_sort(column);
+        self.sync(cx);
     }
 
     fn choose_direction(&mut self, is_descending: bool, cx: &mut Context<Self>) {
-        self.sort.is_descending = is_descending;
-        self.by_relevance = false;
-        self.rearrange(cx);
-        cx.notify();
+        self.song_list.choose_direction(is_descending);
+        self.sync(cx);
     }
 
     fn sort_by(&mut self, column: Column, cx: &mut Context<Self>) {
-        // A heading clicked while the rows follow relevance shows as not sorted,
-        // so it starts from the top rather than turning its column around.
-        if self.is_ranked(cx) {
-            self.sort.column = column;
-            self.sort.is_descending = false;
-        } else {
-            self.sort = self.sort.clicked(column);
-        }
-        self.by_relevance = false;
-        self.rearrange(cx);
-        cx.notify();
+        self.song_list.sort_by(column);
+        self.sync(cx);
     }
 
-    fn is_ranked(&self, cx: &App) -> bool {
-        self.by_relevance && !self.filter.read(cx).value().trim().is_empty()
+    fn is_ranked(&self) -> bool {
+        self.status.is_ranked()
     }
 
     fn bring_selection_into_view(&self) {
@@ -379,7 +185,7 @@ impl Songs {
     }
 
     fn move_selection(&mut self, motion: Motion, cx: &mut Context<Self>) {
-        let len = self.visible.len();
+        let len = self.visible_len();
         let page = page_rows(&self.scroll, len);
         let Some(position) = motion.apply(self.selected_position(), len, page) else {
             return;
@@ -392,10 +198,15 @@ impl Songs {
     }
 
     fn play_selected(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let (Some(start_ix), Some(songs)) = (self.selected_position(), self.loaded_songs()) else {
+        let (Some(start_ix), Some(shown)) = (self.selected_position(), self.shown()) else {
             return;
         };
-        let queue: Arc<[Song]> = self.visible.iter().map(|ix| songs[*ix].clone()).collect();
+        let songs = shown.songs();
+        let queue: Arc<[Song]> = shown
+            .visible()
+            .iter()
+            .map(|ix| songs[*ix].clone())
+            .collect();
         window.dispatch_action(Box::new(PlaySongs::new(queue, start_ix)), cx);
     }
 
@@ -440,8 +251,8 @@ impl Songs {
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
-        let count = self.loaded_songs().map(|songs| songs.len());
-        let is_updating = count.is_some() && self.is_reloading;
+        let count = self.shown().map(|shown| shown.songs().len());
+        let is_updating = count.is_some() && self.status.is_loading();
         ListPaneHeader::new("Songs", count)
             .when(is_updating, |this| this.updating("Updating the songs"))
             .action(
@@ -454,10 +265,11 @@ impl Songs {
     }
 
     fn render_sort_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let is_ranked = self.is_ranked(cx);
+        let is_ranked = self.is_ranked();
+        let sort = self.status.sort();
         let option = |label: &'static str, column: Column| {
             let owner = cx.entity().downgrade();
-            let is_checked = self.sort.column == column && !is_ranked;
+            let is_checked = sort.column == column && !is_ranked;
             Some(SortOption::new(label, is_checked, move |_, cx| {
                 owner
                     .update(cx, |this, cx| this.choose_sort(column, cx))
@@ -466,7 +278,7 @@ impl Songs {
         };
         let direction = |label: &'static str, is_descending: bool| {
             let owner = cx.entity().downgrade();
-            let is_checked = self.sort.is_descending == is_descending && !is_ranked;
+            let is_checked = sort.is_descending == is_descending && !is_ranked;
             Some(SortOption::new(label, is_checked, move |_, cx| {
                 owner
                     .update(cx, |this, cx| this.choose_direction(is_descending, cx))
@@ -475,7 +287,7 @@ impl Songs {
         };
         sort_menu(
             "sort-songs",
-            self.sort.is_descending && !is_ranked,
+            sort.is_descending && !is_ranked,
             vec![
                 option("Title", Column::Title),
                 option("Artist", Column::Artist),
@@ -498,8 +310,8 @@ impl Songs {
         column: Column,
         cx: &mut Context<Self>,
     ) -> Button {
-        let sorted =
-            (self.sort.column == column && !self.is_ranked(cx)).then_some(self.sort.is_descending);
+        let sort = self.status.sort();
+        let sorted = (sort.column == column && !self.is_ranked()).then_some(sort.is_descending);
         let (icon, description) = match sorted {
             Some(false) => (
                 Some(IconName::ArrowUp),
@@ -583,31 +395,35 @@ impl Songs {
     }
 
     fn render_rows(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let songs = match &self.songs {
-            SongList::Loading => return centered(Spinner::new()).into_any_element(),
-            SongList::Failed(error) => {
+        let shown = match (self.shown(), self.status.songs()) {
+            (Some(shown), _) => shown,
+            (None, Shelf::Failed(error)) => {
                 return LoadFailure::new(
                     "Couldn't load songs",
-                    error.clone(),
+                    error.clone().into(),
                     Button::new("retry-songs")
                         .label("Retry")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.focus.focus(window, cx);
-                            this.load(cx);
+                            this.song_list.reload();
+                            this.sync(cx);
                         })),
                 )
                 .into_any_element();
             }
-            SongList::Loaded(songs) => songs.clone(),
+            (None, Shelf::Loading | Shelf::Loaded(_)) => {
+                return centered(Spinner::new()).into_any_element();
+            }
         };
+        let songs = shown.songs().clone();
         if songs.is_empty() {
             return centered(muted_text("This server has no songs.", cx)).into_any_element();
         }
-        if self.visible.is_empty() {
+        if shown.visible().is_empty() {
             let note = self.session.missing_readings_note();
             return no_matches("No songs match the filter.", note, cx).into_any_element();
         }
-        let visible = self.visible.clone();
+        let visible = shown.visible().clone();
         let selected = self.selected.clone();
         let now_playing = self.now_playing.clone();
         let is_focused = self.focus.is_focused(window);
@@ -703,14 +519,17 @@ impl Render for Songs {
                 this.filter.update(cx, |input, cx| input.focus(window, cx));
             }))
             .child(self.render_header(cx))
-            .when_some(self.refresh_error.clone(), |this, error| {
+            .when_some(self.status.failure(), |this, error| {
                 this.child(RefreshFailure::new(
                     "Couldn't refresh the songs",
-                    error,
+                    error.to_owned().into(),
                     Button::new("retry-refresh-songs")
                         .label("Retry")
                         .small()
-                        .on_click(cx.listener(|this, _, _, cx| this.load(cx))),
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.song_list.reload();
+                            this.sync(cx);
+                        })),
                 ))
             })
             .child(self.render_headings(cx))

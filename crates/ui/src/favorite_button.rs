@@ -29,7 +29,7 @@ mod tests {
     use std::collections::HashSet;
     use std::rc::Rc;
 
-    use actions::SetFavorite;
+    use actions::ToggleFavoriteOf;
     use gpui_kit::{
         Context, IntoElement, Modifiers, ParentElement as _, Render, Styled as _, TestAppContext,
         VisualTestContext, Window, div, point, px,
@@ -55,7 +55,7 @@ mod tests {
     fn clicked(
         known: Option<HashSet<subsonic::StarTarget>>,
         cx: &mut TestAppContext,
-    ) -> Vec<SetFavorite> {
+    ) -> Vec<ToggleFavoriteOf> {
         cx.update(|cx| {
             gpui_kit::init(cx);
             actions::set_known_favorites(known, cx);
@@ -64,7 +64,9 @@ mod tests {
         let asked = Rc::new(RefCell::new(Vec::new()));
         cx.update(|_, cx| {
             let asked = asked.clone();
-            cx.on_action(move |action: &SetFavorite, _| asked.borrow_mut().push(action.clone()));
+            cx.on_action(move |action: &ToggleFavoriteOf, _| {
+                asked.borrow_mut().push(action.clone())
+            });
         });
         cx.run_until_parked();
 
@@ -74,19 +76,10 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn the_star_adds_what_is_no_favorite(cx: &mut TestAppContext) {
+    fn the_star_asks_to_toggle_its_favorite(cx: &mut TestAppContext) {
         assert_eq!(
             clicked(Some(HashSet::new()), cx),
-            [SetFavorite::new(Favorite::Artist(artist()), true)]
-        );
-    }
-
-    #[gpui_kit::test]
-    fn the_star_takes_out_a_favorite(cx: &mut TestAppContext) {
-        let known = HashSet::from([Favorite::Artist(artist()).target()]);
-        assert_eq!(
-            clicked(Some(known), cx),
-            [SetFavorite::new(Favorite::Artist(artist()), false)]
+            [ToggleFavoriteOf::new(Favorite::Artist(artist()))]
         );
     }
 

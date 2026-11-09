@@ -7,6 +7,7 @@ mod reading_book;
 mod readings;
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use subsonic::{AlbumId, AlbumWithSongs, CoverArtId, ServerInfo};
@@ -16,9 +17,12 @@ pub use covers::{answer_cover, cover_image};
 pub use reading_book::ReadingBook;
 pub use readings::{Readings, ReadingsFailed, ReadingsState, ReadingsStatus};
 
-/// Where cover art is kept on disk, when the system has a cache directory, holding as much as
-/// the saved setting says.
-pub fn open_covers(store: Result<config::Store, config::Error>) -> Option<catalog::CoverStore> {
+/// Where cover art is kept in the app's cache folder `cache`, holding as much as the saved
+/// setting says.
+pub fn open_covers(
+    store: Result<config::Store, config::Error>,
+    cache: &Path,
+) -> catalog::CoverStore {
     let capacity = match store {
         Ok(store) => store.cover_cache_capacity(),
         // Without a home directory there are no settings to follow
@@ -27,7 +31,7 @@ pub fn open_covers(store: Result<config::Store, config::Error>) -> Option<catalo
     // A setting that cannot be read keeps no more covers rather than the
     // default amount.
     let capacity = capacity.map_or(0, cover_capacity);
-    catalog::CoverStore::user(capacity).ok()
+    catalog::CoverStore::in_cache(cache, capacity)
 }
 
 /// Keeps at most about `capacity` bytes of covers from the next one on, or the

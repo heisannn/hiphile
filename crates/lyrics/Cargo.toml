@@ -13,7 +13,6 @@ test-support = []
 base64.workspace = true
 bytes.workspace = true
 config.workspace = true
-dirs.workspace = true
 executor.workspace = true
 futures.workspace = true
 net.workspace = true

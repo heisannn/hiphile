@@ -13,6 +13,7 @@ catalog.workspace = true
 chrono.workspace = true
 client.workspace = true
 config.workspace = true
+dirs.workspace = true
 executor.workspace = true
 futures.workspace = true
 fuzzy.workspace = true
@@ -44,6 +45,7 @@ playback = { workspace = true, features = ["test-support"] }
 raw-window-handle.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+url.workspace = true
 
 [lints]
 workspace = true

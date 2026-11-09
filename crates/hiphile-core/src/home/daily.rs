@@ -3,63 +3,30 @@ use std::time::Duration;
 
 use executor::{Executor, Publish, Published, Task};
 use session::Session;
-use subsonic::Album;
+use subsonic::{Album, AlbumId};
 use tokio::sync::{broadcast, watch};
 
 use super::recommend::{Recommendations, fetch_recommended, today};
+use super::shelves::{MOST_PLAYED, NEW_ALBUMS};
+use crate::Shelf;
 
-/// How many of the most played albums the home screen asks for, for the widest window. The
-/// recommendations leave them out.
-pub const MOST_PLAYED: u32 = 12;
-/// How many of the new albums the home screen asks for, for the widest window. The
-/// recommendations leave them out.
-pub const NEW_ALBUMS: u32 = 24;
 /// A pick takes the server's outside service several seconds per album, and windows can come to
 /// the front often.
 const RETRY_AFTER: Duration = Duration::from_secs(10 * 60);
 const NOTICES: usize = 16;
 
-/// The albums to try, which stay on show while a pick that replaces them is on its way or fails.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RecommendedAlbums {
-    Loading,
-    Loaded(Arc<[Album]>),
-    Failed(String),
-}
-
-impl RecommendedAlbums {
-    pub fn albums(&self) -> &[Album] {
-        match self {
-            Self::Loaded(albums) => albums,
-            Self::Loading | Self::Failed(_) => &[],
-        }
-    }
-
-    fn begin(&mut self) {
-        if !matches!(self, Self::Loaded(_)) {
-            *self = Self::Loading;
-        }
-    }
-
-    /// A failure leaves albums on show in place.
-    fn finish(&mut self, result: Result<Vec<Album>, String>) {
-        match result {
-            Ok(albums) => *self = Self::Loaded(albums.into()),
-            Err(_) if matches!(self, Self::Loaded(_)) => {}
-            Err(error) => *self = Self::Failed(error),
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecommendedStatus {
-    albums: RecommendedAlbums,
+    albums: Shelf<Album>,
     /// Whether the kept albums are being read or new ones picked.
     is_recommending: bool,
 }
 
 impl RecommendedStatus {
-    pub fn albums(&self) -> &RecommendedAlbums {
+    /// The albums to try that no other shelf of the home screen shows, also when an album gets
+    /// there after the day's pick. They stay on show while a pick that replaces them is on its
+    /// way or fails.
+    pub fn albums(&self) -> &Shelf<Album> {
         &self.albums
     }
 
@@ -103,6 +70,8 @@ struct State {
     day: Option<String>,
     /// A pick went wrong a while ago, and is not made again by itself until this is over.
     is_waiting_to_retry: bool,
+    /// What the other shelves show.
+    shelved: Vec<AlbumId>,
     /// Counts the readings and picks, and the waits, so that one replaced while it was finishing
     /// on another thread cannot change the state after its successor has.
     work_id: u64,
@@ -120,11 +89,12 @@ impl DailyRecommendations {
             session,
             state: Published::new(State {
                 status: RecommendedStatus {
-                    albums: RecommendedAlbums::Loading,
+                    albums: Shelf::Loading,
                     is_recommending: false,
                 },
                 day: None,
                 is_waiting_to_retry: false,
+                shelved: Vec::new(),
                 work_id: 0,
                 retry_id: 0,
                 _work: Task::ready(()),
@@ -168,10 +138,11 @@ impl DailyRecommendations {
         self.0.state.update(|state| self.start_pick(state, true));
     }
 
-    /// A library sync may give a library that had nothing to pick from something to recommend.
+    /// A library sync may give a library that had nothing to pick from something to recommend,
+    /// or other shelves may show every album picked.
     pub fn library_synced(&self) {
         self.0.state.update(|state| {
-            if state.status.albums.albums().is_empty() {
+            if state.status.albums.items().is_empty() {
                 state.day = None;
             }
             self.renew_in(state);
@@ -200,6 +171,7 @@ impl DailyRecommendations {
                 if let Some(kept) = kept {
                     state.day = Some(kept.day);
                     state.status.albums.finish(Ok(kept.albums));
+                    state.keep_shelved_off();
                 }
                 this.renew_in(state);
             });
@@ -248,7 +220,7 @@ impl DailyRecommendations {
         day: String,
     ) -> Option<String> {
         state.status.is_recommending = false;
-        let kept = (!state.status.albums.albums().is_empty())
+        let kept = (!state.status.albums.items().is_empty())
             .then(|| match &result {
                 Ok(found) if found.complete => None,
                 Ok(_) => Some("Couldn't get new recommendations. Try again later.".to_owned()),
@@ -266,8 +238,9 @@ impl DailyRecommendations {
                     self.wait_to_retry(state);
                 }
                 let better = found.complete && !found.albums.is_empty();
-                if better || state.status.albums.albums().is_empty() {
+                if better || state.status.albums.items().is_empty() {
                     state.status.albums.finish(Ok(found.albums));
+                    state.keep_shelved_off();
                 }
             }
             Err(error) => {
@@ -309,6 +282,15 @@ impl DailyRecommendations {
         });
     }
 
+    /// Leaves out `shelved`, which the other shelves show, from the albums on show and from
+    /// those picked later.
+    pub(crate) fn keep_off(&self, shelved: Vec<AlbumId>) {
+        self.0.state.update(|state| {
+            state.shelved = shelved;
+            state.keep_shelved_off();
+        });
+    }
+
     fn downgrade(&self) -> WeakRecommendations {
         WeakRecommendations(Arc::downgrade(&self.0))
     }
@@ -318,6 +300,16 @@ impl State {
     fn next_work(&mut self) -> u64 {
         self.work_id += 1;
         self.work_id
+    }
+
+    fn keep_shelved_off(&mut self) {
+        let is_shelved = |album: &Album| self.shelved.contains(album.id());
+        if let Shelf::Loaded(albums) = &self.status.albums
+            && albums.iter().any(is_shelved)
+        {
+            let others = albums.iter().filter(|album| !is_shelved(album)).cloned();
+            self.status.albums = Shelf::Loaded(others.collect());
+        }
     }
 }
 

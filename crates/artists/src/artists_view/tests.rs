@@ -2,17 +2,21 @@ use std::cell::RefCell;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::net::TcpListener;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use actions::{EnqueueSongs, PlaySongs, ShowAlbum, ShowArtist};
 use gpui_kit::{KeyUpEvent, Keystroke, TestAppContext, VisualTestContext, px};
 use hiphile_core::favorites::Favorite;
+use hiphile_core::test_support;
 use serde_json::{Value, json};
-use subsonic::{AlbumId, Credentials};
+use subsonic::{Album, AlbumId, Song};
 
 use super::detail::{Part, same_place};
 use super::*;
 use ui::card_grid::card_row_height;
+
+/// Past the delay before the detail asks the server.
+const SERVER_DELAY: Duration = Duration::from_millis(250);
 
 fn artist(id: &str, name: &str) -> Artist {
     Artist::new(ArtistId::new(id), name.to_owned(), None, Some(1))
@@ -185,17 +189,11 @@ fn view_with<'a>(
         ui::list_navigation::bind_control_keys(cx);
         crate::init(cx);
     });
-    let net = net::Client::new("hiphile-test").unwrap();
-    let server = client::Server::new(url, Credentials::api_key("k")).unwrap();
-    let info = serde_json::from_value(json!({ "version": "1.16.1" })).unwrap();
-    let session = session::Session::new(
-        client::Client::new(net, server),
-        "alice".to_owned(),
-        info,
-        catalog,
-        None,
-    );
-    cx.add_window_view(|window, cx| Artists::new(session, window, cx))
+    let session = test_support::session_saving_into(catalog, url);
+    let executor = cx.update(|cx| gpui_host::executor(cx));
+    let list = ArtistList::new(executor.clone(), session.clone());
+    let detail = ArtistDetail::new(executor, session.clone());
+    cx.add_window_view(|window, cx| Artists::new(session, list, detail, window, cx))
 }
 
 /// A screen that has yet to show, whose server cannot be reached.
@@ -225,20 +223,17 @@ fn wait_until(view: &Entity<Artists>, cx: &mut VisualTestContext, done: impl Fn(
     panic!("what was waited for never happened");
 }
 
-/// Shows artist `m`, with the requests that makes cancelled.
+/// Shows artist `m`, in place of what the detail asks the server, which answers only once the
+/// clock moves.
 fn show(view: &mut Artists, top_songs: usize, similar: Vec<Artist>, cx: &mut Context<Artists>) {
     view.is_activated = true;
-    view._list_task = Task::ready(());
     view.is_refreshing = false;
-    view.artists = ArtistList::Loaded(Arc::new(vec![
+    view.artists = Shelf::Loaded(Arc::from([
         artist("b", "Bill Evans"),
         artist("m", "Miles Davis"),
     ]));
     view.index_artists(cx);
     view.select_artist(ArtistId::new("m"), cx);
-    view._albums_task = Task::ready(());
-    view._top_songs_task = Task::ready(());
-    view._similar_task = Task::ready(());
     let detail = view.detail.as_mut().unwrap();
     detail.albums = Shelf::Loaded(Arc::from([
         serde_json::from_value(album_json("a2", 1970)).unwrap(),
@@ -271,10 +266,10 @@ fn dispatched_by<A: gpui_kit::Action + Clone>(
 #[gpui_kit::test]
 fn nothing_loads_until_the_screen_shows(cx: &mut TestAppContext) {
     let (view, cx) = view(cx);
-    update(&view, cx, |view, cx| view.refresh(cx));
+    cx.run_until_parked();
     cx.update(|_, cx| {
         let view = view.read(cx);
-        assert!(!view.is_activated);
+        assert!(!view.artist_list.status().is_refreshing());
         assert!(!view.is_refreshing);
         assert!(view.detail.is_none());
     });
@@ -312,23 +307,10 @@ fn a_failed_section_leaves_the_rest_of_the_detail(cx: &mut TestAppContext) {
     let (view, cx) = view(cx);
     update(&view, cx, |view, cx| {
         show(view, 3, Vec::new(), cx);
-        let id = ArtistId::new("m");
-        view.detail.as_mut().unwrap().top_songs = Shelf::Loading;
-        view.finish_loading_top_songs(&id, Err("offline".into()), cx);
+        view.detail.as_mut().unwrap().top_songs = Shelf::Failed("offline".to_owned());
         let parts = view.parts();
         assert!(parts.contains(&Part::TopSongsStatus));
         assert!(parts.contains(&Part::AlbumRow(0..2)));
-    });
-}
-
-#[gpui_kit::test]
-fn an_answer_about_another_artist_is_dropped(cx: &mut TestAppContext) {
-    let (view, cx) = view(cx);
-    update(&view, cx, |view, cx| {
-        show(view, 3, Vec::new(), cx);
-        view.finish_loading_top_songs(&ArtistId::new("b"), Ok(songs(9)), cx);
-        let detail = view.detail.as_ref().unwrap();
-        assert_eq!(detail.top_songs.items().len(), 3);
     });
 }
 
@@ -542,7 +524,7 @@ fn the_favorite_key_follows_what_is_selected_in_each_pane(cx: &mut TestAppContex
         "ctrl-d"
     };
 
-    let asked: Vec<actions::SetFavorite> =
+    let asked: Vec<actions::ToggleFavoriteOf> =
         dispatched_by(key, |view| view.list_focus.clone(), &view, cx);
     assert_eq!(
         asked[0].favorite().target(),
@@ -564,7 +546,7 @@ fn the_favorite_key_follows_what_is_selected_in_each_pane(cx: &mut TestAppContex
         ),
     ] {
         select(&view, item, cx);
-        let asked: Vec<actions::SetFavorite> =
+        let asked: Vec<actions::ToggleFavoriteOf> =
             dispatched_by(key, |view| view.detail_focus.clone(), &view, cx);
         assert_eq!(asked.last().unwrap().favorite().target(), target);
     }
@@ -584,15 +566,15 @@ fn an_artist_cannot_become_a_favorite_before_their_name_is_known(cx: &mut TestAp
         "ctrl-d"
     };
 
-    let asked: Vec<actions::SetFavorite> =
+    let asked: Vec<actions::ToggleFavoriteOf> =
         dispatched_by(key, |view| view.list_focus.clone(), &view, cx);
     assert!(asked.is_empty());
 
     update(&view, cx, |view, cx| {
-        view.detail.as_mut().unwrap().name = Some("Unlisted".into());
+        view.detail.as_mut().unwrap().name = Some("Unlisted".to_owned());
         cx.notify();
     });
-    let asked: Vec<actions::SetFavorite> =
+    let asked: Vec<actions::ToggleFavoriteOf> =
         dispatched_by(key, |view| view.list_focus.clone(), &view, cx);
     let Favorite::Artist(artist) = asked[0].favorite() else {
         panic!("not an artist");
@@ -674,7 +656,7 @@ fn the_list_follows_a_revealed_artist_the_servers_answer_moves(cx: &mut TestAppC
 
     let moved = many_artists().into_iter().rev().collect();
     update(&view, cx, |view, cx| {
-        view.finish_loading_artists(Ok(moved), cx);
+        view.show_artists(Shelf::Loaded(moved), false, cx);
     });
     // Now the 100th row, which `Nearest` brings to the bottom of the list
     let answered = top_row(&view, cx);
@@ -689,7 +671,7 @@ fn a_later_list_leaves_the_scroll_alone(cx: &mut TestAppContext) {
     let (view, cx) = view(cx);
     revealed_before_the_list("a400", &view, cx);
     update(&view, cx, |view, cx| {
-        view.finish_loading_artists(Ok(many_artists()), cx);
+        view.show_artists(Shelf::Loaded(many_artists().into()), false, cx);
     });
     assert!(top_row(&view, cx) > 300);
 
@@ -699,7 +681,7 @@ fn a_later_list_leaves_the_scroll_alone(cx: &mut TestAppContext) {
     assert_eq!(top_row(&view, cx), 0);
 
     update(&view, cx, |view, cx| {
-        view.finish_loading_artists(Ok(many_artists()), cx);
+        view.show_artists(Shelf::Loaded(many_artists().into()), false, cx);
     });
     assert_eq!(top_row(&view, cx), 0);
 }
@@ -735,30 +717,27 @@ fn an_artist_off_the_list_shows_once_the_server_names_them(cx: &mut TestAppConte
     cx.update(|_, cx| {
         let view = view.read(cx);
         let detail = view.detail.as_ref().unwrap();
-        assert_eq!(detail.name.as_ref().unwrap(), "Miles Davis");
+        assert_eq!(detail.name.as_deref(), Some("Miles Davis"));
         assert_eq!(view.selected_artist, Some(ArtistId::new("only-on-songs")));
         assert_eq!(view.selected_position(), None);
     });
 }
 
-fn finish_albums(
-    view: &Entity<Artists>,
-    albums: Vec<Album>,
-    songs: Vec<Song>,
-    cx: &mut VisualTestContext,
-) {
+/// Shows artist `m` with no albums, and `songs` as the saved songs naming them.
+fn show_no_albums(view: &Entity<Artists>, songs: Vec<Song>, cx: &mut VisualTestContext) {
     update(view, cx, |view, cx| {
-        let id = ArtistId::new("m");
-        let found = Artist::new(id.clone(), "Miles Davis".to_owned(), None, None);
-        view.finish_loading_albums(&id, Ok((found, albums)), songs, cx);
+        show(view, 0, Vec::new(), cx);
+        let detail = view.detail.as_mut().unwrap();
+        detail.albums = Shelf::Loaded(Arc::from([]));
+        detail.is_only_on_songs = !songs.is_empty();
+        detail.top_songs = Shelf::Loaded(songs.into());
     });
 }
 
 #[gpui_kit::test]
 fn an_artist_only_on_songs_shows_those_songs_in_place_of_albums(cx: &mut TestAppContext) {
     let (view, cx) = view(cx);
-    update(&view, cx, |view, cx| show(view, 0, Vec::new(), cx));
-    finish_albums(&view, Vec::new(), songs(7), cx);
+    show_no_albums(&view, songs(7), cx);
 
     cx.update(|_, cx| {
         let parts = view.read(cx).parts();
@@ -766,12 +745,6 @@ fn an_artist_only_on_songs_shows_those_songs_in_place_of_albums(cx: &mut TestApp
         assert!(parts.contains(&Part::TopSongsToggle));
         assert!(!parts.contains(&Part::AlbumsHeading));
         assert!(!parts.contains(&Part::AlbumsStatus));
-    });
-
-    // Their songs are all there is: asking for top songs leaves them
-    update(&view, cx, |view, cx| {
-        view.load_top_songs(ArtistId::new("m"), cx);
-        assert_eq!(view.detail.as_ref().unwrap().top_songs.items().len(), 7);
     });
 }
 
@@ -836,31 +809,6 @@ fn the_saved_songs_of_an_artist_with_no_albums_show_and_play(cx: &mut TestAppCon
     assert_eq!(wait_for_queued(&seen, cx), [["a1", "b1"]]);
 }
 
-#[gpui_kit::test]
-fn songs_arriving_in_a_sync_fill_the_page_of_an_artist_with_no_albums(cx: &mut TestAppContext) {
-    let dir = tempfile::tempdir().unwrap();
-    let catalog = catalog::Catalog::open(dir.path()).unwrap();
-    let url = server_of_no_albums();
-    let (view, cx) = view_with(&url, Some(catalog.clone()), cx);
-
-    reveal_guest(&view, cx);
-    wait_until(&view, cx, |view| {
-        matches!(view.detail.as_ref().unwrap().albums, Shelf::Loaded(_))
-    });
-    cx.update(|_, cx| assert!(view.read(cx).parts().contains(&Part::AlbumsStatus)));
-
-    keep(&catalog, guest_songs());
-    update(&view, cx, |view, cx| view.songs_synced(cx));
-    wait_until(&view, cx, |view| {
-        view.detail.as_ref().unwrap().is_only_on_songs
-    });
-
-    cx.update(|_, cx| {
-        let songs = view.read(cx).detail.as_ref().unwrap().top_songs.items();
-        assert_eq!(song_ids(songs), ["a1", "b1"]);
-    });
-}
-
 fn saved_artist(id: &str, name: &str) -> Artist {
     serde_json::from_value(json!({ "id": id, "name": name })).unwrap()
 }
@@ -906,21 +854,10 @@ fn a_sync_of_artists_changes_the_list_on_show(cx: &mut TestAppContext) {
     wait_until(&view, cx, |view| !view.is_refreshing);
 
     keep(&catalog, saved(vec![saved_artist("j", "John Coltrane")]));
-    update(&view, cx, |view, cx| view.artists_synced(cx));
+    update(&view, cx, |view, _| view.artist_list.reload());
     wait_until(&view, cx, |view| !view.is_refreshing);
 
     assert_eq!(listed_names(&view, cx), ["John Coltrane"]);
-}
-
-#[gpui_kit::test]
-fn a_sync_of_artists_leaves_a_screen_yet_to_show_alone(cx: &mut TestAppContext) {
-    let dir = tempfile::tempdir().unwrap();
-    let catalog = catalog::Catalog::open(dir.path()).unwrap();
-    let (view, cx) = view_with("http://127.0.0.1:9", Some(catalog), cx);
-
-    update(&view, cx, |view, cx| view.artists_synced(cx));
-
-    cx.update(|_, cx| assert!(!view.read(cx).is_refreshing));
 }
 
 #[gpui_kit::test]
@@ -950,7 +887,7 @@ fn the_saved_albums_show_when_the_server_cannot_be_reached(cx: &mut TestAppConte
         assert_eq!(view.visible.len(), 1);
         assert_eq!(view.selected_artist, Some(ArtistId::new("m")));
         let detail = view.detail.as_ref().unwrap();
-        assert_eq!(detail.name.as_ref().unwrap(), "Miles Davis");
+        assert_eq!(detail.name.as_deref(), Some("Miles Davis"));
         assert_eq!(detail.albums.items().len(), 1);
     });
 }
@@ -998,42 +935,9 @@ fn left_goes_back_to_the_list_from_the_start_of_a_row(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn an_artist_with_no_songs_at_all_says_so_under_albums(cx: &mut TestAppContext) {
     let (view, cx) = view(cx);
-    update(&view, cx, |view, cx| show(view, 0, Vec::new(), cx));
-    finish_albums(&view, Vec::new(), Vec::new(), cx);
+    show_no_albums(&view, Vec::new(), cx);
 
     cx.update(|_, cx| assert!(view.read(cx).parts().contains(&Part::AlbumsStatus)));
-}
-
-#[gpui_kit::test]
-fn a_failed_refresh_keeps_the_songs_of_an_artist_only_on_songs(cx: &mut TestAppContext) {
-    let (view, cx) = view(cx);
-    update(&view, cx, |view, cx| show(view, 0, Vec::new(), cx));
-    finish_albums(&view, Vec::new(), songs(3), cx);
-
-    update(&view, cx, |view, cx| {
-        let id = ArtistId::new("m");
-        view.finish_loading_albums(&id, Err("offline".into()), Vec::new(), cx);
-        let detail = view.detail.as_ref().unwrap();
-        assert!(detail.is_only_on_songs);
-        assert_eq!(detail.top_songs.items().len(), 3);
-    });
-}
-
-#[gpui_kit::test]
-fn albums_arriving_later_bring_back_the_albums_and_the_top_songs(cx: &mut TestAppContext) {
-    let url = server();
-    let (view, cx) = view_on(&url, cx);
-    update(&view, cx, |view, cx| show(view, 0, Vec::new(), cx));
-    finish_albums(&view, Vec::new(), songs(3), cx);
-
-    let album: Album = serde_json::from_value(album_json("a1", 1959)).unwrap();
-    finish_albums(&view, vec![album], Vec::new(), cx);
-
-    wait_until(&view, cx, |view| {
-        let detail = view.detail.as_ref().unwrap();
-        detail.top_songs.items().len() == 10 && !detail.is_only_on_songs
-    });
-    cx.update(|_, cx| assert!(view.read(cx).parts().contains(&Part::AlbumsHeading)));
 }
 
 #[gpui_kit::test]
@@ -1058,26 +962,6 @@ fn a_new_list_keeps_an_artist_who_was_never_on_it(cx: &mut TestAppContext) {
         view.select_artist(ArtistId::new("only-on-songs"), cx);
         view.set_artists(vec![artist("m", "Miles Davis")], cx);
         assert_eq!(view.selected_artist, Some(ArtistId::new("only-on-songs")));
-    });
-}
-
-#[gpui_kit::test]
-fn a_failed_refresh_keeps_the_list_on_show(cx: &mut TestAppContext) {
-    let (view, cx) = view(cx);
-    update(&view, cx, |view, cx| {
-        show(view, 0, Vec::new(), cx);
-        view.finish_loading_artists(Err("offline".into()), cx);
-        assert_eq!(view.visible.len(), 2);
-        assert_eq!(view.refresh_error.as_ref().unwrap(), "offline");
-    });
-}
-
-#[gpui_kit::test]
-fn failing_to_load_a_first_list_says_so(cx: &mut TestAppContext) {
-    let (view, cx) = view(cx);
-    update(&view, cx, |view, cx| {
-        view.finish_loading_artists(Err("offline".into()), cx);
-        assert!(matches!(view.artists, ArtistList::Failed(_)));
     });
 }
 
@@ -1309,7 +1193,6 @@ fn another_artist_starts_at_the_top(cx: &mut TestAppContext) {
 
     update(&view, cx, |view, cx| {
         view.select_artist(ArtistId::new("b"), cx);
-        view._albums_task = Task::ready(());
         view.detail.as_mut().unwrap().albums = albums(500);
     });
     lay_out(cx);
@@ -1343,41 +1226,6 @@ fn the_part_at_the_top_stays_there_when_the_rest_changes() {
 
     assert_eq!(same_place(&[], 0, &parts(3)), 0);
     assert_eq!(same_place(&parts(3), 2, &[]), 0);
-}
-
-#[gpui_kit::test]
-fn moving_through_artists_asks_the_server_only_about_where_it_stops(cx: &mut TestAppContext) {
-    static ASKED: AtomicUsize = AtomicUsize::new(0);
-    fn counting(method: &str) -> Option<Value> {
-        if method == "getArtist" {
-            ASKED.fetch_add(1, Ordering::SeqCst);
-        }
-        answer(method)
-    }
-    let url = server_answering(counting);
-    let (view, cx) = view_on(&url, cx);
-    update(&view, cx, |view, cx| {
-        view.is_activated = true;
-        view._list_task = Task::ready(());
-        view.artists = ArtistList::Loaded(Arc::new(vec![
-            artist("b", "Bill Evans"),
-            artist("m", "Miles Davis"),
-        ]));
-        view.index_artists(cx);
-        view.select_artist(ArtistId::new("b"), cx);
-    });
-    cx.executor().advance_clock(SERVER_DELAY / 2);
-    cx.run_until_parked();
-    update(&view, cx, |view, cx| {
-        view.select_artist(ArtistId::new("m"), cx);
-    });
-
-    wait_until(&view, cx, |view| {
-        view.detail
-            .as_ref()
-            .is_some_and(|detail| matches!(detail.albums, Shelf::Loaded(_)))
-    });
-    assert_eq!(ASKED.load(Ordering::SeqCst), 1);
 }
 
 #[gpui_kit::test]

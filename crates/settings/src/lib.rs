@@ -96,8 +96,9 @@ fn open(
     };
     let settings = hiphile.settings().clone();
     let readings = hiphile.readings().clone();
+    let song_cache_usage = hiphile.song_cache_usage();
     let window = gpui_kit::open_window(options, cx, |window, cx| {
-        cx.new(|cx| SettingsView::new(settings, readings, updater, window, cx))
+        cx.new(|cx| SettingsView::new(settings, readings, song_cache_usage, updater, window, cx))
     });
     if let Ok((window, _)) = window {
         opened.set(Some(window));

@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use executor::{Executor, Task};
 use subsonic::Credentials;
 
-use crate::{Readings, Session};
+use crate::Session;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SignInField {
@@ -47,18 +47,15 @@ struct Inner {
     /// `None` where the system has no credential store; signing in then
     /// always asks for the password.
     keychain: Option<config::Keychain>,
-    readings: Option<Readings>,
     last_profile: Mutex<Option<config::Profile>>,
 }
 
 impl Accounts {
-    /// Every session it signs in to reads kanji with `readings`.
     pub fn new(
         executor: Executor,
         net: net::Client,
         store: Result<config::Store, config::Error>,
         keychain: Option<config::Keychain>,
-        readings: Option<Readings>,
     ) -> Self {
         let store = store.ok();
         let last_profile = store
@@ -69,7 +66,6 @@ impl Accounts {
             net,
             store,
             keychain,
-            readings,
             last_profile: Mutex::new(last_profile),
         }))
     }
@@ -170,17 +166,13 @@ impl Accounts {
                     }
                 })
                 .await;
-            let mut session = Session::new(
+            Ok(Session::new(
                 client,
                 username.unwrap_or_default(),
                 info,
                 catalog,
                 scrobbles,
-            );
-            if let Some(readings) = &this.0.readings {
-                session = session.with_readings(readings.clone());
-            }
-            Ok(session)
+            ))
         }))
     }
 

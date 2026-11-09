@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use catalog::{SONG_CAPACITY, SongStore};
 use fuzzy::bundle::BUNDLE;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
@@ -94,6 +93,7 @@ impl SettingsView {
     pub(crate) fn new(
         settings: hiphile_core::settings::Settings,
         readings: Readings,
+        song_cache_usage: SongCacheUsage,
         updater: Option<Updater>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -109,9 +109,6 @@ impl SettingsView {
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         audio.list_devices();
-        // Counting and removing keep to no capacity
-        let songs = SongStore::user(SONG_CAPACITY).ok();
-        let song_cache_usage = SongCacheUsage::new(gpui_host::executor(cx), songs);
         let refresh = cx.spawn({
             let audio = audio.clone();
             let usage = song_cache_usage.clone();

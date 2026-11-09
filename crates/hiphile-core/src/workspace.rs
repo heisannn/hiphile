@@ -1,17 +1,21 @@
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use executor::{Executor, Task};
 use playback::PlayerNotice;
 use session::Session;
+use tokio::sync::watch;
 
+use crate::artists::{ArtistDetail, ArtistList};
 use crate::favorites::FavoritesState;
 use crate::follow;
-use crate::home::DailyRecommendations;
+use crate::home::{DailyRecommendations, HomeShelves};
 use crate::library::{LibraryActivity, LibraryNotice, LibrarySync};
 use crate::playlists::PlaylistsState;
 use crate::search::SearchIndex;
 use crate::settings::{AudioSnapshot, Settings};
+use crate::songs::SongList;
 
 /// Everything that exists only while someone is signed in, and what passes changes between it
 /// and the settings. Made on signing in; dropping the last handle stops what it does, playing
@@ -26,6 +30,10 @@ struct Inner {
     activity: LibraryActivity,
     search: SearchIndex,
     recommendations: DailyRecommendations,
+    shelves: HomeShelves,
+    artists: ArtistList,
+    artist_detail: ArtistDetail,
+    songs: SongList,
     favorites: FavoritesState,
     playlists: PlaylistsState,
     player: playback::Player,
@@ -44,6 +52,8 @@ pub(crate) struct Parts {
     pub(crate) settings: Settings,
     /// Holds the volume.
     pub(crate) store: Result<config::Store, config::Error>,
+    /// Where Musixmatch keeps its token.
+    pub(crate) cache: Option<PathBuf>,
     pub(crate) covers: Option<catalog::CoverStore>,
     pub(crate) song_cache: Option<playback::SongCache>,
 }
@@ -54,29 +64,31 @@ impl Workspace {
             executor,
             settings,
             store,
+            cache,
             covers,
             song_cache,
         } = parts;
         let library = LibrarySync::new(executor.clone(), session.clone());
         let activity = LibraryActivity::new(executor.clone(), session.clone(), &library);
-        let audio = settings.audio().snapshot();
-        let player = playback::Player::new(
-            executor.clone(),
-            session.clone(),
-            store,
-            audio.output().clone(),
-            song_cache,
-        );
-        player.set_transitions(audio.transitions());
+        // Followed from before the player is made, so that a change while the rest is made
+        // reaches it
+        let audio_changes = settings.audio().subscribe();
+        let audio = audio_changes.borrow().clone();
+        let player = new_player(&executor, session.clone(), store, &audio, song_cache);
         #[cfg(not(feature = "desktop"))]
         drop(covers);
-        let finder = lyrics::Finder::user(session.client().net().clone());
+        let finder = lyrics::Finder::with_cache(session.client().net().clone(), cache.as_deref());
+        let recommendations = DailyRecommendations::new(executor.clone(), session.clone());
         let this = Self(Arc::new(Inner {
             profile,
             library,
             activity,
             search: SearchIndex::new(executor.clone(), session.clone()),
-            recommendations: DailyRecommendations::new(executor.clone(), session.clone()),
+            shelves: HomeShelves::new(executor.clone(), session.clone(), recommendations.clone()),
+            recommendations,
+            artists: ArtistList::new(executor.clone(), session.clone()),
+            artist_detail: ArtistDetail::new(executor.clone(), session.clone()),
+            songs: SongList::new(executor.clone(), session.clone()),
             favorites: FavoritesState::new(executor.clone(), session.client().clone()),
             playlists: PlaylistsState::new(executor.clone(), session.clone()),
             player,
@@ -91,7 +103,7 @@ impl Workspace {
         let routes = vec![
             this.follow_library(),
             this.follow_plays(),
-            this.follow_audio_settings(audio),
+            this.follow_audio_settings(audio_changes, &audio),
             this.follow_queue_settings(),
             this.follow_lyrics_settings(),
         ];
@@ -121,6 +133,23 @@ impl Workspace {
 
     pub fn recommendations(&self) -> &DailyRecommendations {
         &self.0.recommendations
+    }
+
+    /// The home screen's shelves besides the recommendations.
+    pub fn shelves(&self) -> &HomeShelves {
+        &self.0.shelves
+    }
+
+    pub fn artists(&self) -> &ArtistList {
+        &self.0.artists
+    }
+
+    pub fn artist_detail(&self) -> &ArtistDetail {
+        &self.0.artist_detail
+    }
+
+    pub fn songs(&self) -> &SongList {
+        &self.0.songs
     }
 
     pub fn favorites(&self) -> &FavoritesState {
@@ -160,21 +189,34 @@ impl Workspace {
         lock(&self.0.routes).extend(routes);
     }
 
-    /// What a sync brought reaches the search and the recommendations, which may now have
-    /// something to pick from.
+    /// What a sync brought reaches the search, the home screen's shelves, the artists, the songs
+    /// and the recommendations, which may now have something to pick from.
     fn follow_library(&self) -> Task<()> {
         let search = self.0.search.clone();
         let recommendations = self.0.recommendations.clone();
+        let shelves = self.0.shelves.clone();
+        let artists = self.0.artists.clone();
+        let artist_detail = self.0.artist_detail.clone();
+        let songs = self.0.songs.clone();
         follow::subscribe(
             &self.0.executor,
             self.0.library.notices(),
             move |notice| match notice {
                 LibraryNotice::AlbumsSynced => {
+                    shelves.library_synced();
                     recommendations.library_synced();
                     search.library_changed();
+                    artists.reload();
+                    artist_detail.reload();
                 }
-                LibraryNotice::ArtistsSynced | LibraryNotice::SongsSynced => {
+                LibraryNotice::ArtistsSynced => {
                     search.library_changed();
+                    artists.reload();
+                }
+                LibraryNotice::SongsSynced => {
+                    search.library_changed();
+                    songs.reload();
+                    artist_detail.songs_synced();
                 }
                 LibraryNotice::SyncFailed(_)
                 | LibraryNotice::SyncFinished
@@ -183,37 +225,42 @@ impl Workspace {
         )
     }
 
-    /// A play the server has heard of may change what is worth recommending.
+    /// A play the server has heard of may change what was played and what is worth
+    /// recommending.
     fn follow_plays(&self) -> Task<()> {
         let recommendations = self.0.recommendations.clone();
+        let shelves = self.0.shelves.clone();
         follow::subscribe(
             &self.0.executor,
             self.0.player.notices(),
             move |notice| match notice {
-                PlayerNotice::Played => recommendations.renew(),
+                PlayerNotice::Played => {
+                    shelves.song_played();
+                    recommendations.renew();
+                }
             },
         )
     }
 
     /// The settings also change for what only their window shows, such as the devices listed,
     /// which the player hears nothing of.
-    fn follow_audio_settings(&self, audio: AudioSnapshot) -> Task<()> {
+    fn follow_audio_settings(
+        &self,
+        changes: watch::Receiver<AudioSnapshot>,
+        audio: &AudioSnapshot,
+    ) -> Task<()> {
         let (mut output, mut transitions) = (audio.output().clone(), audio.transitions());
         let player = self.0.player.clone();
-        follow::observe(
-            &self.0.executor,
-            self.0.settings.audio().subscribe(),
-            move |audio: AudioSnapshot| {
-                if *audio.output() != output {
-                    output = audio.output().clone();
-                    player.set_output(output.clone());
-                }
-                if audio.transitions() != transitions {
-                    transitions = audio.transitions();
-                    player.set_transitions(transitions);
-                }
-            },
-        )
+        follow::observe(&self.0.executor, changes, move |audio: AudioSnapshot| {
+            if *audio.output() != output {
+                output = audio.output().clone();
+                player.set_output(output.clone());
+            }
+            if audio.transitions() != transitions {
+                transitions = audio.transitions();
+                player.set_transitions(transitions);
+            }
+        })
     }
 
     fn follow_queue_settings(&self) -> Task<()> {
@@ -250,6 +297,25 @@ impl Workspace {
     pub(crate) fn shutdown(&self) {
         self.0.player.shutdown();
     }
+}
+
+/// Plays on the output and with the transitions of `audio`, at the volume saved in `store`.
+pub(crate) fn new_player(
+    executor: &Executor,
+    session: Session,
+    store: Result<config::Store, config::Error>,
+    audio: &AudioSnapshot,
+    song_cache: Option<playback::SongCache>,
+) -> playback::Player {
+    let player = playback::Player::new(
+        executor.clone(),
+        session,
+        store,
+        audio.output().clone(),
+        song_cache,
+    );
+    player.set_transitions(audio.transitions());
+    player
 }
 
 /// The same workspace, not another one for the same account.

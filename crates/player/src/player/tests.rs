@@ -52,7 +52,7 @@ fn the_bars_star_follows_the_song_and_the_favorites(cx: &mut TestAppContext) {
     cx.update(|window, cx| {
         actions::set_known_favorites(Some(HashSet::new()), cx);
         let asked = asked.clone();
-        cx.on_action(move |action: &actions::SetFavorite, _| {
+        cx.on_action(move |action: &actions::ToggleFavoriteOf, _| {
             asked.borrow_mut().push(action.clone());
         });
         let notified = notified.clone();
@@ -70,7 +70,7 @@ fn the_bars_star_follows_the_song_and_the_favorites(cx: &mut TestAppContext) {
     let favorite = Favorite::Song(song);
     assert_eq!(
         asked.take(),
-        [actions::SetFavorite::new(favorite.clone(), true)]
+        [actions::ToggleFavoriteOf::new(favorite.clone())]
     );
 
     let before = notified.get();

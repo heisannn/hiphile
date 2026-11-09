@@ -128,6 +128,51 @@ fn asking_for_what_already_is_sends_nothing(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn toggling_adds_what_is_no_favorite_and_takes_out_what_is(cx: &mut TestAppContext) {
+    let server = FavoritesServer::new(&["a"]);
+    let favorites = favorites_on(&server, cx);
+    settle(&favorites, cx);
+
+    favorites.toggle(song("n"));
+    favorites.toggle(song("a"));
+    assert_eq!(song_ids(&favorites), ["n"]);
+    settle(&favorites, cx);
+
+    assert_eq!(server.writes(), ["star id=n", "unstar id=a"]);
+}
+
+#[gpui_kit::test]
+fn toggling_goes_by_the_changes_still_on_their_way(cx: &mut TestAppContext) {
+    let server = FavoritesServer::new(&["a"]);
+    let favorites = favorites_on(&server, cx);
+    settle(&favorites, cx);
+    server.hold("star");
+
+    favorites.toggle(song("n"));
+    favorites.toggle(song("n"));
+    server.release("star");
+    settle(&favorites, cx);
+
+    assert_eq!(server.writes(), ["star id=n", "unstar id=n"]);
+    assert_eq!(favorites.snapshot().is_favorite(&target("n")), Some(false));
+}
+
+#[gpui_kit::test]
+fn toggling_does_nothing_until_the_favorites_load(cx: &mut TestAppContext) {
+    let server = FavoritesServer::new(&["a"]);
+    server.hold("getStarred2");
+    let favorites = favorites_on(&server, cx);
+
+    favorites.toggle(song("n"));
+    favorites.toggle(song("a"));
+    server.release("getStarred2");
+    settle(&favorites, cx);
+
+    assert!(server.writes().is_empty());
+    assert_eq!(song_ids(&favorites), ["a"]);
+}
+
+#[gpui_kit::test]
 fn a_removal_the_server_refuses_goes_back_where_it_was(cx: &mut TestAppContext) {
     let server = FavoritesServer::new(&["a", "b", "c"]);
     let favorites = favorites_on(&server, cx);

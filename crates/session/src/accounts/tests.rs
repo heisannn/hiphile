@@ -17,7 +17,7 @@ fn accounts(
     let executor = cx.update(|cx| gpui_host::executor(cx));
     let net = net::Client::new("hiphile-test").unwrap();
     let store = Ok(config::Store::at(dir.path()));
-    Accounts::new(executor, net, store, Some(keychain.clone()), None)
+    Accounts::new(executor, net, store, Some(keychain.clone()))
 }
 
 fn invalid(

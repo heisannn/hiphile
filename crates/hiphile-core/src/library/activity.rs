@@ -218,24 +218,23 @@ impl LibraryActivity {
         });
     }
 
+    /// Starts from what the sync and the download are doing already: either may have begun
+    /// before the activity was made.
     fn follow(&self, sync: &LibrarySync) -> Vec<Task<()>> {
         let executor = &self.0.executor;
         let this = self.downgrade();
+        let notices = sync.notices();
+        let sync_changes = sync.subscribe();
+        let progress = sync_activity(&sync_changes.borrow());
         let mut follows = vec![
-            follow::observe(executor, sync.subscribe(), {
+            follow::observe(executor, sync_changes, {
                 let this = this.clone();
                 move |status: SyncStatus| {
-                    let progress = status.progress().map(|progress| {
-                        ActivityStatus::of_sync(
-                            progress.stage(),
-                            progress.saved(),
-                            progress.total(),
-                        )
-                    });
+                    let progress = sync_activity(&status);
                     this.update(|this, state| this.sync_progress(state, progress));
                 }
             }),
-            follow::subscribe(executor, sync.notices(), {
+            follow::subscribe(executor, notices, {
                 let this = this.clone();
                 move |notice| {
                     if notice == LibraryNotice::SyncFinished {
@@ -244,20 +243,27 @@ impl LibraryActivity {
                 }
             }),
         ];
+        let mut download = None;
         if let Some(readings) = self.0.session.readings() {
             follows.push(follow::on_dictionaries_changed(executor, readings, {
                 let this = this.clone();
                 move || this.update(|this, state| this.read_ahead(state))
             }));
+            let changes = readings.subscribe();
+            download = ActivityStatus::of_download(changes.borrow().state());
             follows.push(follow::observe(
                 executor,
-                readings.subscribe(),
+                changes,
                 move |status: ReadingsStatus| {
                     let download = ActivityStatus::of_download(status.state());
                     this.update(|this, state| this.download_progress(state, download));
                 },
             ));
         }
+        self.0.state.update(|state| {
+            self.sync_progress(state, progress);
+            self.download_progress(state, download);
+        });
         follows
     }
 
@@ -350,6 +356,15 @@ impl LibraryActivity {
     fn downgrade(&self) -> WeakActivity {
         WeakActivity(Arc::downgrade(&self.0))
     }
+}
+
+fn sync_activity(status: &SyncStatus) -> Option<ActivityStatus> {
+    let progress = status.progress()?;
+    Some(ActivityStatus::of_sync(
+        progress.stage(),
+        progress.saved(),
+        progress.total(),
+    ))
 }
 
 impl State {

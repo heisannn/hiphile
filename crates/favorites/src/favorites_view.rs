@@ -12,9 +12,9 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Context, FocusHandle, Focusable, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, ScrollStrategy, SharedString, Styled as _,
-    Subscription, Task, UniformListScrollHandle, Window, div, prelude::FluentBuilder as _,
+    AnyElement, App, Context, FocusHandle, Focusable, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, ScrollStrategy, SharedString, Styled as _, Subscription, Task,
+    UniformListScrollHandle, Window, div, prelude::FluentBuilder as _,
 };
 use hiphile_core::favorites::{
     Favorite, FavoriteLists, FavoritesLoad, FavoritesNotice, FavoritesSnapshot, FavoritesState,
@@ -232,16 +232,7 @@ impl Favorites {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let session = self.session.clone();
-        self._album_task = cx.spawn_in(window, async move |_, cx| {
-            let songs = cx
-                .background_spawn(async move { session.album(&album).await })
-                .await
-                .map(|loaded| Arc::from(loaded.into_parts().1))
-                .map_err(|error| session::describe(&error));
-            cx.update(|window, cx| action.finish(songs, window, cx))
-                .ok();
-        });
+        self._album_task = action.start(album, &self.session, window, cx);
     }
 
     fn go_to_album(&self, window: &mut Window, cx: &mut Context<Self>) {

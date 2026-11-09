@@ -13,6 +13,7 @@ pub mod navigation;
 pub mod playlists;
 pub mod search;
 pub mod settings;
+mod shelf;
 pub mod songs;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
@@ -21,4 +22,5 @@ mod testing;
 mod workspace;
 
 pub use hiphile::{Caches, Hiphile, HiphileSnapshot};
+pub use shelf::Shelf;
 pub use workspace::Workspace;

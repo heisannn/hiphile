@@ -7,7 +7,6 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-dirs.workspace = true
 hex.workspace = true
 lindera.workspace = true
 nucleo-matcher.workspace = true

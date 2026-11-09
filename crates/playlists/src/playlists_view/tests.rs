@@ -158,7 +158,7 @@ fn the_favorite_key_follows_the_song_selected(cx: &mut TestAppContext) {
     cx.update(|_, cx| {
         actions::set_known_favorites(Some(Default::default()), cx);
         let asked = asked.clone();
-        cx.on_action(move |action: &actions::SetFavorite, _| {
+        cx.on_action(move |action: &actions::ToggleFavoriteOf, _| {
             asked.borrow_mut().push(action.favorite().target());
         });
     });

@@ -594,7 +594,12 @@ impl Catalog {
 
 pub(crate) fn servers_dir() -> Result<PathBuf, Error> {
     let cache = dirs::cache_dir().ok_or(Error::NoCacheDir)?;
-    Ok(cache.join("hiphile").join("servers"))
+    Ok(servers_in(&cache.join("hiphile")))
+}
+
+/// Where each server's covers and songs are kept in the app's cache folder `cache`.
+pub(crate) fn servers_in(cache: &Path) -> PathBuf {
+    cache.join("servers")
 }
 
 /// `host-hash`: readable, and different for servers on one host under

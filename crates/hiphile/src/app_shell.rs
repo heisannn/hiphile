@@ -1,7 +1,7 @@
 use account::{SignIn, Start};
 use actions::{
-    AddToPlaylist, ChoosePlaylist, EnqueueSongs, NewPlaylist, PlaySongs, SetFavorite, ShowAlbum,
-    ShowArtist,
+    AddToPlaylist, ChoosePlaylist, EnqueueSongs, NewPlaylist, PlaySongs, ShowAlbum, ShowArtist,
+    ToggleFavoriteOf,
 };
 use artists::{Artists, ArtistsEvent};
 use favorites::Favorites;
@@ -22,7 +22,7 @@ use gpui_kit::{
     prelude::FluentBuilder as _, px,
 };
 use hiphile_core::desktop::{DiscordStatus, MediaNotice, SystemMediaControls};
-use hiphile_core::favorites::{FavoritesNotice, FavoritesState};
+use hiphile_core::favorites::{FavoritesLoad, FavoritesNotice, FavoritesState};
 use hiphile_core::library::{Albums, LibraryActivity, LibraryNotice, LibrarySync, SyncStatus};
 use hiphile_core::navigation::{Destination, History, Location};
 use hiphile_core::playlists::PlaylistsState;
@@ -30,7 +30,7 @@ use hiphile_core::settings::QueueSettings;
 use hiphile_core::{Hiphile, HiphileSnapshot, Workspace};
 use home::Home;
 use library::{Library, LibraryEvent, Refresh};
-use playback::{PlayerNotice, PlayerSnapshot};
+use playback::PlayerSnapshot;
 use player::{
     CloseLyrics, CycleRepeat, LyricsView, MiniPlayer, NextSong, Panels, Player, PreviousSong,
     QueueView, RepeatMode, SaveQueue, SeekBackward, SeekForward, SetRepeat, ToggleLyrics,
@@ -116,7 +116,6 @@ struct WorkspaceScreen {
     _media_notices: Task<()>,
     _quit: Subscription,
     _player_changes: Task<()>,
-    _player_notices: Task<()>,
     _library_events: Subscription,
     _library_notices: Task<()>,
     _artists_events: Subscription,
@@ -264,12 +263,15 @@ impl AppShell {
 
     fn open_workspace(&mut self, core: Workspace, window: &mut Window, cx: &mut Context<Self>) {
         let session = core.session().clone();
-        let home =
-            cx.new(|cx| Home::new(session.clone(), core.recommendations().clone(), window, cx));
+        let (shelves, recommendations) = (core.shelves().clone(), core.recommendations().clone());
+        let home = cx.new(|cx| Home::new(session.clone(), shelves, recommendations, window, cx));
         let library =
             cx.new(|cx| Library::new(session.clone(), core.library().clone(), window, cx));
-        let artists = cx.new(|cx| Artists::new(session.clone(), window, cx));
-        let songs = cx.new(|cx| Songs::new(session.clone(), window, cx));
+        let artists = cx.new(|cx| {
+            let (list, detail) = (core.artists().clone(), core.artist_detail().clone());
+            Artists::new(session.clone(), list, detail, window, cx)
+        });
+        let songs = cx.new(|cx| Songs::new(session.clone(), core.songs().clone(), window, cx));
         let playlists =
             cx.new(|cx| Playlists::new(session.clone(), core.playlists().clone(), window, cx));
         let playlist_choices = follow_playlist_choices(core.playlists(), cx);
@@ -305,14 +307,6 @@ impl AppShell {
                 async {}
             }
         });
-        let player_notices = gpui_host::subscribe(core.player().notices(), cx, {
-            let home = home.downgrade();
-            move |_, notice, cx| match notice {
-                PlayerNotice::Played => {
-                    home.update(cx, |home, cx| home.song_played(cx)).ok();
-                }
-            }
-        });
         let player_changes = follow_player(
             core.player(),
             NowPlayingScreens {
@@ -326,7 +320,7 @@ impl AppShell {
             cx,
         );
         let library_events = cx.subscribe(&library, Self::on_library_event);
-        let library_notices = follow_library(core.library(), &home, &artists, &songs, window, cx);
+        let library_notices = follow_sync_failures(core.library(), window, cx);
         let artists_events = cx.subscribe(&artists, |this, _, event, cx| match event {
             ArtistsEvent::LeftArtist(artist) => {
                 this.remember(Location::Artists(Some(artist.clone())), cx);
@@ -363,7 +357,6 @@ impl AppShell {
             _media_notices: media_notices,
             _quit: quit,
             _player_changes: player_changes,
-            _player_notices: player_notices,
             _library_events: library_events,
             _library_notices: library_notices,
             _artists_events: artists_events,
@@ -428,8 +421,17 @@ impl AppShell {
     ) -> (Entity<Favorites>, (Task<()>, Task<()>)) {
         let state = core.favorites();
         let view = cx.new(|cx| Favorites::new(core.session().clone(), state.clone(), window, cx));
-        let notices =
-            gpui_host::subscribe_in(state.notices(), window, cx, Self::on_favorites_notice);
+        let notices = state.notices();
+        // The workspace starts loading before the shell follows it, so a failure may already
+        // have been told to no one
+        if let FavoritesLoad::Failed(error) = state.snapshot().load().clone()
+            && notices.is_empty()
+        {
+            cx.defer_in(window, move |this, window, cx| {
+                this.on_favorites_notice(FavoritesNotice::LoadFailed(error), window, cx);
+            });
+        }
+        let notices = gpui_host::subscribe_in(notices, window, cx, Self::on_favorites_notice);
         (view, (follow_favorites(state, cx), notices))
     }
 
@@ -523,7 +525,7 @@ impl AppShell {
         }
         workspace.destination = destination;
         match destination {
-            Destination::Home => workspace.home.read(cx).renew_recommended(),
+            Destination::Home => workspace.core.recommendations().renew(),
             // Another device may have changed them meanwhile
             Destination::Playlists => workspace.core.playlists().refresh(),
             Destination::Favorites => workspace.core.favorites().refresh(),
@@ -1063,6 +1065,15 @@ fn follow_library_activity(
     let changes = activity.subscribe();
     let mut is_shown = changes.borrow().is_notice_shown();
     let notice = cx.new(|cx| ActivityNotice::new(activity, cx));
+    // The library may have got busy before the shell followed it
+    if is_shown {
+        cx.defer_in(window, {
+            let notice = notice.clone();
+            move |_, window, cx| {
+                window.push_notification(ActivityNotice::notification(&notice), cx);
+            }
+        });
+    }
     gpui_host::observe_in(changes, window, cx, move |_, activity, window, cx| {
         if activity.is_notice_shown() == is_shown {
             return;
@@ -1076,43 +1087,23 @@ fn follow_library_activity(
     })
 }
 
-/// Passes what a sync brought on to the screens that show it, which open on the home screen.
-fn follow_library(
+/// Tells a sync's failures on the screens that do not show them themselves, which open on the
+/// home screen.
+fn follow_sync_failures(
     sync: &LibrarySync,
-    home: &Entity<Home>,
-    artists: &Entity<Artists>,
-    songs: &Entity<Songs>,
     window: &mut Window,
     cx: &mut Context<AppShell>,
 ) -> Task<()> {
     // The workspace starts its sync before the screens exist, so a failure may already have
-    // been told to no one. What succeeded before them, they read when they load.
+    // been told to no one
     if let Some(error) = failed_sync(&sync.status()) {
         window.push_notification((NotificationType::Error, sync_failure(error)), cx);
     }
-    let home = home.downgrade();
-    let artists = artists.downgrade();
-    let songs = songs.downgrade();
     gpui_host::subscribe_in(
         sync.notices(),
         window,
         cx,
         move |this, notice, window, cx| match notice {
-            LibraryNotice::AlbumsSynced => {
-                home.update(cx, |home, cx| home.library_synced(cx)).ok();
-                artists.update(cx, |artists, cx| artists.refresh(cx)).ok();
-            }
-            LibraryNotice::ArtistsSynced => {
-                artists
-                    .update(cx, |artists, cx| artists.artists_synced(cx))
-                    .ok();
-            }
-            LibraryNotice::SongsSynced => {
-                songs.update(cx, |songs, cx| songs.songs_synced(cx)).ok();
-                artists
-                    .update(cx, |artists, cx| artists.songs_synced(cx))
-                    .ok();
-            }
             LibraryNotice::SyncFailed(error) => {
                 // The albums' screen says so itself
                 if let Screen::Workspace(workspace) = &this.screen
@@ -1121,7 +1112,11 @@ fn follow_library(
                     window.push_notification((NotificationType::Error, sync_failure(&error)), cx);
                 }
             }
-            LibraryNotice::SyncFinished | LibraryNotice::StageSynced(..) => {}
+            LibraryNotice::AlbumsSynced
+            | LibraryNotice::ArtistsSynced
+            | LibraryNotice::SongsSynced
+            | LibraryNotice::SyncFinished
+            | LibraryNotice::StageSynced(..) => {}
         },
     )
 }
@@ -1358,13 +1353,10 @@ impl Render for AppShell {
                 .on_action(cx.listener(|this, _: &ShowFavorites, window, cx| {
                     this.show_destination(Destination::Favorites, window, cx);
                 }))
-                .on_action(cx.listener(|this, action: &SetFavorite, _, _| {
+                .on_action(cx.listener(|this, action: &ToggleFavoriteOf, _, _| {
                     if let Screen::Workspace(workspace) = &this.screen {
                         let favorite = action.favorite().clone();
-                        workspace
-                            .core
-                            .favorites()
-                            .set_favorite(favorite, action.is_favorite());
+                        workspace.core.favorites().toggle(favorite);
                     }
                 }))
                 .on_action(cx.listener(|this, action: &ShowAlbum, window, cx| {

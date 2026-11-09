@@ -1,8 +1,6 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use actions::{AlbumAction, Placement};
-use futures::{StreamExt as _, TryStreamExt as _, stream};
 use gpui_kit::component::{
     ActiveTheme as _, Sizable as _, WindowExt as _,
     button::Button,
@@ -18,17 +16,18 @@ use gpui_kit::{
     Pixels, Render, ScrollStrategy, SharedString, Styled as _, Subscription, Task,
     UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px,
 };
+use hiphile_core::Shelf;
 use hiphile_core::artists::{
-    ArtistDates, ArtistOrder, ArtistSort, album_by_album, arrange, artist_index, artists_of_albums,
-    newest_first,
+    ArtistDates, ArtistDetail, ArtistList, ArtistListStatus, ArtistOrder, ArtistPage, ArtistSort,
+    arrange, artist_index,
 };
 use hiphile_core::favorites::Favorite;
-use subsonic::{Album, Artist, ArtistId, CoverArtId, PlaylistId, Song, SongId};
+use subsonic::{Artist, ArtistId, PlaylistId, SongId};
 use ui::card_grid::GridMotion;
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
 use ui::{
-    ListFilter, ListPaneHeader, LoadFailure, MasterDetail, NowPlaying, RefreshFailure, Shelf,
-    SortOption, centered, muted_text, no_matches, row_list, sort_menu,
+    ListFilter, ListPaneHeader, LoadFailure, MasterDetail, NowPlaying, RefreshFailure, SortOption,
+    centered, muted_text, no_matches, row_list, sort_menu,
 };
 
 mod artist_row;
@@ -42,13 +41,7 @@ use crate::{
     PlayNext, ROOT_CONTEXT,
 };
 
-const TOP_SONGS: u32 = 10;
 const TOP_SONGS_COLLAPSED: usize = 5;
-const SIMILAR_ARTISTS: u32 = 6;
-/// Top songs and similar artists take the server's outside service a while:
-/// moving through the list with the arrow keys should not ask about every artist.
-const SERVER_DELAY: Duration = Duration::from_millis(250);
-const ALBUMS_AT_ONCE: usize = 8;
 /// In pixels: about a row of cards, so that scrolling does not show them arriving.
 const DETAIL_OVERDRAW: f32 = 300.;
 
@@ -59,8 +52,11 @@ pub enum ArtistsEvent {
 
 pub struct Artists {
     session: session::Session,
+    artist_list: ArtistList,
+    artist_detail: ArtistDetail,
     is_activated: bool,
-    artists: ArtistList,
+    /// What is on show of the list, which follows `artist_list`.
+    artists: Shelf<Artist>,
     refresh_error: Option<SharedString>,
     is_refreshing: bool,
     index: Arc<fuzzy::Index>,
@@ -73,7 +69,10 @@ pub struct Artists {
     /// Whether the list on its way should come to the artist just revealed,
     /// who may not be on the list yet or may move when it arrives.
     revealing: bool,
-    detail: Option<ShownArtist>,
+    /// What is on show of the detail, which follows `artist_detail`.
+    detail: Option<ArtistPage>,
+    /// The page last taken from `artist_detail`, which a page it sends again is compared with.
+    taken_page: Option<ArtistPage>,
     selection: Option<Item>,
     top_songs_expanded: bool,
     now_playing: Option<NowPlaying>,
@@ -89,39 +88,24 @@ pub struct Artists {
     /// The artist whose songs a command is still waiting for.
     artist_being_fetched: Option<ArtistId>,
     panes: Entity<ResizableState>,
-    _list_task: Task<()>,
-    _albums_task: Task<()>,
-    _top_songs_task: Task<()>,
-    _similar_task: Task<()>,
     _action_task: Task<()>,
     _index_task: Task<()>,
+    _list_changes: Task<()>,
+    _detail_changes: Task<()>,
     _subscriptions: Vec<Subscription>,
     _readings_changes: Option<Task<()>>,
-}
-
-enum ArtistList {
-    Loading,
-    Loaded(Arc<Vec<Artist>>),
-    Failed(SharedString),
-}
-
-struct ShownArtist {
-    id: ArtistId,
-    /// Known once the list, the saved albums or the server has said.
-    name: Option<SharedString>,
-    cover_art: Option<CoverArtId>,
-    albums: Shelf<Album>,
-    top_songs: Shelf<Song>,
-    similar: Shelf<Artist>,
-    /// Whether the artist has no albums of their own, only songs on others',
-    /// which `top_songs` then holds in place of what the server ranks.
-    is_only_on_songs: bool,
 }
 
 impl EventEmitter<ArtistsEvent> for Artists {}
 
 impl Artists {
-    pub fn new(session: session::Session, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        session: session::Session,
+        artist_list: ArtistList,
+        artist_detail: ArtistDetail,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter artists"));
         let list_focus = cx.focus_handle().tab_stop(true);
         let detail_focus = cx.focus_handle().tab_stop(true);
@@ -142,10 +126,14 @@ impl Artists {
         let readings_changes = session.readings().map(|readings| {
             ui::on_readings_changed(readings, cx, |this: &mut Self, cx| this.index_artists(cx))
         });
+        let list_changes = gpui_host::observe(artist_list.subscribe(), cx, Self::follow_list);
+        let detail_changes = gpui_host::observe(artist_detail.subscribe(), cx, Self::follow_detail);
         Self {
             session,
+            artist_list,
+            artist_detail,
             is_activated: false,
-            artists: ArtistList::Loading,
+            artists: Shelf::Loading,
             refresh_error: None,
             is_refreshing: false,
             index: Arc::default(),
@@ -155,6 +143,7 @@ impl Artists {
             selected_artist: None,
             revealing: false,
             detail: None,
+            taken_page: None,
             selection: None,
             top_songs_expanded: false,
             now_playing: None,
@@ -168,12 +157,10 @@ impl Artists {
             detail_width: px(0.),
             artist_being_fetched: None,
             panes: cx.new(|_| ResizableState::default()),
-            _list_task: Task::ready(()),
-            _albums_task: Task::ready(()),
-            _top_songs_task: Task::ready(()),
-            _similar_task: Task::ready(()),
             _action_task: Task::ready(()),
             _index_task: Task::ready(()),
+            _list_changes: list_changes,
+            _detail_changes: detail_changes,
             _subscriptions: subscriptions,
             _readings_changes: readings_changes,
         }
@@ -182,117 +169,56 @@ impl Artists {
     pub fn activate(&mut self, cx: &mut Context<Self>) {
         if !self.is_activated {
             self.is_activated = true;
-            self.load_artists(cx);
+            self.artist_list.open();
+            self.follow_list(self.artist_list.status(), cx);
         }
     }
 
-    /// Does nothing to a screen that has yet to show.
-    pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        if !self.is_activated {
-            return;
+    fn follow_list(&mut self, status: ArtistListStatus, cx: &mut Context<Self>) {
+        self.refresh_error = status.failure().map(|error| error.to_owned().into());
+        let has_new_dates = self.dates != *status.dates();
+        self.dates = status.dates().clone();
+        if has_new_dates && *status.artists() == self.artists {
+            self.apply_filter(cx);
         }
-        self.load_artists(cx);
-        if let Some(artist) = self.selected_artist.clone() {
-            self.load_detail(artist, cx);
-        }
+        self.show_artists(status.artists().clone(), status.is_refreshing(), cx);
     }
 
-    /// Does nothing to a screen that has yet to show.
-    pub fn artists_synced(&mut self, cx: &mut Context<Self>) {
-        if self.is_activated {
-            self.load_artists(cx);
-        }
-    }
-
-    /// Reads the saved songs again for an artist with no albums of their own,
-    /// whose page is made of them.
-    pub fn songs_synced(&mut self, cx: &mut Context<Self>) {
-        let artist = self
-            .detail
-            .as_ref()
-            .filter(|detail| matches!(&detail.albums, Shelf::Loaded(albums) if albums.is_empty()))
-            .map(|detail| detail.id.clone());
-        if let Some(artist) = artist {
-            self.load_albums(artist, cx);
-        }
-    }
-
-    /// Shows the saved artists, which a sync keeps up to date. Before there are
-    /// any, shows what the saved albums say, then what the server says.
-    fn load_artists(&mut self, cx: &mut Context<Self>) {
-        self.is_refreshing = true;
-        self.refresh_error = None;
-        if self.loaded_artists().is_none() {
-            self.artists = ArtistList::Loading;
-        }
-        let client = self.session.client().clone();
-        let catalog = self.session.catalog().cloned();
-        let has_list = self.loaded_artists().is_some();
-        self._list_task = cx.spawn(async move |this, cx| {
-            if let Some(catalog) = catalog {
-                let saved = cx
-                    .background_spawn(async move {
-                        // Albums that can't be read only leave the artists without dates
-                        let albums = catalog.albums();
-                        let dates = albums.as_deref().map(ArtistDates::of_albums);
-                        let dates = Arc::new(dates.unwrap_or_default());
-                        let artists = catalog.artists()?;
-                        if !artists.is_empty() {
-                            return Ok((artists, dates, true));
-                        }
-                        Ok::<_, catalog::Error>((artists_of_albums(&albums?), dates, false))
-                    })
-                    .await;
-                // A copy that can't be read only means waiting for the server
-                match saved {
-                    Ok((artists, dates, true)) => {
-                        this.update(cx, |this, cx| {
-                            this.dates = dates;
-                            this.finish_loading_artists(Ok(artists), cx);
-                        })
-                        .ok();
-                        return;
-                    }
-                    Ok((artists, dates, false)) => {
-                        this.update(cx, |this, cx| {
-                            this.dates = dates;
-                            if !has_list && !artists.is_empty() {
-                                this.set_artists(artists, cx);
-                            }
-                        })
-                        .ok();
-                    }
-                    Err(_) => {}
-                }
-            }
-            let result = cx
-                .background_spawn(async move { client.artists().await })
-                .await
-                .map_err(|error| SharedString::from(session::describe(&error)));
-            this.update(cx, |this, cx| this.finish_loading_artists(result, cx))
-                .ok();
-        });
-        cx.notify();
-    }
-
-    fn finish_loading_artists(
+    fn show_artists(
         &mut self,
-        result: Result<Vec<Artist>, SharedString>,
+        artists: Shelf<Artist>,
+        is_refreshing: bool,
         cx: &mut Context<Self>,
     ) {
-        self.is_refreshing = false;
-        match result {
-            Ok(artists) => self.set_artists(artists, cx),
-            Err(error) if self.loaded_artists().is_some() => self.refresh_error = Some(error),
-            Err(error) => self.artists = ArtistList::Failed(error),
+        self.is_refreshing = is_refreshing;
+        if artists != self.artists {
+            match artists {
+                Shelf::Loaded(artists) => self.set_artists(artists, cx),
+                artists => self.artists = artists,
+            }
         }
-        self.revealing = false;
+        if !is_refreshing {
+            self.revealing = false;
+        }
         cx.notify();
+    }
+
+    fn follow_detail(&mut self, page: Option<ArtistPage>, cx: &mut Context<Self>) {
+        if page != self.taken_page {
+            self.take_page(page);
+            cx.notify();
+        }
+    }
+
+    fn take_page(&mut self, page: Option<ArtistPage>) {
+        self.taken_page.clone_from(&page);
+        self.detail = page;
     }
 
     /// The selection stays, also on an artist the list does not have, as one who
     /// only appears on songs, unless the artist was on the list and has gone.
-    fn set_artists(&mut self, artists: Vec<Artist>, cx: &mut Context<Self>) {
+    fn set_artists(&mut self, artists: impl Into<Arc<[Artist]>>, cx: &mut Context<Self>) {
+        let artists = artists.into();
         let is_listed = |list: &[Artist], id: &ArtistId| list.iter().any(|a| a.id() == id);
         let has_gone = self.selected_artist.as_ref().is_some_and(|selected| {
             let was_listed = self
@@ -300,11 +226,12 @@ impl Artists {
                 .is_some_and(|old| is_listed(old, selected));
             was_listed && !is_listed(&artists, selected)
         });
-        self.artists = ArtistList::Loaded(Arc::new(artists));
+        self.artists = Shelf::Loaded(artists);
         self.index_artists(cx);
         if has_gone {
             self.selected_artist = None;
-            self.detail = None;
+            self.artist_detail.close();
+            self.take_page(None);
         }
         if self.selected_artist.is_none() {
             let first = self.visible_artist(0).map(|artist| artist.id().clone());
@@ -318,10 +245,10 @@ impl Artists {
         cx.notify();
     }
 
-    fn loaded_artists(&self) -> Option<&Arc<Vec<Artist>>> {
+    fn loaded_artists(&self) -> Option<&Arc<[Artist]>> {
         match &self.artists {
-            ArtistList::Loaded(artists) => Some(artists),
-            _ => None,
+            Shelf::Loaded(artists) => Some(artists),
+            Shelf::Loading | Shelf::Failed(_) => None,
         }
     }
 
@@ -410,16 +337,8 @@ impl Artists {
         let listed = self
             .loaded_artists()
             .and_then(|artists| artists.iter().find(|listed| listed.id() == &artist));
-        self.detail = Some(ShownArtist {
-            id: artist.clone(),
-            name: listed.map(|listed| listed.name().to_owned().into()),
-            cover_art: listed.and_then(|listed| listed.cover_art().cloned()),
-            albums: Shelf::Loading,
-            top_songs: Shelf::Loading,
-            similar: Shelf::Loading,
-            is_only_on_songs: false,
-        });
-        self.load_detail(artist, cx);
+        self.artist_detail.show(&artist, listed);
+        self.take_page(self.artist_detail.page());
         cx.notify();
     }
 
@@ -447,195 +366,6 @@ impl Artists {
         if let Some(position) = self.selected_position() {
             self.list_scroll
                 .scroll_to_item(position, ScrollStrategy::Nearest);
-        }
-    }
-
-    fn load_detail(&mut self, artist: ArtistId, cx: &mut Context<Self>) {
-        self.load_albums(artist.clone(), cx);
-        self.load_similar(artist.clone(), cx);
-        self.load_top_songs(artist, cx);
-    }
-
-    /// Shows the saved albums of `artist` at once. The server's answer replaces
-    /// them, and names an artist nothing else had a name for.
-    fn load_albums(&mut self, artist: ArtistId, cx: &mut Context<Self>) {
-        if let Some(detail) = &mut self.detail {
-            detail.albums.begin();
-        }
-        let client = self.session.client().clone();
-        let catalog = self.session.catalog().cloned();
-        self._albums_task = cx.spawn(async move |this, cx| {
-            if let Some(catalog) = catalog.clone() {
-                let id = artist.clone();
-                let saved = cx
-                    .background_spawn(async move { catalog.albums_by_artist(&id) })
-                    .await;
-                if let Ok(saved) = saved
-                    && !saved.is_empty()
-                {
-                    this.update(cx, |this, cx| this.show_saved_albums(&artist, saved, cx))
-                        .ok();
-                }
-            }
-            cx.background_executor().timer(SERVER_DELAY).await;
-            let result = {
-                let artist = artist.clone();
-                cx.background_spawn(async move { client.artist(&artist).await })
-                    .await
-            }
-            .map(|found| found.into_parts())
-            .map_err(|error| SharedString::from(session::describe(&error)));
-            // Read now so that "no albums" never shows on the way to the songs
-            let has_no_albums = matches!(&result, Ok((_, albums)) if albums.is_empty());
-            let songs = match catalog {
-                Some(catalog) if has_no_albums => {
-                    let artist = artist.clone();
-                    cx.background_spawn(async move { saved_songs_naming(&catalog, &artist) })
-                        .await
-                }
-                _ => Vec::new(),
-            };
-            this.update(cx, |this, cx| {
-                this.finish_loading_albums(&artist, result, songs, cx);
-            })
-            .ok();
-        });
-        cx.notify();
-    }
-
-    fn show_saved_albums(&mut self, id: &ArtistId, albums: Vec<Album>, cx: &mut Context<Self>) {
-        let Some(detail) = self.detail.as_mut().filter(|detail| &detail.id == id) else {
-            return;
-        };
-        let names_artist = detail.name.is_none();
-        if names_artist {
-            detail.name = albums
-                .first()
-                .and_then(Album::artist)
-                .map(|name| name.to_owned().into());
-        }
-        detail.albums = Shelf::Loaded(newest_first(albums).into());
-        if names_artist {
-            self.load_top_songs(id.clone(), cx);
-        }
-        cx.notify();
-    }
-
-    fn finish_loading_albums(
-        &mut self,
-        id: &ArtistId,
-        result: Result<(Artist, Vec<Album>), SharedString>,
-        songs_naming_artist: Vec<Song>,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(detail) = self.detail.as_mut().filter(|detail| &detail.id == id) else {
-            return;
-        };
-        let had_name = detail.name.is_some();
-        let was_only_on_songs = detail.is_only_on_songs;
-        match result {
-            Ok((artist, albums)) => {
-                detail.name = Some(artist.name().to_owned().into());
-                if artist.cover_art().is_some() {
-                    detail.cover_art = artist.cover_art().cloned();
-                }
-                detail.albums.finish(Ok(newest_first(albums)));
-                detail.is_only_on_songs = !songs_naming_artist.is_empty();
-            }
-            Err(error) => detail.albums.finish(Err(error)),
-        }
-        if detail.is_only_on_songs {
-            // A failed refresh brings no songs: those on show stay
-            if !songs_naming_artist.is_empty() {
-                detail.top_songs = Shelf::Loaded(songs_naming_artist.into());
-            }
-            self._top_songs_task = Task::ready(());
-        } else if was_only_on_songs || (!had_name && detail.name.is_some()) {
-            // Top songs are asked for by name, which may only now have arrived
-            self.load_top_songs(id.clone(), cx);
-        }
-        cx.notify();
-    }
-
-    fn load_top_songs(&mut self, artist: ArtistId, cx: &mut Context<Self>) {
-        let Some(detail) = self.detail.as_mut().filter(|detail| detail.id == artist) else {
-            return;
-        };
-        if detail.is_only_on_songs {
-            return;
-        }
-        detail.top_songs.begin();
-        let Some(name) = detail.name.clone() else {
-            return;
-        };
-        let client = self.session.client().clone();
-        self._top_songs_task = cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(SERVER_DELAY).await;
-            let result = cx
-                .background_spawn(async move { client.top_songs(&name, TOP_SONGS).await })
-                .await;
-            this.update(cx, |this, cx| {
-                let result = result.map_err(|error| {
-                    format!("Couldn't load top songs. {}", session::describe(&error)).into()
-                });
-                this.finish_loading_top_songs(&artist, result, cx);
-            })
-            .ok();
-        });
-        cx.notify();
-    }
-
-    fn finish_loading_top_songs(
-        &mut self,
-        id: &ArtistId,
-        result: Result<Vec<Song>, SharedString>,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(detail) = self.detail.as_mut().filter(|detail| &detail.id == id) {
-            detail.top_songs.finish(result);
-            cx.notify();
-        }
-    }
-
-    fn load_similar(&mut self, artist: ArtistId, cx: &mut Context<Self>) {
-        let Some(detail) = self.detail.as_mut().filter(|detail| detail.id == artist) else {
-            return;
-        };
-        detail.similar.begin();
-        let client = self.session.client().clone();
-        self._similar_task = cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(SERVER_DELAY).await;
-            let result = {
-                let artist = artist.clone();
-                cx.background_spawn(async move {
-                    client.similar_artists(&artist, SIMILAR_ARTISTS).await
-                })
-                .await
-            };
-            this.update(cx, |this, cx| {
-                let result = result.map_err(|error| {
-                    format!(
-                        "Couldn't load similar artists. {}",
-                        session::describe(&error)
-                    )
-                    .into()
-                });
-                this.finish_loading_similar(&artist, result, cx);
-            })
-            .ok();
-        });
-        cx.notify();
-    }
-
-    fn finish_loading_similar(
-        &mut self,
-        id: &ArtistId,
-        result: Result<Vec<Artist>, SharedString>,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(detail) = self.detail.as_mut().filter(|detail| &detail.id == id) {
-            detail.similar.finish(result);
-            cx.notify();
         }
     }
 
@@ -681,27 +411,18 @@ impl Artists {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.artist_being_fetched = Some(artist.clone());
+        let songs = self.artist_detail.songs(&artist);
+        self.artist_being_fetched = Some(artist);
         cx.notify();
-        let session = self.session.clone();
-        let shown = self
-            .detail
-            .as_ref()
-            .filter(|detail| detail.id == artist && matches!(detail.albums, Shelf::Loaded(_)))
-            .map(|detail| detail.albums.items().to_vec());
         self._action_task = cx.spawn_in(window, async move |this, cx| {
-            let songs = cx
-                .background_spawn(async move { artist_songs(&session, &artist, shown).await })
-                .await
-                .map_err(|error| session::describe(&error));
+            let songs = songs.await;
             cx.update(|window, cx| match songs {
                 Ok(songs) => {
                     if let Some(command) = action.command(songs.into()) {
                         window.dispatch_action(command, cx);
                     }
                 }
-                Err(error) => {
-                    let message = format!("Couldn't load this artist. {error}");
+                Err(message) => {
                     window.push_notification((NotificationType::Error, message), cx);
                 }
             })
@@ -745,7 +466,7 @@ impl Artists {
                     Button::new("retry-refresh-artists")
                         .label("Retry")
                         .small()
-                        .on_click(cx.listener(|this, _, _, cx| this.load_artists(cx))),
+                        .on_click(cx.listener(|this, _, _, _| this.artist_list.reload())),
                 ))
             })
             .child(self.render_list(window, cx))
@@ -832,21 +553,21 @@ impl Artists {
 
     fn render_rows(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let artists = match &self.artists {
-            ArtistList::Loading => return centered(Spinner::new()).into_any_element(),
-            ArtistList::Failed(error) => {
+            Shelf::Loading => return centered(Spinner::new()).into_any_element(),
+            Shelf::Failed(error) => {
                 return LoadFailure::new(
                     "Couldn't load artists",
-                    error.clone(),
+                    error.clone().into(),
                     Button::new("retry-artists")
                         .label("Retry")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.list_focus.focus(window, cx);
-                            this.load_artists(cx);
+                            this.artist_list.reload();
                         })),
                 )
                 .into_any_element();
             }
-            ArtistList::Loaded(artists) => artists.clone(),
+            Shelf::Loaded(artists) => artists.clone(),
         };
         if artists.is_empty() {
             return centered(muted_text("This server has no artists.", cx)).into_any_element();
@@ -913,43 +634,6 @@ fn add_selection_command(playlist: Option<&PlaylistId>) -> Box<dyn gpui_kit::Act
     Box::new(AddSelectionToPlaylist {
         playlist: playlist.cloned(),
     })
-}
-
-async fn artist_songs(
-    session: &session::Session,
-    artist: &ArtistId,
-    albums: Option<Vec<Album>>,
-) -> Result<Vec<Song>, client::Error> {
-    let albums = match albums {
-        Some(albums) => albums,
-        None => {
-            let (_, albums) = session.client().artist(artist).await?.into_parts();
-            newest_first(albums)
-        }
-    };
-    let fetches: Vec<_> = albums
-        .iter()
-        .map(|album| session.album(album.id()))
-        .collect();
-    let albums: Vec<_> = stream::iter(fetches)
-        .buffered(ALBUMS_AT_ONCE)
-        .try_collect()
-        .await?;
-    let mut songs: Vec<Song> = albums
-        .into_iter()
-        .flat_map(|album| album.into_parts().1)
-        .collect();
-    if songs.is_empty()
-        && let Some(catalog) = session.catalog()
-    {
-        songs = saved_songs_naming(catalog, artist);
-    }
-    Ok(songs)
-}
-
-/// A copy that can't be read has nothing to add to what the server said.
-fn saved_songs_naming(catalog: &catalog::Catalog, artist: &ArtistId) -> Vec<Song> {
-    album_by_album(catalog.songs_by_artist(artist).unwrap_or_default())
 }
 
 #[cfg(test)]

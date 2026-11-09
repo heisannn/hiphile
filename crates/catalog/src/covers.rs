@@ -7,7 +7,7 @@ use subsonic::CoverArtRequest;
 
 use crate::Error;
 use crate::blobs::Blobs;
-use crate::store::servers_dir;
+use crate::store::servers_in;
 
 /// How much cover art may stay on disk, across every server, unless the
 /// settings say otherwise. When a write goes over, the images used longest ago
@@ -54,8 +54,9 @@ impl KeptCover {
 }
 
 impl CoverStore {
-    pub fn user(capacity: u64) -> Result<Self, Error> {
-        Ok(Self::at(servers_dir()?, capacity, COVER_REFRESH_AFTER))
+    /// In the app's cache folder `cache`, beside the songs.
+    pub fn in_cache(cache: &Path, capacity: u64) -> Self {
+        Self::at(servers_in(cache), capacity, COVER_REFRESH_AFTER)
     }
 
     pub fn at(root: impl AsRef<Path>, capacity: u64, refresh_after: Duration) -> Self {

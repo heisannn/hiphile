@@ -7,7 +7,7 @@ use url::Url;
 
 use crate::Error;
 use crate::blobs::Blobs;
-use crate::store::servers_dir;
+use crate::store::servers_in;
 
 /// How much audio may stay on disk, across every server, unless the
 /// settings say otherwise. When a write goes over, the songs played longest
@@ -45,8 +45,9 @@ impl KeptSong {
 }
 
 impl SongStore {
-    pub fn user(capacity: u64) -> Result<Self, Error> {
-        Ok(Self::at(servers_dir()?, capacity))
+    /// In the app's cache folder `cache`, beside the covers.
+    pub fn in_cache(cache: &Path, capacity: u64) -> Self {
+        Self::at(servers_in(cache), capacity)
     }
 
     pub fn at(root: impl AsRef<Path>, capacity: u64) -> Self {
@@ -70,6 +71,11 @@ impl SongStore {
         }
         self.blobs.touch(&path, &metadata);
         Some(KeptSong { file, byte_len })
+    }
+
+    /// Keeps at most about `capacity` bytes from the next write on, for every clone.
+    pub fn set_capacity(&self, capacity: u64) {
+        self.blobs.set_capacity(capacity);
     }
 
     /// Bytes that take most of the capacity on their own are not kept.

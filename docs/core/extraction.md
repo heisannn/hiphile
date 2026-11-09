@@ -26,6 +26,7 @@ it happen (see the [NSH evaluation](../nsh/evaluation.md)), and the logic can be
 | 6 | Done. `LibrarySync`, `LibraryActivity`, `SearchIndex` and `DailyRecommendations` in `hiphile-core`; `LibraryEvent` keeps only `LeftAlbum`, the rest are `LibraryNotice`s |
 | 7 | Done. `playback::Player` holds the queue, the states, the engine, scrobbling and the volume; `hiphile_core::desktop` (`DiscordStatus`, `SystemMediaControls`) follows it; the current song's lyrics and their timing are `lyrics::CurrentLyrics` and `lyrics::timing`. See [Found in step 7](#found-in-step-7) |
 | 8 | Done. `hiphile_core::Hiphile` is the app's core: the settings, `Readings`, the cover cache, signing in and the signed-in `hiphile_core::Workspace`, which makes the handles and routes between them. `hiphile-cli` signs in, syncs and lists through it on tokio. See [Found in step 8](#found-in-step-8) |
+| 9 | Done. The workspace's handles load what the views loaded: `artists::ArtistList` and `ArtistDetail`, `songs::SongList`, `home::HomeShelves`, all into `hiphile_core::Shelf`; an album's detail is `library::AlbumDetail` and its songs for an action `library::album_songs`; `FavoritesState::toggle` picks the direction. A host gives the cache folder (`Caches::At`), the settings window counts kept songs through the core, and `hiphile-cli play` plays through `Hiphile::player`. See [Found in step 9](#found-in-step-9) |
 
 ## Where things stand
 
@@ -191,6 +192,7 @@ stay with the views.
 | 6 | The library sync and its activity, the search index, home recommendations | |
 | 7 | The player into `playback`, in parts: states and queue operations; engine events and preparing the next song; scrobbling; Discord and media controls as followers in `hiphile_core::desktop`; the volume, the window handle and `shutdown()`; the current song's lyrics into `lyrics` | One part at a time |
 | 8 | The routing and the session's lifetime from `app_shell.rs` into `hiphile-core` | Last |
+| 9 | What steps 1 to 8 left in the views (see [Step 9](#step-9)) | In four parts |
 
 ## The updater pilot
 
@@ -272,6 +274,8 @@ Step 2 tried the design rules on `updater`. They held, with these details settle
 - **The `actions` globals hold copies.** The known favorites, the playlist choices and the skip setting
   are fed by the shell from the handles' `watch`es, so a change reaches the stars and menus one turn
   later. A global could hold the handle instead, but about ten view tests set these copies directly.
+  Since step 9 the known favorites only label and disable the stars and menus: the core decides which
+  way a toggle goes.
 - **Names.** Handles are named after what they do (`LibrarySync`, `SearchIndex`, `DailyRecommendations`).
   The favorites' and playlists' handles are `FavoritesState` and `PlaylistsState`, as their views have
   the plain names.
@@ -282,14 +286,15 @@ Step 2 tried the design rules on `updater`. They held, with these details settle
 - **Behaviour that changed.** When a reload drops the selected favorite, the row at its place is
   selected rather than the first. The core judges whether today's recommendations are empty by its own
   list, while the view leaves out albums on other shelves (`keep_shelves_off_recommended`): if every
-  recommended album is on another shelf, a sync no longer starts a new pick. Moving the other shelves
-  into the core ends that.
+  recommended album is on another shelf, a sync no longer starts a new pick. Step 9 ended that by moving
+  the other shelves into the core.
 - **Still in GPUI crates.** The album detail and its catalog cache (`select_album`) and the `act_on_album`
-  helpers; home's recently played, most played and new albums shelves; the filter indexes of the albums
+  helpers; home's recently played, most played and new albums shelves (these three moved in step 9);
+  the filter indexes of the albums
   and the playlists, which only the view's filter uses; the confirmations ("Added to …"), with
   `AddToPlaylist` routed through the playlists view for them (a notice since step 8);
-  `actions::toggle_favorite` deciding the direction from its copy. The routing in `app_shell.rs` is
-  step 8.
+  `actions::toggle_favorite` deciding the direction from its copy (until step 9). The routing in
+  `app_shell.rs` is step 8.
 
 ## Decided before steps 7 and 8
 
@@ -318,9 +323,11 @@ Step 2 tried the design rules on `updater`. They held, with these details settle
   engine's frame count, as views and bindings poll it while they show it.
 - **Still to do for mobile, outside these steps.** `config` picks the Linux secret service as the
   keychain on iOS (any Unix but macOS); a mobile app keeps the password in its own keychain or the core
-  takes the store from the host. The dictionaries' and caches' folders come from `dirs`, which a mobile
-  app should give instead. Since step 8 a host chooses between the user's caches and none
-  (`hiphile_core::Caches`); a folder of the host's own is still missing.
+  takes the store from the host. Since step 9 a host gives the folder for the covers, the songs, the
+  dictionaries and Musixmatch's token (`Caches::At`). Still from `dirs`: the library's database
+  (`catalog::Catalog::open_server`, under the user's caches) and the scrobbles waiting to be sent
+  (under the user's data), both opened by `session::Accounts`, and Discord's cover links, on the
+  desktop only.
 
 ## Found in step 7
 
@@ -363,26 +370,150 @@ Step 2 tried the design rules on `updater`. They held, with these details settle
 - **The store is read once.** `config::Error::Shared(Arc<Error>)` lets each handle take its own
   `Result<config::Store, config::Error>` from one `Store::user()`, and each still words its own failure.
 - **Caches.** `Caches::User` keeps covers, songs and the dictionaries in the user's caches, `Caches::None`
-  keeps none, for tests and the CLI.
+  keeps none, for tests and the CLI. Step 9 added `Caches::At`, a folder the host gives.
 - **The workspace starts before its host follows it.** Signing in makes the workspace and starts its
   first sync on the executor, and the shell makes the screens on a later turn, when it sees the new
   snapshot. A notice sent in between reaches no one, so a host reads the state when it starts following:
-  the shell tells a sync failure it finds there, and the screens read what a sync already brought when
-  they load. A binding layer has to do the same. The routing between the handles runs on executor tasks,
-  and the workspace and the player are made on a background thread.
+  the shell tells a sync failure and a failed load of the favorites it finds there, puts up the
+  activity's notice when the library is busy already, and the screens read what a sync already brought
+  when they load. A binding layer has to do the same. Inside the core, a follower subscribes before it
+  reads the value it starts from: the workspace makes the player from the audio settings it subscribed
+  to, and `LibraryActivity` starts from the sync and the download under way. The routing between the
+  handles runs on executor tasks, and the workspace and the player are made on a background thread.
 - **Navigation stays in the shell.** Where the user is comes from the views' selection, so in the core it
   would take the views' state at every step.
 - **The CLI does not open a workspace**, which would start syncing, loading the favorites, the playlists
   and the recommendations, scrobbling and the audio engine for a ping. It connects and uses the handles
   it needs on `Executor::tokio`: `LibrarySync` (its `StageSynced` notices report each stage) for `sync`
   and `albums`. `search` still asks the server, which `SearchIndex` would limit to the saved library, and
-  `play` still uses `playback`'s pieces directly, so the core's player has not run without a window yet.
+  `play` still used `playback`'s pieces directly until step 9 gave it the core's player.
 - **Behaviour that changed.** "Added to …" is a notice (`PlaylistsNotice::SongsAdded`) and shows a turn
   later. The CLI words its failures as the core does, goes on to the songs when the artists fail, and
   opens the catalog and the scrobbles for every command.
 - **Still in GPUI crates.** The settings window opens the song cache itself to count what it keeps
-  (`SongCacheUsage`), and `musixmatch::Client::user` keeps its token in the `dirs` cache; the rest is
-  listed under steps 5 to 7.
+  (`SongCacheUsage`), and `musixmatch::Client::user` keeps its token in the `dirs` cache (both moved in
+  step 9); the rest is listed under steps 5 to 7.
+
+## Decided after step 8
+
+On 2026-11-09, after the user tried the app:
+
+- The CLI keeps to the handles it needs and does not open a workspace.
+- Navigation stays in the shell.
+- `lyrics` may depend on `config` for `LyricsHighlight`.
+- The UniFFI pilot waits.
+
+## Step 9
+
+What the steps left in the views that a mobile app would need too. Building the filter indexes stays in
+the views, as the index is built by a core function (`album_index` and the like) that any host can call.
+
+| Part | Content |
+| --- | --- |
+| A | The artists' list (the catalog, then the server), an artist's detail (albums, saved songs), top and similar songs, playing an artist; the songs' list (loading and arranging) |
+| B | An album's detail and its catalog cache (`select_album`); one core way to get an album's songs for every `act_on_album`, with its error text; toggling a favorite by the core's set rather than the `actions` copy |
+| C | Home's recently played, most played and new albums shelves with `RecentlyPlayed`, and keeping them off the recommendations in the core, which ends the behaviour change noted in step 6 |
+| D | A cache folder the host gives (`Caches`), where `musixmatch` keeps its token too; the settings window counting kept songs through the core's song cache; `hiphile-cli play` through `playback::Player` |
+
+## Found in step 9
+
+- **One shelf.** `hiphile_core::Shelf<T>` (`Loading`, `Loaded`, `Failed`) is what every list that loads
+  publishes: the home screen's shelves and recommendations, the artists, an artist's albums, top songs
+  and similar artists, and the songs. A reload keeps what is on show, even when it fails. `ui::Shelf` is
+  gone.
+- **Home's shelves.** `HomeShelves` loads recently played, most played and new albums when the
+  workspace opens, and the workspace reloads them after a play or a sync. It takes the
+  `DailyRecommendations` and, under its own lock, tells it which albums it shows (`keep_off`), so a pick
+  and the check for an empty list leave them out as before step 6. It is the first handle that calls
+  another under its lock; the order is the shelves, then the recommendations, never the other way.
+- **Artists and songs.** The workspace makes `ArtistList` (the catalog, then the server), `ArtistDetail`
+  (an artist's page, which it reads again after a sync) and `SongList` (reading and arranging the songs).
+  `ArtistPage` is a record with public fields, as a UniFFI record would be. `ArtistDetail::songs` gives
+  the songs for playing an artist, with the core's error text. A list read again with the same content
+  keeps its `Arc`, so a view's index still matches it.
+- **The songs' index made a round trip.** As first decided, the filter index stayed in the view, which
+  built it with the dictionaries and handed it back (`SongList::set_index`) for the core to arrange by.
+  After step 9 the core builds it itself (see [Decided after step 9](#decided-after-step-9)).
+- **Views take the snapshot at once, and keep the last one taken.** A view that has just called a handle
+  takes its snapshot then and compares later ones with it (`taken_page`), not with its copy, so a test
+  can change the copy.
+- **An album's detail** is `library::AlbumDetail`, which each screen that shows an album makes for itself
+  rather than the workspace, as screens show different albums. It shows the saved songs first, then the
+  server's, which it saves. `album_songs` gives an action an album's songs, saved or from the server, with
+  the core's error text; `actions::AlbumAction::start` runs it, so `actions` depends on `gpui-host` and
+  `session`.
+- **Favorites.** `FavoritesState::toggle` decides the direction from the core's set, including changes
+  not yet sent; `actions::ToggleFavoriteOf` replaces `SetFavorite`. `set_favorite` stays for a host that
+  knows the direction.
+- **Caches.** `Caches::At(folder)` takes a host's folder; the crates take the folder (`CoverStore::in_cache`,
+  `SongStore::in_cache`, `fuzzy::bundle::root_in`, `musixmatch::Client::with_cache`) instead of finding it
+  with `dirs`. The core keeps one `SongStore` for as long as it lives: the player's cache and
+  `Hiphile::song_cache_usage` go through it, and a new limit reaches it through `set_capacity`.
+- **The readings only when needed.** `Hiphile` makes `Readings` on the first `readings()` or when a
+  workspace opens, which gives the workspace's session the readings; `session::Accounts` no longer does.
+  The CLI shares the app's cache folder for the songs, and making the readings at start would fetch or
+  remove the app's dictionaries while it plays. The app's shell asks for them when it opens.
+- **The core's player without a window.** `Hiphile::player(session)` is a player for a host without a
+  workspace, with the audio settings of the moment, the saved volume and the core's song cache.
+  `hiphile-cli play` follows it on `Executor::tokio` (`play::play_through`). Its test plays two songs that
+  fail to open, so no device opens; playing a song to its end is left to the real CLI.
+- **Merging the parts.** Parts A and C each made a shelf type, so the one at the crate's root stayed; the
+  shell's library routing went entirely to the workspace, and the shell only tells sync failures
+  (`follow_sync_failures`).
+- **Behaviour that changed.** Home's shelves start loading when the workspace opens and reach the view a
+  turn later. Songs show once the view's index has reached the core, a turn later than before, and the
+  header's count and "Updating" change with the new arrangement. A reload that brings back the same
+  artists no longer rebuilds the filter index or scrolls. Two quick clicks on a star both count. Leaving
+  an album in the library stops its load. The settings window's Clear also resets what the player
+  counted as kept. `hiphile-cli play` plays at the saved volume rather than full scale, sends now playing
+  and scrobbles (and those waiting from before), prepares the next song so that none waits between songs,
+  words its failures as the core does, fetches the songs by ID before it plays, shows the format only when
+  it changes, and waits for the device's rate to be put back before it exits.
+- **Still in GPUI crates.** The filter indexes of the albums, the playlists and the artists, built by core
+  functions (the songs' moved after step 9); the selection rules of the lists (the first item, an item that went, revealing
+  one); which parts an artist's page shows and how many top songs; the play queue made from the songs on
+  show; the confirmations. A workspace test of the routing between the library and the screens' handles
+  is missing: a `LibraryNotice` cannot be sent from outside `library::sync`.
+
+## Decided after step 9
+
+On 2026-11-09:
+
+- `hiphile-cli play` keeps sending now playing and scrobbles, and plays at the saved volume.
+- `SongList` builds the songs' filter index itself, with the dictionaries when they are there, and builds
+  it again when they come or go, as `SearchIndex` does. The view keeps the filter text and the selection.
+  The round trip and its turn are gone: songs show once the core has read, indexed and arranged them.
+
+## Reviewed after step 9
+
+On 2026-11-09, five reviewers went over `653d7e4..3a48bf5` against the code before the extraction.
+Fixed then:
+
+- `Player::set_repeat` prepares the following song again, as `cycle_repeat` does.
+- A library without songs shows as loaded, not as loading for ever.
+- An audio setting changed while the workspace is made reaches the player.
+- The shell puts up the activity's notice and tells a failed load of the favorites that came before it
+  followed them (see [Found in step 8](#found-in-step-8)).
+
+Left, all minor:
+
+- A first sync's failure is told when it came before the shell followed it and not after, since only a
+  requested sync sends `SyncFailed`. Which of the two is wanted is undecided.
+- Taking a favorite off twice quickly on the favorites' own screen takes the same one off and back on:
+  the view dispatches the action and reads the new selection a turn later.
+- Deleting the open playlist while the list failed to load leaves it selected in the view.
+- A count of the song cache that was under way when it was cleared can publish the old size after it.
+- A replaced open of a song runs on to the stream's headers: it blocks a thread, where the old one was
+  dropped at its next `.await`.
+- A value written on quitting can be overwritten by an older one the saver was writing.
+- GPUI's `spawn_blocking` shares the background pool with the core's tasks. That pool is fixed on Linux,
+  which is not released.
+- `library::Albums` has the shape of `Shelf<Album>`.
+- From before the extraction: a playlist created while the list reloads can show twice, and a failed
+  save of a playlist's songs drops its rename or deletion that waited.
+- Untested: `Hiphile::sign_in` up to an open workspace (`Accounts::connect` opens the catalog in the
+  user's folders), the songs indexed again when the dictionaries come or go (a `Readings` with
+  dictionaries needs a real bundle), and the shell's part of following what came first.
 
 ## Done when
 
@@ -397,5 +528,6 @@ Step 2 tried the design rules on `updater`. They held, with these details settle
 
 - The crate split above, in particular whether `hiphile-core` should be split per domain later for build
   times.
-- A UniFFI pilot after step 8: a binding crate that wraps signing in, the library and playing, with
-  Swift bindings generated in a test, to find what the handles' shapes still lack.
+- A UniFFI pilot, later (see [Decided after step 8](#decided-after-step-8)): a binding crate that wraps
+  signing in, the library and playing, with Swift bindings generated in a test, to find what the
+  handles' shapes still lack.

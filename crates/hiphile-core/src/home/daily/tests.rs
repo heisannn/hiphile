@@ -46,11 +46,11 @@ fn clear(state: &mut State) {
     state.is_waiting_to_retry = false;
     state._retry = Task::ready(());
     state.day = None;
-    state.status.albums = RecommendedAlbums::Loaded(Arc::from([]));
+    state.status.albums = Shelf::Loaded(Arc::from([]));
 }
 
-fn on_show(albums: Vec<Album>) -> RecommendedAlbums {
-    RecommendedAlbums::Loaded(albums.into())
+fn on_show(albums: Vec<Album>) -> Shelf<Album> {
+    Shelf::Loaded(albums.into())
 }
 
 fn found(ids: &[&str], complete: bool) -> Result<Recommendations, String> {
@@ -64,7 +64,7 @@ fn shown(state: &State) -> Vec<String> {
     state
         .status
         .albums
-        .albums()
+        .items()
         .iter()
         .map(|album| album.id().to_string())
         .collect()
@@ -111,7 +111,7 @@ fn an_incomplete_pick_shows_with_nothing_else_to_show(cx: &mut TestAppContext) {
     let recommendations = recommendations(None, cx);
     update(&recommendations, |this, state| {
         clear(state);
-        state.status.albums = RecommendedAlbums::Loading;
+        state.status.albums = Shelf::Loading;
         this.finish(state, found(&["r0"], false), today());
         assert_eq!(shown(state), ["r0"]);
         assert_eq!(state.day, None);
@@ -240,9 +240,9 @@ fn a_failure_that_shows_on_the_shelf_needs_no_other_word(cx: &mut TestAppContext
     let recommendations = recommendations(None, cx);
     update(&recommendations, |this, state| {
         clear(state);
-        state.status.albums = RecommendedAlbums::Loading;
+        state.status.albums = Shelf::Loading;
         assert_eq!(this.finish(state, Err("offline".into()), today()), None);
-        assert!(matches!(state.status.albums, RecommendedAlbums::Failed(_)));
+        assert!(matches!(state.status.albums, Shelf::Failed(_)));
     });
 }
 
@@ -349,7 +349,7 @@ fn another_day_picks_new_recommendations_with_the_old_on_show(cx: &mut TestAppCo
         this.renew_in(state);
 
         assert!(state.status.is_recommending);
-        assert_eq!(state.status.albums.albums().len(), 1);
+        assert_eq!(state.status.albums.items().len(), 1);
     });
 }
 
@@ -358,11 +358,64 @@ fn a_pick_on_its_way_is_not_started_again(cx: &mut TestAppContext) {
     let recommendations = recommendations(None, cx);
     update(&recommendations, |this, state| {
         clear(state);
-        state.status.albums = RecommendedAlbums::Failed("before".into());
+        state.status.albums = Shelf::Failed("before".into());
         state.status.is_recommending = true;
 
         this.renew_in(state);
 
-        assert!(matches!(state.status.albums, RecommendedAlbums::Failed(_)));
+        assert!(matches!(state.status.albums, Shelf::Failed(_)));
     });
+}
+
+fn ids(ids: &[&str]) -> Vec<AlbumId> {
+    ids.iter().map(|id| AlbumId::new(*id)).collect()
+}
+
+#[gpui_kit::test]
+fn an_album_on_another_shelf_leaves_the_recommendations(cx: &mut TestAppContext) {
+    let recommendations = recommendations(None, cx);
+    update(&recommendations, |_, state| {
+        clear(state);
+        state.status.albums = on_show(recommended(2));
+    });
+
+    recommendations.keep_off(ids(&["r1", "elsewhere"]));
+
+    update(&recommendations, |_, state| {
+        assert_eq!(shown(state), ["r0"])
+    });
+}
+
+#[gpui_kit::test]
+fn a_pick_leaves_out_the_albums_on_other_shelves_but_keeps_them(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let catalog = catalog_in(&dir);
+    let recommendations = recommendations(Some(catalog.clone()), cx);
+    update(&recommendations, |_, state| clear(state));
+    recommendations.keep_off(ids(&["r0"]));
+
+    update(&recommendations, |this, state| {
+        this.finish(state, found(&["r0", "r1"], true), today());
+        assert_eq!(shown(state), ["r1"]);
+    });
+    cx.run_until_parked();
+
+    let kept = catalog.recommended("alice").unwrap().unwrap();
+    assert_eq!(kept.albums.len(), 2);
+}
+
+#[gpui_kit::test]
+fn a_library_sync_picks_again_when_other_shelves_show_every_recommendation(
+    cx: &mut TestAppContext,
+) {
+    let recommendations = recommendations(None, cx);
+    update(&recommendations, |this, state| {
+        clear(state);
+        this.finish(state, found(&["r0"], true), today());
+    });
+    recommendations.keep_off(ids(&["r0"]));
+
+    recommendations.library_synced();
+
+    assert!(recommendations.status().is_recommending());
 }

@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use actions::{ChoosePlaylist, EnqueueSongs, ShowAlbum, ShowArtist};
 use gpui_kit::{
-    Entity, KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, Pixels,
-    Point, TestAppContext, VisualTestContext, point,
+    AppContext as _, Entity, KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent,
+    MouseUpEvent, Pixels, Point, TestAppContext, VisualTestContext, point,
 };
 use hiphile_core::test_support::{self, FavoritesServer, song_json};
 use subsonic::{AlbumId, ArtistId};
@@ -217,7 +217,7 @@ fn the_key_asks_to_take_the_selected_favorite_out(cx: &mut TestAppContext) {
         let known = view.read(cx).shown.known().map(|known| (**known).clone());
         actions::set_known_favorites(known, cx);
         let asked = asked.clone();
-        cx.on_action(move |action: &actions::SetFavorite, _| {
+        cx.on_action(move |action: &actions::ToggleFavoriteOf, _| {
             asked.borrow_mut().push(action.clone());
         });
     });
@@ -232,10 +232,7 @@ fn the_key_asks_to_take_the_selected_favorite_out(cx: &mut TestAppContext) {
 
     cx.simulate_keystrokes(key);
 
-    assert_eq!(
-        *asked.borrow(),
-        [actions::SetFavorite::new(song("a"), false)]
-    );
+    assert_eq!(*asked.borrow(), [actions::ToggleFavoriteOf::new(song("a"))]);
 }
 
 #[gpui_kit::test]

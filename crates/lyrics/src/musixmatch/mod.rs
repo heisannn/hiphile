@@ -6,7 +6,7 @@
 mod response;
 mod token;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -22,6 +22,7 @@ const APP_ID: &str = "mac-ios-v2.0";
 const USER_AGENT: &str = "Musixmatch/2025120901 CFNetwork/3860.300.31 Darwin/25.2.0";
 const APP_VERSION: &str = "10.1.1";
 const TOKEN_VARIABLE: &str = "MUSIXMATCH_USER_TOKEN";
+const TOKEN_FILE: &str = "musixmatch.json";
 
 #[derive(Clone)]
 pub struct Client {
@@ -32,14 +33,18 @@ pub struct Client {
 
 impl Client {
     /// A client that uses the token in the environment, if there is one, and
-    /// otherwise asks for one and keeps it in the system cache directory.
-    pub fn user(net: net::Client) -> Self {
-        let cache = dirs::cache_dir().map(|cache| cache.join("hiphile").join("musixmatch.json"));
-        let tokens = match std::env::var(TOKEN_VARIABLE) {
-            Ok(token) if !token.is_empty() => Tokens::given(token),
-            _ => Tokens::kept_in(cache),
-        };
-        Self::new(net, tokens)
+    /// otherwise asks for one and keeps it in the app's cache folder `cache`, or
+    /// only in memory without one.
+    pub fn with_cache(net: net::Client, cache: Option<&Path>) -> Self {
+        match std::env::var(TOKEN_VARIABLE) {
+            Ok(token) if !token.is_empty() => Self::new(net, Tokens::given(token)),
+            _ => Self::kept_in_cache(net, cache),
+        }
+    }
+
+    fn kept_in_cache(net: net::Client, cache: Option<&Path>) -> Self {
+        let path = cache.map(|cache| cache.join(TOKEN_FILE));
+        Self::new(net, Tokens::kept_in(path))
     }
 
     pub fn with_token(net: net::Client, base: Url, token: impl Into<String>) -> Self {
@@ -276,6 +281,21 @@ mod tests {
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+    }
+
+    #[test]
+    fn the_token_is_kept_in_the_cache_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let (base, _requests) = service(vec![token_answer("first"), plain_answer("a")]);
+
+        let client = Client {
+            base,
+            ..Client::kept_in_cache(net(), Some(dir.path()))
+        };
+        block_on(client.find_lyrics(&query())).unwrap();
+
+        let kept = std::fs::read_to_string(dir.path().join("musixmatch.json")).unwrap();
+        assert!(kept.contains("first"), "{kept}");
     }
 
     #[test]

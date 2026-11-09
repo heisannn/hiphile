@@ -192,3 +192,36 @@ fn a_sync_shows_until_it_ends(cx: &mut TestAppContext) {
     );
     assert!(!status.is_notice_shown());
 }
+
+#[gpui_kit::test]
+fn a_sync_under_way_before_the_activity_follows_it_shows(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let catalog = catalog::Catalog::open(dir.path()).unwrap();
+    let url = server_answering(json!({
+        "albumList2": { "album": [{ "id": "a", "name": "A" }] },
+        "artists": { "index": [] },
+        "searchResult3": { "song": [] },
+        "scanStatus": { "scanning": false },
+    }));
+    cx.executor().allow_parking();
+    let executor = cx.update(|cx| gpui_host::executor(cx));
+    let sync = LibrarySync::new(executor.clone(), session_saving_into(Some(catalog), &url));
+    // One step at a time, to stop between two stages
+    while sync.status().progress().is_none() {
+        assert!(sync.status().is_running(), "the sync ended unseen");
+        if !cx.executor().tick() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    let activity = LibraryActivity::new(executor, session_saving_into(None, &url), &sync);
+
+    let status = activity.status();
+    assert!(status.is_notice_shown());
+    assert!(
+        status
+            .shown()
+            .is_some_and(|shown| shown.label().starts_with("Syncing"))
+    );
+    wait_for(cx, || !sync.status().is_running());
+}

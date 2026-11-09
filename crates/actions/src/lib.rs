@@ -5,16 +5,16 @@
 //! here; a feature's own commands stay in that feature.
 
 use std::collections::HashSet;
-use std::fmt::Display;
 use std::sync::Arc;
 
 mod instrumentals;
 
 use gpui_kit::component::{WindowExt as _, menu::PopupMenu, notification::NotificationType};
 use gpui_kit::{
-    Action, App, Context, Global, KeyBinding, SharedString, Subscription, Window, actions,
+    Action, App, Context, Global, KeyBinding, SharedString, Subscription, Task, Window, actions,
 };
 use hiphile_core::favorites::Favorite;
+use hiphile_core::library::album_songs;
 use hiphile_core::playlists::PlaylistChoice;
 use subsonic::{AlbumId, ArtistId, PlaylistId, Song, StarTarget};
 
@@ -155,22 +155,30 @@ impl AlbumAction {
         })
     }
 
-    pub fn finish<E: Display>(
+    /// Does this to `album`'s songs, the saved ones when there are any, until the task is
+    /// dropped.
+    pub fn start(
         self,
-        songs: Result<Arc<[Song]>, E>,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
+        album: AlbumId,
+        session: &session::Session,
+        window: &Window,
+        cx: &App,
+    ) -> Task<()> {
+        let songs = album_songs(&gpui_host::executor(cx), session, album);
+        window.spawn(cx, async move |cx| {
+            let songs = songs.await;
+            cx.update(|window, cx| self.finish(songs, window, cx)).ok();
+        })
+    }
+
+    fn finish(self, songs: Result<Arc<[Song]>, String>, window: &mut Window, cx: &mut App) {
         match songs {
             Ok(songs) => {
                 if let Some(command) = self.command(songs) {
                     window.dispatch_action(command, cx);
                 }
             }
-            Err(error) => {
-                let message = format!("Couldn't load this album. {error}");
-                window.push_notification((NotificationType::Error, message), cx);
-            }
+            Err(error) => window.push_notification((NotificationType::Error, error), cx),
         }
     }
 }
@@ -225,27 +233,21 @@ pub fn bind_go_to_artist(context: &'static str, cx: &mut App) {
     cx.bind_keys([KeyBinding::new(key, GoToArtist, Some(context))]);
 }
 
+/// Adds `favorite` to the favorites, or takes it out when it is one. The app shell handles it,
+/// and the favorites decide which way it goes.
 #[derive(Clone, Debug, PartialEq, Action)]
 #[action(namespace = hiphile, no_json)]
-pub struct SetFavorite {
+pub struct ToggleFavoriteOf {
     favorite: Favorite,
-    is_favorite: bool,
 }
 
-impl SetFavorite {
-    pub fn new(favorite: Favorite, is_favorite: bool) -> Self {
-        Self {
-            favorite,
-            is_favorite,
-        }
+impl ToggleFavoriteOf {
+    pub fn new(favorite: Favorite) -> Self {
+        Self { favorite }
     }
 
     pub fn favorite(&self) -> &Favorite {
         &self.favorite
-    }
-
-    pub fn is_favorite(&self) -> bool {
-        self.is_favorite
     }
 }
 
@@ -305,11 +307,8 @@ pub fn favorite_menu_item(menu: PopupMenu, target: &StarTarget, cx: &App) -> Pop
     )
 }
 
-/// Does nothing until the favorites are known.
 pub fn toggle_favorite(favorite: Favorite, window: &mut Window, cx: &mut App) {
-    if let Some(is_favorite) = is_favorite(&favorite.target(), cx) {
-        window.dispatch_action(Box::new(SetFavorite::new(favorite, !is_favorite)), cx);
-    }
+    window.dispatch_action(Box::new(ToggleFavoriteOf::new(favorite)), cx);
 }
 
 /// Replace the play queue with `songs` and start playing.

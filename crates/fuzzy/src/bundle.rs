@@ -47,9 +47,9 @@ pub enum Error {
     WrongFile,
 }
 
-pub fn root() -> Result<PathBuf, Error> {
-    let cache = dirs::cache_dir().ok_or(Error::NoCacheDir)?;
-    Ok(cache.join("hiphile").join("readings"))
+/// Where the bundles are kept in the app's cache folder `cache`.
+pub fn root_in(cache: &Path) -> PathBuf {
+    cache.join("readings")
 }
 
 /// Only a complete bundle ever has this name, as [`install`] moves it there whole.
