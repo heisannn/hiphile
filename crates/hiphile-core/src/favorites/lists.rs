@@ -118,6 +118,22 @@ impl FavoriteLists {
         }
     }
 
+    /// What stays selected of `section` once the lists have changed: `selected` while it is
+    /// there, otherwise the favorite now at `was_ix`, where it was, or the last.
+    pub fn kept_selection(
+        &self,
+        section: Section,
+        selected: Option<&StarTarget>,
+        was_ix: usize,
+    ) -> Option<StarTarget> {
+        if let Some(selected) = selected.filter(|selected| self.contains(selected)) {
+            return Some(selected.clone());
+        }
+        let ix = crate::selection::after_removal(was_ix, self.len(section))?;
+        self.favorite_at(section, ix)
+            .map(|favorite| favorite.target())
+    }
+
     pub fn remove(&mut self, target: &StarTarget) -> Option<(Favorite, usize)> {
         let ix = self.position(target)?;
         let favorite = self.favorite_at(Section::of(target), ix)?;
@@ -183,6 +199,25 @@ mod tests {
 
         lists.add(Favorite::Song(song("s4")), 99);
         assert_eq!(song_ids(&lists), ["s3", "s1", "s2", "s4"]);
+    }
+
+    #[test]
+    fn the_selection_stays_while_it_is_there_and_moves_to_its_place_when_gone() {
+        let mut lists = lists();
+        let first = StarTarget::Song(SongId::new("s1"));
+        let second = StarTarget::Song(SongId::new("s2"));
+        assert_eq!(
+            lists.kept_selection(Section::Songs, Some(&second), 0),
+            Some(second.clone())
+        );
+
+        lists.remove(&second);
+        assert_eq!(
+            lists.kept_selection(Section::Songs, Some(&second), 1),
+            Some(first.clone())
+        );
+        lists.remove(&first);
+        assert_eq!(lists.kept_selection(Section::Songs, Some(&first), 0), None);
     }
 
     #[test]

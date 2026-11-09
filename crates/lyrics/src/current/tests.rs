@@ -80,12 +80,13 @@ fn lookup(current: &CurrentLyrics) -> Lookup {
 #[gpui_kit::test]
 fn a_new_song_starts_over_and_found_lyrics_are_kept(cx: &mut TestAppContext) {
     let (current, finds) = current(cx);
+    let _wanted = current.want();
     finds.answer_with(Ok(lyrics(3)));
-    current.look_up(Some(&song("a")));
+    current.set_song(Some(&song("a")));
     cx.run_until_parked();
     assert!(matches!(lookup(&current), Lookup::Done(song, _) if song.to_string() == "a"));
 
-    current.look_up(Some(&song("b")));
+    current.set_song(Some(&song("b")));
     assert!(matches!(lookup(&current), Lookup::Loading(song) if song.to_string() == "b"));
     assert_eq!(finds.asked().len(), 2);
 
@@ -95,7 +96,7 @@ fn a_new_song_starts_over_and_found_lyrics_are_kept(cx: &mut TestAppContext) {
     assert_eq!(current.0.state.read(|state| state.found.len()), 1);
 
     // Back to the first song, whose lyrics are at hand
-    current.look_up(Some(&song("a")));
+    current.set_song(Some(&song("a")));
     assert!(matches!(lookup(&current), Lookup::Done(song, _) if song.to_string() == "a"));
     assert_eq!(finds.asked().len(), 2);
 }
@@ -103,29 +104,85 @@ fn a_new_song_starts_over_and_found_lyrics_are_kept(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn an_answer_after_the_song_changed_is_kept_for_going_back(cx: &mut TestAppContext) {
     let (current, finds) = current(cx);
-    current.look_up(Some(&song("a")));
-    current.look_up(Some(&song("b")));
+    let _wanted = current.want();
+    current.set_song(Some(&song("a")));
+    current.set_song(Some(&song("b")));
 
     current.finish_lookup(SongId::new("a"), Ok(lyrics(2)));
     assert!(matches!(lookup(&current), Lookup::Loading(s) if s.to_string() == "b"));
 
-    current.look_up(Some(&song("a")));
+    current.set_song(Some(&song("a")));
     assert!(matches!(lookup(&current), Lookup::Done(..)));
     assert_eq!(finds.asked().len(), 2);
 }
 
 #[gpui_kit::test]
-fn a_failed_lookup_is_tried_again(cx: &mut TestAppContext) {
+fn wanting_looks_for_the_current_song_once(cx: &mut TestAppContext) {
+    let (current, finds) = current(cx);
+    current.set_song(Some(&song("a")));
+    assert!(finds.asked().is_empty(), "unwanted, nothing is looked for");
+
+    drop(current.want());
+    let _wanted = current.want();
+
+    assert_eq!(finds.asked().len(), 1);
+    assert!(finds.asked()[0].contains("Title of a"));
+}
+
+#[gpui_kit::test]
+fn all_that_want_the_lyrics_share_one_lookup(cx: &mut TestAppContext) {
+    let (current, finds) = current(cx);
+    current.set_song(Some(&song("a")));
+    let first = current.want();
+    let _second = current.want();
+    assert_eq!(finds.asked().len(), 1);
+
+    drop(first);
+    current.set_song(Some(&song("b")));
+    assert_eq!(finds.asked().len(), 2);
+}
+
+#[gpui_kit::test]
+fn a_song_that_comes_while_no_one_wants_the_lyrics_waits_until_someone_does(
+    cx: &mut TestAppContext,
+) {
+    let (current, finds) = current(cx);
+    current.set_song(Some(&song("a")));
+    drop(current.want());
+    current.set_song(Some(&song("b")));
+    assert_eq!(finds.asked().len(), 1);
+
+    let _wanted = current.want();
+    assert_eq!(finds.asked().len(), 2);
+    assert!(finds.asked()[1].contains("Title of b"));
+
+    current.set_song(None);
+    assert_eq!(lookup(&current), Lookup::Nothing);
+}
+
+#[gpui_kit::test]
+fn a_failed_lookup_is_tried_again_only_when_asked(cx: &mut TestAppContext) {
     let (current, finds) = current(cx);
     finds.answer_with(Err(Error::InvalidResponse));
-    current.look_up(Some(&song("a")));
+    current.set_song(Some(&song("a")));
+    let wanted = current.want();
     cx.run_until_parked();
     assert!(matches!(lookup(&current), Lookup::Failed(..)));
 
+    // As when the song pauses or plays on, or the lyrics close and open again
+    current.set_song(Some(&song("a")));
+    drop(wanted);
+    let _wanted = current.want();
+    assert!(matches!(lookup(&current), Lookup::Failed(..)));
+    assert_eq!(finds.asked().len(), 1);
+
     finds.answer_with(Ok(lyrics(2)));
-    current.look_up(Some(&song("a")));
+    current.retry();
     cx.run_until_parked();
     assert!(matches!(lookup(&current), Lookup::Done(..)));
+    assert_eq!(finds.asked().len(), 2);
+
+    current.retry();
     assert_eq!(finds.asked().len(), 2);
 }
 

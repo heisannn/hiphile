@@ -180,7 +180,7 @@ impl RenderOnce for PositionLine {
         let player = self.player.read(cx);
         let snapshot = player.snapshot();
         let duration = snapshot.duration();
-        let seekable = snapshot.is_started() && duration.is_some();
+        let seekable = snapshot.is_seekable();
         let position = player.shown_position();
         let buffering = snapshot.is_buffering();
         let slider = self
@@ -317,7 +317,7 @@ impl RenderOnce for VolumeControl {
         let player = self.player.read(cx);
         let shown = player.snapshot();
         let level = shown.volume();
-        let (icon, label) = if shown.is_muted() || level == 0.0 {
+        let (icon, label) = if shown.is_silent() {
             (IconName::VolumeX, "Unmute")
         } else if level < 0.5 {
             (IconName::Volume1, "Mute")

@@ -1,8 +1,10 @@
-use config::{ResamplingQuality, SoxrInterpolation, SoxrParameters, SoxrPhase, SoxrQuality};
+use config::{
+    ResamplingQuality, SoxrInterpolation, SoxrParameters, SoxrPerformance, SoxrPhase, SoxrQuality,
+};
 use gpui_kit::TestAppContext;
 
 use crate::settings::audio::tests::{settings_saving_to, told};
-use crate::settings::{AudioSnapshot, Choice};
+use crate::settings::{AudioSnapshot, Choice, SoxrSetting};
 
 const SOXR: usize = 2;
 
@@ -98,7 +100,7 @@ fn the_values_come_back_after_another_resampler(cx: &mut TestAppContext) {
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
     settings.select_resampler(SOXR);
-    settings.change_soxr_filter(|filter| filter.phase = SoxrPhase::Minimum);
+    settings.select_soxr_phase(2);
 
     settings.select_rubato_quality(2);
     cx.run_until_parked();
@@ -290,8 +292,8 @@ fn values_off_the_lists_stay_options_and_presets_read_apart(cx: &mut TestAppCont
         .collect();
     assert_eq!(presets, ["0.676", "0.916", "0.914", "0.911"]);
 
-    settings.change_soxr_filter(|filter| filter.precision = 22.5);
-    settings.change_soxr(|parameters| parameters.performance.coef_table_kb = 1);
+    settings.set_soxr_precision("22.5");
+    settings.set_soxr_coef_table("1");
     let settings = settings.snapshot();
     assert_eq!(
         labels(&settings.soxr_precision_options()),
@@ -332,4 +334,69 @@ fn a_phase_and_an_interpolation_are_chosen_by_their_places(cx: &mut TestAppConte
             interpolation
         );
     }
+}
+
+#[gpui_kit::test]
+fn what_has_a_default_of_its_own_goes_back_to_it(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = config::Store::at(dir.path());
+    let settings = settings_saving_to(&store, cx);
+    settings.select_resampler(SOXR);
+    let all = [
+        SoxrSetting::Quality,
+        SoxrSetting::Precision,
+        SoxrSetting::PassbandEnd,
+        SoxrSetting::Phase,
+        SoxrSetting::DoublePrecision,
+        SoxrSetting::CoefTable,
+        SoxrSetting::Interpolation,
+        SoxrSetting::MinDft,
+        SoxrSetting::LargeDft,
+    ];
+    assert!(
+        !all.iter()
+            .any(|setting| settings.snapshot().is_soxr_resettable(*setting))
+    );
+
+    settings.select_soxr_phase(2);
+    settings.set_soxr_double_precision(true);
+    settings.set_soxr_coef_table("1600");
+    settings.select_soxr_interpolation(2);
+    settings.set_soxr_min_dft("4096");
+    settings.set_soxr_large_dft("65536");
+    settings.set_soxr_precision("20");
+    let snapshot = settings.snapshot();
+    for setting in all {
+        let is_preset_s = matches!(setting, SoxrSetting::Precision | SoxrSetting::PassbandEnd);
+        assert_eq!(
+            snapshot.is_soxr_resettable(setting),
+            !is_preset_s,
+            "{setting:?}"
+        );
+    }
+
+    for setting in all {
+        settings.reset_soxr(setting);
+    }
+    cx.run_until_parked();
+
+    let parameters = settings.snapshot().soxr_parameters();
+    assert_eq!(parameters.performance, SoxrPerformance::default());
+    assert_eq!(parameters.quality, SoxrQuality::default());
+    assert_eq!(store.soxr_parameters().unwrap(), SoxrParameters::default());
+}
+
+#[gpui_kit::test]
+fn double_precision_makes_the_quality_custom(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = config::Store::at(dir.path());
+    let settings = settings_saving_to(&store, cx);
+    settings.select_resampler(SOXR);
+
+    settings.set_soxr_double_precision(true);
+
+    let snapshot = settings.snapshot();
+    assert!(snapshot.soxr_filter().double_precision);
+    assert_eq!(snapshot.soxr_quality_ix(), 4);
+    assert!(snapshot.is_soxr_resettable(SoxrSetting::Quality));
 }

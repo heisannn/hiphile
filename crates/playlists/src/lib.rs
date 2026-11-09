@@ -3,7 +3,6 @@
 //! other features dispatch to [`Playlists`], and keeps the choices that
 //! `actions::add_to_playlist_submenu` offers them in step with the state.
 
-mod filter;
 mod name_form;
 mod playlists_view;
 

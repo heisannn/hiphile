@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use fuzzy::bundle::BUNDLE;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
@@ -18,8 +16,8 @@ use gpui_kit::{
 };
 use hiphile_core::settings::{
     APPEARANCES, AppearanceSettings, AudioSettings, AudioSnapshot, CacheLimit, DiscordSettings,
-    LYRICS_HIGHLIGHTS, LyricsSettings, MATCH_SONG, QueueSettings, RESAMPLERS, RUBATO_QUALITIES,
-    SYSTEM_DEFAULT, SongCacheUsage, format_size,
+    Freshness, LYRICS_HIGHLIGHTS, LyricsSettings, MATCH_SONG, PcmSetting, QueueSettings,
+    RESAMPLERS, RUBATO_QUALITIES, SYSTEM_DEFAULT, SongCacheUsage, format_size,
 };
 use session::{Readings, ReadingsState};
 use updater::{UpdateState, Updater};
@@ -31,13 +29,6 @@ use crate::imgbb_key_field::ImgbbKeyField;
 use crate::r8brain_section::{R8brainFields, r8brain_groups, r8brain_quality_item};
 use crate::soxr_section::{soxr_groups, soxr_quality_item};
 use crate::{CloseWindow, SETTINGS_CONTEXT};
-
-/// How often the devices are listed and the kept songs counted again while the
-/// window is open, so a device plugged in or a song kept meanwhile shows up.
-/// Neither reports a change that reaches here.
-const REFRESH: Duration = Duration::from_secs(2);
-
-const PCM_ONLY: &str = "DSD plays songs whole while it's on.";
 
 pub(crate) struct SettingsView {
     appearance: AppearanceSettings,
@@ -67,10 +58,10 @@ pub(crate) struct SettingsView {
     _queue_changes: Task<()>,
     _readings_changes: Task<()>,
     _updater_changes: Option<Task<()>>,
-    _refresh: Task<()>,
+    _fresh: [Freshness; 2],
 }
 
-fn exclusive_item(audio: &AudioSettings, is_dsd_on: bool) -> SettingItem {
+fn exclusive_item(audio: &AudioSettings, snapshot: &AudioSnapshot) -> SettingItem {
     let field = SettingField::switch(
         {
             let audio = audio.clone();
@@ -81,11 +72,11 @@ fn exclusive_item(audio: &AudioSettings, is_dsd_on: bool) -> SettingItem {
             move |is_on, _| audio.set_exclusive(is_on)
         },
     );
-    let item = SettingItem::new("Exclusive mode", field).disabled(is_dsd_on);
-    if is_dsd_on {
-        item.description("DSD needs it while it's on.")
-    } else {
-        item
+    let note = snapshot.dsd_note(PcmSetting::ExclusiveMode);
+    let item = SettingItem::new("Exclusive mode", field).disabled(note.is_some());
+    match note {
+        Some(note) => item.description(note),
+        None => item,
     }
 }
 
@@ -108,18 +99,7 @@ impl SettingsView {
         // Holds focus so the window's commands work before anything is clicked
         let focus = cx.focus_handle();
         focus.focus(window, cx);
-        audio.list_devices();
-        let refresh = cx.spawn({
-            let audio = audio.clone();
-            let usage = song_cache_usage.clone();
-            async move |_, cx| {
-                loop {
-                    cx.background_executor().timer(REFRESH).await;
-                    audio.list_devices();
-                    usage.count();
-                }
-            }
-        });
+        let fresh = [audio.keep_fresh(), song_cache_usage.keep_fresh()];
         let r8brain_fields = R8brainFields::new(&audio, window, cx);
         let song_cache_field = cx.new(|cx| CacheLimitField::new(song_cache.clone(), window, cx));
         let cover_cache_field = cx.new(|cx| CacheLimitField::new(cover_cache.clone(), window, cx));
@@ -156,7 +136,7 @@ impl SettingsView {
             cover_cache_field,
             song_cache_usage,
             focus,
-            _refresh: refresh,
+            _fresh: fresh,
         }
     }
 
@@ -265,16 +245,17 @@ impl SettingsView {
         .default_value(MATCH_SONG);
 
         let errors: Vec<SharedString> = audio.errors().map(SharedString::new).collect();
-        let mut rate = SettingItem::new("Sample rate", rate).disabled(audio.is_dsd_on());
-        if audio.is_dsd_on() {
-            rate = rate.description("DSD sets the rate while it's on.");
+        let note = audio.dsd_note(PcmSetting::SampleRate);
+        let mut rate = SettingItem::new("Sample rate", rate).disabled(note.is_some());
+        if let Some(note) = note {
+            rate = rate.description(note);
         }
         let mut items = vec![
             SettingItem::new("Output device", device).disabled(!audio.has_devices()),
             rate,
         ];
         if AudioSettings::is_exclusive_offered() {
-            items.push(exclusive_item(&self.audio, audio.is_dsd_on()));
+            items.push(exclusive_item(&self.audio, &audio));
         }
         let mut output = SettingGroup::new().items(items);
         if !errors.is_empty() {
@@ -307,10 +288,10 @@ impl SettingsView {
                 move |is_on, _| audio.set_play_pause_fade(is_on)
             },
         );
-        let is_dsd_on = audio.is_dsd_on();
-        let mut fade = SettingItem::new("Fade", fade).disabled(is_dsd_on);
-        if is_dsd_on {
-            fade = fade.description("DSD cuts in and out at once while it's on.");
+        let note = audio.dsd_note(PcmSetting::PlayPauseFade);
+        let mut fade = SettingItem::new("Fade", fade).disabled(note.is_some());
+        if let Some(note) = note {
+            fade = fade.description(note);
         }
         SettingGroup::new().title("Play and pause").items([fade])
     }
@@ -332,21 +313,15 @@ impl SettingsView {
             AudioSnapshot::crossfade_value,
             AudioSettings::set_crossfade,
         );
-        let is_dsd_on = audio.is_dsd_on();
+        let trim_note = audio.dsd_note(PcmSetting::TrimSilence);
         let trim_silence = SettingItem::new("Trim silence", trim_silence)
-            .disabled(is_dsd_on)
-            .description(if is_dsd_on {
-                PCM_ONLY
-            } else {
-                "Silence longer than 10 seconds inside a song goes too."
-            });
-        let mut crossfade = SettingItem::new("Crossfade", crossfade).disabled(is_dsd_on);
-        let note = if is_dsd_on {
-            Some(PCM_ONLY)
-        } else {
-            audio.crossfade_note()
-        };
-        if let Some(note) = note {
+            .disabled(trim_note.is_some())
+            .description(
+                trim_note.unwrap_or("Silence longer than 10 seconds inside a song goes too."),
+            );
+        let mut crossfade = SettingItem::new("Crossfade", crossfade)
+            .disabled(audio.dsd_note(PcmSetting::Crossfade).is_some());
+        if let Some(note) = audio.crossfade_note() {
             crossfade = crossfade.description(note);
         }
         SettingGroup::new()
@@ -360,7 +335,7 @@ impl SettingsView {
             move |_, _, _| {
                 let settings = audio.snapshot();
                 let selected = settings.resampler_ix();
-                let is_dsd_on = settings.is_dsd_on();
+                let is_dsd_on = settings.dsd_note(PcmSetting::Resampling).is_some();
                 let audio = audio.clone();
                 RadioGroup::horizontal("resampler")
                     .selected_index(Some(selected))
@@ -374,7 +349,7 @@ impl SettingsView {
                     .on_click(move |ix, _, _| audio.select_resampler(*ix))
             }
         });
-        let is_dsd_on = audio.is_dsd_on();
+        let note = audio.dsd_note(PcmSetting::Resampling);
         let mut items = vec![SettingItem::new("Resampler", resampler)];
         if audio.uses_r8brain() {
             items.push(r8brain_quality_item(&self.audio));
@@ -386,10 +361,10 @@ impl SettingsView {
         let mut group = SettingGroup::new().title("Resampling").items(
             items
                 .into_iter()
-                .map(|item| item.keywords(["resampling"]).disabled(is_dsd_on)),
+                .map(|item| item.keywords(["resampling"]).disabled(note.is_some())),
         );
-        if is_dsd_on {
-            group = group.description("DSD uses the DSD filter settings below while it's on.");
+        if let Some(note) = note {
+            group = group.description(note);
         }
         group
     }
@@ -400,7 +375,7 @@ impl SettingsView {
             move |_, _, _| {
                 let settings = audio.snapshot();
                 let selected = settings.rubato_quality_ix();
-                let is_dsd_on = settings.is_dsd_on();
+                let is_dsd_on = settings.dsd_note(PcmSetting::Resampling).is_some();
                 let audio = audio.clone();
                 RadioGroup::horizontal("rubato-quality")
                     .selected_index(Some(selected))

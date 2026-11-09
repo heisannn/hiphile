@@ -16,6 +16,7 @@ use gpui_kit::{
     ParentElement as _, Render, ScrollStrategy, SharedString, Styled as _, Subscription, Task,
     UniformListScrollHandle, Window, div, prelude::FluentBuilder as _,
 };
+use hiphile_core::alerts;
 use hiphile_core::favorites::{
     Favorite, FavoriteLists, FavoritesLoad, FavoritesNotice, FavoritesSnapshot, FavoritesState,
     Section,
@@ -112,21 +113,12 @@ impl Favorites {
         cx.notify();
     }
 
-    /// Selects the row at `fallback_ix`, or the last, when nothing is selected
-    /// of `section` or what was is gone.
-    fn keep_selection(&mut self, section: Section, fallback_ix: usize) {
-        let lists = self.shown.lists();
-        let selected = &self.selected[section.ix()];
-        if selected
-            .as_ref()
-            .is_some_and(|target| lists.contains(target))
-        {
-            return;
-        }
-        let last = lists.len(section).saturating_sub(1);
-        self.selected[section.ix()] = lists
-            .favorite_at(section, fallback_ix.min(last))
-            .map(|favorite| favorite.target());
+    fn keep_selection(&mut self, section: Section, was_ix: usize) {
+        let selected = &mut self.selected[section.ix()];
+        *selected = self
+            .shown
+            .lists()
+            .kept_selection(section, selected.as_ref(), was_ix);
     }
 
     fn selected_position(&self) -> Option<usize> {
@@ -255,9 +247,12 @@ impl Favorites {
         }
     }
 
-    fn toggle_selected(&self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Through the favorites rather than an action, so that a second toggle right after acts
+    /// on what is selected once the first has taken its favorite out.
+    fn toggle_selected(&mut self, cx: &mut Context<Self>) {
         if let Some(favorite) = self.selected_favorite() {
-            actions::toggle_favorite(favorite, window, cx);
+            self.favorites.toggle(favorite);
+            self.show(self.favorites.snapshot(), cx);
         }
     }
 
@@ -327,8 +322,8 @@ impl Favorites {
             .on_action(
                 cx.listener(|this, _: &GoToArtist, window, cx| this.go_to_artist(window, cx)),
             )
-            .on_action(cx.listener(|this, _: &ToggleFavorite, window, cx| {
-                this.toggle_selected(window, cx);
+            .on_action(cx.listener(|this, _: &ToggleFavorite, _, cx| {
+                this.toggle_selected(cx);
             }))
             .on_action(cx.listener(|this, _: &PreviousSection, _, cx| {
                 this.show_adjacent_section(-1, cx);
@@ -345,7 +340,7 @@ impl Favorites {
             FavoritesLoad::Loading => return centered(Spinner::new()).into_any_element(),
             FavoritesLoad::Failed(error) => {
                 return LoadFailure::new(
-                    "Couldn't load favorites",
+                    alerts::FAVORITES_FAILED,
                     SharedString::from(error.clone()),
                     Button::new("retry-favorites")
                         .label("Retry")

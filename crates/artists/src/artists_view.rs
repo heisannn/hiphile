@@ -1,3 +1,4 @@
+use std::mem;
 use std::sync::Arc;
 
 use actions::{AlbumAction, Placement};
@@ -16,12 +17,9 @@ use gpui_kit::{
     Pixels, Render, ScrollStrategy, SharedString, Styled as _, Subscription, Task,
     UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px,
 };
-use hiphile_core::Shelf;
-use hiphile_core::artists::{
-    ArtistDates, ArtistDetail, ArtistList, ArtistListStatus, ArtistOrder, ArtistPage, ArtistSort,
-    arrange, artist_index,
-};
+use hiphile_core::artists::{ArtistDetail, ArtistList, ArtistListStatus, ArtistOrder, ArtistPage};
 use hiphile_core::favorites::Favorite;
+use hiphile_core::{Shelf, Shown};
 use subsonic::{Artist, ArtistId, PlaylistId, SongId};
 use ui::card_grid::GridMotion;
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
@@ -41,7 +39,6 @@ use crate::{
     PlayNext, ROOT_CONTEXT,
 };
 
-const TOP_SONGS_COLLAPSED: usize = 5;
 /// In pixels: about a row of cards, so that scrolling does not show them arriving.
 const DETAIL_OVERDRAW: f32 = 300.;
 
@@ -55,16 +52,13 @@ pub struct Artists {
     artist_list: ArtistList,
     artist_detail: ArtistDetail,
     is_activated: bool,
+    /// The list's status last taken, which a new one is compared with.
+    status: ArtistListStatus,
     /// What is on show of the list, which follows `artist_list`.
     artists: Shelf<Artist>,
+    shown: Option<Shown<Artist>>,
     refresh_error: Option<SharedString>,
     is_refreshing: bool,
-    index: Arc<fuzzy::Index>,
-    /// Positions in the loaded artists that match the filter, in the order they show.
-    visible: Arc<Vec<usize>>,
-    sort: ArtistSort,
-    /// From the saved albums: without a saved library, no artist has a date.
-    dates: Arc<ArtistDates>,
     selected_artist: Option<ArtistId>,
     /// Whether the list on its way should come to the artist just revealed,
     /// who may not be on the list yet or may move when it arrives.
@@ -89,11 +83,9 @@ pub struct Artists {
     artist_being_fetched: Option<ArtistId>,
     panes: Entity<ResizableState>,
     _action_task: Task<()>,
-    _index_task: Task<()>,
     _list_changes: Task<()>,
     _detail_changes: Task<()>,
     _subscriptions: Vec<Subscription>,
-    _readings_changes: Option<Task<()>>,
 }
 
 impl EventEmitter<ArtistsEvent> for Artists {}
@@ -113,7 +105,7 @@ impl Artists {
             // The artist on show has a star that says
             actions::observe_favorites(cx),
             cx.subscribe_in(&filter, window, |this, _, event, window, cx| match event {
-                InputEvent::Change => this.apply_filter(cx),
+                InputEvent::Change => this.filter_changed(cx),
                 InputEvent::PressEnter { .. } => this.list_focus.focus(window, cx),
                 _ => {}
             }),
@@ -123,23 +115,19 @@ impl Artists {
             cx.on_focus(&detail_focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&detail_focus, window, |_, _, cx| cx.notify()),
         ];
-        let readings_changes = session.readings().map(|readings| {
-            ui::on_readings_changed(readings, cx, |this: &mut Self, cx| this.index_artists(cx))
-        });
+        let status = artist_list.status();
         let list_changes = gpui_host::observe(artist_list.subscribe(), cx, Self::follow_list);
         let detail_changes = gpui_host::observe(artist_detail.subscribe(), cx, Self::follow_detail);
-        Self {
+        let mut this = Self {
             session,
             artist_list,
             artist_detail,
             is_activated: false,
-            artists: Shelf::Loading,
+            status: status.clone(),
+            artists: status.artists().clone(),
+            shown: None,
             refresh_error: None,
             is_refreshing: false,
-            index: Arc::default(),
-            visible: Arc::default(),
-            sort: ArtistSort::default(),
-            dates: Arc::default(),
             selected_artist: None,
             revealing: false,
             detail: None,
@@ -158,45 +146,42 @@ impl Artists {
             artist_being_fetched: None,
             panes: cx.new(|_| ResizableState::default()),
             _action_task: Task::ready(()),
-            _index_task: Task::ready(()),
             _list_changes: list_changes,
             _detail_changes: detail_changes,
             _subscriptions: subscriptions,
-            _readings_changes: readings_changes,
-        }
+        };
+        this.show_list(status.shown().cloned(), cx);
+        this
     }
 
     pub fn activate(&mut self, cx: &mut Context<Self>) {
         if !self.is_activated {
             self.is_activated = true;
             self.artist_list.open();
-            self.follow_list(self.artist_list.status(), cx);
+            self.sync(cx);
         }
+    }
+
+    /// Takes the list's status at once after a call into it, so that what follows does not act
+    /// on the old one.
+    fn sync(&mut self, cx: &mut Context<Self>) {
+        self.follow_list(self.artist_list.status(), cx);
     }
 
     fn follow_list(&mut self, status: ArtistListStatus, cx: &mut Context<Self>) {
-        self.refresh_error = status.failure().map(|error| error.to_owned().into());
-        let has_new_dates = self.dates != *status.dates();
-        self.dates = status.dates().clone();
-        if has_new_dates && *status.artists() == self.artists {
-            self.apply_filter(cx);
+        let old = mem::replace(&mut self.status, status);
+        self.refresh_error = self.status.failure().map(|error| error.to_owned().into());
+        if old.artists() != self.status.artists() {
+            self.artists = self.status.artists().clone();
         }
-        self.show_artists(status.artists().clone(), status.is_refreshing(), cx);
+        if old.shown() != self.status.shown() {
+            self.show_list(self.status.shown().cloned(), cx);
+        }
+        self.set_refreshing(self.status.is_refreshing(), cx);
     }
 
-    fn show_artists(
-        &mut self,
-        artists: Shelf<Artist>,
-        is_refreshing: bool,
-        cx: &mut Context<Self>,
-    ) {
+    fn set_refreshing(&mut self, is_refreshing: bool, cx: &mut Context<Self>) {
         self.is_refreshing = is_refreshing;
-        if artists != self.artists {
-            match artists {
-                Shelf::Loaded(artists) => self.set_artists(artists, cx),
-                artists => self.artists = artists,
-            }
-        }
         if !is_refreshing {
             self.revealing = false;
         }
@@ -217,17 +202,26 @@ impl Artists {
 
     /// The selection stays, also on an artist the list does not have, as one who
     /// only appears on songs, unless the artist was on the list and has gone.
-    fn set_artists(&mut self, artists: impl Into<Arc<[Artist]>>, cx: &mut Context<Self>) {
-        let artists = artists.into();
+    /// Artists in a new order keep the selected one in view.
+    fn show_list(&mut self, shown: Option<Shown<Artist>>, cx: &mut Context<Self>) {
+        let old = mem::replace(&mut self.shown, shown);
+        let Some(artists) = self.shown.as_ref().map(|shown| shown.items().clone()) else {
+            return;
+        };
+        if old
+            .as_ref()
+            .is_some_and(|old| Arc::ptr_eq(old.items(), &artists))
+        {
+            self.scroll_to_selected_artist();
+            return;
+        }
         let is_listed = |list: &[Artist], id: &ArtistId| list.iter().any(|a| a.id() == id);
         let has_gone = self.selected_artist.as_ref().is_some_and(|selected| {
-            let was_listed = self
-                .loaded_artists()
-                .is_some_and(|old| is_listed(old, selected));
+            let was_listed = old
+                .as_ref()
+                .is_some_and(|old| is_listed(old.items(), selected));
             was_listed && !is_listed(&artists, selected)
         });
-        self.artists = Shelf::Loaded(artists);
-        self.index_artists(cx);
         if has_gone {
             self.selected_artist = None;
             self.artist_detail.close();
@@ -245,67 +239,39 @@ impl Artists {
         cx.notify();
     }
 
-    fn loaded_artists(&self) -> Option<&Arc<[Artist]>> {
-        match &self.artists {
-            Shelf::Loaded(artists) => Some(artists),
-            Shelf::Loading | Shelf::Failed(_) => None,
-        }
+    fn listed_artists(&self) -> Option<&Arc<[Artist]>> {
+        self.shown.as_ref().map(Shown::items)
+    }
+
+    fn visible_len(&self) -> usize {
+        self.shown.as_ref().map_or(0, |shown| shown.visible().len())
     }
 
     fn visible_artist(&self, position: usize) -> Option<&Artist> {
-        self.loaded_artists()?.get(*self.visible.get(position)?)
+        self.shown.as_ref()?.get(position)
     }
 
     fn selected_position(&self) -> Option<usize> {
         let selected = self.selected_artist.as_ref()?;
-        (0..self.visible.len()).find(|position| {
-            self.visible_artist(*position)
-                .is_some_and(|artist| artist.id() == selected)
-        })
+        self.shown
+            .as_ref()?
+            .position(|artist| artist.id() == selected)
     }
 
-    fn apply_filter(&mut self, cx: &mut Context<Self>) {
+    fn filter_changed(&mut self, cx: &mut Context<Self>) {
         let query = self.filter.read(cx).value();
-        let found = self.index.search(&query);
-        self.visible = Arc::new(match self.loaded_artists() {
-            Some(artists) => arrange(artists, found, &self.dates, self.sort),
-            None => found,
-        });
-        cx.notify();
+        self.artist_list.set_query(&query);
+        self.sync(cx);
     }
 
-    fn set_sort(&mut self, sort: ArtistSort, cx: &mut Context<Self>) {
-        if self.sort != sort {
-            self.sort = sort;
-            self.apply_filter(cx);
-            self.scroll_to_selected_artist();
-        }
+    fn choose_order(&mut self, order: ArtistOrder, cx: &mut Context<Self>) {
+        self.artist_list.choose_order(order);
+        self.sync(cx);
     }
 
-    /// Makes the artists searchable at once as far as they read without a
-    /// dictionary, then, off the UI thread, as far as they read with one.
-    fn index_artists(&mut self, cx: &mut Context<Self>) {
-        let Some(artists) = self.loaded_artists().cloned() else {
-            return;
-        };
-        self.index = Arc::new(artist_index(&artists, None));
-        self._index_task = Task::ready(());
-        self.apply_filter(cx);
-        let Some(book) = self.session.reading_book() else {
-            return;
-        };
-        self._index_task = cx.spawn(async move |this, cx| {
-            let index = cx
-                .background_spawn(async move {
-                    book.read(|speller| artist_index(&artists, Some(speller)))
-                })
-                .await;
-            this.update(cx, |this, cx| {
-                this.index = Arc::new(index);
-                this.apply_filter(cx);
-            })
-            .ok();
-        });
+    fn choose_direction(&mut self, is_descending: bool, cx: &mut Context<Self>) {
+        self.artist_list.choose_direction(is_descending);
+        self.sync(cx);
     }
 
     pub fn selected_artist(&self) -> Option<&ArtistId> {
@@ -335,7 +301,7 @@ impl Artists {
             offset_in_item: px(0.),
         });
         let listed = self
-            .loaded_artists()
+            .listed_artists()
             .and_then(|artists| artists.iter().find(|listed| listed.id() == &artist));
         self.artist_detail.show(&artist, listed);
         self.take_page(self.artist_detail.page());
@@ -346,14 +312,17 @@ impl Artists {
     /// only appears on songs, shows in the detail all the same.
     pub fn reveal_artist(&mut self, artist: ArtistId, window: &mut Window, cx: &mut Context<Self>) {
         self.activate(cx);
-        let is_hidden = self
-            .loaded_artists()
-            .and_then(|artists| artists.iter().position(|listed| listed.id() == &artist))
-            .is_some_and(|position| !self.visible.contains(&position));
+        let is_hidden = self.shown.as_ref().is_some_and(|shown| {
+            let position = shown
+                .items()
+                .iter()
+                .position(|listed| listed.id() == &artist);
+            position.is_some_and(|position| !shown.visible().contains(&position))
+        });
         if is_hidden {
             self.filter
                 .update(cx, |filter, cx| filter.set_value("", window, cx));
-            self.apply_filter(cx);
+            self.filter_changed(cx);
         }
         self.select_artist(artist, cx);
         self.revealing = self.is_refreshing;
@@ -382,7 +351,7 @@ impl Artists {
     }
 
     fn move_artist(&mut self, motion: Motion, cx: &mut Context<Self>) {
-        let len = self.visible.len();
+        let len = self.visible_len();
         let page = page_rows(&self.list_scroll, len);
         let Some(position) = motion.apply(self.selected_position(), len, page) else {
             return;
@@ -447,7 +416,7 @@ impl Artists {
     }
 
     fn render_list_pane(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let count = self.loaded_artists().map(|artists| artists.len());
+        let count = self.listed_artists().map(|artists| artists.len());
         let is_updating = count.is_some() && self.is_refreshing;
         v_flex()
             .size_full()
@@ -474,25 +443,27 @@ impl Artists {
     }
 
     fn render_sort_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let current = self.sort;
-        let option = |label: &'static str, is_checked: bool, sort: ArtistSort| {
+        let current = self.status.sort();
+        let order = |label: &'static str, order: ArtistOrder| {
             let owner = cx.entity().downgrade();
+            Some(SortOption::new(
+                label,
+                current.order == order,
+                move |_, cx| {
+                    owner
+                        .update(cx, |this, cx| this.choose_order(order, cx))
+                        .ok();
+                },
+            ))
+        };
+        let direction = |label: &'static str, is_descending: bool| {
+            let owner = cx.entity().downgrade();
+            let is_checked = current.is_descending == is_descending;
             Some(SortOption::new(label, is_checked, move |_, cx| {
-                owner.update(cx, |this, cx| this.set_sort(sort, cx)).ok();
+                owner
+                    .update(cx, |this, cx| this.choose_direction(is_descending, cx))
+                    .ok();
             }))
-        };
-        let order = |label, order| {
-            let sort = if current.order == order {
-                current
-            } else {
-                ArtistSort::chosen(order)
-            };
-            option(label, current.order == order, sort)
-        };
-        let direction = |label, is_descending| {
-            let mut sort = current;
-            sort.is_descending = is_descending;
-            option(label, current.is_descending == is_descending, sort)
         };
         sort_menu(
             "sort-artists",
@@ -552,9 +523,12 @@ impl Artists {
     }
 
     fn render_rows(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let artists = match &self.artists {
-            Shelf::Loading => return centered(Spinner::new()).into_any_element(),
-            Shelf::Failed(error) => {
+        let shown = match (&self.shown, &self.artists) {
+            (Some(shown), _) => shown.clone(),
+            (None, Shelf::Loading | Shelf::Loaded(_)) => {
+                return centered(Spinner::new()).into_any_element();
+            }
+            (None, Shelf::Failed(error)) => {
                 return LoadFailure::new(
                     "Couldn't load artists",
                     error.clone().into(),
@@ -567,16 +541,14 @@ impl Artists {
                 )
                 .into_any_element();
             }
-            Shelf::Loaded(artists) => artists.clone(),
         };
-        if artists.is_empty() {
+        if shown.items().is_empty() {
             return centered(muted_text("This server has no artists.", cx)).into_any_element();
         }
-        if self.visible.is_empty() {
+        if shown.visible().is_empty() {
             let note = self.session.missing_readings_note();
             return no_matches("No artists match the filter.", note, cx).into_any_element();
         }
-        let visible = self.visible.clone();
         let selected = self.selected_artist.clone();
         let is_focused = self.list_focus.is_focused(window);
         let owner = cx.entity().downgrade();
@@ -584,10 +556,10 @@ impl Artists {
         row_list(
             "artist-list",
             "Artists",
-            visible.len(),
+            shown.visible().len(),
             &self.list_scroll,
             move |position| {
-                let artist = artists.get(*visible.get(position)?)?;
+                let artist = shown.get(position)?;
                 Some(ArtistRow::new(
                     artist,
                     selected.as_ref() == Some(artist.id()),

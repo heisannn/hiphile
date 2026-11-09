@@ -1,13 +1,15 @@
-use config::{R8brainFilter, R8brainPerformance, R8brainQuality};
 use gpui_kit::component::{
     radio::{Radio, RadioGroup},
     setting::{SettingField, SettingGroup, SettingItem},
 };
 use gpui_kit::{AppContext as _, Axis, Context, Entity, SharedString, Window};
-use hiphile_core::settings::{AudioSettings, AudioSnapshot, R8BRAIN_PHASES, R8BRAIN_QUALITIES};
+use hiphile_core::settings::{
+    AudioSettings, AudioSnapshot, PcmSetting, R8BRAIN_PHASES, R8BRAIN_QUALITIES, R8brainNumber,
+    R8brainSetting,
+};
 
 use crate::audio_options::dropdown;
-use crate::r8brain_number_field::{R8brainNumber, R8brainNumberField};
+use crate::r8brain_number_field::R8brainNumberField;
 
 pub(crate) struct R8brainFields {
     attenuation: Entity<R8brainNumberField>,
@@ -38,7 +40,7 @@ impl R8brainFields {
 /// The Audio page's r8brain groups, which stay out of the way unless it is what resamples.
 pub(crate) fn r8brain_groups(audio: &AudioSettings, fields: &R8brainFields) -> Vec<SettingGroup> {
     let settings = audio.snapshot();
-    if !settings.uses_r8brain() || settings.is_dsd_on() {
+    if !settings.uses_r8brain() || settings.dsd_note(PcmSetting::Resampling).is_some() {
         return Vec::new();
     }
     let filter = [
@@ -55,15 +57,7 @@ pub(crate) fn r8brain_groups(audio: &AudioSettings, fields: &R8brainFields) -> V
         SettingItem::new("Phase", phase_field(audio)).description(
             "Minimum adds far less delay, but moves frequencies in time by different amounts.",
         ),
-        SettingItem::new(
-            "Whole-step filters",
-            filter_switch(
-                audio,
-                |filter| filter.whole_stepping,
-                |filter, is_on| filter.whole_stepping = is_on,
-            ),
-        )
-        .description(
+        SettingItem::new("Whole-step filters", whole_stepping_field(audio)).description(
             "Rates at a ratio of small whole numbers get a filter per position, which keeps time \
              exactly. Off interpolates as at any other ratio.",
         ),
@@ -125,32 +119,28 @@ pub(crate) fn r8brain_quality_item(audio: &AudioSettings) -> SettingItem {
 }
 
 fn quality_field(audio: &AudioSettings) -> SettingField<SharedString> {
-    let reset_check = audio.clone();
-    let reset = audio.clone();
-    let audio = audio.clone();
-    SettingField::render(move |_, _, _| {
-        let selected = audio.snapshot().r8brain_quality_ix();
-        let is_dsd_on = audio.snapshot().is_dsd_on();
+    let field = SettingField::render({
         let audio = audio.clone();
-        RadioGroup::horizontal("r8brain-quality")
-            .selected_index(Some(selected))
-            .disabled(is_dsd_on)
-            .children(
-                R8BRAIN_QUALITIES
-                    .iter()
-                    .enumerate()
-                    .map(|(ix, label)| Radio::new(("r8brain-quality", ix)).label(*label)),
-            )
-            .on_click(move |ix, _, _| {
-                audio.select_r8brain_quality(*ix);
-            })
-    })
-    .on_reset(
-        move |_| reset_check.snapshot().r8brain_parameters().quality != R8brainQuality::default(),
-        move |_, _| {
-            reset.change_r8brain(|parameters| parameters.quality = R8brainQuality::default());
-        },
-    )
+        move |_, _, _| {
+            let settings = audio.snapshot();
+            let selected = settings.r8brain_quality_ix();
+            let is_dsd_on = settings.dsd_note(PcmSetting::Resampling).is_some();
+            let audio = audio.clone();
+            RadioGroup::horizontal("r8brain-quality")
+                .selected_index(Some(selected))
+                .disabled(is_dsd_on)
+                .children(
+                    R8BRAIN_QUALITIES
+                        .iter()
+                        .enumerate()
+                        .map(|(ix, label)| Radio::new(("r8brain-quality", ix)).label(*label)),
+                )
+                .on_click(move |ix, _, _| {
+                    audio.select_r8brain_quality(*ix);
+                })
+        }
+    });
+    resettable(field, audio, R8brainSetting::Quality)
 }
 
 fn bit_depth_field(audio: &AudioSettings, settings: &AudioSnapshot) -> SettingField<SharedString> {
@@ -163,65 +153,43 @@ fn bit_depth_field(audio: &AudioSettings, settings: &AudioSnapshot) -> SettingFi
 }
 
 fn phase_field(audio: &AudioSettings) -> SettingField<SharedString> {
-    let audio = audio.clone();
-    let reset_check = audio.clone();
-    let reset = audio.clone();
-    SettingField::render(move |_, _, _| {
-        let selected = audio.snapshot().r8brain_phase_ix();
+    let field = SettingField::render({
         let audio = audio.clone();
-        RadioGroup::horizontal("r8brain-phase")
-            .selected_index(Some(selected))
-            .children(
-                R8BRAIN_PHASES
-                    .iter()
-                    .enumerate()
-                    .map(|(ix, label)| Radio::new(("r8brain-phase", ix)).label(*label)),
-            )
-            .on_click(move |ix, _, _| {
-                audio.select_r8brain_phase(*ix);
-            })
-    })
-    .on_reset(
-        move |_| reset_check.snapshot().r8brain_filter().phase != default_filter().phase,
-        move |_, _| {
-            reset.change_r8brain_filter(|filter| filter.phase = default_filter().phase);
-        },
-    )
+        move |_, _, _| {
+            let selected = audio.snapshot().r8brain_phase_ix();
+            let audio = audio.clone();
+            RadioGroup::horizontal("r8brain-phase")
+                .selected_index(Some(selected))
+                .children(
+                    R8BRAIN_PHASES
+                        .iter()
+                        .enumerate()
+                        .map(|(ix, label)| Radio::new(("r8brain-phase", ix)).label(*label)),
+                )
+                .on_click(move |ix, _, _| {
+                    audio.select_r8brain_phase(*ix);
+                })
+        }
+    });
+    resettable(field, audio, R8brainSetting::Phase)
 }
 
-fn filter_switch(
-    audio: &AudioSettings,
-    get: fn(&R8brainFilter) -> bool,
-    set: fn(&mut R8brainFilter, bool),
-) -> SettingField<bool> {
-    let default = get(&default_filter());
-    let reset_check = audio.clone();
-    let reset = audio.clone();
-    SettingField::switch(
+fn whole_stepping_field(audio: &AudioSettings) -> SettingField<bool> {
+    let field = SettingField::switch(
         {
             let audio = audio.clone();
-            move |_| get(&audio.snapshot().r8brain_filter())
+            move |_| audio.snapshot().r8brain_filter().whole_stepping
         },
         {
             let audio = audio.clone();
-            move |is_on, _| {
-                audio.change_r8brain_filter(|filter| set(filter, is_on));
-            }
+            move |is_on, _| audio.set_r8brain_whole_stepping(is_on)
         },
-    )
-    .on_reset(
-        move |_| get(&reset_check.snapshot().r8brain_filter()) != default,
-        move |_, _| {
-            reset.change_r8brain_filter(|filter| set(filter, default));
-        },
-    )
+    );
+    resettable(field, audio, R8brainSetting::WholeStepping)
 }
 
 fn extended_fft_field(audio: &AudioSettings) -> SettingField<bool> {
-    let default = R8brainPerformance::default().extended_fft;
-    let reset_check = audio.clone();
-    let reset = audio.clone();
-    SettingField::switch(
+    let field = SettingField::switch(
         {
             let audio = audio.clone();
             move |_| {
@@ -234,26 +202,20 @@ fn extended_fft_field(audio: &AudioSettings) -> SettingField<bool> {
         },
         {
             let audio = audio.clone();
-            move |is_on, _| {
-                audio.change_r8brain(|parameters| parameters.performance.extended_fft = is_on);
-            }
+            move |is_on, _| audio.set_r8brain_extended_fft(is_on)
         },
-    )
-    .on_reset(
-        move |_| {
-            reset_check
-                .snapshot()
-                .r8brain_parameters()
-                .performance
-                .extended_fft
-                != default
-        },
-        move |_, _| {
-            reset.change_r8brain(|parameters| parameters.performance.extended_fft = default);
-        },
-    )
+    );
+    resettable(field, audio, R8brainSetting::ExtendedFft)
 }
 
-fn default_filter() -> R8brainFilter {
-    R8brainQuality::default().filter()
+fn resettable<T>(
+    field: SettingField<T>,
+    audio: &AudioSettings,
+    setting: R8brainSetting,
+) -> SettingField<T> {
+    let (check, reset) = (audio.clone(), audio.clone());
+    field.on_reset(
+        move |_| check.snapshot().is_r8brain_resettable(setting),
+        move |_, _| reset.reset_r8brain(setting),
+    )
 }

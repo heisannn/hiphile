@@ -3,6 +3,7 @@
 use gpui_kit::component::{WindowExt as _, button::Button, notification::Notification};
 use gpui_kit::{Context, Window};
 use hiphile_core::playlists::EntryId;
+use hiphile_core::selection;
 
 use super::Playlists;
 
@@ -18,9 +19,6 @@ impl Playlists {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.can_edit_songs() {
-            return;
-        }
         if self.playlists.move_entry(id, to_ix) {
             self.selected_entry = Some(id);
             self.sync(window, cx);
@@ -61,13 +59,10 @@ impl Playlists {
     }
 
     pub(super) fn remove_selected_entry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.can_edit_songs() {
-            return;
-        }
         let Some(id) = self.selected_entry else {
             return;
         };
-        let Some((ix, song)) = self.playlists.remove_entry(id) else {
+        let Some(removal) = self.playlists.remove_entry(id) else {
             return;
         };
         self.selected_entry = None;
@@ -75,9 +70,11 @@ impl Playlists {
         let len = self
             .loaded_detail()
             .map_or(0, |loaded| loaded.entries().len());
-        self.select_entry_at(ix.min(len.saturating_sub(1)), cx);
+        if let Some(ix) = selection::after_removal(removal.ix(), len) {
+            self.select_entry_at(ix, cx);
+        }
 
-        let message = format!("Removed “{}”", song.title());
+        let message = removal.message().to_owned();
         let owner = cx.entity().downgrade();
         window.push_notification(
             Notification::new()

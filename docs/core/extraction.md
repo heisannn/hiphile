@@ -20,13 +20,14 @@ it happen (see the [NSH evaluation](../nsh/evaluation.md)), and the logic can be
 | 1 | Done. The [pure files](#free-of-gpui-but-inside-gpui-crates) are in `hiphile-core` and `playback`, with three items they used from GPUI crates; the views use them there |
 | 2 | Done. `updater` is free of GPUI and the rules held; see [The updater pilot](#the-updater-pilot) |
 | Before 3 | `gpui-host` split from `ui`, and the [decisions](#decided-before-steps-3-to-6) for steps 3 to 6 |
-| 3 | Done. `session` is free of GPUI and checked: `Readings` is a handle, the sign-in procedure is `session::Accounts`, and GPUI's HTTP client and the globals for covers and readings are in `ui` (`ui::init_network`, `ui::readings`, `ui::set_cover_capacity`, `ui::on_readings_changed`) |
+| 3 | Done. `session` is free of GPUI and checked: `Readings` is a handle, the sign-in procedure is `session::Accounts`, and GPUI's HTTP client is in `ui` (`ui::set_http_client`; the globals for covers and readings it had then went in step 8) |
 | 4 | Done. The settings models are handles in `hiphile_core::settings`; the `settings` crate keeps the window, its fields and applying the appearance. The seven `*Changed` events are gone |
 | 5 | Done. `FavoritesState` and `PlaylistsState` in `hiphile-core` load, keep and write the favorites and the playlists; `is_instrumental` and what is skipped are in `playback`. The `actions` globals hold copies the shell feeds from the handles. See [Found in steps 5 and 6](#found-in-steps-5-and-6) |
 | 6 | Done. `LibrarySync`, `LibraryActivity`, `SearchIndex` and `DailyRecommendations` in `hiphile-core`; `LibraryEvent` keeps only `LeftAlbum`, the rest are `LibraryNotice`s |
 | 7 | Done. `playback::Player` holds the queue, the states, the engine, scrobbling and the volume; `hiphile_core::desktop` (`DiscordStatus`, `SystemMediaControls`) follows it; the current song's lyrics and their timing are `lyrics::CurrentLyrics` and `lyrics::timing`. See [Found in step 7](#found-in-step-7) |
 | 8 | Done. `hiphile_core::Hiphile` is the app's core: the settings, `Readings`, the cover cache, signing in and the signed-in `hiphile_core::Workspace`, which makes the handles and routes between them. `hiphile-cli` signs in, syncs and lists through it on tokio. See [Found in step 8](#found-in-step-8) |
 | 9 | Done. The workspace's handles load what the views loaded: `artists::ArtistList` and `ArtistDetail`, `songs::SongList`, `home::HomeShelves`, all into `hiphile_core::Shelf`; an album's detail is `library::AlbumDetail` and its songs for an action `library::album_songs`; `FavoritesState::toggle` picks the direction. A host gives the cache folder (`Caches::At`), the settings window counts kept songs through the core, and `hiphile-cli play` plays through `Hiphile::player`. See [Found in step 9](#found-in-step-9) |
+| 10 | Done. What the survey after step 9 found: the settings' setters check what they are given, the albums', artists' and playlists' lists are indexed and arranged in the core on one shape (`Shown<T>`), the workspace's notices are `alerts` worded in the core, showing a screen, Refresh and resuming a sign-in are the core's, and the player's and the lyrics' rules left in views moved. See [Found in step 10](#found-in-step-10) |
 
 ## Where things stand
 
@@ -131,21 +132,20 @@ gave `Recommendations` a `new`, and `History` a `Default`.
 7. **View state stays in views.** Slider drags, focus, selection, scroll, which panels are open and
    animation are the view's. The core takes values (`seek_to(Duration)`, `set_volume(level)`).
 8. **The host gives the core what only a window has.** The window handle that media controls need comes in
-   when the player starts. Raising the window becomes a notice that the host acts on. The host calls
-   `shutdown()` when the app quits, which restores the device's sample rate and hog mode (today
-   `cx.on_app_quit`).
+   once the workspace is open (`Workspace::connect_media_controls`). Raising the window becomes a notice that
+   the host acts on. The host calls `Hiphile::shutdown()` when the app quits, which writes what waits,
+   clears the system's media controls and restores the device's sample rate and hog mode.
 9. **Saves are serial and coalesced:** one write at a time, the last value wins. One helper replaces the
    four copies in `Player::save_volume`, `AudioSettings`, `Updater::save` and `Readings::save_choice`.
    It is `executor::Saver<T>`: `save(value)` replaces the value still waiting, and `save_with(|waiting| …)`
    builds on it, for `AudioSettings`, which writes only the fields that changed. The write runs on a
    blocking thread and reports through the owner's closure, and what was given is written even if the
-   saver is dropped first. `Readings::save_choice` is not serial today. `take_waiting` hands the host the
-   value still waiting, for a write before quitting: the settings window's `cx.on_app_quit` calls
-   `save_before_quitting()` on the handles that hold a typed value not yet committed, as it calls
-   `shutdown()` for the player.
-10. **Constructors take their stores.** `Player::new` uses the user's real config store today, so a test that
-    changes the volume changes the user's saved volume. Core constructors take the config store (and the
-    catalog, the caches), and tests give them temporary ones.
+   saver is dropped first. `take_waiting` hands the host the value still waiting, for a write before
+   quitting: `Hiphile::shutdown()` calls `save_before_quitting()` on the handles that hold a typed value not
+   yet committed, and stops the player.
+10. **Constructors take their stores.** Before step 7, `Player::new` used the user's real config store, so a
+    test that changed the volume changed the user's saved volume. Core constructors take the config store
+    (and the catalog, the caches), and tests give them temporary ones.
 11. **One `net::Client` for the life of the process**, owned by the app, with clones elsewhere, so the last
     one is never dropped inside a tokio runtime.
 
@@ -193,6 +193,7 @@ stay with the views.
 | 7 | The player into `playback`, in parts: states and queue operations; engine events and preparing the next song; scrobbling; Discord and media controls as followers in `hiphile_core::desktop`; the volume, the window handle and `shutdown()`; the current song's lyrics into `lyrics` | One part at a time |
 | 8 | The routing and the session's lifetime from `app_shell.rs` into `hiphile-core` | Last |
 | 9 | What steps 1 to 8 left in the views (see [Step 9](#step-9)) | In four parts |
+| 10 | What the survey after step 9 found (see [Step 10](#step-10)) | In five parts |
 
 ## The updater pilot
 
@@ -344,7 +345,7 @@ Step 2 tried the design rules on `updater`. They held, with these details settle
   config.
 - **Covers for the followers** come through the cover cache: the rule for a kept cover is
   `session::answer_cover` (GPUI's image loads use it too), and `session::cover_image` gives a follower the
-  image; the app passes the cache it opened (`ui::covers`).
+  image; the workspace gets the cache from `Hiphile` (`Parts::covers`).
 - **Dependencies.** `playback` takes `config`; `lyrics` takes `config` (for `LyricsHighlight`),
   `executor`, `subsonic` and tokio's `sync`; the `desktop` feature takes `presence`, `media-controls`,
   `net`, `url` and `async-channel`. `media_controls::MediaControls` is `Send`, so a follower can hold it.
@@ -374,9 +375,10 @@ Step 2 tried the design rules on `updater`. They held, with these details settle
 - **The workspace starts before its host follows it.** Signing in makes the workspace and starts its
   first sync on the executor, and the shell makes the screens on a later turn, when it sees the new
   snapshot. A notice sent in between reaches no one, so a host reads the state when it starts following:
-  the shell tells a sync failure and a failed load of the favorites it finds there, puts up the
-  activity's notice when the library is busy already, and the screens read what a sync already brought
-  when they load. A binding layer has to do the same. Inside the core, a follower subscribes before it
+  the shell puts up the activity's notice when the library is busy already, and the screens read what a
+  sync already brought when they load. A binding layer has to do the same. Since step 10 the core collects
+  the alerts from the start (`Workspace::alerts`, `Hiphile::alerts`), so no host catches up on those.
+  Inside the core, a follower subscribes before it
   reads the value it starts from: the workspace makes the player from the audio settings it subscribed
   to, and `LibraryActivity` starts from the sync and the download under way. The routing between the
   handles runs on executor tasks, and the workspace and the player are made on a background thread.
@@ -405,8 +407,8 @@ On 2026-11-09, after the user tried the app:
 
 ## Step 9
 
-What the steps left in the views that a mobile app would need too. Building the filter indexes stays in
-the views, as the index is built by a core function (`album_index` and the like) that any host can call.
+What the steps left in the views that a mobile app would need too. Building the filter indexes was to
+stay in the views; the songs' moved into the core after step 9 and the others in step 10.
 
 | Part | Content |
 | --- | --- |
@@ -461,16 +463,16 @@ the views, as the index is built by a core function (`album_index` and the like)
   shell's library routing went entirely to the workspace, and the shell only tells sync failures
   (`follow_sync_failures`).
 - **Behaviour that changed.** Home's shelves start loading when the workspace opens and reach the view a
-  turn later. Songs show once the view's index has reached the core, a turn later than before, and the
-  header's count and "Updating" change with the new arrangement. A reload that brings back the same
+  turn later. Songs showed once the view's index had reached the core, a turn later than before (since
+  "Decided after step 9", once the core has indexed and arranged them), and the header's count and "Updating" change with the new arrangement. A reload that brings back the same
   artists no longer rebuilds the filter index or scrolls. Two quick clicks on a star both count. Leaving
   an album in the library stops its load. The settings window's Clear also resets what the player
   counted as kept. `hiphile-cli play` plays at the saved volume rather than full scale, sends now playing
   and scrobbles (and those waiting from before), prepares the next song so that none waits between songs,
   words its failures as the core does, fetches the songs by ID before it plays, shows the format only when
   it changes, and waits for the device's rate to be put back before it exits.
-- **Still in GPUI crates.** The filter indexes of the albums, the playlists and the artists, built by core
-  functions (the songs' moved after step 9); the selection rules of the lists (the first item, an item that went, revealing
+- **Still in GPUI crates** at the end of step 9, all moved in step 10 but for the selection itself: the
+  filter indexes of the albums, the playlists and the artists; the selection rules of the lists (the first item, an item that went, revealing
   one); which parts an artist's page shows and how many top songs; the play queue made from the songs on
   show; the confirmations. A workspace test of the routing between the library and the screens' handles
   is missing: a `LibraryNotice` cannot be sent from outside `library::sync`.
@@ -497,23 +499,125 @@ Fixed then:
 
 Left, all minor:
 
-- A first sync's failure is told when it came before the shell followed it and not after, since only a
-  requested sync sends `SyncFailed`. Which of the two is wanted is undecided.
-- Taking a favorite off twice quickly on the favorites' own screen takes the same one off and back on:
-  the view dispatches the action and reads the new selection a turn later.
-- Deleting the open playlist while the list failed to load leaves it selected in the view.
-- A count of the song cache that was under way when it was cleared can publish the old size after it.
+Fixed in step 10: the first sync's failure (now always told), taking a favorite off twice quickly,
+deleting the open playlist while the list failed, the song cache's count after Clear, `library::Albums`
+(now `Shelf<Album>`), the playlist shown twice and the rename or deletion dropped after a failed save, and
+the shell's part of following what came first (now the alerts' core tests). Still left:
+
 - A replaced open of a song runs on to the stream's headers: it blocks a thread, where the old one was
   dropped at its next `.await`.
 - A value written on quitting can be overwritten by an older one the saver was writing.
 - GPUI's `spawn_blocking` shares the background pool with the core's tasks. That pool is fixed on Linux,
   which is not released.
-- `library::Albums` has the shape of `Shelf<Album>`.
-- From before the extraction: a playlist created while the list reloads can show twice, and a failed
-  save of a playlist's songs drops its rename or deletion that waited.
 - Untested: `Hiphile::sign_in` up to an open workspace (`Accounts::connect` opens the catalog in the
-  user's folders), the songs indexed again when the dictionaries come or go (a `Readings` with
-  dictionaries needs a real bundle), and the shell's part of following what came first.
+  user's folders), and the lists indexed again when the dictionaries come or go (a `Readings` with
+  dictionaries needs a real bundle).
+
+## Surveyed after step 9
+
+On 2026-11-09, four researchers looked for what the GPUI crates still decide that a second UI would have
+to write again. Besides what "Still in GPUI crates" lists, they found:
+
+- **Setters that trust their callers.** `CacheLimit::set_gib` takes a negative or NaN size, which the next
+  start cannot read, and then keeps no songs; `change_r8brain` takes values out of range, which the next
+  start replaces with the defaults; `PlaylistsState::create` and `rename` take a blank name, and `rename`
+  and `delete` do not check that the playlist is the user's; `turn_dsd_on` ignores `dsd_obstacle`, and the
+  warning before it is only in the view. The views check all of these today.
+- **Blocking work off the executor.** The albums', artists' and playlists' views read the dictionaries
+  (`ReadingBook::read`, which reads and writes the catalog) on `cx.background_spawn`, against rule 5.
+- **What the shell decides.** The text of the workspace's notices, when one is not shown (the screen that
+  shows the failure itself), what each one that came before the shell followed needs; what showing a
+  screen and Refresh ask of the core; resuming a sign-in, only once and not after signing out, and one
+  attempt at a time (`Hiphile::sign_in` takes a second while the first runs).
+- **Smaller rules in views.** Which queue commands apply to an entry; when the current song's lyrics are
+  looked up; which parts of a line light and how much (the view adds `SEEK_ROUNDING` itself); whether the
+  position can be sought; the queue made from the songs on show and the top songs shown; an unopened
+  playlist's songs; an artist page's parts and figures; an album's duration; the home screen's sections;
+  durations and counts as text (the CLI writes durations of an hour or more differently); the r8brain
+  field's settling, which the cache limit and the ImgBB key already do in the core; fetching a cover for
+  a host, done three times.
+- **Bugs from before the extraction.** At volume 0 and not muted, the button says Unmute and mutes; the
+  artists' list shows "0 albums" where the artist's page shows none; a playlist that diverged offers Move
+  and Remove, which do nothing; the home screen's shelves ask for as many albums as the widest window
+  shows, while the view's columns have no limit.
+
+## Decided before step 10
+
+On 2026-11-09:
+
+- A first sync's failure is told whenever it comes, as a requested one's is.
+- The core words the notices in full, as `playback` does ("in Settings, then press Play").
+- The albums', artists' and playlists' filter indexes move into the core, as the songs' did after step 9.
+  The rule in [Step 9](#step-9) that they stay in the views is withdrawn.
+- The bugs above are fixed in step 10.
+
+## Step 10
+
+| Part | Content |
+| --- | --- |
+| A | Settings: the setters check and clamp what they are given; the r8brain field's settling, parsing and reset into the core; `save_before_quitting` covers the audio settings; DSD checks its obstacle and words its warnings; the notes on what DSD turns off; refreshing the device list while a host shows it |
+| B | Albums and artists: `AlbumList` and a sorted, filtered `ArtistList` in the core on one shared shape with `SongList`; the queue from the songs on show and the top songs shown; an artist page's parts and figures; an album's duration; the home screen's sections and how many albums it asks for; `library::Albums` becomes `Shelf<Album>` |
+| C | Playlists and favorites: the playlists' filter index; names and who may edit checked in the core; diverged playlists offer no song edits; an unopened playlist's songs; the notices and confirmations worded in the core; what is selected after a removal, and the favorites' screen toggling through the core |
+| D | The shell: the workspace's and the app's notices (`alerts`) with their text and the catch-up; what showing a screen and Refresh do; resuming a sign-in and one attempt at a time; clearing the media controls on shutdown; a cover for a host; one `Placement` |
+| E | The player and text: the queue entries' commands; when the lyrics are looked up; lit parts of the lines; seekable and silent; volume 0 unmutes; durations and counts as text, shared with the CLI |
+
+The parts run in parallel, each in its own worktree; they meet in `workspace.rs`, `hiphile-core/src/lib.rs`
+and the shell.
+
+## Found in step 10
+
+- **Settings (A).** The setters clamp what they are given (`CacheLimit::set_gib`, the r8brain numbers), and
+  the r8brain field's parsing, settling, ranges, resets and presets are the core's: a host shows
+  `AudioSnapshot::r8brain_text` and calls `type_r8brain` and `commit_r8brain`. `NumberRange` gives a
+  stepper its bounds. The closures (`change_r8brain`, `change_soxr`) are private. `save_before_quitting`
+  writes the audio settings too, a value still settling included. `turn_dsd_on` does nothing while
+  `dsd_obstacle` says why not; its warnings are `DsdWarning` data and its choices `Choice`s;
+  `dsd_note(PcmSetting)` says what DSD turns off. `Freshness` is the guard a host holds while it shows
+  the devices or the song count, in place of the window's 2 s loop. A device for tests comes from
+  `audio::OutputDevice::listed` (`test-support`).
+- **Lists (B).** `Shown<T>` (`items`, `visible`, `queue_from`) is what the songs, the albums
+  (`library::AlbumList`, `Workspace::albums`) and the artists (`ArtistList`) show, through one
+  `pub(crate)` arranger that indexes twice (at once without the dictionaries, then with them) and drops
+  stale work by id. `AlbumList` follows `LibrarySync` and compares its shelf by pointer. `ArtistPage` says
+  its sections, picture, counts and the top songs on show; `album_count_to_show` hides a count of 0
+  everywhere. `LoadedAlbum` gives its duration. Home's `sections` and `MAX_COLUMNS` (12) decide what shows
+  and how many albums a shelf asks for. Giving up revealing an album keys on `SyncFinished`, as a `watch`
+  joins the states between.
+- **Playlists and favorites (C).** `PlaylistsState::set_query` and `PlaylistsSnapshot::visible` index the
+  playlists as the lists do, though not yet through `Shown<T>`. Names are trimmed and a blank one refused,
+  and `rename` and `delete` refuse what the user cannot edit (`is_editable`, `are_songs_editable`; named
+  `is_`/`are_` as the coding guide asks). Notices and results carry their text (`SongsAdded`, `Removal`,
+  `CreatedPlaylist`, `delete_confirmation`, `new_playlist_scope`). `songs_of` gives an unopened playlist's
+  songs. What is selected after a change is `selection::after_removal`, `kept_selection` and
+  `OpenPlaylist::follow`; the selection itself stays in the views.
+- **The shell (D).** `hiphile_core::alerts` words the sync's, the favorites' and the dictionaries' failures
+  and the skipped instrumentals (`PlayerNotice::Skipped`), and keeps up to 16 from the start; `told_on`
+  names the screen that shows the failure itself. `Workspace::showing`, `refresh` and `app_activated`
+  hold what a screen and Refresh ask of the core, which takes only a `Destination`; navigation stays in
+  the shell, and `Refresh` is the app crate's action. `Hiphile::resume` resumes once per start and never
+  after signing out, and `sign_in` refuses a second attempt (`SignInRefused::SigningIn`).
+  `Hiphile::cover_image` fetches a cover for a host and for the desktop followers.
+- **The player and text (E).** `Queue::commands_for`, `is_clearable` and `entry_state`;
+  `PlayerSnapshot::is_seekable` and `is_silent`; `lyrics::timing::lit_lines`, which returns only the lines
+  lit and adds the seek rounding itself (its ranges are UTF-8 bytes: a Swift or Kotlin binding converts
+  them to UTF-16); `CurrentLyrics::set_song`, fed by the workspace, `want()` (a counted guard a view holds
+  while it shows the lyrics) and `retry()`. `hiphile_core::format` writes durations and counts for the
+  views and the CLI.
+- **Behaviour that changed.** A first sync's failure is told whenever it comes. Albums, artists and their
+  filters show a turn after the core has them, and the selection scrolls into view after a filter or a
+  sort. Unmuting at volume 0 goes back to the last level saved above 0, or half. Closing and opening the
+  lyrics no longer retries a failed lookup; Retry does. A command on a playlist whose songs are loading or
+  failed reads them from the server. The rename dialog closes once the core accepts the name. A resumed
+  sign-in no longer fills the password field, and editing any field stops it. Typing in an r8brain field
+  publishes a snapshot per key, and a value typed out of range is clamped when the app quits. The CLI
+  writes durations of an hour or more as `h:mm:ss`. Home shows at most 12 cards across.
+- **Tests.** A test that ends with a request on its way can drop the last `net::Client` on the network's
+  thread and abort the test process (rule 11); wait for the requests before the test ends. Some
+  workspace tests against `NOWHERE` still carry that risk. One run of `cargo test --workspace` failed
+  once at `df52f9e` and passed four times after; the test was not found.
+- **Still open.** The soxr setters do not check ranges. `PlaylistsSnapshot::visible` could become a
+  `Shown<Playlist>`. The workspace's own notices (favorites' and playlists' write failures, home's
+  reload failures) are still told by the views.
 
 ## Done when
 

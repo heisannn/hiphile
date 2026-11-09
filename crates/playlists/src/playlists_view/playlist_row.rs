@@ -26,6 +26,7 @@ impl PlaylistRow {
     pub(super) fn new(
         playlist: &Playlist,
         username: &str,
+        is_editable: bool,
         is_selected: bool,
         is_focused: bool,
         owner: WeakEntity<Playlists>,
@@ -35,7 +36,7 @@ impl PlaylistRow {
             id: playlist.id().clone(),
             name: playlist.name().to_owned().into(),
             details: playlist_details(playlist, username),
-            is_editable: playlist.is_editable_by(username),
+            is_editable,
             has_songs: playlist.song_count() != Some(0),
             is_selected,
             is_focused,

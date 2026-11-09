@@ -6,42 +6,42 @@ use std::time::Duration;
 
 use actions::NewPlaylist;
 use gpui_kit::{KeyBinding, KeyUpEvent, Keystroke, TestAppContext, VisualTestContext, actions};
+use hiphile_core::test_support;
 use serde_json::json;
-use subsonic::Credentials;
 
 use super::*;
+
+const NOWHERE: &str = "http://127.0.0.1:9";
 
 fn album(id: &str, name: &str) -> Album {
     serde_json::from_value(json!({ "id": id, "name": name })).unwrap()
 }
 
-/// A library with two albums, whose server cannot be reached.
-fn library(cx: &mut TestAppContext) -> (Entity<Library>, &mut VisualTestContext) {
-    library_on("http://127.0.0.1:9", cx)
+fn two_albums_json() -> serde_json::Value {
+    json!({ "album": [{ "id": "a", "name": "Alpha" }, { "id": "b", "name": "Beta" }] })
 }
 
-/// A library with two albums once the first sync, which finds no albums at `url`, is over.
+/// A library whose server has two albums and nothing else, with them on show.
+fn library(cx: &mut TestAppContext) -> (Entity<Library>, &mut VisualTestContext) {
+    let url = server_answering(json!({ "albumList2": two_albums_json() }));
+    library_on(&url, cx)
+}
+
+/// A library on `url` once the first sync is over and what it brought shows.
 fn library_on<'a>(
     url: &str,
     cx: &'a mut TestAppContext,
 ) -> (Entity<Library>, &'a mut VisualTestContext) {
-    // The failing requests wake the test from the network's own thread
+    // The requests wake the test from the network's own thread
     cx.executor().allow_parking();
     cx.update(gpui_kit::init);
-    let net = net::Client::new("hiphile-test").unwrap();
-    let server = client::Server::new(url, Credentials::api_key("k")).unwrap();
-    let info = serde_json::from_value(json!({ "version": "1.16.1" })).unwrap();
-    let session = session::Session::new(
-        client::Client::new(net, server),
-        "alice".to_owned(),
-        info,
-        None,
-        None,
-    );
-    let sync = LibrarySync::new(cx.update(|cx| gpui_host::executor(cx)), session.clone());
-    let (library, cx) = cx.add_window_view(|window, cx| Library::new(session, sync, window, cx));
+    let session = test_support::session(url);
+    let executor = cx.update(|cx| gpui_host::executor(cx));
+    let sync = LibrarySync::new(executor.clone(), session.clone());
+    let albums = AlbumList::new(executor, session.clone(), &sync);
+    let (library, cx) =
+        cx.add_window_view(|window, cx| Library::new(session, sync, albums, window, cx));
     wait_for_the_sync(&library, cx);
-    set_albums(&library, vec![album("a", "Alpha"), album("b", "Beta")], cx);
     (library, cx)
 }
 
@@ -96,9 +96,10 @@ fn set_filter(library: &Entity<Library>, query: &str, cx: &mut VisualTestContext
             library
                 .filter
                 .update(cx, |filter, cx| filter.set_value(query, window, cx));
-            library.apply_filter(cx);
+            library.filter_changed(cx);
         });
     });
+    cx.run_until_parked();
 }
 
 fn reveal(library: &Entity<Library>, id: &str, cx: &mut VisualTestContext) {
@@ -107,6 +108,11 @@ fn reveal(library: &Entity<Library>, id: &str, cx: &mut VisualTestContext) {
             library.reveal_album(AlbumId::new(id), window, cx);
         });
     });
+    cx.run_until_parked();
+}
+
+fn visible_len(library: &Entity<Library>, cx: &mut VisualTestContext) -> usize {
+    cx.update(|_, cx| library.read(cx).visible_len())
 }
 
 /// Presses `key` on what focus reaches next after `from`. A button acts on
@@ -133,7 +139,7 @@ fn press_after(
 
 fn key_presses_retry(key: &str, cx: &mut TestAppContext) -> bool {
     actions!(library_test, [TakenByTheWorkspace]);
-    let (library, cx) = library(cx);
+    let (library, cx) = library_on(NOWHERE, cx);
     init_keys(cx);
     cx.update(|_, cx| {
         cx.bind_keys([KeyBinding::new(
@@ -145,8 +151,7 @@ fn key_presses_retry(key: &str, cx: &mut TestAppContext) -> bool {
     });
     cx.update(|_, cx| {
         library.update(cx, |library, cx| {
-            library.albums = Albums::Failed("before".into());
-            library.visible = Arc::default();
+            library.albums = Shelf::Failed("before".into());
             cx.notify();
         });
     });
@@ -154,7 +159,7 @@ fn key_presses_retry(key: &str, cx: &mut TestAppContext) -> bool {
 
     // Pressed, it loads again, and whatever that comes to is not this
     cx.update(
-        |_, cx| !matches!(&library.read(cx).albums, Albums::Failed(error) if error == "before"),
+        |_, cx| !matches!(&library.read(cx).albums, Shelf::Failed(error) if error == "before"),
     )
 }
 
@@ -165,9 +170,11 @@ fn init_keys(cx: &mut VisualTestContext) {
     });
 }
 
-/// Lets a sync of the library end, as one the server cannot answer fails.
+/// Lets a sync of the library end and what it brought show.
 fn wait_for_the_sync(library: &Entity<Library>, cx: &mut VisualTestContext) {
-    wait_until(library, cx, |library| !library.sync.status().is_running());
+    wait_until(library, cx, |library| {
+        !library.sync.status().is_running() && !library.status.is_updating()
+    });
 }
 
 /// Runs what is under way until `done`, as answers from the network arrive off the executor.
@@ -222,10 +229,10 @@ fn revealing_an_album_the_filter_hides_clears_the_filter(cx: &mut TestAppContext
 
     reveal(&library, "b", cx);
 
+    assert_eq!(visible_len(&library, cx), 2);
     cx.update(|_, cx| {
         let library = library.read(cx);
         assert_eq!(library.filter.read(cx).value(), "");
-        assert_eq!(library.visible.len(), 2);
         assert_eq!(library.selected_album, Some(AlbumId::new("b")));
     });
 }
@@ -237,10 +244,10 @@ fn revealing_an_album_the_filter_shows_keeps_the_filter(cx: &mut TestAppContext)
 
     reveal(&library, "b", cx);
 
+    assert_eq!(visible_len(&library, cx), 1);
     cx.update(|_, cx| {
         let library = library.read(cx);
         assert_eq!(library.filter.read(cx).value(), "Beta");
-        assert_eq!(library.visible.len(), 1);
         assert_eq!(library.selected_album, Some(AlbumId::new("b")));
     });
 }
@@ -260,9 +267,14 @@ fn revealing_an_album_moves_focus_to_the_album_list(cx: &mut TestAppContext) {
     });
 }
 
+/// Puts `albums` on show as the list would without a filter, while its own stay as they are.
 fn set_albums(library: &Entity<Library>, albums: Vec<Album>, cx: &mut VisualTestContext) {
     cx.update(|_, cx| {
-        library.update(cx, |library, cx| library.set_albums(albums.into(), cx));
+        library.update(cx, |library, cx| {
+            let shown = test_support::shown_in_order(albums);
+            library.albums = Shelf::Loaded(shown.items().clone());
+            library.show(Some(shown), cx);
+        });
     });
 }
 
@@ -416,7 +428,7 @@ fn the_favorite_key_goes_to_the_album_or_the_song_with_focus(cx: &mut TestAppCon
 }
 
 fn server_of_album_a() -> String {
-    server_answering(json!({ "album": album_a_json() }))
+    server_answering(json!({ "albumList2": two_albums_json(), "album": album_a_json() }))
 }
 
 fn server_answering(fields: serde_json::Value) -> String {
@@ -455,7 +467,10 @@ fn an_action_on_an_album_still_loading_waits_for_its_songs(cx: &mut TestAppConte
     cx.update(|window, cx| {
         let seen = plays.clone();
         cx.on_action(move |action: &PlaySongs, _| seen.borrow_mut().push(action.clone()));
-        library.update(cx, |library, cx| library.albums_focus.focus(window, cx));
+        library.update(cx, |library, cx| {
+            library.retry_album(cx);
+            library.albums_focus.focus(window, cx);
+        });
     });
     cx.update(|_, cx| {
         let detail = &library.read(cx).detail;

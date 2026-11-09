@@ -50,7 +50,7 @@ fn wait_until_shown(list: &SongList, cx: &mut TestAppContext) {
         !status.is_loading()
             && matches!(
                 (status.songs(), status.shown()),
-                (Shelf::Loaded(read), Some(shown)) if Arc::ptr_eq(read, shown.songs())
+                (Shelf::Loaded(read), Some(shown)) if Arc::ptr_eq(read, shown.items())
             )
     });
 }
@@ -60,7 +60,7 @@ fn shown(list: &SongList) -> Vec<String> {
     let Some(shown) = status.shown() else {
         return Vec::new();
     };
-    let songs = shown.songs();
+    let songs = shown.items();
     shown
         .visible()
         .iter()
@@ -131,7 +131,7 @@ fn other_songs_read_again_replace_those_on_show(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn the_same_songs_read_again_keep_their_index(cx: &mut TestAppContext) {
     let (list, _dir, _catalog) = shown_list(cx);
-    let before = list.status().shown().unwrap().songs().clone();
+    let before = list.status().shown().unwrap().items().clone();
 
     list.reload();
     wait_for(cx, || !list.status().is_loading());
@@ -139,7 +139,7 @@ fn the_same_songs_read_again_keep_their_index(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     let status = list.status();
-    assert!(Arc::ptr_eq(status.shown().unwrap().songs(), &before));
+    assert!(Arc::ptr_eq(status.shown().unwrap().items(), &before));
     assert_eq!(shown(&list), ["c", "b", "a"]);
 }
 

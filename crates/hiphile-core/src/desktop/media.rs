@@ -1,14 +1,13 @@
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 
 use executor::{Executor, Task};
-use futures::executor::block_on;
 use media_controls::{CoverFile, MediaCommand, MediaControls, MediaStatus};
 use playback::{EntryId, PlayerSnapshot};
 use subsonic::{CoverArtId, Song};
 use tokio::sync::broadcast;
 
 use super::{COVER_PIXELS, REFRESH};
-use crate::follow;
+use crate::{covers, follow};
 
 const NOTICES: usize = 16;
 
@@ -23,7 +22,7 @@ pub enum MediaNotice {
 #[derive(Clone)]
 pub struct SystemMediaControls(Arc<Inner>);
 
-struct WeakControls(Weak<Inner>);
+pub(crate) struct WeakControls(Weak<Inner>);
 
 struct Inner {
     executor: Executor,
@@ -155,16 +154,20 @@ impl SystemMediaControls {
             return;
         };
         state.sought_cover = Some(cover.clone());
-        let url = self.0.session.cover_art_url(&cover, COVER_PIXELS);
-        let net = self.0.session.client().net().clone();
-        let covers = self.0.covers.clone();
-        // The cover cache and the file are on the disk
-        let file = self.0.executor.spawn_blocking(move || {
-            let image = block_on(session::cover_image(&net, covers.as_ref(), &url))?;
-            CoverFile::write(&image).ok()
-        });
+        let image = covers::cover_image(
+            &self.0.executor,
+            self.0.session.client().net().clone(),
+            self.0.covers.clone(),
+            self.0.session.cover_art_url(&cover, COVER_PIXELS),
+        );
+        let executor = self.0.executor.clone();
         let weak = self.downgrade();
         state._cover = self.0.executor.spawn(async move {
+            let Some(image) = image.await else {
+                return;
+            };
+            // The file is on the disk
+            let file = executor.spawn_blocking(move || CoverFile::write(&image).ok());
             if let (Some(file), Some(this)) = (file.await, weak.upgrade()) {
                 this.lock().controls.set_cover(cover, file);
             }
@@ -199,13 +202,13 @@ impl SystemMediaControls {
         self.0.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn downgrade(&self) -> WeakControls {
+    pub(crate) fn downgrade(&self) -> WeakControls {
         WeakControls(Arc::downgrade(&self.0))
     }
 }
 
 impl WeakControls {
-    fn upgrade(&self) -> Option<SystemMediaControls> {
+    pub(crate) fn upgrade(&self) -> Option<SystemMediaControls> {
         self.0.upgrade().map(SystemMediaControls)
     }
 }

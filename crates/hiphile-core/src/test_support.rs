@@ -6,8 +6,12 @@ mod playlists_server;
 pub use favorites_server::{FavoritesServer, song_json};
 pub use playlists_server::{PlaylistsServer, Request};
 
+use std::sync::Arc;
+
 use serde_json::json;
 use subsonic::Credentials;
+
+use crate::Shown;
 
 /// Signed in to `url` as alice, with no saved library.
 pub fn session(url: &str) -> session::Session {
@@ -26,4 +30,11 @@ pub fn session_saving_into(catalog: Option<catalog::Catalog>, url: &str) -> sess
         catalog,
         None,
     )
+}
+
+/// Every one of `items`, in their order, as a list would show them without a query.
+pub fn shown_in_order<T>(items: impl Into<Arc<[T]>>) -> Shown<T> {
+    let items = items.into();
+    let visible = (0..items.len()).collect();
+    Shown::new(items, visible)
 }

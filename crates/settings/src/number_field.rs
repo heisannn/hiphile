@@ -10,6 +10,7 @@ use gpui_kit::{
     ParentElement as _, RenderOnce, SharedString, StatefulInteractiveElement as _, Styled as _,
     TextAlign, Window, div,
 };
+use hiphile_core::settings::NumberRange;
 
 const CONTEXT: &str = "SettingsNumberField";
 
@@ -20,67 +21,46 @@ pub(crate) fn init(cx: &mut App) {
     ]);
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct NumberRange {
-    pub(crate) min: f64,
-    pub(crate) max: f64,
-    pub(crate) step: f64,
-    /// How many digits may follow the point, with `None` for any.
-    pub(crate) fraction: Option<usize>,
+/// An input that holds numbers to `range` when it loses focus.
+pub(crate) fn number_state(
+    range: NumberRange,
+    window: &mut Window,
+    cx: &mut Context<InputState>,
+) -> InputState {
+    InputState::new(window, cx)
+        .mask_pattern(MaskPattern::Number {
+            separator: None,
+            fraction: range.fraction(),
+        })
+        .min(range.min())
+        .max(range.max())
 }
 
-impl NumberRange {
-    /// The state holds numbers to the range when it loses focus.
-    pub(crate) fn state(self, window: &mut Window, cx: &mut Context<InputState>) -> InputState {
-        InputState::new(window, cx)
-            .mask_pattern(MaskPattern::Number {
-                separator: None,
-                fraction: self.fraction,
-            })
-            .min(self.min)
-            .max(self.max)
-    }
-
-    /// The number `text` stands for, held to the range; `None` while it is not one yet, as for
-    /// `-` on the way to a number.
-    pub(crate) fn parse(self, text: &str) -> Option<f64> {
-        let number = text.parse::<f64>().ok()?;
-        // Adding zero turns `-0` into `0`, which is how it should read later
-        Some(number.clamp(self.min, self.max) + 0.0)
-    }
-
-    /// Whether `text` is a number that the range does not hold, as `1` on the way to `100` can be
-    pub(crate) fn is_beyond(self, text: &str) -> bool {
-        text.parse::<f64>()
-            .is_ok_and(|number| !(self.min..=self.max).contains(&number))
-    }
-
-    /// Moves the number in `state` one step and moves focus there, reporting the change as
-    /// typing would.
-    fn apply(
-        self,
-        state: &Entity<InputState>,
-        action: StepAction,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        state.update(cx, |state, cx| {
-            state.focus(window, cx);
-            let value = step_value(
-                &state.value(),
-                action,
-                self.step,
-                Some(self.min),
-                Some(self.max),
-            );
-            if let Some(value) = value {
-                state.replace_all(value, window, cx);
-            }
-        });
-    }
+/// Moves the number in `state` one step and moves focus there, reporting the change as typing
+/// would.
+fn step(
+    range: NumberRange,
+    state: &Entity<InputState>,
+    action: StepAction,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    state.update(cx, |state, cx| {
+        state.focus(window, cx);
+        let value = step_value(
+            &state.value(),
+            action,
+            range.step(),
+            Some(range.min()),
+            Some(range.max()),
+        );
+        if let Some(value) = value {
+            state.replace_all(value, window, cx);
+        }
+    });
 }
 
-/// Shows and edits the number in `state`, which [`NumberRange::state`] made.
+/// Shows and edits the number in `state`, which [`number_state`] made.
 #[derive(IntoElement)]
 pub(crate) struct NumberField {
     state: Entity<InputState>,
@@ -128,7 +108,7 @@ impl NumberField {
             .hover(move |this| this.bg(hover))
             .active(move |this| this.bg(active))
             .child(Icon::new(icon).xsmall())
-            .on_click(move |_, window, cx| range.apply(&state, action, window, cx))
+            .on_click(move |_, window, cx| step(range, &state, action, window, cx))
     }
 }
 
@@ -158,10 +138,10 @@ impl RenderOnce for NumberField {
             .w_40()
             .key_context(CONTEXT)
             .on_action(move |_: &Increment, window, cx| {
-                range.apply(&up, StepAction::Increment, window, cx)
+                step(range, &up, StepAction::Increment, window, cx)
             })
             .on_action(move |_: &Decrement, window, cx| {
-                range.apply(&down, StepAction::Decrement, window, cx)
+                step(range, &down, StepAction::Decrement, window, cx)
             })
             .child(input)
     }

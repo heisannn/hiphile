@@ -5,6 +5,7 @@ use std::time::Duration;
 use audio::PlaybackFormat;
 use executor::Executor;
 use futures::future;
+use hiphile_core::format::format_duration;
 use playback::{EntryId, Player, PlayerSnapshot};
 use subsonic::Song;
 
@@ -86,8 +87,10 @@ impl Report {
             self.format = Some(format.clone());
             writeln!(out, "  {}", describe_format(format))?;
         }
-        let total = snapshot.duration().map_or_else(|| "?".to_owned(), clock);
-        write!(progress, "\r  {} / {total}", clock(position))?;
+        let total = snapshot
+            .duration()
+            .map_or_else(|| "?".to_owned(), format_duration);
+        write!(progress, "\r  {} / {total}", format_duration(position))?;
         progress.flush()?;
         self.is_line_open = true;
         Ok(Step::Wait)
@@ -116,11 +119,6 @@ fn describe_format(format: &PlaybackFormat) -> String {
         None => String::new(),
     };
     format!("{source} -> {output}{conversion}")
-}
-
-fn clock(duration: Duration) -> String {
-    let seconds = duration.as_secs();
-    format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
 #[cfg(test)]

@@ -21,6 +21,11 @@ impl<T> Shelf<T> {
         matches!(self, Self::Loaded(_))
     }
 
+    /// Whether it loaded and holds nothing, which says nothing worth a place on the screen.
+    pub(crate) fn has_loaded_nothing(&self) -> bool {
+        matches!(self, Self::Loaded(items) if items.is_empty())
+    }
+
     pub(crate) fn begin(&mut self) {
         if !self.is_loaded() {
             *self = Self::Loading;

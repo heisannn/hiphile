@@ -19,6 +19,7 @@ use hiphile_core::playlists::PlaylistChoice;
 use subsonic::{AlbumId, ArtistId, PlaylistId, Song, StarTarget};
 
 pub use instrumentals::{is_skipped, queue_menu_items, set_skip_instrumentals, without_skipped};
+pub use playback::Placement;
 
 #[derive(Clone, Debug, PartialEq, Action)]
 #[action(namespace = hiphile, no_json)]
@@ -342,12 +343,6 @@ impl PlaySongs {
     pub fn start_ix(&self) -> Option<usize> {
         self.start_ix
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Placement {
-    Next,
-    Last,
 }
 
 /// Add `songs` to the play queue at `placement`, starting them when nothing

@@ -4,8 +4,9 @@ use chrono::{DateTime, Local, TimeDelta, Utc};
 use futures::future::{join_all, try_join4};
 use subsonic::{Album, AlbumId, Song};
 
-/// How many to pick, for the widest window.
-const RECOMMENDED: usize = 12;
+use super::layout::AlbumShelf;
+
+const RECOMMENDED: usize = AlbumShelf::Recommended.room();
 /// How long an album stays out of the picks after being played.
 const HEARD_DAYS: i64 = 14;
 /// How many of the albums played last to look through for those.

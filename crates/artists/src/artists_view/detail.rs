@@ -23,7 +23,7 @@ use gpui_kit::{
     px,
 };
 use hiphile_core::Shelf;
-use hiphile_core::artists::ArtistPage;
+use hiphile_core::artists::{ArtistPage, ArtistSection, album_count_to_show};
 use hiphile_core::favorites::Favorite;
 use subsonic::{Album, AlbumId, Artist, ArtistId, Song, SongId, StarTarget};
 use ui::card_grid::{GridMotion, card_row, card_row_height, columns_for, media_card, step};
@@ -37,7 +37,7 @@ use ui::{
     skippable_song, song_artist_link, song_row_label, song_with_cover,
 };
 
-use super::{Artists, TOP_SONGS_COLLAPSED, add_selection_command};
+use super::{Artists, add_selection_command};
 use crate::{
     AddSelectionToPlaylist, AddToPlaylist, AddToQueue, Back, DETAIL_CONTEXT, GoToAlbum, Open, Play,
     PlayNext, SelectLeft, SelectRight,
@@ -61,7 +61,7 @@ pub(super) enum Item {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Part {
     Header,
-    TopSongsHeading,
+    SongsHeading(ArtistSection),
     TopSongsStatus,
     Song(usize),
     TopSongsToggle,
@@ -104,17 +104,6 @@ pub(super) fn same_place(old: &[Part], top: usize, new: &[Part]) -> usize {
 }
 
 impl Artists {
-    fn top_songs_shown(&self, detail: &ArtistPage) -> usize {
-        let len = detail.top_songs.items().len();
-        if self.top_songs_expanded {
-            len
-        } else {
-            len.min(TOP_SONGS_COLLAPSED)
-        }
-    }
-
-    /// Top songs and similar artists with nothing to show go away: a server without
-    /// an outside service to ask has nothing to say about them.
     pub(super) fn parts(&self) -> Vec<Part> {
         let Some(detail) = &self.detail else {
             return Vec::new();
@@ -126,36 +115,38 @@ impl Artists {
                 .map(move |start| start..(start + columns).min(len))
         };
         let mut parts = vec![Part::Header];
-        match &detail.top_songs {
-            Shelf::Loaded(songs) if songs.is_empty() => {}
-            Shelf::Loaded(songs) => {
-                parts.push(Part::TopSongsHeading);
-                parts.extend((0..self.top_songs_shown(detail)).map(Part::Song));
-                if songs.len() > TOP_SONGS_COLLAPSED {
-                    parts.push(Part::TopSongsToggle);
+        for section in detail.sections() {
+            match section {
+                ArtistSection::TopSongs | ArtistSection::Songs => {
+                    parts.push(Part::SongsHeading(section));
+                    if detail.top_songs.is_loaded() {
+                        let shown = detail.top_songs_on_show(self.top_songs_expanded);
+                        parts.extend((0..shown.len()).map(Part::Song));
+                        if detail.has_more_top_songs() {
+                            parts.push(Part::TopSongsToggle);
+                        }
+                    } else {
+                        parts.push(Part::TopSongsStatus);
+                    }
                 }
-            }
-            Shelf::Loading | Shelf::Failed(_) => {
-                parts.extend([Part::TopSongsHeading, Part::TopSongsStatus]);
-            }
-        }
-        if !detail.is_only_on_songs {
-            parts.push(Part::AlbumsHeading);
-            match &detail.albums {
-                Shelf::Loaded(albums) if !albums.is_empty() => {
-                    parts.extend(rows_of(albums.len()).map(Part::AlbumRow));
+                ArtistSection::Albums => {
+                    parts.push(Part::AlbumsHeading);
+                    match &detail.albums {
+                        Shelf::Loaded(albums) if !albums.is_empty() => {
+                            parts.extend(rows_of(albums.len()).map(Part::AlbumRow));
+                        }
+                        _ => parts.push(Part::AlbumsStatus),
+                    }
                 }
-                _ => parts.push(Part::AlbumsStatus),
-            }
-        }
-        match &detail.similar {
-            Shelf::Loaded(artists) if artists.is_empty() => {}
-            Shelf::Loaded(artists) => {
-                parts.push(Part::SimilarHeading);
-                parts.extend(rows_of(artists.len()).map(Part::SimilarRow));
-            }
-            Shelf::Loading | Shelf::Failed(_) => {
-                parts.extend([Part::SimilarHeading, Part::SimilarStatus]);
+                ArtistSection::Similar => {
+                    parts.push(Part::SimilarHeading);
+                    match &detail.similar {
+                        Shelf::Loaded(artists) => {
+                            parts.extend(rows_of(artists.len()).map(Part::SimilarRow));
+                        }
+                        Shelf::Loading | Shelf::Failed(_) => parts.push(Part::SimilarStatus),
+                    }
+                }
             }
         }
         parts
@@ -242,7 +233,7 @@ impl Artists {
                 )
                 && matches!(
                     parts[ix - 1],
-                    Part::TopSongsHeading | Part::AlbumsHeading | Part::SimilarHeading
+                    Part::SongsHeading(_) | Part::AlbumsHeading | Part::SimilarHeading
                 );
             self.reveal_part(if heading_above { ix - 1 } else { ix });
         }
@@ -333,10 +324,8 @@ impl Artists {
         let Some(detail) = &self.detail else {
             return;
         };
-        let shown = self.top_songs_shown(detail);
-        if let Some(songs) = detail.top_songs.items().get(..shown)
-            && ix < songs.len()
-        {
+        let songs = detail.top_songs_on_show(self.top_songs_expanded);
+        if ix < songs.len() {
             let songs: Arc<[Song]> = songs.into();
             window.dispatch_action(Box::new(PlaySongs::new(songs, ix)), cx);
         }
@@ -421,13 +410,11 @@ impl Artists {
     pub(super) fn selected_artist_whole(&self) -> Option<Artist> {
         let selected = self.selected_artist.as_ref()?;
         let listed = self
-            .loaded_artists()
+            .listed_artists()
             .and_then(|artists| artists.iter().find(|artist| artist.id() == selected));
         match (listed, &self.detail) {
             (Some(artist), _) => Some(artist.clone()),
-            (None, Some(detail)) if detail.id == *selected && detail.name.is_some() => {
-                Some(shown_as_artist(detail))
-            }
+            (None, Some(detail)) if detail.id == *selected => detail.as_artist(),
             (None, _) => None,
         }
     }
@@ -629,10 +616,9 @@ impl Artists {
     ) -> AnyElement {
         match part {
             Part::Header => self.render_header(detail, cx),
-            Part::TopSongsHeading => section_heading(if detail.is_only_on_songs {
-                "Songs"
-            } else {
-                "Top songs"
+            Part::SongsHeading(section) => section_heading(match section {
+                ArtistSection::Songs => "Songs",
+                _ => "Top songs",
             })
             .into_any_element(),
             Part::TopSongsStatus => self.render_top_songs_status(detail, cx),
@@ -663,30 +649,17 @@ impl Artists {
     }
 
     fn render_header(&self, detail: &ArtistPage, cx: &mut Context<Self>) -> AnyElement {
-        let albums = detail.albums.items();
-        let cover = detail
-            .cover_art
-            .as_ref()
-            .or_else(|| albums.first().and_then(Album::cover_art))
-            .or_else(|| detail.top_songs.items().first().and_then(Song::cover_art))
-            .map(|cover_art| {
-                self.session
-                    .cover_art_url(cover_art, CARD_COVER_PIXELS)
-                    .into()
-            });
-        let songs: Option<u32> = albums.iter().map(Album::song_count).sum();
-        let summary = match &detail.albums {
-            _ if detail.is_only_on_songs => {
-                format_song_count(detail.top_songs.items().len()).into()
-            }
-            Shelf::Loaded(_) => join_details([
-                Some(format_album_count(albums.len())),
-                songs.map(|songs| format_song_count(songs as usize)),
-            ]),
-            Shelf::Loading | Shelf::Failed(_) => SharedString::default(),
-        };
+        let cover = detail.picture().map(|cover_art| {
+            self.session
+                .cover_art_url(cover_art, CARD_COVER_PIXELS)
+                .into()
+        });
+        let summary = join_details([
+            detail.album_count().map(format_album_count),
+            detail.song_count().map(format_song_count),
+        ]);
         let name = detail.name.clone().unwrap_or_default().into();
-        let has_songs = !albums.is_empty() || detail.is_only_on_songs;
+        let has_songs = detail.has_songs();
         DetailHeader::new(cover, name, summary)
             .artist_picture()
             .action(
@@ -704,7 +677,8 @@ impl Artists {
                     .selected_artist_whole()
                     .filter(|artist| *artist.id() == detail.id);
                 let is_nameless = artist.is_none();
-                let artist = artist.unwrap_or_else(|| shown_as_artist(detail));
+                let artist = artist
+                    .unwrap_or_else(|| Artist::new(detail.id.clone(), String::new(), None, None));
                 ui::favorite_button("favorite-artist", Favorite::Artist(artist), cx)
                     .when(is_nameless, |button| button.disabled(true))
             })
@@ -818,7 +792,7 @@ impl Artists {
         let is_focused = self.detail_focus.is_focused(window);
         let title = SharedString::from(song.title().to_owned());
         // The artist on show goes without saying
-        let artist = song_artist_link(song).filter(|_| song.artist_id() != Some(&detail.id));
+        let artist = song_artist_link(song).filter(|_| detail.is_by_another_artist(song));
         let details = ArtistLine::of_song_by(artist, song);
         let duration = song.duration().map(format_duration).unwrap_or_default();
         let cover = song.cover_art().map(|cover_art| {
@@ -956,10 +930,7 @@ impl Artists {
                 .cover_art_url(cover_art, CARD_COVER_PIXELS)
                 .into()
         });
-        // Zero says nothing of an artist the server knows for their songs
-        let albums = artist
-            .album_count()
-            .filter(|count| *count > 0)
+        let albums = album_count_to_show(artist)
             .map(|count| format_album_count(count as usize))
             .unwrap_or_default();
         let details = div()
@@ -1003,17 +974,4 @@ impl Artists {
         })
         .into_any_element()
     }
-}
-
-fn shown_as_artist(detail: &ArtistPage) -> Artist {
-    let albums = match &detail.albums {
-        Shelf::Loaded(albums) => u32::try_from(albums.len()).ok(),
-        Shelf::Loading | Shelf::Failed(_) => None,
-    };
-    Artist::new(
-        detail.id.clone(),
-        detail.name.clone().unwrap_or_default(),
-        detail.cover_art.clone(),
-        albums,
-    )
 }

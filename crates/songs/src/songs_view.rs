@@ -16,9 +16,9 @@ use gpui_kit::{
     InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollStrategy, Styled as _,
     Subscription, Task, UniformListScrollHandle, Window, div, prelude::FluentBuilder as _,
 };
-use hiphile_core::Shelf;
 use hiphile_core::favorites::Favorite;
-use hiphile_core::songs::{Column, ShownSongs, SongList, SongListStatus};
+use hiphile_core::songs::{Column, SongList, SongListStatus};
+use hiphile_core::{Shelf, Shown};
 use subsonic::{Song, SongId};
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
 use ui::{
@@ -107,7 +107,7 @@ impl Songs {
             // New songs leave the scroll where it was
             let is_reordered = matches!(
                 (old.shown(), self.status.shown()),
-                (Some(old), Some(new)) if Arc::ptr_eq(old.songs(), new.songs())
+                (Some(old), Some(new)) if Arc::ptr_eq(old.items(), new.items())
             );
             if is_reordered {
                 self.bring_selection_into_view();
@@ -116,7 +116,7 @@ impl Songs {
         cx.notify();
     }
 
-    fn shown(&self) -> Option<&ShownSongs> {
+    fn shown(&self) -> Option<&Shown<Song>> {
         self.status.shown()
     }
 
@@ -125,16 +125,12 @@ impl Songs {
     }
 
     fn visible_song(&self, position: usize) -> Option<&Song> {
-        let shown = self.shown()?;
-        shown.songs().get(*shown.visible().get(position)?)
+        self.shown()?.get(position)
     }
 
     fn selected_position(&self) -> Option<usize> {
         let selected = self.selected.as_ref()?;
-        (0..self.visible_len()).find(|position| {
-            self.visible_song(*position)
-                .is_some_and(|song| song.id() == selected)
-        })
+        self.shown()?.position(|song| song.id() == selected)
     }
 
     fn selected_song(&self) -> Option<&Song> {
@@ -198,16 +194,12 @@ impl Songs {
     }
 
     fn play_selected(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let (Some(start_ix), Some(shown)) = (self.selected_position(), self.shown()) else {
-            return;
-        };
-        let songs = shown.songs();
-        let queue: Arc<[Song]> = shown
-            .visible()
-            .iter()
-            .map(|ix| songs[*ix].clone())
-            .collect();
-        window.dispatch_action(Box::new(PlaySongs::new(queue, start_ix)), cx);
+        let queue = self
+            .selected_position()
+            .and_then(|position| self.shown()?.queue_from(position));
+        if let Some((songs, start_ix)) = queue {
+            window.dispatch_action(Box::new(PlaySongs::new(songs, start_ix)), cx);
+        }
     }
 
     fn enqueue_selected(&self, placement: Placement, window: &mut Window, cx: &mut Context<Self>) {
@@ -251,7 +243,7 @@ impl Songs {
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
-        let count = self.shown().map(|shown| shown.songs().len());
+        let count = self.shown().map(|shown| shown.items().len());
         let is_updating = count.is_some() && self.status.is_loading();
         ListPaneHeader::new("Songs", count)
             .when(is_updating, |this| this.updating("Updating the songs"))
@@ -415,7 +407,7 @@ impl Songs {
                 return centered(Spinner::new()).into_any_element();
             }
         };
-        let songs = shown.songs().clone();
+        let songs = shown.items().clone();
         if songs.is_empty() {
             return centered(muted_text("This server has no songs.", cx)).into_any_element();
         }

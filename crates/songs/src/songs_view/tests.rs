@@ -252,66 +252,6 @@ fn wait_until(view: &Entity<Songs>, cx: &mut VisualTestContext, done: impl Fn(&S
 }
 
 #[gpui_kit::test]
-fn a_sort_chosen_during_the_first_load_holds_when_the_songs_arrive(cx: &mut TestAppContext) {
-    let url = server();
-    let (view, cx) = view_on(&url, cx);
-    cx.update(|_, cx| {
-        view.update(cx, |view, cx| {
-            view.activate(cx);
-            view.sort_by(Column::Time, cx);
-        });
-    });
-
-    wait_for_songs(&view, cx);
-
-    assert_eq!(shown(&view, cx), ["c", "b", "a"]);
-}
-
-#[gpui_kit::test]
-fn a_filter_typed_during_a_reload_holds_when_the_songs_arrive(cx: &mut TestAppContext) {
-    let (view, cx, dir) = table(cx);
-    let mut more = songs();
-    more.push(serde_json::from_value(song_json("d", "Donna Lee", 150)).unwrap());
-    catalog_of(&dir, more);
-    cx.update(|_, cx| view.update(cx, |view, _| view.song_list.reload()));
-    set_filter(&view, "blues", cx);
-    assert_eq!(shown(&view, cx), ["b"]);
-
-    wait_until(&view, cx, |view| {
-        view.shown().is_some_and(|shown| shown.songs().len() == 4)
-    });
-
-    assert_eq!(shown(&view, cx), ["b"]);
-}
-
-#[gpui_kit::test]
-fn the_saved_songs_show_without_asking_the_server(cx: &mut TestAppContext) {
-    let (view, cx, _dir) = table(cx);
-
-    assert_eq!(shown(&view, cx), ["a", "b", "c"]);
-    cx.update(|_, cx| assert_eq!(view.read(cx).status.failure(), None));
-}
-
-#[gpui_kit::test]
-fn a_failed_reload_keeps_the_songs_until_a_new_try_starts(cx: &mut TestAppContext) {
-    let (view, cx, dir) = table(cx);
-    // With nothing saved, the server is asked, and cannot be reached
-    catalog_of(&dir, Vec::new());
-    cx.update(|_, cx| view.update(cx, |view, _| view.song_list.reload()));
-
-    wait_until(&view, cx, |view| view.status.failure().is_some());
-
-    assert_eq!(shown(&view, cx), ["a", "b", "c"]);
-    cx.update(|_, cx| {
-        view.update(cx, |view, cx| {
-            view.song_list.reload();
-            view.sync(cx);
-            assert_eq!(view.status.failure(), None);
-        });
-    });
-}
-
-#[gpui_kit::test]
 fn clicking_headings_sorts_and_clicking_again_turns_it_around(cx: &mut TestAppContext) {
     let (view, cx, _dir) = table(cx);
     assert_eq!(shown(&view, cx), ["a", "b", "c"]);

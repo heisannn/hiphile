@@ -6,8 +6,8 @@ use std::time::Duration;
 use anyhow::Context as _;
 use clap::{Args, Parser, Subcommand};
 use executor::Executor;
-use hiphile_core::library::{Albums, LibraryNotice, LibrarySync, Outcome, SyncStage, SyncStatus};
-use hiphile_core::{Caches, Hiphile};
+use hiphile_core::library::{LibraryNotice, LibrarySync, Outcome, SyncStage, SyncStatus};
+use hiphile_core::{Caches, Hiphile, Shelf};
 use subsonic::{Credentials, Song, SongId};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -282,7 +282,7 @@ fn report(stage: SyncStage, outcome: Outcome) -> anyhow::Result<()> {
 /// Why the sync that ended failed, if it did.
 fn failure(status: &SyncStatus) -> anyhow::Result<()> {
     match (status.albums(), status.failure()) {
-        (Albums::Failed(error), _) => anyhow::bail!("{error}"),
+        (Shelf::Failed(error), _) => anyhow::bail!("{error}"),
         (_, Some(error)) => anyhow::bail!("{error}"),
         _ => Ok(()),
     }
@@ -316,8 +316,8 @@ fn albums(args: ServerArgs, refresh: bool, offline: bool) -> anyhow::Result<()> 
         let status = library.status();
         failure(&status)?;
         match status.albums() {
-            Albums::Loaded(albums) => albums.clone(),
-            Albums::Loading | Albums::Failed(_) => anyhow::bail!("the albums never came"),
+            Shelf::Loaded(albums) => albums.clone(),
+            Shelf::Loading | Shelf::Failed(_) => anyhow::bail!("the albums never came"),
         }
     };
     for album in albums.iter() {

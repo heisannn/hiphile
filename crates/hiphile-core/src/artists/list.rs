@@ -99,6 +99,12 @@ fn by_key<K: Ord>(
     keyed.into_iter().map(|(_, ix)| ix).collect()
 }
 
+/// How many albums to say an artist has: none for zero, which says nothing of an artist the server
+/// knows for their songs.
+pub fn album_count_to_show(artist: &Artist) -> Option<u32> {
+    artist.album_count().filter(|count| *count > 0)
+}
+
 pub fn artist_index(artists: &[Artist], speller: Option<&dyn Speller>) -> Index {
     Index::new(artists.iter().map(|artist| [artist.name()]), speller)
 }

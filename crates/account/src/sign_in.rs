@@ -9,17 +9,11 @@ use gpui_kit::{
     AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, SharedString,
     Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _,
 };
-use hiphile_core::Hiphile;
+use hiphile_core::{Hiphile, SignInRefused};
 use session::SignInField;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Start {
-    /// Signs in with the last profile's saved password, if there is one.
-    Resume,
-    Fresh,
-}
-
-/// Signs in to `hiphile`, which then opens the workspace.
+/// Signs in to `hiphile`, which then opens the workspace. Made, it signs in again as whoever did
+/// last, as the core allows, until the user starts typing.
 pub struct SignIn {
     hiphile: Hiphile,
     server: Entity<InputState>,
@@ -28,24 +22,19 @@ pub struct SignIn {
     status: Status,
     _resume: Task<()>,
     _attempt: Task<()>,
+    _signing_in: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
 #[derive(Clone, PartialEq)]
 enum Status {
     Idle,
-    SigningIn,
     Invalid(SignInField, SharedString),
     Failed(SharedString),
 }
 
 impl SignIn {
-    pub fn new(
-        hiphile: Hiphile,
-        start: Start,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(hiphile: Hiphile, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let profile = hiphile.last_profile();
         let server = cx.new(|cx| {
             InputState::new(window, cx)
@@ -67,19 +56,19 @@ impl SignIn {
         });
         let password = cx.new(|cx| InputState::new(window, cx).masked(true));
 
-        let submit_on_enter = |this: &mut Self,
-                               _: &Entity<InputState>,
-                               event: &InputEvent,
-                               window: &mut Window,
-                               cx: &mut Context<Self>| {
-            if matches!(event, InputEvent::PressEnter { .. }) {
-                this.sign_in(window, cx);
-            }
+        let on_input = |this: &mut Self,
+                        _: &Entity<InputState>,
+                        event: &InputEvent,
+                        window: &mut Window,
+                        cx: &mut Context<Self>| match event {
+            InputEvent::PressEnter { .. } => this.sign_in(window, cx),
+            InputEvent::Change => this._resume = Task::ready(()),
+            _ => {}
         };
         let subscriptions = vec![
-            cx.subscribe_in(&server, window, submit_on_enter),
-            cx.subscribe_in(&username, window, submit_on_enter),
-            cx.subscribe_in(&password, window, submit_on_enter),
+            cx.subscribe_in(&server, window, on_input),
+            cx.subscribe_in(&username, window, on_input),
+            cx.subscribe_in(&password, window, on_input),
         ];
 
         let first_empty = [&server, &username, &password]
@@ -89,47 +78,27 @@ impl SignIn {
             .clone();
         first_empty.update(cx, |input, cx| input.focus(window, cx));
 
-        let mut this = Self {
+        let resume = match hiphile.resume() {
+            Some(resume) => cx.spawn(async move |this, cx| {
+                let result = resume.await;
+                this.update(cx, |this, cx| this.finish(result, cx)).ok();
+            }),
+            None => Task::ready(()),
+        };
+        Self {
+            _signing_in: gpui_host::notify_on_change(hiphile.subscribe(), cx),
             hiphile,
             server,
             username,
             password,
             status: Status::Idle,
-            _resume: Task::ready(()),
+            _resume: resume,
             _attempt: Task::ready(()),
             _subscriptions: subscriptions,
-        };
-        if start == Start::Resume
-            && let Some(profile) = profile
-        {
-            this.resume(profile, window, cx);
         }
-        this
-    }
-
-    /// Without a saved password, or if the keychain fails, the form waits for the user.
-    fn resume(&mut self, profile: config::Profile, window: &mut Window, cx: &mut Context<Self>) {
-        let lookup = self.hiphile.saved_password(profile);
-        self._resume = cx.spawn_in(window, async move |this, cx| {
-            let Some(password) = lookup.await else {
-                return;
-            };
-            this.update_in(cx, |this, window, cx| {
-                // The user may have started typing meanwhile
-                if this.password.read(cx).value().is_empty() {
-                    this.password
-                        .update(cx, |input, cx| input.set_value(password, window, cx));
-                    this.sign_in(window, cx);
-                }
-            })
-            .ok();
-        });
     }
 
     fn sign_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.status == Status::SigningIn {
-            return;
-        }
         let attempt = self.hiphile.sign_in(
             &self.server.read(cx).value(),
             &self.username.read(cx).value(),
@@ -137,28 +106,30 @@ impl SignIn {
         );
         let attempt = match attempt {
             Ok(attempt) => attempt,
-            Err(invalid) => {
+            Err(SignInRefused::Invalid(invalid)) => {
                 self.status = Status::Invalid(invalid.field(), invalid.message().to_owned().into());
                 self.input(invalid.field())
                     .update(cx, |input, cx| input.focus(window, cx));
                 cx.notify();
                 return;
             }
+            Err(SignInRefused::SigningIn) => return,
         };
-        self.status = Status::SigningIn;
+        self.status = Status::Idle;
         cx.notify();
 
         self._attempt = cx.spawn(async move |this, cx| {
             let result = attempt.await;
-            this.update(cx, |this, cx| {
-                this.status = match result {
-                    Ok(()) => Status::Idle,
-                    Err(error) => Status::Failed(error.into()),
-                };
-                cx.notify();
-            })
-            .ok();
+            this.update(cx, |this, cx| this.finish(result, cx)).ok();
         });
+    }
+
+    fn finish(&mut self, result: Result<(), String>, cx: &mut Context<Self>) {
+        self.status = match result {
+            Ok(()) => Status::Idle,
+            Err(error) => Status::Failed(error.into()),
+        };
+        cx.notify();
     }
 
     fn input(&self, field: SignInField) -> &Entity<InputState> {
@@ -179,7 +150,7 @@ impl SignIn {
 
 impl Render for SignIn {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let signing_in = self.status == Status::SigningIn;
+        let signing_in = self.hiphile.snapshot().is_signing_in();
         let failure = match &self.status {
             Status::Failed(message) => Some(message.clone()),
             _ => None,

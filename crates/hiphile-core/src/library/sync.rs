@@ -10,6 +10,8 @@ use session::Session;
 use subsonic::Album;
 use tokio::sync::{broadcast, watch};
 
+use crate::Shelf;
+
 const NOTICES: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,26 +45,18 @@ impl SyncProgress {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Albums {
-    Loading,
-    Loaded(Arc<[Album]>),
-    /// They never showed, for this reason.
-    Failed(String),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SyncStatus {
-    albums: Albums,
+    albums: Shelf<Album>,
     is_running: bool,
     /// The last a sync under way said of its stages, until it ends.
     progress: Option<SyncProgress>,
     /// Updating albums already on show failed, for this reason. Albums that never showed fail as
-    /// [`Albums::Failed`] instead.
+    /// [`Shelf::Failed`] instead.
     failure: Option<String>,
 }
 
 impl SyncStatus {
-    pub fn albums(&self) -> &Albums {
+    pub fn albums(&self) -> &Shelf<Album> {
         &self.albums
     }
 
@@ -86,7 +80,7 @@ pub enum LibraryNotice {
     SongsSynced,
     /// A sync ended, however that went, with no other to follow.
     SyncFinished,
-    /// A sync the user asked for failed, for why.
+    /// A sync failed, for why, with no other to follow.
     SyncFailed(String),
     /// A stage of a sync through the saved library ended so, the albums it brought already in
     /// the status.
@@ -113,9 +107,6 @@ struct State {
     status: SyncStatus,
     /// A refresh was asked for while a sync ran, to run once it ends rather than cut it short.
     again: bool,
-    /// Whether the sync under way or last run is one the user asked for, whose failure they
-    /// should hear of wherever they are.
-    is_requested: bool,
     work_id: u64,
     _work: Task<()>,
 }
@@ -136,13 +127,12 @@ impl LibrarySync {
             session,
             state: Published::new(State {
                 status: SyncStatus {
-                    albums: Albums::Loading,
+                    albums: Shelf::Loading,
                     is_running: false,
                     progress: None,
                     failure: None,
                 },
                 again: false,
-                is_requested: false,
                 work_id: 0,
                 _work: Task::ready(()),
             }),
@@ -179,10 +169,7 @@ impl LibrarySync {
         }
         state.status.is_running = true;
         state.status.failure = None;
-        state.is_requested = mode == Mode::Always;
-        if !matches!(state.status.albums, Albums::Loaded(_)) {
-            state.status.albums = Albums::Loading;
-        }
+        state.status.albums.begin();
         state.work_id += 1;
         let work_id = state.work_id;
         let this = self.downgrade();
@@ -196,16 +183,14 @@ impl LibrarySync {
 
     fn finish(&self, state: &mut State, result: Result<(), String>) {
         let again = mem::take(&mut state.again);
-        if let (Err(error), true, false) = (&result, state.is_requested, again) {
+        if let (Err(error), false) = (&result, again) {
             self.notify(LibraryNotice::SyncFailed(error.clone()));
         }
         state.status.is_running = false;
         match result {
             Ok(()) => {}
-            Err(error) if matches!(state.status.albums, Albums::Loaded(_)) => {
-                state.status.failure = Some(error);
-            }
-            Err(error) => state.status.albums = Albums::Failed(error),
+            Err(error) if state.status.albums.is_loaded() => state.status.failure = Some(error),
+            Err(error) => state.status.albums = Shelf::Failed(error),
         }
         if again {
             self.start(state, Mode::Always);
@@ -227,7 +212,7 @@ impl LibrarySync {
 
 impl State {
     fn set_albums(&mut self, albums: Vec<Album>) {
-        self.status.albums = Albums::Loaded(albums.into());
+        self.status.albums = Shelf::Loaded(albums.into());
     }
 }
 
@@ -256,11 +241,8 @@ impl WeakSync {
     }
 
     fn has_albums(&self) -> bool {
-        self.upgrade().is_some_and(|this| {
-            this.0
-                .state
-                .read(|state| matches!(state.status.albums, Albums::Loaded(_)))
-        })
+        self.upgrade()
+            .is_some_and(|this| this.0.state.read(|state| state.status.albums.is_loaded()))
     }
 }
 

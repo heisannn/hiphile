@@ -2,6 +2,7 @@ use gpui_kit::TestAppContext;
 use tempfile::TempDir;
 
 use super::*;
+use crate::testing::{NOWHERE, wait_for};
 
 fn hiphile(store: Result<config::Store, config::Error>, cx: &mut TestAppContext) -> Hiphile {
     hiphile_keeping(store, Caches::None, cx)
@@ -92,6 +93,35 @@ fn a_folder_the_host_gives_keeps_the_covers_and_the_dictionaries(cx: &mut TestAp
     assert!(cache.path().join("servers").is_dir());
     // Turned off, they go from where they are kept
     assert!(!dictionaries.exists());
+}
+
+#[gpui_kit::test]
+fn a_host_has_a_kept_cover_from_the_folder_it_gave(cx: &mut TestAppContext) {
+    let (_dir, store) = store_with("romaji_search = false\n");
+    let cache = tempfile::tempdir().unwrap();
+    let hiphile = hiphile_keeping(Ok(store), Caches::At(cache.path().to_owned()), cx);
+    let url = "http://127.0.0.1:9/rest/getCoverArt?id=al-1&size=80";
+    let cover = subsonic::CoverArtRequest::parse(&url::Url::parse(url).unwrap()).unwrap();
+    hiphile.covers().unwrap().put(&cover, b"image").unwrap();
+
+    let mut image = hiphile.cover_image(url);
+    cx.run_until_parked();
+
+    let image = futures::FutureExt::now_or_never(&mut image).flatten();
+    assert_eq!(image.as_deref(), Some(&b"image"[..]));
+}
+
+#[gpui_kit::test]
+fn a_cover_neither_kept_nor_on_the_server_is_none(cx: &mut TestAppContext) {
+    // The server's answer comes from the network's own thread
+    cx.executor().allow_parking();
+    let (_dir, store) = store_with("romaji_search = false\n");
+    let hiphile = hiphile(Ok(store), cx);
+
+    let mut image = hiphile.cover_image("http://127.0.0.1:9/rest/getCoverArt?id=al-1&size=80");
+    cx.run_until_parked();
+
+    assert_eq!(futures::FutureExt::now_or_never(&mut image), Some(None));
 }
 
 #[gpui_kit::test]
@@ -203,9 +233,111 @@ fn signing_out_closes_the_workspace(cx: &mut TestAppContext) {
 fn what_was_typed_is_checked_before_signing_in(cx: &mut TestAppContext) {
     let hiphile = hiphile(Err(config::Error::NoHomeDir), cx);
 
-    let invalid = hiphile.sign_in("", "alice", "secret").err().unwrap();
+    let Err(SignInRefused::Invalid(invalid)) = hiphile.sign_in("", "alice", "secret") else {
+        panic!("signing in started");
+    };
 
     assert_eq!(invalid.field(), session::SignInField::Server);
     assert!(hiphile.workspace().is_none());
+    assert!(!hiphile.snapshot().is_signing_in());
     cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn another_attempt_waits_for_the_one_under_way(cx: &mut TestAppContext) {
+    // The server's answer comes from the network's own thread
+    cx.executor().allow_parking();
+    let hiphile = hiphile(Err(config::Error::NoHomeDir), cx);
+
+    let mut first = hiphile.sign_in(NOWHERE, "alice", "secret").unwrap();
+    assert!(hiphile.snapshot().is_signing_in());
+    let second = hiphile.sign_in(NOWHERE, "bob", "secret");
+    assert_eq!(second.err(), Some(SignInRefused::SigningIn));
+
+    wait_for(cx, || !hiphile.snapshot().is_signing_in());
+    let error = futures::FutureExt::now_or_never(&mut first)
+        .unwrap()
+        .unwrap_err();
+    assert!(error.starts_with("Couldn't reach"), "{error}");
+    let third = hiphile.sign_in(NOWHERE, "bob", "secret");
+    assert!(third.is_ok());
+    drop(third);
+    cx.run_until_parked();
+    assert!(!hiphile.snapshot().is_signing_in());
+}
+
+#[gpui_kit::test]
+fn an_attempt_dropped_unfinished_ends(cx: &mut TestAppContext) {
+    let hiphile = hiphile(Err(config::Error::NoHomeDir), cx);
+    let attempt = hiphile.sign_in(NOWHERE, "alice", "secret").unwrap();
+
+    drop(attempt);
+    cx.run_until_parked();
+
+    assert!(!hiphile.snapshot().is_signing_in());
+}
+
+fn store_with_alice() -> (TempDir, config::Store) {
+    store_with(&format!(
+        "server = \"{NOWHERE}\"\nusername = \"alice\"\npassword = \"secret\"\n\
+         romaji_search = false\n"
+    ))
+}
+
+#[gpui_kit::test]
+fn whoever_signed_in_last_is_signed_in_again_only_once(cx: &mut TestAppContext) {
+    // The server's answer comes from the network's own thread
+    cx.executor().allow_parking();
+    let (_dir, store) = store_with_alice();
+    let hiphile = hiphile(Ok(store), cx);
+
+    let mut resumed = hiphile.resume().expect("nothing to resume");
+    assert!(hiphile.resume().is_none());
+
+    let mut result = None;
+    wait_for(cx, || {
+        result = futures::FutureExt::now_or_never(&mut resumed);
+        result.is_some()
+    });
+    // With the password saved, as nothing answers there
+    let error = result.unwrap().unwrap_err();
+    assert!(error.starts_with("Couldn't reach"), "{error}");
+    assert!(!hiphile.snapshot().is_signing_in());
+}
+
+#[gpui_kit::test]
+fn nothing_is_resumed_after_signing_out(cx: &mut TestAppContext) {
+    let (_dir, store) = store_with_alice();
+    let hiphile = hiphile(Ok(store), cx);
+
+    hiphile.sign_out();
+
+    assert!(hiphile.resume().is_none());
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn nothing_is_resumed_for_someone_new(cx: &mut TestAppContext) {
+    let (_dir, store) = store_with("romaji_search = false\n");
+    let hiphile = hiphile(Ok(store), cx);
+
+    assert!(hiphile.resume().is_none());
+}
+
+#[gpui_kit::test]
+fn dictionaries_that_could_not_be_had_are_told_to_a_host_that_follows_later(
+    cx: &mut TestAppContext,
+) {
+    let (_dir, store) = store_with("");
+    let hiphile = hiphile(Ok(store), cx);
+    assert!(hiphile.alerts().earlier.is_empty());
+    assert!(hiphile.0.readings.get().is_none());
+
+    hiphile.readings();
+    cx.run_until_parked();
+
+    let earlier = hiphile.alerts().earlier;
+    assert_eq!(earlier.len(), 1);
+    assert!(earlier[0].message.ends_with(" Try again in Settings."));
+    assert_eq!(earlier[0].told_on, None);
 }

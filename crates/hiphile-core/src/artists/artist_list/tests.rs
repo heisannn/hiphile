@@ -137,3 +137,109 @@ fn failing_to_read_a_first_list_says_why(cx: &mut TestAppContext) {
     assert!(matches!(status.artists(), Shelf::Failed(_)));
     assert_eq!(status.failure(), None);
 }
+
+fn shown(list: &ArtistList) -> Vec<String> {
+    let status = list.status();
+    let Some(shown) = status.shown() else {
+        return Vec::new();
+    };
+    let ids = shown.visible().iter().map(|ix| shown.items()[*ix].id());
+    ids.map(ToString::to_string).collect()
+}
+
+fn wait_until_shown(list: &ArtistList, cx: &mut TestAppContext) {
+    wait_for(cx, || {
+        let status = list.status();
+        !status.is_refreshing() && status.shown().is_some()
+    });
+}
+
+fn dated_album(id: &str, artist: &str, created: &str) -> Album {
+    serde_json::from_value(json!({
+        "id": id, "name": id, "artistId": artist, "artist": artist, "created": created,
+    }))
+    .unwrap()
+}
+
+/// Bill Evans and Miles Davis saved, with an album each added as `added` says.
+fn saved_artists(added: [&str; 2]) -> Saved {
+    Saved {
+        artists: vec![
+            saved_artist("b", "Bill Evans"),
+            saved_artist("m", "Miles Davis"),
+        ],
+        albums: vec![
+            dated_album("b1", "b", added[0]),
+            dated_album("m1", "m", added[1]),
+        ],
+        ..Saved::default()
+    }
+}
+
+/// The artists of [`saved_artists`] on show.
+fn shown_list(
+    added: [&str; 2],
+    cx: &mut TestAppContext,
+) -> (ArtistList, tempfile::TempDir, catalog::Catalog) {
+    let dir = tempfile::tempdir().unwrap();
+    let catalog = catalog::Catalog::open(dir.path()).unwrap();
+    keep(&catalog, &saved_artists(added));
+    let list = artist_list(Some(catalog.clone()), NOWHERE, cx);
+    list.open();
+    wait_until_shown(&list, cx);
+    (list, dir, catalog)
+}
+
+const OLDER: &str = "2024-01-01T00:00:00Z";
+const NEWER: &str = "2025-01-01T00:00:00Z";
+
+#[gpui_kit::test]
+fn a_query_finds_artists_by_name(cx: &mut TestAppContext) {
+    let (list, _dir, _catalog) = shown_list([OLDER, NEWER], cx);
+    assert_eq!(shown(&list), ["b", "m"]);
+
+    list.set_query("EVANS");
+    cx.run_until_parked();
+
+    assert_eq!(shown(&list), ["b"]);
+}
+
+#[gpui_kit::test]
+fn the_order_chosen_goes_by_each_artists_newest_album(cx: &mut TestAppContext) {
+    let (list, _dir, _catalog) = shown_list([OLDER, NEWER], cx);
+
+    list.choose_order(ArtistOrder::Added);
+    cx.run_until_parked();
+    assert_eq!(shown(&list), ["m", "b"]);
+
+    list.choose_direction(false);
+    cx.run_until_parked();
+    assert_eq!(shown(&list), ["b", "m"]);
+}
+
+#[gpui_kit::test]
+fn choosing_the_order_already_chosen_keeps_its_direction(cx: &mut TestAppContext) {
+    let list = artist_list(None, NOWHERE, cx);
+
+    list.choose_order(ArtistOrder::Released);
+    assert!(list.status().sort().is_descending);
+    list.choose_direction(false);
+    list.choose_order(ArtistOrder::Released);
+
+    assert!(!list.status().sort().is_descending);
+}
+
+#[gpui_kit::test]
+fn new_dates_for_the_same_artists_put_them_in_order_again(cx: &mut TestAppContext) {
+    let (list, _dir, catalog) = shown_list([OLDER, NEWER], cx);
+    list.choose_order(ArtistOrder::Added);
+    cx.run_until_parked();
+    let before = list.status().shown().unwrap().items().clone();
+
+    keep(&catalog, &saved_artists([NEWER, OLDER]));
+    list.reload();
+    wait_until_shown(&list, cx);
+
+    assert_eq!(shown(&list), ["b", "m"]);
+    assert!(Arc::ptr_eq(list.status().shown().unwrap().items(), &before));
+}

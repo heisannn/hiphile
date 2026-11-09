@@ -24,7 +24,6 @@ player.workspace = true
 playlists.workspace = true
 presence.workspace = true
 search.workspace = true
-session.workspace = true
 settings.workspace = true
 songs.workspace = true
 subsonic.workspace = true

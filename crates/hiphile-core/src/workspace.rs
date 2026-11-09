@@ -7,11 +7,13 @@ use playback::PlayerNotice;
 use session::Session;
 use tokio::sync::watch;
 
+use crate::alerts::{self, Alerts};
 use crate::artists::{ArtistDetail, ArtistList};
 use crate::favorites::FavoritesState;
 use crate::follow;
 use crate::home::{DailyRecommendations, HomeShelves};
-use crate::library::{LibraryActivity, LibraryNotice, LibrarySync};
+use crate::library::{AlbumList, LibraryActivity, LibraryNotice, LibrarySync};
+use crate::navigation::Destination;
 use crate::playlists::PlaylistsState;
 use crate::search::SearchIndex;
 use crate::settings::{AudioSnapshot, Settings};
@@ -28,6 +30,7 @@ struct Inner {
     session: Session,
     library: LibrarySync,
     activity: LibraryActivity,
+    albums: AlbumList,
     search: SearchIndex,
     recommendations: DailyRecommendations,
     shelves: HomeShelves,
@@ -40,9 +43,13 @@ struct Inner {
     lyrics: lyrics::CurrentLyrics,
     executor: Executor,
     settings: Settings,
+    alerts: alerts::Collector,
     /// For the desktop's followers.
     #[cfg(feature = "desktop")]
     covers: Option<catalog::CoverStore>,
+    /// Cleared on shutdown: quitting may not drop them, and the system keeps what they showed.
+    #[cfg(feature = "desktop")]
+    media_controls: Mutex<Vec<crate::desktop::WeakControls>>,
     routes: Mutex<Vec<Task<()>>>,
 }
 
@@ -70,6 +77,7 @@ impl Workspace {
         } = parts;
         let library = LibrarySync::new(executor.clone(), session.clone());
         let activity = LibraryActivity::new(executor.clone(), session.clone(), &library);
+        let albums = AlbumList::new(executor.clone(), session.clone(), &library);
         // Followed from before the player is made, so that a change while the rest is made
         // reaches it
         let audio_changes = settings.audio().subscribe();
@@ -83,6 +91,7 @@ impl Workspace {
             profile,
             library,
             activity,
+            albums,
             search: SearchIndex::new(executor.clone(), session.clone()),
             shelves: HomeShelves::new(executor.clone(), session.clone(), recommendations.clone()),
             recommendations,
@@ -96,8 +105,11 @@ impl Workspace {
             session,
             executor,
             settings,
+            alerts: alerts::Collector::new(),
             #[cfg(feature = "desktop")]
             covers,
+            #[cfg(feature = "desktop")]
+            media_controls: Mutex::default(),
             routes: Mutex::default(),
         }));
         let routes = vec![
@@ -106,8 +118,10 @@ impl Workspace {
             this.follow_audio_settings(audio_changes, &audio),
             this.follow_queue_settings(),
             this.follow_lyrics_settings(),
+            this.follow_songs_for_lyrics(),
         ];
         this.keep(routes);
+        this.keep(this.collect_alerts());
         this
     }
 
@@ -125,6 +139,11 @@ impl Workspace {
 
     pub fn activity(&self) -> &LibraryActivity {
         &self.0.activity
+    }
+
+    /// The albums the library keeps, as their screen arranges them.
+    pub fn albums(&self) -> &AlbumList {
+        &self.0.albums
     }
 
     pub fn search(&self) -> &SearchIndex {
@@ -164,9 +183,51 @@ impl Workspace {
         &self.0.player
     }
 
-    /// The lyrics of what the player plays, once a view looks them up.
+    /// The lyrics of what the player plays, looked up while a view wants them.
     pub fn lyrics(&self) -> &lyrics::CurrentLyrics {
         &self.0.lyrics
+    }
+
+    /// What the user should hear of from the library, the favorites and the player: those told
+    /// since the workspace opened, and those to come.
+    pub fn alerts(&self) -> Alerts {
+        self.0.alerts.follow()
+    }
+
+    /// What `destination` needs as it comes on show: the artists and the songs are read the first
+    /// time, the recommendations may be from another day, and the playlists and the favorites are
+    /// read again, as another device may have changed them meanwhile.
+    pub fn showing(&self, destination: Destination) {
+        match destination {
+            Destination::Home => self.0.recommendations.renew(),
+            Destination::Artists => self.0.artists.open(),
+            Destination::Songs => self.0.songs.open(),
+            Destination::Playlists => self.0.playlists.refresh(),
+            Destination::Favorites => self.0.favorites.refresh(),
+            Destination::Albums => {}
+        }
+    }
+
+    /// Fetches what `destination` shows again: the playlists and the favorites themselves, the
+    /// other screens the whole library. Favorites that failed to load are read again from any
+    /// screen, as the stars and menus of every screen wait on them.
+    pub fn refresh(&self, destination: Destination) {
+        match destination {
+            Destination::Playlists => self.0.playlists.refresh(),
+            Destination::Favorites => self.0.favorites.refresh(),
+            Destination::Home | Destination::Artists | Destination::Albums | Destination::Songs => {
+                self.0.library.refresh();
+            }
+        }
+        if destination != Destination::Favorites {
+            self.0.favorites.reload_if_failed();
+        }
+    }
+
+    /// Call when the app comes to the front again: the recommendations on show may be from
+    /// another day, for an app left open overnight.
+    pub fn app_activated(&self) {
+        self.0.recommendations.renew();
     }
 
     #[cfg(feature = "desktop")]
@@ -182,6 +243,11 @@ impl Workspace {
     #[cfg(feature = "desktop")]
     pub(crate) fn covers(&self) -> Option<&catalog::CoverStore> {
         self.0.covers.as_ref()
+    }
+
+    #[cfg(feature = "desktop")]
+    pub(crate) fn keep_media_controls(&self, controls: crate::desktop::WeakControls) {
+        lock(&self.0.media_controls).push(controls);
     }
 
     /// Keeps `routes` going for as long as the workspace lives.
@@ -238,8 +304,19 @@ impl Workspace {
                     shelves.song_played();
                     recommendations.renew();
                 }
+                PlayerNotice::Skipped => {}
             },
         )
+    }
+
+    /// From when the workspace is made, as its sync and the favorites start at once.
+    fn collect_alerts(&self) -> [Task<()>; 3] {
+        let (executor, collector) = (&self.0.executor, &self.0.alerts);
+        [
+            alerts::follow_library(executor, &self.0.library, collector),
+            alerts::follow_favorites(executor, &self.0.favorites, collector),
+            alerts::follow_player(executor, &self.0.player, collector),
+        ]
     }
 
     /// The settings also change for what only their window shows, such as the devices listed,
@@ -289,12 +366,32 @@ impl Workspace {
         })
     }
 
+    fn follow_songs_for_lyrics(&self) -> Task<()> {
+        let changes = self.0.player.subscribe();
+        let song = changes.borrow().current_song().cloned();
+        self.0.lyrics.set_song(song.as_ref());
+        let lyrics = self.0.lyrics.clone();
+        follow::observe(&self.0.executor, changes, move |shown| {
+            lyrics.set_song(shown.current_song());
+        })
+    }
+
     pub(crate) fn set_song_cache(&self, song_cache: Option<playback::SongCache>) {
         self.0.player.set_song_cache(song_cache);
     }
 
-    /// Restores the output device as the player found it.
+    /// Restores the output device as the player found it, and clears the system's media controls.
     pub(crate) fn shutdown(&self) {
+        #[cfg(feature = "desktop")]
+        {
+            let connected: Vec<_> = lock(&self.0.media_controls)
+                .iter()
+                .filter_map(crate::desktop::WeakControls::upgrade)
+                .collect();
+            for controls in connected {
+                controls.clear();
+            }
+        }
         self.0.player.shutdown();
     }
 }

@@ -19,8 +19,19 @@ fn told_transitions(settings: &AudioSettings) -> u32 {
     settings.0.state.read(|state| state.told.transitions)
 }
 
-/// On GPUI's executor, which the test's `run_until_parked` drives. `AudioSettings::new` would
-/// list the machine's devices.
+pub(in crate::settings) const DAC: &str = "coreaudio:dac";
+
+/// Takes every DSD rate of both families.
+pub(in crate::settings) fn dac() -> OutputDevice {
+    OutputDevice::listed(
+        DAC,
+        "DAC",
+        &[44_100, 48_000, 88_200, 96_000, 176_400, 192_000],
+        &[176_400, 192_000, 352_800, 384_000, 705_600, 768_000],
+    )
+}
+
+/// On GPUI's executor, which the test's `run_until_parked` drives.
 pub(in crate::settings) fn settings_saving_to(
     store: &config::Store,
     cx: &mut TestAppContext,
@@ -94,7 +105,8 @@ fn r8brain_values_from_elsewhere_stay_out_of_the_file(cx: &mut TestAppContext) {
     let executor = cx.update(|cx| gpui_host::executor(cx));
     let settings = AudioSettings::with(executor, Some(store.clone()), output, quality, dsd, None);
 
-    settings.change_r8brain(|parameters| parameters.performance.max_input_frames = 4096);
+    settings.type_r8brain(R8brainNumber::MaxInputFrames, "4096");
+    settings.commit_r8brain(R8brainNumber::MaxInputFrames);
     cx.run_until_parked();
 
     let text = std::fs::read_to_string(store.config_path()).unwrap();
@@ -328,21 +340,17 @@ fn exclusive_mode_is_told_saved_and_survives_other_changes(cx: &mut TestAppConte
     assert_eq!(told(&settings), 1);
     assert!(store.exclusive_mode().unwrap());
 
-    settings.set_device("a:1");
+    settings.pretend_listed(vec![dac()]);
+    settings.set_device(DAC);
     settings.set_rate("48000");
     settings.select_rubato_quality(2);
     cx.run_until_parked();
     assert!(settings.snapshot().output().is_exclusive());
 
-    let mut dsd = settings.snapshot().dsd().clone();
-    dsd.is_on = true;
-    dsd.device = Some("a:1".to_owned());
-    settings.set_dsd(dsd);
+    settings.turn_dsd_on();
     cx.run_until_parked();
     assert!(settings.snapshot().output().is_exclusive());
-    let mut dsd = settings.snapshot().dsd().clone();
-    dsd.is_on = false;
-    settings.set_dsd(dsd);
+    settings.turn_dsd_off();
 
     settings.set_exclusive(false);
     cx.run_until_parked();
@@ -373,8 +381,8 @@ fn changes_waiting_for_a_write_are_written_together(cx: &mut TestAppContext) {
 
     settings.set_rate("48000");
     settings.set_trim_silence(true);
-    settings.change_soxr(|parameters| parameters.performance.coef_table_kb = 1600);
-    settings.change_soxr(|parameters| parameters.performance.min_dft_size = 4096);
+    settings.set_soxr_coef_table("1600");
+    settings.set_soxr_min_dft("4096");
     cx.run_until_parked();
 
     assert_eq!(store.sample_rate().unwrap(), SampleRate::Fixed(48_000));
@@ -507,4 +515,62 @@ fn a_multiple_is_told_saved_and_reaches_the_output(cx: &mut TestAppContext) {
     settings.set_rate(MATCH_SONG);
     cx.run_until_parked();
     assert_eq!(store.sample_rate().unwrap(), SampleRate::MatchSong);
+}
+
+#[gpui_kit::test]
+fn what_waits_and_what_is_typed_are_written_before_quitting(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = config::Store::at(dir.path());
+    let settings = settings_saving_to(&store, cx);
+
+    settings.set_rate("48000");
+    settings.set_trim_silence(true);
+    settings.type_r8brain(R8brainNumber::MaxInputFrames, "4096");
+    settings.save_before_quitting();
+
+    assert_eq!(store.sample_rate().unwrap(), SampleRate::Fixed(48_000));
+    assert!(store.trim_silence().unwrap());
+    let parameters = store.r8brain_parameters().unwrap();
+    assert_eq!(parameters.performance.max_input_frames, 4096);
+    assert_eq!(
+        settings
+            .snapshot()
+            .r8brain_text(R8brainNumber::MaxInputFrames),
+        "4096"
+    );
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn a_number_beyond_its_range_is_written_held_to_it_before_quitting(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = config::Store::at(dir.path());
+    let settings = settings_saving_to(&store, cx);
+
+    settings.type_r8brain(R8brainNumber::Attenuation, "1");
+    settings.save_before_quitting();
+
+    let filter = store.r8brain_parameters().unwrap().quality.filter();
+    assert_eq!(filter.attenuation, 49.0);
+}
+
+#[gpui_kit::test]
+fn with_dsd_on_the_crossfade_note_says_dsd_plays_songs_whole(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = config::Store::at(dir.path());
+    let settings = settings_saving_to(&store, cx);
+    settings.pretend_listed(vec![dac()]);
+    settings.set_device(DAC);
+    settings.set_crossfade("5");
+    let note = settings.snapshot().crossfade_note();
+    assert!(note.is_some());
+
+    settings.turn_dsd_on();
+
+    let snapshot = settings.snapshot();
+    assert_ne!(snapshot.crossfade_note(), note);
+    assert_eq!(
+        snapshot.crossfade_note(),
+        snapshot.dsd_note(PcmSetting::Crossfade)
+    );
 }

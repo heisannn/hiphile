@@ -419,3 +419,14 @@ fn a_library_sync_picks_again_when_other_shelves_show_every_recommendation(
 
     assert!(recommendations.status().is_recommending());
 }
+
+#[gpui_kit::test]
+fn only_albums_on_show_are_worth_a_reload(cx: &mut TestAppContext) {
+    let recommendations = recommendations(None, cx);
+    update(&recommendations, |_, state| {
+        state.status.albums = Shelf::Failed("offline".into());
+        assert!(!state.status.is_reloadable());
+        state.status.albums = Shelf::Loaded(recommended(1).into());
+        assert!(state.status.is_reloadable());
+    });
+}

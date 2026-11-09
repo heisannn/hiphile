@@ -1,3 +1,4 @@
+use std::mem;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 
@@ -6,6 +7,8 @@ use session::{Accounts, Invalid, Readings, Session, SignedIn};
 use subsonic::Credentials;
 use tokio::sync::watch;
 
+use crate::alerts::{self, Alerts};
+use crate::covers;
 use crate::follow;
 use crate::settings::{CacheLimit, CacheLimitSnapshot, Settings, SongCacheUsage};
 use crate::workspace::{self, Parts, Workspace};
@@ -38,12 +41,18 @@ impl Caches {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HiphileSnapshot {
     workspace: Option<Workspace>,
+    is_signing_in: bool,
 }
 
 impl HiphileSnapshot {
     /// What exists while someone is signed in.
     pub fn workspace(&self) -> Option<&Workspace> {
         self.workspace.as_ref()
+    }
+
+    /// Whether an attempt to sign in is under way, which takes no other until it ends.
+    pub fn is_signing_in(&self) -> bool {
+        self.is_signing_in
     }
 
     /// Who is signed in.
@@ -79,6 +88,8 @@ struct Inner {
     /// is nowhere to keep them.
     songs: Option<catalog::SongStore>,
     accounts: Accounts,
+    /// Of what the app does apart from a workspace: the dictionaries.
+    alerts: alerts::Collector,
     state: Published<State>,
     follows: Mutex<Vec<Task<()>>>,
 }
@@ -87,6 +98,20 @@ struct State {
     shown: HiphileSnapshot,
     /// `None` when there is nowhere to keep songs or their limit could not be read.
     song_cache: Option<playback::SongCache>,
+    /// Counts the attempts to sign in, so that one that ends late cannot end its successor.
+    attempt_id: u64,
+    /// Whether whoever signed in last may still be signed in again without asking: once, and
+    /// not after signing out, as a password in the settings file would sign them straight back in.
+    may_resume: bool,
+}
+
+/// Why signing in did not start.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SignInRefused {
+    /// What was typed, found before asking any server.
+    Invalid(Invalid),
+    /// Another attempt is under way, which decides.
+    SigningIn,
 }
 
 impl Publish for State {
@@ -129,6 +154,8 @@ impl Hiphile {
             state: Published::new(State {
                 shown: HiphileSnapshot::default(),
                 song_cache,
+                attempt_id: 0,
+                may_resume: true,
             }),
             executor,
             net,
@@ -140,6 +167,7 @@ impl Hiphile {
             covers,
             songs,
             accounts,
+            alerts: alerts::Collector::new(),
             follows: Mutex::default(),
         }));
         let follows = [this.follow_cover_limit(), this.follow_song_limit()];
@@ -155,18 +183,39 @@ impl Hiphile {
     /// removing them when they are off.
     pub fn readings(&self) -> &Readings {
         self.0.readings.get_or_init(|| {
-            Readings::at(
+            let readings = Readings::at(
                 self.0.executor.clone(),
                 self.0.net.clone(),
                 share(&self.0.store),
                 self.0.dictionaries.clone(),
-            )
+            );
+            let failures = alerts::follow_readings(&self.0.executor, &readings, &self.0.alerts);
+            lock(&self.0.follows).push(failures);
+            readings
         })
+    }
+
+    /// What the user should hear of apart from a workspace, which has its own
+    /// ([`Workspace::alerts`]): those told since the core was made, and those to come. Asking
+    /// does not make the readings.
+    pub fn alerts(&self) -> Alerts {
+        self.0.alerts.follow()
     }
 
     /// Where covers are kept, if anywhere.
     pub fn covers(&self) -> Option<&catalog::CoverStore> {
         self.0.covers.as_ref()
+    }
+
+    /// The cover at `url`, a session's [`Session::cover_art_url`], from the covers kept while they
+    /// have it and else from the server, or nothing when neither has it.
+    pub fn cover_image(&self, url: &str) -> Task<Option<Arc<[u8]>>> {
+        covers::cover_image(
+            &self.0.executor,
+            self.0.net.clone(),
+            self.0.covers.clone(),
+            Arc::from(url),
+        )
     }
 
     /// How much the song cache keeps, counted now, and removing it. Each call counts anew.
@@ -200,25 +249,74 @@ impl Hiphile {
         self.0.accounts.saved_password(profile)
     }
 
-    /// Checks what was typed before anything else. Signed in, the workspace opens and the profile
-    /// and the password are remembered for next time; the error says what went wrong for the
-    /// user.
+    /// Checks what was typed before anything else, and takes no attempt while another is under
+    /// way. Signed in, the workspace opens and the profile and the password are remembered for
+    /// next time; the error says what went wrong for the user. Dropping the task calls the
+    /// attempt off.
     pub fn sign_in(
         &self,
         address: &str,
         username: &str,
         password: &str,
-    ) -> Result<Task<Result<(), String>>, Invalid> {
-        let attempt = self.0.accounts.sign_in(address, username, password)?;
-        let this = self.downgrade();
-        Ok(self.0.executor.spawn(async move {
-            let SignedIn {
-                session, profile, ..
-            } = attempt.await?;
-            if let Some(this) = this.upgrade() {
-                this.open_workspace(session, profile);
+    ) -> Result<Task<Result<(), String>>, SignInRefused> {
+        self.0.state.update(|state| {
+            if state.shown.is_signing_in {
+                return Err(SignInRefused::SigningIn);
             }
-            Ok(())
+            let attempt = self
+                .0
+                .accounts
+                .sign_in(address, username, password)
+                .map_err(SignInRefused::Invalid)?;
+            state.shown.is_signing_in = true;
+            state.attempt_id += 1;
+            let ending = Attempt {
+                hiphile: self.downgrade(),
+                id: state.attempt_id,
+            };
+            Ok(self.0.executor.spawn(async move {
+                let SignedIn {
+                    session, profile, ..
+                } = attempt.await?;
+                if let Some(this) = ending.hiphile.upgrade() {
+                    this.signed_in(ending.id, session, profile);
+                }
+                Ok(())
+            }))
+        })
+    }
+
+    /// Signs in as whoever did last with the password saved for them, as [`Self::sign_in`] does,
+    /// once for as long as the core lives. `None` after the first call, after signing out, and
+    /// when nobody has signed in before. Ends with `Ok` also when no password was saved, or when
+    /// another attempt was under way, which then decides. Dropping the task calls it off, as
+    /// when the user starts typing instead.
+    pub fn resume(&self) -> Option<Task<Result<(), String>>> {
+        if !self
+            .0
+            .state
+            .update(|state| mem::take(&mut state.may_resume))
+        {
+            return None;
+        }
+        let profile = self.0.accounts.last_profile()?;
+        let lookup = self.0.accounts.saved_password(profile.clone());
+        let this = self.downgrade();
+        Some(self.0.executor.spawn(async move {
+            let Some(password) = lookup.await else {
+                return Ok(());
+            };
+            let Some(attempt) = this
+                .upgrade()
+                .map(|this| this.sign_in(profile.server(), profile.username(), &password))
+            else {
+                return Ok(());
+            };
+            match attempt {
+                Ok(attempt) => attempt.await,
+                Err(SignInRefused::SigningIn) => Ok(()),
+                Err(SignInRefused::Invalid(invalid)) => Err(invalid.message().to_owned()),
+            }
         }))
     }
 
@@ -249,16 +347,20 @@ impl Hiphile {
     }
 
     /// Closes the workspace, which stops playing, and forgets the saved password, so that signing
-    /// in again asks for it, unless the settings file has it.
+    /// in again asks for it, unless the settings file has it. Nothing is resumed after it.
     pub fn sign_out(&self) {
-        let closed = self.0.state.update(|state| state.shown.workspace.take());
+        let closed = self.0.state.update(|state| {
+            state.may_resume = false;
+            state.shown.workspace.take()
+        });
         if let Some(closed) = closed {
             self.0.accounts.forget_password(closed.profile().clone());
         }
     }
 
-    /// Writes what is still waiting to be saved and restores the output device as the player
-    /// found it. Call when the host quits, which may not drop the workspace.
+    /// Writes what is still waiting to be saved, restores the output device as the player found
+    /// it and clears the system's media controls. Call when the host quits, which may not drop
+    /// the workspace.
     pub fn shutdown(&self) {
         self.0.settings.save_before_quitting();
         if let Some(workspace) = self.workspace() {
@@ -266,19 +368,36 @@ impl Hiphile {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn open_workspace(&self, session: Session, profile: config::Profile) {
         let session = session.with_readings(self.readings().clone());
+        self.0
+            .state
+            .update(|state| self.open_workspace_in(state, session, profile));
+    }
+
+    /// Opens the workspace and ends the attempt `attempt_id` in one change, so that no host sees
+    /// it signed in while still signing in.
+    fn signed_in(&self, attempt_id: u64, session: Session, profile: config::Profile) {
+        let session = session.with_readings(self.readings().clone());
         self.0.state.update(|state| {
-            let parts = Parts {
-                executor: self.0.executor.clone(),
-                settings: self.0.settings.clone(),
-                store: share(&self.0.store),
-                cache: self.0.cache.clone(),
-                covers: self.0.covers.clone(),
-                song_cache: state.song_cache.clone(),
-            };
-            state.shown.workspace = Some(Workspace::new(session, profile, parts));
+            if state.attempt_id == attempt_id {
+                state.shown.is_signing_in = false;
+            }
+            self.open_workspace_in(state, session, profile);
         });
+    }
+
+    fn open_workspace_in(&self, state: &mut State, session: Session, profile: config::Profile) {
+        let parts = Parts {
+            executor: self.0.executor.clone(),
+            settings: self.0.settings.clone(),
+            store: share(&self.0.store),
+            cache: self.0.cache.clone(),
+            covers: self.0.covers.clone(),
+            song_cache: state.song_cache.clone(),
+        };
+        state.shown.workspace = Some(Workspace::new(session, profile, parts));
     }
 
     fn follow_cover_limit(&self) -> Task<()> {
@@ -331,6 +450,24 @@ impl Hiphile {
 impl WeakHiphile {
     fn upgrade(&self) -> Option<Hiphile> {
         self.0.upgrade().map(Hiphile)
+    }
+}
+
+/// Ends an attempt to sign in however it ends, also when its task is dropped unfinished.
+struct Attempt {
+    hiphile: WeakHiphile,
+    id: u64,
+}
+
+impl Drop for Attempt {
+    fn drop(&mut self) {
+        if let Some(this) = self.hiphile.upgrade() {
+            this.0.state.update(|state| {
+                if state.attempt_id == self.id {
+                    state.shown.is_signing_in = false;
+                }
+            });
+        }
     }
 }
 

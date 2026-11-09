@@ -1,12 +1,17 @@
 use std::sync::Arc;
 
 use gpui_kit::component::{
-    WindowExt as _, button::ButtonVariant, menu::PopupMenu, notification::Notification,
+    WindowExt as _,
+    button::ButtonVariant,
+    menu::PopupMenu,
+    notification::{Notification, NotificationType},
 };
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, DismissEvent, Entity, FocusHandle, Focusable as _,
     IntoElement as _, ParentElement as _, SharedString, Subscription, Window, anchored, deferred,
 };
+use hiphile_core::playlists::{CreatedPlaylist, new_playlist_scope};
+use hiphile_core::selection;
 use subsonic::{PlaylistId, Song};
 
 use super::{Playlists, PlaylistsEvent};
@@ -43,11 +48,7 @@ impl Playlists {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<NameForm> {
-        let scope = match &*songs {
-            [] => None,
-            [song] => Some(format!("Starts with “{}”", song.title()).into()),
-            songs => Some(format!("Starts with {} songs", songs.len()).into()),
-        };
+        let scope = new_playlist_scope(&songs).map(SharedString::from);
         let owner = cx.entity().downgrade();
         cx.new(|cx| {
             NameForm::new(
@@ -77,13 +78,13 @@ impl Playlists {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let created = self.playlists.create(name.clone(), &songs);
+        let created = self.playlists.create(&name, &songs);
         self._create_task = cx.spawn_in(window, async move |this, cx| {
             let created = created.await;
             this.update_in(cx, |this, window, cx| match created {
-                Ok(id) => {
+                Ok(created) => {
                     window.close_dialog(cx);
-                    this.playlist_created(id, &name, songs.len(), window, cx);
+                    this.playlist_created(created, songs.is_empty(), window, cx);
                 }
                 Err(error) => form.update(cx, |form, cx| form.set_failed(error.into(), cx)),
             })
@@ -93,30 +94,24 @@ impl Playlists {
 
     fn playlist_created(
         &mut self,
-        id: PlaylistId,
-        name: &str,
-        song_count: usize,
+        created: CreatedPlaylist,
+        is_empty: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.sync(window, cx);
-        if song_count == 0 {
+        if is_empty {
             // It may be hidden by the filter, which it should not stay under
             self.filter
                 .update(cx, |filter, cx| filter.set_value("", window, cx));
-            self.apply_filter(cx);
+            self.apply_filter(window, cx);
             self.selected = None;
-            self.select(id, window, cx);
+            self.select(created.id().clone(), window, cx);
             self.list_focus.focus(window, cx);
             cx.emit(PlaylistsEvent::CreatedEmpty);
         } else {
-            let count = if song_count == 1 {
-                "1 song".to_owned()
-            } else {
-                format!("{song_count} songs")
-            };
             window.push_notification(
-                Notification::new().message(format!("Created “{name}” with {count}")),
+                Notification::new().message(created.message().to_owned()),
                 cx,
             );
         }
@@ -137,13 +132,20 @@ impl Playlists {
                 &name,
                 "Rename",
                 None,
-                move |name, _, window, cx| {
-                    window.close_dialog(cx);
-                    owner
-                        .update(cx, |this, cx| {
-                            this.rename_playlist(playlist.clone(), name, window, cx);
-                        })
-                        .ok();
+                move |name, form, window, cx| {
+                    let renamed = owner.update(cx, |this, cx| {
+                        this.rename_playlist(playlist.clone(), &name, window, cx)
+                    });
+                    match renamed {
+                        Ok(Ok(())) => window.close_dialog(cx),
+                        Ok(Err(error)) => {
+                            // The form is being updated until this returns
+                            window.defer(cx, move |_, cx| {
+                                form.update(cx, |form, cx| form.set_failed(error.into(), cx));
+                            });
+                        }
+                        Err(_) => {}
+                    }
                 },
                 window,
                 cx,
@@ -155,30 +157,31 @@ impl Playlists {
     pub(super) fn rename_playlist(
         &mut self,
         playlist: PlaylistId,
-        name: String,
+        name: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        self.playlists.rename(playlist, name);
+    ) -> Result<(), String> {
+        self.playlists.rename(playlist, name)?;
         self.sync(window, cx);
+        Ok(())
     }
 
     pub(super) fn open_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.is_editable() {
-            return;
-        }
-        let Some(selected) = self.selected_playlist() else {
+        let Some(playlist) = self.selected.clone() else {
             return;
         };
-        let playlist = selected.id().clone();
-        let title = SharedString::from(format!("Delete “{}”?", selected.name()));
+        let Some(confirmation) = self.shown.delete_confirmation(&playlist) else {
+            return;
+        };
+        let title = SharedString::from(confirmation.title().to_owned());
+        let message = SharedString::from(confirmation.message().to_owned());
         let owner = cx.entity().downgrade();
         window.open_alert_dialog(cx, move |alert, _, _| {
             let playlist = playlist.clone();
             let owner = owner.clone();
             alert
                 .title(title.clone())
-                .description("The songs stay in your library. This can't be undone.")
+                .description(message.clone())
                 .ok_text("Delete")
                 .ok_variant(ButtonVariant::Danger)
                 .show_cancel(true)
@@ -201,16 +204,19 @@ impl Playlists {
         cx: &mut Context<Self>,
     ) {
         let position = self.selected_position();
-        self.playlists.delete(playlist);
+        if let Err(error) = self.playlists.delete(playlist.clone()) {
+            window.push_notification((NotificationType::Error, error), cx);
+            return;
+        }
         self.sync(window, cx);
-        if let Some(next) = position
-            .and_then(|position| {
-                self.visible_playlist(position)
-                    .or_else(|| self.visible_playlist(position.checked_sub(1)?))
-            })
-            .map(|listed| listed.id().clone())
-        {
-            self.select(next, window, cx);
+        let next = position
+            .and_then(|position| selection::after_removal(position, self.shown.visible().len()))
+            .and_then(|position| self.visible_playlist(position))
+            .map(|listed| listed.id().clone());
+        match next {
+            Some(next) => self.select(next, window, cx),
+            None if self.selected.as_ref() == Some(&playlist) => self.clear_selection(window, cx),
+            None => {}
         }
         self.list_focus.focus(window, cx);
     }

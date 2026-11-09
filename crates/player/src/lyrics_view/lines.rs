@@ -2,7 +2,6 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::time::Duration;
 
-use config::LyricsHighlight;
 use gpui_kit::base::{Transition, transition};
 use gpui_kit::component::{
     ActiveTheme as _, StyledExt as _, button::Button, h_flex, scroll::Scrollbar, v_flex,
@@ -13,10 +12,8 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled as _, StyledText, Subscription, Task, Window, div,
     point, prelude::FluentBuilder as _, px, rems,
 };
-use lyrics::timing::{Lit, SEEK_ROUNDING, emphasis};
-use lyrics::{CurrentLyrics, Lookup, Lyrics, TimedLine, TimedLyrics};
-use playback::PlayerSnapshot;
-use subsonic::Song;
+use lyrics::timing::{Lit, LitLine, lit_lines};
+use lyrics::{CurrentLyrics, Lookup, Lyrics, TimedLyrics, Wanted};
 use ui::list_navigation::CONTROL_CONTEXT;
 use ui::{centered, muted_text, section_failure, section_loading};
 
@@ -54,8 +51,8 @@ pub(crate) struct LyricsLines {
     player: Entity<Player>,
     pub(super) lyrics: CurrentLyrics,
     fit: fn(&Window) -> LinesFit,
-    /// Whether they are on show, and so need looking up and keeping current.
-    is_active: bool,
+    /// Held while they are on show, which looks them up and keeps them current.
+    wanted: Option<Wanted>,
     pub(super) scroll: ScrollHandle,
     /// Whether the lines keep the current one in view, until the user scrolls.
     pub(super) is_following: bool,
@@ -88,27 +85,17 @@ impl LyricsLines {
             cx.notify();
         });
         let changes = player.read(cx).core().subscribe();
-        let now_playing = |shown: &PlayerSnapshot| {
-            let song = shown.current_song().map(|song| song.id().clone());
-            (song, shown.is_playing())
-        };
-        let mut followed = now_playing(&changes.borrow());
+        let mut was_playing = changes.borrow().is_playing();
         let player_changes = gpui_host::observe(changes, cx, move |this, shown, cx| {
-            if now_playing(&shown) == followed {
-                return;
-            }
-            followed = now_playing(&shown);
-            this.sync_refresh(cx);
-            // Pausing is no cause to look again
-            if this.is_active && !this.is_current_song_looked_up(cx) {
-                this.look_up_current(cx);
+            if std::mem::replace(&mut was_playing, shown.is_playing()) != shown.is_playing() {
+                this.sync_refresh(cx);
             }
         });
         Self {
             player,
             lyrics,
             fit,
-            is_active: false,
+            wanted: None,
             scroll: ScrollHandle::new(),
             is_following: true,
             scroll_key: 0,
@@ -121,27 +108,16 @@ impl LyricsLines {
     }
 
     pub(crate) fn set_active(&mut self, is_active: bool, cx: &mut Context<Self>) {
-        self.is_active = is_active;
-        if is_active {
-            self.look_up_current(cx);
+        if is_active != self.wanted.is_some() {
+            self.wanted = is_active.then(|| self.lyrics.want());
         }
         self.sync_refresh(cx);
-    }
-
-    fn look_up_current(&self, cx: &App) {
-        self.lyrics
-            .look_up(self.player.read(cx).snapshot().current_song());
-    }
-
-    fn is_current_song_looked_up(&self, cx: &App) -> bool {
-        self.lyrics.snapshot().lookup().song()
-            == self.player.read(cx).snapshot().current_song().map(Song::id)
     }
 
     /// Checks whether the lines should change for as long as the view is open
     /// and the song moving. Otherwise only the player's own changes move them.
     fn sync_refresh(&mut self, cx: &mut Context<Self>) {
-        if !self.is_active || !self.player.read(cx).snapshot().is_playing() {
+        if self.wanted.is_none() || !self.player.read(cx).snapshot().is_playing() {
             self.refresh = None;
         } else if self.refresh.is_none() {
             self.refresh = Some(cx.spawn(async move |this, cx| {
@@ -166,7 +142,7 @@ impl LyricsLines {
         };
         let lit = Lit::of(
             lyrics,
-            lines_position(self.player.read(cx)),
+            self.player.read(cx).shown_position(),
             current.highlight(),
         );
         if lit != self.lit {
@@ -181,8 +157,8 @@ impl LyricsLines {
         self.lit = Lit::default();
     }
 
-    pub(super) fn retry(&mut self, cx: &mut Context<Self>) {
-        self.look_up_current(cx);
+    pub(super) fn retry(&self) {
+        self.lyrics.retry();
     }
 
     pub(super) fn follow_again(&mut self, cx: &mut Context<Self>) {
@@ -205,13 +181,7 @@ impl LyricsLines {
     }
 
     /// The layout comes from the last frame, so nothing moves until there has been one.
-    fn follow_current_line(
-        &self,
-        lyrics: &TimedLyrics,
-        position: Duration,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
+    fn follow_current_line(&self, window: &mut Window, cx: &mut App) {
         let id = ElementId::from(("lyrics-scroll", self.scroll_key));
         if !self.is_following {
             // Easing state lasts only while each frame asks for it, and following
@@ -221,7 +191,7 @@ impl LyricsLines {
             return;
         }
         // The room before the lines is the list's first child
-        let child_ix = lyrics.line_at(position).unwrap_or(0) + 1;
+        let child_ix = self.lit.line.unwrap_or(0) + 1;
         let Some(line) = self.scroll.bounds_for_item(child_ix) else {
             window.request_animation_frame();
             return;
@@ -244,11 +214,12 @@ impl LyricsLines {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let player = self.player.read(cx);
-        let position = lines_position(player);
+        let position = player.shown_position();
         let is_playing = player.snapshot().is_playing();
         let highlight = self.lyrics.snapshot().highlight();
         self.lit = Lit::of(lyrics, position, highlight);
-        self.follow_current_line(lyrics, position, window, cx);
+        let lit = lit_lines(lyrics, position, is_playing, highlight);
+        self.follow_current_line(window, cx);
 
         let theme = cx.theme();
         let (dim, bright, hover) = (
@@ -257,10 +228,8 @@ impl LyricsLines {
             theme.muted.opacity(0.7),
         );
         let radius = theme.radius_lg;
-        let mut is_fading = false;
         let lines = lyrics.lines().iter().enumerate().map(|(ix, line)| {
-            let (runs, fading) = line_runs(line, position, is_playing, highlight, dim, bright);
-            is_fading |= fading;
+            let runs = line_runs(lit.line(ix), dim, bright);
             let start = line.start();
             div()
                 .id(("lyrics-line", ix))
@@ -280,7 +249,7 @@ impl LyricsLines {
         });
         let lines: Vec<AnyElement> = lines.collect();
         // A frame for each step of a fade, and between fades the refresh checks
-        if is_fading && is_playing {
+        if lit.is_fading() {
             window.request_animation_frame();
         }
         let is_following = self.is_following;
@@ -397,7 +366,7 @@ impl Render for LyricsLines {
             Lookup::Failed(_, reason) => {
                 let retry = Button::new("retry-lyrics")
                     .label("Retry")
-                    .on_click(cx.listener(|this, _, _, cx| this.retry(cx)));
+                    .on_click(cx.listener(|this, _, _, _| this.retry()));
                 v_flex()
                     .size_full()
                     .justify_center()
@@ -426,42 +395,23 @@ impl Render for LyricsLines {
     }
 }
 
-fn lines_position(player: &Player) -> Duration {
-    player.shown_position() + SEEK_ROUNDING
-}
-
-/// The colors of the lit parts of `line`, and whether any is changing.
+/// The colours of the lit parts of a line.
 pub(super) fn line_runs(
-    line: &TimedLine,
-    position: Duration,
-    is_playing: bool,
-    highlight: LyricsHighlight,
+    lit: Option<&LitLine>,
     dim: Hsla,
     bright: Hsla,
-) -> (Vec<(Range<usize>, HighlightStyle)>, bool) {
-    let mut is_fading = false;
-    let mut runs = Vec::new();
-    let mut light = |range: Range<usize>, start: Duration| {
-        let lit = emphasis(line, start, position, is_playing);
-        is_fading |= lit > 0. && lit < 1.;
-        if lit > 0. {
-            let color = dim.blend(bright.opacity(lit));
+) -> Vec<(Range<usize>, HighlightStyle)> {
+    let parts = lit.map(LitLine::parts).unwrap_or_default();
+    parts
+        .iter()
+        .map(|part| {
             let style = HighlightStyle {
-                color: Some(color),
+                color: Some(dim.blend(bright.opacity(part.emphasis()))),
                 ..HighlightStyle::default()
             };
-            runs.push((range, style));
-        }
-    };
-    match highlight {
-        LyricsHighlight::ByWord => {
-            for element in line.elements() {
-                light(element.range(), element.start());
-            }
-        }
-        LyricsHighlight::ByLine => light(0..line.text().len(), line.start()),
-    }
-    (runs, is_fading)
+            (part.range(), style)
+        })
+        .collect()
 }
 
 fn copyright_line(text: Arc<str>) -> impl IntoElement {

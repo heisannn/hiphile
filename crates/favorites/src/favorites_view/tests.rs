@@ -206,33 +206,47 @@ fn retry_loads_the_favorites_that_failed(cx: &mut TestAppContext) {
     assert_eq!(song_ids(&view, cx), ["a"]);
 }
 
-#[gpui_kit::test]
-fn the_key_asks_to_take_the_selected_favorite_out(cx: &mut TestAppContext) {
-    let server = FavoritesServer::new(&["a", "b"]);
-    let (view, cx) = view_on(&server, cx);
-    wait_until(&view, cx, is_settled);
-    let asked = Rc::new(RefCell::new(Vec::new()));
-    // What the app shell keeps, and does with what the key leads to
+/// Takes the selected favorite out with its key `times` over, without a turn in between, while
+/// what the app shell does with a toggle asked for elsewhere goes to the favorites.
+fn press_favorite_key(times: usize, view: &Entity<Favorites>, cx: &mut VisualTestContext) {
     cx.update(|_, cx| {
         let known = view.read(cx).shown.known().map(|known| (**known).clone());
         actions::set_known_favorites(known, cx);
-        let asked = asked.clone();
+        let favorites = view.read(cx).favorites.clone();
         cx.on_action(move |action: &actions::ToggleFavoriteOf, _| {
-            asked.borrow_mut().push(action.clone());
+            favorites.toggle(action.favorite().clone());
         });
     });
-    focus(&view, cx);
-    let key = cx.update(|_, cx| {
-        if cx.platform_info().is_mac() {
-            "cmd-d"
-        } else {
-            "ctrl-d"
-        }
-    });
+    focus(view, cx);
+    let key = platform_key("cmd-d", "ctrl-d", cx);
+    let keys = vec![key; times].join(" ");
+    cx.simulate_keystrokes(&keys);
+}
 
-    cx.simulate_keystrokes(key);
+#[gpui_kit::test]
+fn the_key_takes_the_selected_favorite_out(cx: &mut TestAppContext) {
+    let server = FavoritesServer::new(&["a", "b"]);
+    let (view, cx) = view_on(&server, cx);
+    wait_until(&view, cx, is_settled);
 
-    assert_eq!(*asked.borrow(), [actions::ToggleFavoriteOf::new(song("a"))]);
+    press_favorite_key(1, &view, cx);
+
+    assert_eq!(song_ids(&view, cx), ["b"]);
+    assert_eq!(selected_song(&view, cx), Some(target("b")));
+    wait_until(&view, cx, is_settled);
+}
+
+#[gpui_kit::test]
+fn the_key_twice_takes_out_two_favorites(cx: &mut TestAppContext) {
+    let server = FavoritesServer::new(&["a", "b", "c"]);
+    let (view, cx) = view_on(&server, cx);
+    wait_until(&view, cx, is_settled);
+
+    press_favorite_key(2, &view, cx);
+
+    assert_eq!(song_ids(&view, cx), ["c"]);
+    assert_eq!(selected_song(&view, cx), Some(target("c")));
+    wait_until(&view, cx, is_settled);
 }
 
 #[gpui_kit::test]

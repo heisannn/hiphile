@@ -27,5 +27,8 @@ objc2-core-foundation.workspace = true
 windows.workspace = true
 windows-core.workspace = true
 
+[features]
+test-support = []
+
 [lints]
 workspace = true

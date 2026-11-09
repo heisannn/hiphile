@@ -22,6 +22,7 @@ fn song(id: &str) -> Song {
 
 struct Main {
     mini_player: Option<Entity<MiniPlayer>>,
+    _songs: Task<()>,
 }
 
 impl Render for Main {
@@ -57,9 +58,11 @@ fn main_window_answering(
             player
         });
         let lyrics = CurrentLyrics::with_find_lyrics(gpui_host::executor(cx), find_from(answers));
+        let songs = crate::testing::follow_songs(player.read(cx).core(), &lyrics, cx);
         let mini_player = cx.new(|cx| MiniPlayer::new(player, lyrics, window, cx));
         Main {
             mini_player: Some(mini_player),
+            _songs: songs,
         }
     })
 }
@@ -356,9 +359,7 @@ fn focus_comes_back_when_the_focused_button_goes(cx: &mut TestAppContext) {
     mini_cx.update(|window, cx| window.focus_next(cx));
     assert_ne!(mini_cx.update(|window, cx| window.focused(cx)), view_focus);
 
-    let lyrics = cx.read(|cx| mini.read(cx).lyrics.clone());
-    let song = player.read_with(cx, |player, _| player.snapshot().current_song().cloned());
-    lyrics.look_up(song.as_ref());
+    cx.read(|cx| mini.read(cx).lyrics.clone()).retry();
     draw(&mut mini_cx);
     assert!(mini_cx.debug_bounds("lyrics-retry").is_none());
 

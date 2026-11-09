@@ -1,8 +1,6 @@
-use std::mem;
 use std::sync::Arc;
 
-use gpui_kit::{App, Context, Task};
-use session::{Readings, ReadingsStatus};
+use gpui_kit::App;
 
 use crate::http::NetHttpClient;
 
@@ -11,21 +9,4 @@ use crate::http::NetHttpClient;
 /// `gpui_kit::init`.
 pub fn set_http_client(net: net::Client, covers: Option<catalog::CoverStore>, cx: &mut App) {
     cx.set_http_client(Arc::new(NetHttpClient::new(net, covers)));
-}
-
-/// Calls `on_change` each time the dictionaries come or go, for as long as the task is kept:
-/// what was read with them, or for lack of them, is out of date.
-pub fn on_readings_changed<V: 'static>(
-    readings: &Readings,
-    cx: &mut Context<V>,
-    mut on_change: impl FnMut(&mut V, &mut Context<V>) + 'static,
-) -> Task<()> {
-    let changes = readings.subscribe();
-    let mut had_dictionaries = changes.borrow().dictionaries().is_some();
-    gpui_host::observe(changes, cx, move |this, status: ReadingsStatus, cx| {
-        let has_dictionaries = status.dictionaries().is_some();
-        if mem::replace(&mut had_dictionaries, has_dictionaries) != has_dictionaries {
-            on_change(this, cx);
-        }
-    })
 }

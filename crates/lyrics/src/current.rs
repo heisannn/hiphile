@@ -60,10 +60,23 @@ impl LyricsSnapshot {
     }
 }
 
-/// The lyrics of the song on show, shared by all that show them so that a song is looked up
-/// once. It looks only when asked.
+/// The lyrics of the song the player is on, shared by all that show them so that a song is
+/// looked up once. It looks only while some [`Wanted`] is held, and only once for each song: a
+/// failed lookup is tried again only by [`retry`](Self::retry).
 #[derive(Clone)]
 pub struct CurrentLyrics(Arc<Inner>);
+
+/// Held while the lyrics show, so that the song's lyrics are looked up. Dropping it lets go.
+#[must_use]
+pub struct Wanted(WeakLyrics);
+
+impl Drop for Wanted {
+    fn drop(&mut self) {
+        if let Some(lyrics) = self.0.upgrade() {
+            lyrics.0.state.update(|state| state.wanted -= 1);
+        }
+    }
+}
 
 struct WeakLyrics(Weak<Inner>);
 
@@ -77,6 +90,9 @@ struct State {
     shown: LyricsSnapshot,
     /// Songs whose lyrics were found, or found not to exist, oldest first.
     found: Vec<(SongId, Arc<Lyrics>)>,
+    song: Option<Song>,
+    /// How many [`Wanted`] are held.
+    wanted: usize,
 }
 
 impl Publish for State {
@@ -106,6 +122,8 @@ impl CurrentLyrics {
                     highlight: LyricsHighlight::default(),
                 },
                 found: Vec::new(),
+                song: None,
+                wanted: 0,
             }),
         }))
     }
@@ -126,32 +144,46 @@ impl CurrentLyrics {
             .update(|state| state.shown.highlight = highlight);
     }
 
-    /// Looks for the lyrics of `song`, unless they are on show or on their way. A failed search
-    /// is tried again. Without a song, shows nothing.
-    pub fn look_up(&self, song: Option<&Song>) {
-        let Some(song) = song else {
-            self.0
-                .state
-                .update(|state| state.shown.lookup = Lookup::Nothing);
+    /// The song the player is on, whose lyrics are looked up while they are wanted.
+    pub fn set_song(&self, song: Option<&Song>) {
+        let asked = self.0.state.update(|state| {
+            if state.song.as_ref().map(Song::id) != song.map(Song::id) {
+                state.song = song.cloned();
+            }
+            state.look_up(false)
+        });
+        self.ask(asked);
+    }
+
+    /// Looks up the song's lyrics unless they were already, and keeps looking up those of each
+    /// song after it until every [`Wanted`] is dropped.
+    pub fn want(&self) -> Wanted {
+        let asked = self.0.state.update(|state| {
+            state.wanted += 1;
+            state.look_up(false)
+        });
+        self.ask(asked);
+        Wanted(self.downgrade())
+    }
+
+    /// Looks again for lyrics whose lookup failed.
+    pub fn retry(&self) {
+        let asked = self.0.state.update(|state| state.look_up(true));
+        self.ask(asked);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn song(&self) -> Option<SongId> {
+        self.0
+            .state
+            .read(|state| state.song.as_ref().map(|song| song.id().clone()))
+    }
+
+    fn ask(&self, asked: Option<(SongId, TrackQuery)>) {
+        let Some((id, query)) = asked else {
             return;
         };
-        let id = song.id().clone();
-        let is_asked = self.0.state.update(|state| {
-            let is_failed = matches!(state.shown.lookup, Lookup::Failed(..));
-            if state.shown.lookup.song() == Some(&id) && !is_failed {
-                return false;
-            }
-            if let Some((_, lyrics)) = state.found.iter().find(|(found, _)| *found == id) {
-                state.shown.lookup = Lookup::Done(id.clone(), lyrics.clone());
-                return false;
-            }
-            state.shown.lookup = Lookup::Loading(id.clone());
-            true
-        });
-        if !is_asked {
-            return;
-        }
-        let found = (self.0.find_lyrics)(query_for(song));
+        let found = (self.0.find_lyrics)(query);
         let weak = self.downgrade();
         // It goes on when the song changes: the token it may be waiting for is what the next
         // song needs, and asking for another could be refused.
@@ -195,6 +227,28 @@ impl WeakLyrics {
 }
 
 impl State {
+    /// Shows the song's lyrics while they are wanted, and gives what is to be asked for them.
+    fn look_up(&mut self, is_retry: bool) -> Option<(SongId, TrackQuery)> {
+        if self.wanted == 0 {
+            return None;
+        }
+        let Some(song) = &self.song else {
+            self.shown.lookup = Lookup::Nothing;
+            return None;
+        };
+        let id = song.id();
+        let is_failed = matches!(self.shown.lookup, Lookup::Failed(..));
+        if self.shown.lookup.song() == Some(id) && !(is_retry && is_failed) {
+            return None;
+        }
+        if let Some((_, lyrics)) = self.found.iter().find(|(found, _)| found == id) {
+            self.shown.lookup = Lookup::Done(id.clone(), lyrics.clone());
+            return None;
+        }
+        self.shown.lookup = Lookup::Loading(id.clone());
+        Some((id.clone(), query_for(song)))
+    }
+
     fn keep_found(&mut self, song: &SongId, lyrics: Lyrics) -> Arc<Lyrics> {
         if let Some((_, kept)) = self.found.iter().find(|(found, _)| found == song) {
             return kept.clone();

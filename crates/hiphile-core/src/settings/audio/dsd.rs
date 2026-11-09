@@ -5,9 +5,14 @@ use config::{
 };
 
 use super::choices::{Choice, number_value, numbers, same_labels};
-use super::{AudioSettings, AudioSnapshot, State, window_label};
+use super::{AudioSettings, AudioSnapshot, MATCH_SONG, State, window_label};
 
 const DSD_QUALITIES: [&str; 5] = ["Low", "Medium", "High", "Max", "Custom"];
+
+const PCM: &str = "pcm";
+const DOP: &str = "dop";
+const STANDARD_BASE_RATE: &str = "44100";
+const PCM_ONLY: &str = "DSD plays songs whole while it's on.";
 
 const SINC: &str = "sinc";
 const FFT: &str = "fft";
@@ -23,9 +28,105 @@ const DITHER_DBS: [f64; 5] = [-140.0, -120.0, -100.0, -80.0, -60.0];
 const INPUT_LEVEL_DBS: [f64; 6] = [-12.0, -9.0, -6.0, -3.0, 0.0, 3.0];
 const LIMITER_CEILING_DBS: [f64; 3] = [1.0, 0.0, -1.0];
 
+/// A setting for PCM, which DSD may turn off while it is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PcmSetting {
+    SampleRate,
+    ExclusiveMode,
+    PlayPauseFade,
+    TrimSilence,
+    Crossfade,
+    Resampling,
+}
+
+/// What to ask before a change that can play loud noise.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DsdWarning {
+    title: String,
+    message: &'static str,
+    confirm_label: &'static str,
+}
+
+impl DsdWarning {
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    pub fn message(&self) -> &str {
+        self.message
+    }
+
+    /// For the choice that makes the change.
+    pub fn confirm_label(&self) -> &str {
+        self.confirm_label
+    }
+}
+
 impl AudioSnapshot {
     pub fn is_dsd_on(&self) -> bool {
         self.output().dop().is_some()
+    }
+
+    /// While DSD is on, why `setting` has no effect.
+    pub fn dsd_note(&self, setting: PcmSetting) -> Option<&'static str> {
+        if !self.is_dsd_on() {
+            return None;
+        }
+        Some(match setting {
+            PcmSetting::SampleRate => "DSD sets the rate while it's on.",
+            PcmSetting::ExclusiveMode => "DSD needs it while it's on.",
+            PcmSetting::PlayPauseFade => "DSD cuts in and out at once while it's on.",
+            PcmSetting::TrimSilence | PcmSetting::Crossfade => PCM_ONLY,
+            PcmSetting::Resampling => "DSD uses the DSD filter settings below while it's on.",
+        })
+    }
+
+    pub fn dsd_format_options(&self) -> Vec<Choice> {
+        vec![Choice::new(PCM, "PCM"), Choice::new(DOP, "DSD (DoP)")]
+    }
+
+    pub fn dsd_format_value(&self) -> String {
+        if self.is_dsd_on() { DOP } else { PCM }.to_owned()
+    }
+
+    /// What to ask before choosing `value` of [`Self::dsd_format_options`]. A device that cannot
+    /// decode DoP plays it as noise at full level, whatever the app's volume was, and nothing
+    /// the device reports can tell beforehand.
+    pub fn dsd_format_warning(&self, value: &str) -> Option<DsdWarning> {
+        (value == DOP && !self.is_dsd_on() && self.dsd_obstacle().is_none()).then(|| DsdWarning {
+            title: format!("Turn on DSD for “{}”?", self.dsd_device_name()),
+            message: "The app's volume stops working: sound comes at full level, so turn the \
+                      device down first. A device without DoP support plays loud noise.",
+            confirm_label: "Turn on",
+        })
+    }
+
+    pub fn dsd_base_rate_options(&self) -> Vec<Choice> {
+        vec![
+            Choice::new(STANDARD_BASE_RATE, "44.1 kHz"),
+            Choice::new(MATCH_SONG, "Match each song"),
+        ]
+    }
+
+    pub fn dsd_base_rate_value(&self) -> String {
+        if self.matches_song_family() {
+            MATCH_SONG
+        } else {
+            STANDARD_BASE_RATE
+        }
+        .to_owned()
+    }
+
+    /// What to ask before choosing `value` of [`Self::dsd_base_rate_options`]. A DAC can decode
+    /// the standard DSD rates and still take the 48 kHz family's for PCM, which a song already
+    /// playing would turn into noise at once.
+    pub fn dsd_base_rate_warning(&self, value: &str) -> Option<DsdWarning> {
+        (value == MATCH_SONG && !self.matches_song_family()).then(|| DsdWarning {
+            title: "Match each song's base rate?".to_owned(),
+            message: "Songs at 48 kHz and its multiples then play at DSD rates based on 48 kHz. \
+                      A DAC that doesn't decode those plays loud noise, so turn it down first.",
+            confirm_label: "Match",
+        })
     }
 
     /// Why DSD cannot be turned on for the chosen device.
@@ -269,8 +370,8 @@ impl AudioSettings {
         CAN_PLAY_DOP
     }
 
-    /// Asks for no confirmation itself, though a device that cannot decode DoP plays it as loud
-    /// noise.
+    /// Asks for no confirmation itself: [`AudioSnapshot::dsd_format_warning`] says what to ask.
+    /// Does nothing while there is an [`AudioSnapshot::dsd_obstacle`].
     pub fn turn_dsd_on(&self) {
         self.change(State::turn_dsd_on);
     }
@@ -284,10 +385,29 @@ impl AudioSettings {
         self.change(|state| state.set_dsd_rate(value));
     }
 
-    /// Asks for no confirmation itself, though a DAC that does not decode the 48 kHz family's
-    /// DSD rates plays them as loud noise.
+    /// `value` is one of [`AudioSnapshot::dsd_format_options`]. DSD turns on as
+    /// [`Self::turn_dsd_on`] turns it on.
+    pub fn set_dsd_format(&self, value: &str) {
+        match value {
+            DOP => self.turn_dsd_on(),
+            PCM => self.turn_dsd_off(),
+            _ => {}
+        }
+    }
+
+    /// Asks for no confirmation itself: [`AudioSnapshot::dsd_base_rate_warning`] says what to
+    /// ask.
     pub fn set_matches_song_family(&self, matches: bool) {
         self.change(|state| state.change_dsd(|dsd| dsd.matches_song_family = matches));
+    }
+
+    /// `value` is one of [`AudioSnapshot::dsd_base_rate_options`].
+    pub fn set_dsd_base_rate(&self, value: &str) {
+        match value {
+            MATCH_SONG => self.set_matches_song_family(true),
+            STANDARD_BASE_RATE => self.set_matches_song_family(false),
+            _ => {}
+        }
     }
 
     pub fn set_fades_dsd_in(&self, is_on: bool) {
@@ -408,6 +528,9 @@ impl AudioSettings {
 impl State {
     fn turn_dsd_on(&mut self) {
         let settings = &self.settings;
+        if settings.dsd_obstacle().is_some() {
+            return;
+        }
         let mut dsd = settings.dsd().clone();
         dsd.is_on = true;
         dsd.device = settings.output().device().map(str::to_owned);
@@ -511,17 +634,22 @@ mod tests {
     use gpui_kit::TestAppContext;
 
     use super::*;
-    use crate::settings::audio::tests::{settings_saving_to, told};
+    use crate::settings::audio::tests::{DAC, dac, settings_saving_to, told};
 
-    const DAC: &str = "coreaudio:dac";
+    /// With the DAC listed and chosen.
+    fn settings_on_the_dac(store: &config::Store, cx: &mut TestAppContext) -> AudioSettings {
+        let settings = settings_saving_to(store, cx);
+        settings.pretend_listed(vec![dac()]);
+        settings.set_device(DAC);
+        settings
+    }
 
     #[gpui_kit::test]
     fn dsd_goes_on_for_the_chosen_device_and_is_saved(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
-        let settings = settings_saving_to(&store, cx);
+        let settings = settings_on_the_dac(&store, cx);
 
-        settings.set_device(DAC);
         settings.turn_dsd_on();
         cx.run_until_parked();
 
@@ -539,8 +667,7 @@ mod tests {
     fn another_device_plays_pcm_until_dsd_is_turned_on_for_it(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
-        let settings = settings_saving_to(&store, cx);
-        settings.set_device(DAC);
+        let settings = settings_on_the_dac(&store, cx);
         settings.turn_dsd_on();
         settings.set_device("coreaudio:other");
         assert!(!settings.snapshot().is_dsd_on());
@@ -553,8 +680,7 @@ mod tests {
     fn the_fade_can_be_turned_off_and_reaches_the_output(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
-        let settings = settings_saving_to(&store, cx);
-        settings.set_device(DAC);
+        let settings = settings_on_the_dac(&store, cx);
         settings.turn_dsd_on();
         let snapshot = settings.snapshot();
         assert!(snapshot.fades_dsd_in());
@@ -588,8 +714,7 @@ mod tests {
     fn a_chosen_cutoff_is_listed_once(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
-        let settings = settings_saving_to(&store, cx);
-        settings.set_device(DAC);
+        let settings = settings_on_the_dac(&store, cx);
         settings.turn_dsd_on();
         settings.set_dsd_cutoff("0.85");
         let settings = settings.snapshot();
@@ -601,8 +726,7 @@ mod tests {
     fn the_wide_noise_band_shows_only_where_it_applies(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
-        let settings = settings_saving_to(&store, cx);
-        settings.set_device(DAC);
+        let settings = settings_on_the_dac(&store, cx);
         settings.turn_dsd_on();
         settings.set_dsd_noise_band(WIDE_NOISE_BAND);
         assert_eq!(settings.snapshot().dsd_noise_band_value(), WIDE_NOISE_BAND);
@@ -627,8 +751,7 @@ mod tests {
     fn a_new_rate_or_preset_reaches_the_output(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
-        let settings = settings_saving_to(&store, cx);
-        settings.set_device(DAC);
+        let settings = settings_on_the_dac(&store, cx);
         settings.turn_dsd_on();
         let before = told(&settings);
 
@@ -650,8 +773,7 @@ mod tests {
     fn matching_the_song_family_is_off_until_asked_for(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
-        let settings = settings_saving_to(&store, cx);
-        settings.set_device(DAC);
+        let settings = settings_on_the_dac(&store, cx);
         settings.turn_dsd_on();
         let frame_rates =
             |settings: &AudioSnapshot| settings.output().dop().unwrap().frame_rates_for(48_000)[0];
@@ -728,6 +850,100 @@ mod tests {
         let parameters = store.dsd_output().unwrap().quality.parameters();
         assert_eq!(parameters.dither_db, Some(-100.0));
         assert_eq!(parameters.limiter_ceiling_db, None);
+    }
+
+    #[gpui_kit::test]
+    fn dsd_stays_off_for_a_device_that_cannot_take_it(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = config::Store::at(dir.path());
+        let settings = settings_saving_to(&store, cx);
+        settings.set_device(DAC);
+        settings.turn_dsd_on();
+        assert!(!settings.snapshot().is_dsd_on());
+
+        let speakers = audio::OutputDevice::listed(DAC, "Speakers", &[44_100, 48_000], &[]);
+        settings.pretend_listed(vec![speakers]);
+        assert!(settings.snapshot().dsd_obstacle().is_some());
+        settings.set_dsd_format(DOP);
+        cx.run_until_parked();
+
+        assert!(!settings.snapshot().is_dsd_on());
+        assert!(!store.dsd_output().unwrap().is_on);
+    }
+
+    #[gpui_kit::test]
+    fn turning_dsd_on_asks_first_in_the_device_s_name(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = config::Store::at(dir.path());
+        let settings = settings_on_the_dac(&store, cx);
+        let snapshot = settings.snapshot();
+        assert_eq!(snapshot.dsd_format_warning(PCM), None);
+        let warning = snapshot.dsd_format_warning(DOP).unwrap();
+        assert_eq!(warning.title(), "Turn on DSD for “DAC”?");
+        assert_eq!(warning.confirm_label(), "Turn on");
+
+        settings.set_dsd_format(DOP);
+
+        let snapshot = settings.snapshot();
+        assert_eq!(snapshot.dsd_format_value(), DOP);
+        assert_eq!(snapshot.dsd_format_warning(DOP), None);
+        settings.set_dsd_format(PCM);
+        assert_eq!(settings.snapshot().dsd_format_value(), PCM);
+    }
+
+    #[gpui_kit::test]
+    fn without_dsd_there_is_nothing_to_ask(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = config::Store::at(dir.path());
+        let settings = settings_saving_to(&store, cx);
+        assert_eq!(settings.snapshot().dsd_format_warning(DOP), None);
+    }
+
+    #[gpui_kit::test]
+    fn only_matching_the_song_family_asks_first(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = config::Store::at(dir.path());
+        let settings = settings_on_the_dac(&store, cx);
+        settings.turn_dsd_on();
+        let snapshot = settings.snapshot();
+        assert_eq!(snapshot.dsd_base_rate_value(), STANDARD_BASE_RATE);
+        assert_eq!(snapshot.dsd_base_rate_warning(STANDARD_BASE_RATE), None);
+        let warning = snapshot.dsd_base_rate_warning(MATCH_SONG).unwrap();
+        assert_eq!(warning.confirm_label(), "Match");
+
+        settings.set_dsd_base_rate(MATCH_SONG);
+        let snapshot = settings.snapshot();
+        assert!(snapshot.matches_song_family());
+        assert_eq!(snapshot.dsd_base_rate_warning(MATCH_SONG), None);
+
+        settings.set_dsd_base_rate(STANDARD_BASE_RATE);
+        assert!(!settings.snapshot().matches_song_family());
+    }
+
+    #[gpui_kit::test]
+    fn dsd_says_why_the_pcm_settings_are_off_only_while_it_is_on(cx: &mut TestAppContext) {
+        let all = [
+            PcmSetting::SampleRate,
+            PcmSetting::ExclusiveMode,
+            PcmSetting::PlayPauseFade,
+            PcmSetting::TrimSilence,
+            PcmSetting::Crossfade,
+            PcmSetting::Resampling,
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let store = config::Store::at(dir.path());
+        let settings = settings_on_the_dac(&store, cx);
+        assert!(
+            all.iter()
+                .all(|pcm| settings.snapshot().dsd_note(*pcm).is_none())
+        );
+
+        settings.turn_dsd_on();
+
+        assert!(
+            all.iter()
+                .all(|pcm| settings.snapshot().dsd_note(*pcm).is_some())
+        );
     }
 
     #[test]

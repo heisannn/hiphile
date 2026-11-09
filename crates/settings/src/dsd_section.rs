@@ -5,14 +5,9 @@ use gpui_kit::component::{
     setting::{SettingField, SettingGroup, SettingItem},
 };
 use gpui_kit::{App, SharedString, Window};
-use hiphile_core::settings::{AudioSettings, AudioSnapshot};
+use hiphile_core::settings::{AudioSettings, AudioSnapshot, Choice, DsdWarning};
 
 use crate::audio_options::dropdown;
-
-const FORMATS: [&str; 2] = ["PCM", "DSD (DoP)"];
-const DSD_FORMAT_IX: usize = 1;
-const BASE_RATES: [&str; 2] = ["44.1 kHz", "Match each song"];
-const MATCHING_BASE_RATE_IX: usize = 1;
 
 /// The Audio page's DSD groups, which stay out of the way until it is on.
 pub(crate) fn dsd_groups(audio: &AudioSettings) -> Vec<SettingGroup> {
@@ -72,100 +67,87 @@ fn format_field(audio: &AudioSettings) -> SettingField<SharedString> {
     let audio = audio.clone();
     SettingField::render(move |_, _, _| {
         let settings = audio.snapshot();
-        let is_on = settings.is_dsd_on();
-        let is_blocked = settings.dsd_obstacle().is_some();
-        let audio = audio.clone();
-        RadioGroup::horizontal("output-format")
-            .selected_index(Some(usize::from(is_on)))
-            .disabled(is_blocked)
-            .children(
-                FORMATS
-                    .iter()
-                    .enumerate()
-                    .map(|(ix, label)| Radio::new(("output-format", ix)).label(*label)),
-            )
-            .on_click(move |ix, window, cx| {
-                let is_dsd = *ix == DSD_FORMAT_IX;
-                if is_dsd == is_on {
-                    return;
-                }
-                if is_dsd {
-                    confirm_dsd(&audio, window, cx);
-                } else {
-                    audio.turn_dsd_off();
-                }
-            })
+        choice_group(
+            "output-format",
+            &audio,
+            settings.dsd_format_options(),
+            settings.dsd_format_value(),
+            AudioSnapshot::dsd_format_warning,
+            AudioSettings::set_dsd_format,
+        )
+        .disabled(settings.dsd_obstacle().is_some())
     })
-}
-
-/// A device that cannot decode DoP plays it as noise at full level, whatever
-/// the app's volume was, and nothing the device reports can tell beforehand.
-fn confirm_dsd(audio: &AudioSettings, window: &mut Window, cx: &mut App) {
-    let name = audio.snapshot().dsd_device_name();
-    let title = SharedString::from(format!("Turn on DSD for “{name}”?"));
-    let audio = audio.clone();
-    window.open_alert_dialog(cx, move |alert, _, _| {
-        let audio = audio.clone();
-        alert
-            .title(title.clone())
-            .description(
-                "The app's volume stops working: sound comes at full level, so turn the \
-                 device down first. A device without DoP support plays loud noise.",
-            )
-            .ok_text("Turn on")
-            .ok_variant(ButtonVariant::Danger)
-            .show_cancel(true)
-            .on_ok(move |_, _, _| {
-                audio.turn_dsd_on();
-                true
-            })
-    });
 }
 
 fn base_rate_field(audio: &AudioSettings) -> SettingField<SharedString> {
     let audio = audio.clone();
     SettingField::render(move |_, _, _| {
-        let matches = audio.snapshot().matches_song_family();
-        let audio = audio.clone();
-        RadioGroup::horizontal("dsd-base-rate")
-            .selected_index(Some(usize::from(matches)))
-            .children(
-                BASE_RATES
-                    .iter()
-                    .enumerate()
-                    .map(|(ix, label)| Radio::new(("dsd-base-rate", ix)).label(*label)),
-            )
-            .on_click(move |ix, window, cx| {
-                let wants_matching = *ix == MATCHING_BASE_RATE_IX;
-                if wants_matching == matches {
-                    return;
-                }
-                if wants_matching {
-                    confirm_matching_base_rate(&audio, window, cx);
-                } else {
-                    audio.set_matches_song_family(false);
-                }
-            })
+        let settings = audio.snapshot();
+        choice_group(
+            "dsd-base-rate",
+            &audio,
+            settings.dsd_base_rate_options(),
+            settings.dsd_base_rate_value(),
+            AudioSnapshot::dsd_base_rate_warning,
+            AudioSettings::set_dsd_base_rate,
+        )
     })
 }
 
-/// A DAC can decode the standard DSD rates and still take the 48 kHz family's
-/// for PCM, which a song already playing would turn into noise at once.
-fn confirm_matching_base_rate(audio: &AudioSettings, window: &mut Window, cx: &mut App) {
+/// Radios for `choices`, which ask first when the settings warn of a choice.
+fn choice_group(
+    id: &'static str,
+    audio: &AudioSettings,
+    choices: Vec<Choice>,
+    value: String,
+    warning: fn(&AudioSnapshot, &str) -> Option<DsdWarning>,
+    set: fn(&AudioSettings, &str),
+) -> RadioGroup {
+    let selected = choices.iter().position(|choice| choice.value() == value);
+    let radios = choices
+        .iter()
+        .enumerate()
+        .map(|(ix, choice)| Radio::new((id, ix)).label(choice.label().to_owned()));
     let audio = audio.clone();
+    RadioGroup::horizontal(id)
+        .selected_index(selected)
+        .children(radios)
+        .on_click(move |ix, window, cx| {
+            let Some(chosen) = choices.get(*ix).map(|choice| choice.value().to_owned()) else {
+                return;
+            };
+            if chosen == value {
+                return;
+            }
+            match warning(&audio.snapshot(), &chosen) {
+                Some(warning) => confirm(&audio, warning, chosen, set, window, cx),
+                None => set(&audio, &chosen),
+            }
+        })
+}
+
+fn confirm(
+    audio: &AudioSettings,
+    warning: DsdWarning,
+    chosen: String,
+    set: fn(&AudioSettings, &str),
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let audio = audio.clone();
+    let title = SharedString::from(warning.title().to_owned());
+    let message = SharedString::from(warning.message().to_owned());
+    let confirm_label = SharedString::from(warning.confirm_label().to_owned());
     window.open_alert_dialog(cx, move |alert, _, _| {
-        let audio = audio.clone();
+        let (audio, chosen) = (audio.clone(), chosen.clone());
         alert
-            .title("Match each song's base rate?")
-            .description(
-                "Songs at 48 kHz and its multiples then play at DSD rates based on 48 kHz. \
-                 A DAC that doesn't decode those plays loud noise, so turn it down first.",
-            )
-            .ok_text("Match")
+            .title(title.clone())
+            .description(message.clone())
+            .ok_text(confirm_label.clone())
             .ok_variant(ButtonVariant::Danger)
             .show_cancel(true)
             .on_ok(move |_, _, _| {
-                audio.set_matches_song_family(true);
+                set(&audio, &chosen);
                 true
             })
     });

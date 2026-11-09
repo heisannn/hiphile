@@ -223,3 +223,46 @@ fn songs_that_cannot_be_had_say_so_and_why(cx: &mut TestAppContext) {
         )
     );
 }
+
+fn loaded(album: serde_json::Value) -> LoadedAlbum {
+    serde_json::from_value::<AlbumWithSongs>(album)
+        .unwrap()
+        .into()
+}
+
+#[test]
+fn an_album_lasts_as_it_says_or_as_its_songs_do() {
+    let said = loaded(json!({ "id": "a", "name": "a", "duration": 60, "song": [] }));
+    assert_eq!(said.duration(), Some(Duration::from_secs(60)));
+
+    let songs = json!([
+        { "id": "s1", "title": "s1", "duration": 100 },
+        { "id": "s2", "title": "s2", "duration": 20 },
+    ]);
+    let summed = loaded(json!({ "id": "a", "name": "a", "song": songs }));
+    assert_eq!(summed.duration(), Some(Duration::from_secs(120)));
+
+    let songs = json!([
+        { "id": "s1", "title": "s1", "duration": 100 },
+        { "id": "s2", "title": "s2" },
+    ]);
+    let untold = loaded(json!({ "id": "a", "name": "a", "song": songs }));
+    assert_eq!(untold.duration(), None);
+}
+
+#[test]
+fn only_a_song_by_another_artist_than_the_album_names_its_own() {
+    let songs = json!([
+        { "id": "s1", "title": "s1", "artist": "Various" },
+        { "id": "s2", "title": "s2", "artist": "Miles Davis" },
+        { "id": "s3", "title": "s3" },
+    ]);
+    let album = loaded(json!({ "id": "a", "name": "a", "artist": "Various", "song": songs }));
+
+    let by_another: Vec<_> = album
+        .songs()
+        .iter()
+        .map(|song| album.is_by_another_artist(song))
+        .collect();
+    assert_eq!(by_another, [false, true, true]);
+}

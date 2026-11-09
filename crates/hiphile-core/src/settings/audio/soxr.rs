@@ -1,6 +1,6 @@
 use config::{
     SOXR_LARGE_DFT_SIZES, SOXR_MIN_DFT_SIZES, SoxrFilter, SoxrInterpolation, SoxrParameters,
-    SoxrPhase, SoxrQuality,
+    SoxrPerformance, SoxrPhase, SoxrQuality,
 };
 
 use super::choices::{Choice, number_value, numbers, same_labels};
@@ -13,6 +13,20 @@ pub const SOXR_INTERPOLATIONS: [&str; 3] = ["Auto", "Linear", "Cubic"];
 const PRECISIONS: [f64; 5] = [16.0, 20.0, 24.0, 28.0, 32.0];
 const PASSBAND_ENDS: [f64; 4] = [0.90, 0.95, 0.98, 0.99];
 const COEF_TABLE_KBS: [f64; 6] = [100.0, 200.0, 400.0, 800.0, 1600.0, 3200.0];
+
+/// A part of the soxr parameters that may go back to its default on its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SoxrSetting {
+    Quality,
+    Precision,
+    PassbandEnd,
+    Phase,
+    DoublePrecision,
+    CoefTable,
+    Interpolation,
+    MinDft,
+    LargeDft,
+}
 
 impl AudioSnapshot {
     pub fn soxr_filter(&self) -> SoxrFilter {
@@ -106,15 +120,41 @@ impl AudioSnapshot {
             .large_dft_size
             .to_string()
     }
+
+    /// The precision and the pass-band end differ between presets, so they go back with the
+    /// preset instead.
+    pub fn is_soxr_resettable(&self, setting: SoxrSetting) -> bool {
+        let parameters = self.soxr_parameters();
+        let (filter, performance) = (self.soxr_filter(), parameters.performance);
+        let (default_filter, default_performance) = defaults();
+        match setting {
+            SoxrSetting::Quality => parameters.quality != SoxrQuality::default(),
+            SoxrSetting::Precision | SoxrSetting::PassbandEnd => false,
+            SoxrSetting::Phase => filter.phase != default_filter.phase,
+            SoxrSetting::DoublePrecision => {
+                filter.double_precision != default_filter.double_precision
+            }
+            SoxrSetting::CoefTable => {
+                performance.coef_table_kb != default_performance.coef_table_kb
+            }
+            SoxrSetting::Interpolation => {
+                performance.coef_interpolation != default_performance.coef_interpolation
+            }
+            SoxrSetting::MinDft => performance.min_dft_size != default_performance.min_dft_size,
+            SoxrSetting::LargeDft => {
+                performance.large_dft_size != default_performance.large_dft_size
+            }
+        }
+    }
 }
 
 impl AudioSettings {
-    pub fn change_soxr(&self, change: impl FnOnce(&mut SoxrParameters)) {
+    fn change_soxr(&self, change: impl FnOnce(&mut SoxrParameters)) {
         self.change(|state| state.change_soxr(change));
     }
 
     /// A change makes the quality custom.
-    pub fn change_soxr_filter(&self, change: impl FnOnce(&mut SoxrFilter)) {
+    fn change_soxr_filter(&self, change: impl FnOnce(&mut SoxrFilter)) {
         self.change(|state| state.change_soxr_filter(change));
     }
 
@@ -182,6 +222,16 @@ impl AudioSettings {
             self.change_soxr(|parameters| parameters.performance.large_dft_size = size);
         }
     }
+
+    /// A change makes the quality custom.
+    pub fn set_soxr_double_precision(&self, is_on: bool) {
+        self.change_soxr_filter(|filter| filter.double_precision = is_on);
+    }
+
+    /// Does nothing unless [`AudioSnapshot::is_soxr_resettable`].
+    pub fn reset_soxr(&self, setting: SoxrSetting) {
+        self.change(|state| state.reset_soxr(setting));
+    }
 }
 
 impl State {
@@ -198,6 +248,39 @@ impl State {
             self.change_soxr(|parameters| parameters.quality = SoxrQuality::Custom(filter));
         }
     }
+
+    fn reset_soxr(&mut self, setting: SoxrSetting) {
+        if !self.settings.is_soxr_resettable(setting) {
+            return;
+        }
+        let (filter, performance) = defaults();
+        match setting {
+            SoxrSetting::Quality => {
+                self.change_soxr(|parameters| parameters.quality = SoxrQuality::default());
+            }
+            SoxrSetting::Precision | SoxrSetting::PassbandEnd => {}
+            SoxrSetting::Phase => self.change_soxr_filter(|current| current.phase = filter.phase),
+            SoxrSetting::DoublePrecision => self.change_soxr_filter(|current| {
+                current.double_precision = filter.double_precision;
+            }),
+            SoxrSetting::CoefTable => self.change_soxr(|parameters| {
+                parameters.performance.coef_table_kb = performance.coef_table_kb;
+            }),
+            SoxrSetting::Interpolation => self.change_soxr(|parameters| {
+                parameters.performance.coef_interpolation = performance.coef_interpolation;
+            }),
+            SoxrSetting::MinDft => self.change_soxr(|parameters| {
+                parameters.performance.min_dft_size = performance.min_dft_size;
+            }),
+            SoxrSetting::LargeDft => self.change_soxr(|parameters| {
+                parameters.performance.large_dft_size = performance.large_dft_size;
+            }),
+        }
+    }
+}
+
+fn defaults() -> (SoxrFilter, SoxrPerformance) {
+    (SoxrQuality::default().filter(), SoxrPerformance::default())
 }
 
 /// A value off the list, as every preset's pass-band end is, goes where it falls among the others.

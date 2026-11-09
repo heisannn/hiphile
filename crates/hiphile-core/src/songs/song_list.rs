@@ -1,38 +1,21 @@
 use std::sync::{Arc, Weak};
 
 use executor::{Executor, Publish, Published, Task};
-use fuzzy::Index;
+use fuzzy::{Index, Speller};
 use session::Session;
 use subsonic::Song;
 use tokio::sync::watch;
 
 use super::arrange::{Column, Sort, arrange, song_index};
-use crate::{Shelf, follow};
-
-/// Songs and the order they show in.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ShownSongs {
-    songs: Arc<[Song]>,
-    visible: Arc<[usize]>,
-}
-
-impl ShownSongs {
-    pub fn songs(&self) -> &Arc<[Song]> {
-        &self.songs
-    }
-
-    /// Positions in [`ShownSongs::songs`] of those that match the query, in the order they show.
-    pub fn visible(&self) -> &Arc<[usize]> {
-        &self.visible
-    }
-}
+use crate::shown::{Arranged, Arranger, Arranging, is_waiting, take_reading};
+use crate::{Shelf, Shown, follow};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SongListStatus {
     /// The songs read last, which show once they are indexed and arranged.
     songs: Shelf<Song>,
-    shown: Option<ShownSongs>,
-    is_loading: bool,
+    shown: Option<Shown<Song>>,
+    is_reading: bool,
     /// Reading songs again failed, for this reason. Songs that never showed fail as
     /// [`Shelf::Failed`] instead.
     failure: Option<String>,
@@ -50,12 +33,13 @@ impl SongListStatus {
 
     /// What shows, which stays while newer songs wait for their index and their order. `None`
     /// until the first songs have both.
-    pub fn shown(&self) -> Option<&ShownSongs> {
+    pub fn shown(&self) -> Option<&Shown<Song>> {
         self.shown.as_ref()
     }
 
+    /// Whether songs are being read, or wait to show.
     pub fn is_loading(&self) -> bool {
-        self.is_loading
+        self.is_reading || is_waiting(&self.songs, self.shown.as_ref())
     }
 
     pub fn failure(&self) -> Option<&str> {
@@ -92,16 +76,11 @@ struct Inner {
 struct State {
     status: SongListStatus,
     is_open: bool,
-    /// The songs the last index was built for, with it.
-    indexed: Option<(Arc<[Song]>, Arc<Index>)>,
-    /// Count the readings, the indexes and the arrangements, so that one replaced while it was
-    /// finishing on another thread cannot replace its successor's result.
+    /// Counts the readings, so that one replaced while it was finishing on another thread cannot
+    /// replace its successor's result.
     load_id: u64,
-    index_id: u64,
-    arrange_id: u64,
+    arranging: Arranging<Song>,
     _load: Task<()>,
-    _index: Task<()>,
-    _arrange: Task<()>,
     _readings_changes: Task<()>,
 }
 
@@ -114,20 +93,16 @@ impl SongList {
                 status: SongListStatus {
                     songs: Shelf::Loading,
                     shown: None,
-                    is_loading: false,
+                    is_reading: false,
                     failure: None,
                     sort: Sort::DEFAULT,
                     by_relevance: true,
                     query: String::new(),
                 },
                 is_open: false,
-                indexed: None,
                 load_id: 0,
-                index_id: 0,
-                arrange_id: 0,
+                arranging: Arranging::default(),
                 _load: Task::ready(()),
-                _index: Task::ready(()),
-                _arrange: Task::ready(()),
                 _readings_changes: Task::ready(()),
             }),
         }));
@@ -221,7 +196,7 @@ impl SongList {
     /// Shows the saved songs; with none saved yet, as during the first sync, asks the server for
     /// them.
     fn load(&self, state: &mut State) {
-        state.status.is_loading = true;
+        state.status.is_reading = true;
         state.status.failure = None;
         state.status.songs.begin();
         state.load_id += 1;
@@ -254,65 +229,24 @@ impl SongList {
         });
     }
 
-    /// Off the host's thread: reading a large library with the dictionaries takes a while. The
-    /// songs on show stay until the new ones are indexed and arranged.
     fn index(&self, state: &mut State) {
-        state.index_id += 1;
-        let Shelf::Loaded(songs) = &state.status.songs else {
-            return;
-        };
-        let songs = songs.clone();
-        let index_id = state.index_id;
-        let book = self.0.session.reading_book();
-        let executor = self.0.executor.clone();
-        let this = self.downgrade();
-        state._index = self.0.executor.spawn(async move {
-            let index = executor
-                .spawn_blocking({
-                    let songs = songs.clone();
-                    move || match book {
-                        Some(book) => book.read(|speller| song_index(&songs, Some(speller))),
-                        None => song_index(&songs, None),
-                    }
-                })
-                .await;
-            this.update(|this, state| {
-                if state.index_id == index_id {
-                    state.indexed = Some((songs, Arc::new(index)));
-                    this.arrange(state);
-                }
-            });
-        });
+        if let Shelf::Loaded(songs) = &state.status.songs {
+            let songs = songs.clone();
+            self.arranger().index(state, songs);
+        }
     }
 
-    /// Off the host's thread: a large library takes a moment to sort.
     fn arrange(&self, state: &mut State) {
-        state.arrange_id += 1;
-        let Some((songs, index)) = state.indexed.clone() else {
-            return;
-        };
-        let arrange_id = state.arrange_id;
-        let query = state.status.query.clone();
-        let sort = state.status.sort;
-        let by_relevance = state.status.by_relevance;
-        let executor = self.0.executor.clone();
+        self.arranger().arrange(state);
+    }
+
+    fn arranger(&self) -> Arranger<State> {
         let this = self.downgrade();
-        state._arrange = self.0.executor.spawn(async move {
-            let visible = executor
-                .spawn_blocking({
-                    let songs = songs.clone();
-                    move || arrange(&songs, &index, &query, sort, by_relevance)
-                })
-                .await;
-            this.update(|_, state| {
-                if state.arrange_id == arrange_id {
-                    state.status.shown = Some(ShownSongs {
-                        songs,
-                        visible: visible.into(),
-                    });
-                }
-            });
-        });
+        Arranger::new(
+            self.0.executor.clone(),
+            self.0.session.clone(),
+            move |change| this.update(|_, state| change(state)),
+        )
     }
 
     fn downgrade(&self) -> WeakList {
@@ -323,26 +257,38 @@ impl SongList {
 impl State {
     /// Whether other songs came, which need an index.
     fn finish_loading(&mut self, result: Result<Vec<Song>, String>) -> bool {
-        self.status.is_loading = false;
-        match result {
-            // The same songs keep their index
-            Ok(songs) if self.status.songs.is_loaded() && *self.status.songs.items() == *songs => {
-                false
-            }
-            Ok(songs) => {
-                self.status.songs = Shelf::Loaded(songs.into());
-                true
-            }
-            // The songs on show stay there, with word of what went wrong
-            Err(error) if self.status.songs.is_loaded() => {
-                self.status.failure = Some(error);
-                false
-            }
-            Err(error) => {
-                self.status.songs = Shelf::Failed(error);
-                false
-            }
-        }
+        self.status.is_reading = false;
+        take_reading(&mut self.status.songs, &mut self.status.failure, result)
+    }
+}
+
+impl Arranged for State {
+    type Item = Song;
+    type Order = (String, Sort, bool);
+
+    fn arranging(&mut self) -> &mut Arranging<Song> {
+        &mut self.arranging
+    }
+
+    fn shown(&mut self) -> &mut Option<Shown<Song>> {
+        &mut self.status.shown
+    }
+
+    fn order(&self) -> Self::Order {
+        let status = &self.status;
+        (status.query.clone(), status.sort, status.by_relevance)
+    }
+
+    fn index(songs: &[Song], speller: Option<&dyn Speller>) -> Index {
+        song_index(songs, speller)
+    }
+
+    fn arrange(
+        songs: &[Song],
+        index: &Index,
+        (query, sort, by_relevance): Self::Order,
+    ) -> Vec<usize> {
+        arrange(songs, index, &query, sort, by_relevance)
     }
 }
 

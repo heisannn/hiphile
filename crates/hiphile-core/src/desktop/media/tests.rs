@@ -146,3 +146,33 @@ fn letting_go_of_them_lets_go_of_nothing_else(cx: &mut TestAppContext) {
     assert!(weak.upgrade().is_none());
     drop(player);
 }
+
+#[gpui_kit::test]
+fn shutting_the_core_down_clears_what_the_system_shows(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let net = net::Client::new("hiphile-test").unwrap();
+    let executor = cx.update(|cx| gpui_host::executor(cx));
+    let hiphile = crate::Hiphile::new(
+        executor,
+        net,
+        Err(config::Error::NoHomeDir),
+        None,
+        crate::Caches::None,
+    );
+    hiphile.open_workspace(
+        crate::test_support::session(NOWHERE),
+        config::Profile::new(NOWHERE, "alice"),
+    );
+    let controls = hiphile
+        .workspace()
+        .unwrap()
+        .connect_media_controls(MediaControls::connect(&NoWindow));
+    let cover = CoverArtId::new("c");
+    let file = CoverFile::write(b"image").unwrap();
+    controls.lock().controls.set_cover(cover.clone(), file);
+
+    hiphile.shutdown();
+
+    assert!(!controls.lock().controls.has_cover(&cover));
+    cx.run_until_parked();
+}

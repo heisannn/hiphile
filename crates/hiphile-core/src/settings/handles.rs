@@ -66,6 +66,7 @@ impl Settings {
     /// Writes what is still settling or waiting, which nothing would write once the app has
     /// quit.
     pub fn save_before_quitting(&self) {
+        self.audio.save_before_quitting();
         self.song_cache.save_before_quitting();
         self.cover_cache.save_before_quitting();
         self.discord.save_before_quitting();

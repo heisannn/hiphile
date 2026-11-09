@@ -51,6 +51,22 @@ impl OutputDevice {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+impl OutputDevice {
+    /// A device as a listing would find it, which runs at `sample_rates` shared or exclusive.
+    pub fn listed(id: &str, name: &str, sample_rates: &[u32], dop_rates: &[u32]) -> Self {
+        Self {
+            id: Some(id.to_owned()),
+            name: name.to_owned(),
+            sample_rate: sample_rates.first().copied(),
+            sample_rates: sample_rates.to_vec(),
+            exclusive_sample_rates: sample_rates.to_vec(),
+            dop_rates: dop_rates.to_vec(),
+            is_default: false,
+        }
+    }
+}
+
 pub fn output_devices() -> Result<Vec<OutputDevice>, Error> {
     let host = cpal::default_host();
     let default_id = host

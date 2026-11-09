@@ -3,6 +3,7 @@ use gpui_kit::{
     App, ElementId, FocusHandle, IntoElement, MouseButton, ParentElement as _, RenderOnce,
     SharedString, Styled as _, WeakEntity, Window,
 };
+use hiphile_core::artists::album_count_to_show;
 use subsonic::{Artist, ArtistId, StarTarget};
 use ui::{RowText, format_album_count};
 
@@ -31,8 +32,7 @@ impl ArtistRow {
         Self {
             id: artist.id().clone(),
             name: artist.name().to_owned().into(),
-            details: artist
-                .album_count()
+            details: album_count_to_show(artist)
                 .map(|count| format_album_count(count as usize).into()),
             is_selected,
             is_focused,

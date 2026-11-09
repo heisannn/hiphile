@@ -6,8 +6,13 @@ use tokio::sync::watch;
 
 use executor::{Publish, Published};
 
+use super::NumberRange;
+
 /// The field reports every keystroke, and on the way to `16` a limit of `1` could remove files.
 const SETTLE: Duration = Duration::from_millis(500);
+
+/// Up to far beyond any disk.
+const RANGE: NumberRange = NumberRange::new(0., (1u32 << 20) as f64, 1., None);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CacheKind {
@@ -69,6 +74,15 @@ impl CacheLimitSnapshot {
     /// What was last chosen, which may not have settled yet.
     pub fn gib(&self) -> f64 {
         self.gib.unwrap_or_else(|| self.kind.default_gib())
+    }
+
+    /// [`Self::gib`] as a field shows it once it is left.
+    pub fn gib_text(&self) -> String {
+        self.gib().to_string()
+    }
+
+    pub fn is_default(&self) -> bool {
+        self.gib.is_none()
     }
 
     /// The bytes to keep, or `None` for the default limit.
@@ -159,8 +173,17 @@ impl CacheLimit {
         self.0.state.subscribe()
     }
 
-    /// Takes effect once no other has come for a moment.
+    /// What [`Self::set_gib`] holds a limit to.
+    pub fn range() -> NumberRange {
+        RANGE
+    }
+
+    /// Takes effect once no other has come for a moment, held to [`Self::range`]. NaN changes
+    /// nothing.
     pub fn set_gib(&self, gib: f64) {
+        let Some(gib) = RANGE.clamp(gib) else {
+            return;
+        };
         let this = Arc::downgrade(&self.0);
         let executor = self.0.executor.clone();
         self.0.state.update(|state| {
@@ -174,9 +197,23 @@ impl CacheLimit {
         });
     }
 
-    /// Goes back to the limit in effect, dropping a change that has not settled, as when the
-    /// field is emptied on the way to another number.
-    pub fn revert(&self) {
+    /// What a field holds, as it is typed. Text that is no number yet, as when the field is
+    /// emptied on the way to another number, goes back to the limit in effect.
+    pub fn set_typed(&self, text: &str) {
+        match RANGE.parse(text) {
+            Some(gib) => self.set_gib(gib),
+            None => self.revert(),
+        }
+    }
+
+    /// Goes back to the default limit, which settles as another would.
+    pub fn reset(&self) {
+        let kind = self.0.state.read(|state| state.limit.kind);
+        self.set_gib(kind.default_gib());
+    }
+
+    /// Drops a change that has not settled.
+    fn revert(&self) {
         self.0.state.update(|state| {
             state._settle = Task::ready(());
             state.limit.gib = state.limit.applied;
@@ -308,6 +345,60 @@ mod tests {
         cx.run_until_parked();
         assert_eq!(limit.snapshot().capacity(), Some(16 << 30));
         assert_eq!(store.song_cache_gib().unwrap(), Some(16.0));
+    }
+
+    #[gpui_kit::test]
+    fn a_limit_is_held_to_what_the_next_start_can_read(cx: &mut gpui_kit::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = config::Store::at(dir.path());
+        let executor = cx.update(|cx| gpui_host::executor(cx));
+        let limit = CacheLimit::new(CacheKind::Songs, executor, Ok(store.clone()));
+
+        limit.set_gib(-1.0);
+        limit.set_gib(f64::NAN);
+        assert_eq!(limit.snapshot().gib_text(), "0");
+        cx.executor().advance_clock(SETTLE);
+        cx.run_until_parked();
+        assert_eq!(store.song_cache_gib().unwrap(), Some(0.0));
+
+        limit.set_gib(f64::INFINITY);
+        assert_eq!(limit.snapshot().gib(), CacheLimit::range().max());
+    }
+
+    #[gpui_kit::test]
+    fn text_that_is_no_number_goes_back_to_the_limit_in_effect(cx: &mut gpui_kit::TestAppContext) {
+        let executor = cx.update(|cx| gpui_host::executor(cx));
+        let limit = CacheLimit::new(CacheKind::Covers, executor, Err(config::Error::NoHomeDir));
+
+        limit.set_typed("3");
+        assert_eq!(limit.snapshot().gib(), 3.0);
+        limit.set_typed("");
+        cx.executor().advance_clock(SETTLE);
+        cx.run_until_parked();
+
+        assert!(limit.snapshot().is_default());
+        assert_eq!(limit.snapshot().capacity(), None);
+    }
+
+    #[gpui_kit::test]
+    fn reset_goes_back_to_the_default_once_it_settles(cx: &mut gpui_kit::TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = config::Store::at(dir.path());
+        let executor = cx.update(|cx| gpui_host::executor(cx));
+        let limit = CacheLimit::new(CacheKind::Songs, executor, Ok(store.clone()));
+        limit.set_typed("3");
+        cx.executor().advance_clock(SETTLE);
+        cx.run_until_parked();
+        assert!(!limit.snapshot().is_default());
+
+        limit.reset();
+        assert!(limit.snapshot().is_default());
+        assert_eq!(limit.snapshot().capacity(), Some(3 << 30));
+        cx.executor().advance_clock(SETTLE);
+        cx.run_until_parked();
+
+        assert_eq!(limit.snapshot().capacity(), None);
+        assert_eq!(store.song_cache_gib().unwrap(), None);
     }
 
     #[gpui_kit::test]

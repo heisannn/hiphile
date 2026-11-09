@@ -100,7 +100,7 @@ fn a_sync_without_a_saved_copy_says_the_songs_may_have_changed(cx: &mut TestAppC
 }
 
 #[gpui_kit::test]
-fn only_a_sync_the_user_asked_for_says_when_it_fails(cx: &mut TestAppContext) {
+fn the_first_sync_and_each_refresh_say_when_they_fail(cx: &mut TestAppContext) {
     let sync = library_sync(None, NOWHERE, cx);
     let mut notices = sync.notices();
     let mut counts = [0; 3];
@@ -109,28 +109,26 @@ fn only_a_sync_the_user_asked_for_says_when_it_fails(cx: &mut TestAppContext) {
         count(&mut notices, &mut counts);
         !sync.status().is_running()
     });
-    assert_eq!(counts[2], 0);
+    assert_eq!(counts[2], 1);
 
     sync.refresh();
     wait_for(cx, || {
         count(&mut notices, &mut counts);
-        counts[2] > 0
+        counts[2] > 1
     });
-    assert_eq!(counts[2], 1);
+    assert_eq!(counts[2], 2);
 }
 
 #[gpui_kit::test]
 fn albums_that_never_showed_fail_as_albums(cx: &mut TestAppContext) {
     let sync = library_sync(None, NOWHERE, cx);
     assert!(sync.status().is_running());
-    assert_eq!(*sync.status().albums(), Albums::Loading);
+    assert_eq!(*sync.status().albums(), Shelf::Loading);
 
     wait_for(cx, || !sync.status().is_running());
 
     let status = sync.status();
-    assert!(
-        matches!(status.albums(), Albums::Failed(error) if error.starts_with("Couldn't reach"))
-    );
+    assert!(matches!(status.albums(), Shelf::Failed(error) if error.starts_with("Couldn't reach")));
     assert_eq!(status.failure(), None);
 }
 
@@ -142,14 +140,14 @@ fn albums_on_show_stay_when_a_refresh_fails(cx: &mut TestAppContext) {
         vec![serde_json::from_value(json!({ "id": "a", "name": "A" })).unwrap()].into();
     sync.0
         .state
-        .update(|state| state.status.albums = Albums::Loaded(albums.clone()));
+        .update(|state| state.status.albums = Shelf::Loaded(albums.clone()));
 
     sync.refresh();
-    assert_eq!(*sync.status().albums(), Albums::Loaded(albums.clone()));
+    assert_eq!(*sync.status().albums(), Shelf::Loaded(albums.clone()));
     wait_for(cx, || !sync.status().is_running());
 
     let status = sync.status();
-    assert_eq!(*status.albums(), Albums::Loaded(albums));
+    assert_eq!(*status.albums(), Shelf::Loaded(albums));
     assert!(
         status
             .failure()
@@ -191,7 +189,7 @@ fn a_refreshing_sync_says_how_each_stage_ended(cx: &mut TestAppContext) {
             (SyncStage::Songs, synced),
         ]
     );
-    assert_eq!(*sync.status().albums(), Albums::Loaded(Arc::from([])));
+    assert_eq!(*sync.status().albums(), Shelf::Loaded(Arc::from([])));
 }
 
 #[gpui_kit::test]

@@ -60,6 +60,13 @@ impl Write {
         }
     }
 
+    fn changes_songs(&self) -> bool {
+        match self {
+            Self::ReplaceSongs { .. } | Self::AddSongs { .. } | Self::InsertSong { .. } => true,
+            Self::Rename { .. } | Self::Delete { .. } => false,
+        }
+    }
+
     /// What couldn't be done, to go before the reason.
     pub fn failure(&self) -> &'static str {
         match self {
@@ -105,10 +112,12 @@ impl WriteQueue {
         self.0.iter().any(|write| write.playlist() == playlist)
     }
 
-    /// Drops what waits for `playlist`, after a write to it failed: what
-    /// follows was made on top of a change the server doesn't have.
-    pub fn forget(&mut self, playlist: &PlaylistId) {
-        self.0.retain(|write| write.playlist() != playlist);
+    /// Drops the changes to `playlist`'s songs that wait, after a write to it
+    /// failed: they were made from songs the server may not have. A rename or
+    /// a deletion still goes.
+    pub fn forget_songs(&mut self, playlist: &PlaylistId) {
+        self.0
+            .retain(|write| write.playlist() != playlist || !write.changes_songs());
     }
 }
 
@@ -163,11 +172,29 @@ mod tests {
     }
 
     #[test]
-    fn forgetting_a_playlist_leaves_the_others_writes() {
+    fn forgetting_a_playlists_songs_leaves_the_others_writes() {
         let mut queue = WriteQueue::default();
         queue.push(replace("p", &["a"]));
         queue.push(replace("q", &["a"]));
-        queue.forget(&PlaylistId::new("p"));
+        queue.forget_songs(&PlaylistId::new("p"));
         assert_eq!(drain(&mut queue), [replace("q", &["a"])]);
+    }
+
+    #[test]
+    fn forgetting_a_playlists_songs_leaves_its_rename_and_deletion() {
+        let playlist = PlaylistId::new("p");
+        let rename = Write::Rename {
+            playlist: playlist.clone(),
+            name: "New".to_owned(),
+        };
+        let delete = Write::Delete {
+            playlist: playlist.clone(),
+        };
+        let mut queue = WriteQueue::default();
+        queue.push(rename.clone());
+        queue.push(replace("p", &["a"]));
+        queue.push(delete.clone());
+        queue.forget_songs(&playlist);
+        assert_eq!(drain(&mut queue), [rename, delete]);
     }
 }

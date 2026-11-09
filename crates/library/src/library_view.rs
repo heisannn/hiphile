@@ -1,3 +1,4 @@
+use std::mem;
 use std::sync::Arc;
 
 use actions::{
@@ -19,11 +20,13 @@ use gpui_kit::{
     Styled as _, Subscription, Task, UniformListScrollHandle, Window, div,
     prelude::FluentBuilder as _,
 };
+use hiphile_core::alerts;
 use hiphile_core::favorites::Favorite;
 use hiphile_core::library::{
-    AlbumDetail, AlbumDetailSnapshot, AlbumOrder, AlbumSort, Albums, LibraryNotice, LibrarySync,
-    LoadedAlbum, SyncStatus, album_index, arrange,
+    AlbumDetail, AlbumDetailSnapshot, AlbumList, AlbumListStatus, AlbumOrder, LibraryNotice,
+    LibrarySync, LoadedAlbum,
 };
+use hiphile_core::{Shelf, Shown};
 use subsonic::{Album, AlbumId, PlaylistId, Song, SongId};
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
 use ui::{
@@ -40,7 +43,7 @@ use song_row::SongRow;
 
 use crate::{
     ALBUMS_CONTEXT, AddAlbumToPlaylist, AddToPlaylist, AddToQueue, Back, FocusFilter,
-    LIBRARY_CONTEXT, Open, Play, PlayNext, Refresh, SONGS_CONTEXT,
+    LIBRARY_CONTEXT, Open, Play, PlayNext, SONGS_CONTEXT,
 };
 
 /// The renderer aliases an image drawn at less than half its size, so this stays
@@ -55,18 +58,18 @@ pub enum LibraryEvent {
 pub struct Library {
     session: session::Session,
     sync: LibrarySync,
-    /// What the sync showed last.
-    status: SyncStatus,
-    /// The albums the list shows, which follow the sync's.
-    albums: Albums,
-    index: Arc<fuzzy::Index>,
-    /// Positions in the loaded albums that match the filter, in the order they show.
-    visible: Arc<Vec<usize>>,
-    sort: AlbumSort,
+    album_list: AlbumList,
+    /// The list's status last taken, which a new one is compared with.
+    status: AlbumListStatus,
+    /// What is on show of the list, which follows `album_list`.
+    albums: Shelf<Album>,
+    shown: Option<Shown<Album>>,
     selected_album: Option<AlbumId>,
     /// The selected album, when it was asked to show before the list had it.
     /// It stays selected and comes into view once a sync brings it.
     revealing: Option<AlbumId>,
+    /// A sync ended, so that the album being revealed is given up once what it brought shows.
+    gives_up_revealing: bool,
     album: AlbumDetail,
     /// What the album's detail showed last.
     detail: AlbumDetailSnapshot,
@@ -81,11 +84,9 @@ pub struct Library {
     panes: Entity<ResizableState>,
     _album_changes: Task<()>,
     _album_action_task: Task<()>,
-    _index_task: Task<()>,
     _subscriptions: Vec<Subscription>,
-    _sync_changes: Task<()>,
+    _list_changes: Task<()>,
     _sync_notices: Task<()>,
-    _readings_changes: Option<Task<()>>,
 }
 
 impl EventEmitter<LibraryEvent> for Library {}
@@ -94,6 +95,7 @@ impl Library {
     pub fn new(
         session: session::Session,
         sync: LibrarySync,
+        album_list: AlbumList,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -104,7 +106,7 @@ impl Library {
             // The album on show has a star that says
             actions::observe_favorites(cx),
             cx.subscribe_in(&filter, window, |this, _, event, window, cx| match event {
-                InputEvent::Change => this.apply_filter(cx),
+                InputEvent::Change => this.filter_changed(cx),
                 InputEvent::PressEnter { .. } => this.albums_focus.focus(window, cx),
                 _ => {}
             }),
@@ -114,12 +116,13 @@ impl Library {
             cx.on_focus(&songs_focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&songs_focus, window, |_, _, cx| cx.notify()),
         ];
-        let status = sync.status();
-        let sync_changes = gpui_host::observe(sync.subscribe(), cx, Self::follow_sync);
+        let status = album_list.status();
+        let list_changes = gpui_host::observe(album_list.subscribe(), cx, Self::follow_list);
         let sync_notices =
             gpui_host::subscribe(sync.notices(), cx, |this: &mut Self, notice, cx| {
                 if notice == LibraryNotice::SyncFinished {
-                    this.sync_finished(cx);
+                    this.gives_up_revealing = true;
+                    this.sync(cx);
                 }
             });
         let album = AlbumDetail::new(gpui_host::executor(cx), session.clone());
@@ -127,13 +130,13 @@ impl Library {
         let mut this = Self {
             session,
             sync,
+            album_list,
             status: status.clone(),
-            albums: Albums::Loading,
-            index: Arc::default(),
-            visible: Arc::default(),
-            sort: AlbumSort::default(),
+            albums: status.albums().clone(),
+            shown: None,
             selected_album: None,
             revealing: None,
+            gives_up_revealing: false,
             album,
             detail: AlbumDetailSnapshot::None,
             cover_url: None,
@@ -147,16 +150,11 @@ impl Library {
             panes: cx.new(|_| ResizableState::default()),
             _album_changes: album_changes,
             _album_action_task: Task::ready(()),
-            _index_task: Task::ready(()),
             _subscriptions: subscriptions,
-            _sync_changes: sync_changes,
+            _list_changes: list_changes,
             _sync_notices: sync_notices,
-            _readings_changes: None,
         };
-        this._readings_changes = this.session.readings().map(|readings| {
-            ui::on_readings_changed(readings, cx, |this: &mut Self, cx| this.index_albums(cx))
-        });
-        this.show_albums(status.albums().clone(), cx);
+        this.show(status.shown().cloned(), cx);
         this
     }
 
@@ -165,46 +163,43 @@ impl Library {
         self.sync.refresh();
     }
 
-    fn follow_sync(&mut self, status: SyncStatus, cx: &mut Context<Self>) {
-        if status.albums() != self.status.albums() {
-            self.show_albums(status.albums().clone(), cx);
+    /// Gives up on an album being revealed once the albums a sync brought show without it.
+    fn follow_list(&mut self, status: AlbumListStatus, cx: &mut Context<Self>) {
+        let old = mem::replace(&mut self.status, status);
+        if old.albums() != self.status.albums() {
+            self.albums = self.status.albums().clone();
         }
-        self.status = status;
+        if old.shown() != self.status.shown() {
+            self.show(self.status.shown().cloned(), cx);
+        }
+        if self.gives_up_revealing && !self.status.is_updating() {
+            self.gives_up_revealing = false;
+            self.revealing = None;
+        }
         cx.notify();
     }
 
-    /// Gives up on an album being revealed that the sync did not bring. The albums it brought
-    /// come first, as their change may not have been followed yet.
-    fn sync_finished(&mut self, cx: &mut Context<Self>) {
-        self.follow_sync(self.sync.status(), cx);
-        self.revealing = None;
+    /// Takes the list's status at once after a call into it, so that what follows does not act
+    /// on the old one.
+    fn sync(&mut self, cx: &mut Context<Self>) {
+        self.follow_list(self.album_list.status(), cx);
     }
 
-    fn show_albums(&mut self, albums: Albums, cx: &mut Context<Self>) {
-        match albums {
-            Albums::Loaded(albums) => self.set_albums(albums, cx),
-            Albums::Loading => {
-                self.albums = Albums::Loading;
-                self.visible = Arc::default();
-            }
-            Albums::Failed(error) => self.albums = Albums::Failed(error),
+    /// Keeps the selection while the album is still there or a sync may yet bring it. Albums
+    /// in a new order keep the selected one in view.
+    fn show(&mut self, shown: Option<Shown<Album>>, cx: &mut Context<Self>) {
+        let old = mem::replace(&mut self.shown, shown);
+        let Some(albums) = self.shown.as_ref().map(|shown| shown.items().clone()) else {
+            return;
+        };
+        if old.is_some_and(|old| Arc::ptr_eq(old.items(), &albums)) {
+            self.scroll_to_selected_album();
+            return;
         }
-    }
-
-    /// Replaces the album list, keeping the selection while the album is
-    /// still there or a sync may yet bring it.
-    fn set_albums(&mut self, albums: Arc<[Album]>, cx: &mut Context<Self>) {
-        let keeps_selection = self.revealing.is_some()
-            || self
-                .selected_album
-                .as_ref()
-                .is_some_and(|selected| albums.iter().any(|album| album.id() == selected));
-        let revealed = self
-            .revealing
-            .as_ref()
-            .is_some_and(|revealing| albums.iter().any(|album| album.id() == revealing));
-        self.albums = Albums::Loaded(albums);
-        self.index_albums(cx);
+        let is_listed = |id: &AlbumId| albums.iter().any(|album| album.id() == id);
+        let keeps_selection =
+            self.revealing.is_some() || self.selected_album.as_ref().is_some_and(is_listed);
+        let revealed = self.revealing.as_ref().is_some_and(is_listed);
         if !keeps_selection {
             self.selected_album = None;
             self.album.clear();
@@ -227,68 +222,39 @@ impl Library {
         }
     }
 
-    fn loaded_albums(&self) -> Option<&Arc<[Album]>> {
-        match &self.albums {
-            Albums::Loaded(albums) => Some(albums),
-            _ => None,
-        }
+    fn listed_albums(&self) -> Option<&Arc<[Album]>> {
+        self.shown.as_ref().map(Shown::items)
+    }
+
+    fn visible_len(&self) -> usize {
+        self.shown.as_ref().map_or(0, |shown| shown.visible().len())
     }
 
     fn visible_album(&self, position: usize) -> Option<&Album> {
-        let albums = self.loaded_albums()?;
-        albums.get(*self.visible.get(position)?)
+        self.shown.as_ref()?.get(position)
     }
 
     fn selected_position(&self) -> Option<usize> {
         let selected = self.selected_album.as_ref()?;
-        (0..self.visible.len()).find(|position| {
-            self.visible_album(*position)
-                .is_some_and(|album| album.id() == selected)
-        })
+        self.shown
+            .as_ref()?
+            .position(|album| album.id() == selected)
     }
 
-    fn apply_filter(&mut self, cx: &mut Context<Self>) {
+    fn filter_changed(&mut self, cx: &mut Context<Self>) {
         let query = self.filter.read(cx).value();
-        let found = self.index.search(&query);
-        self.visible = Arc::new(match self.loaded_albums() {
-            Some(albums) => arrange(albums, found, self.sort),
-            None => found,
-        });
-        cx.notify();
+        self.album_list.set_query(&query);
+        self.sync(cx);
     }
 
-    fn set_sort(&mut self, sort: AlbumSort, cx: &mut Context<Self>) {
-        if self.sort != sort {
-            self.sort = sort;
-            self.apply_filter(cx);
-            self.scroll_to_selected_album();
-        }
+    fn choose_order(&mut self, order: AlbumOrder, cx: &mut Context<Self>) {
+        self.album_list.choose_order(order);
+        self.sync(cx);
     }
 
-    /// Makes the albums searchable at once as far as they read without a
-    /// dictionary, then, off the UI thread, as far as they read with one.
-    fn index_albums(&mut self, cx: &mut Context<Self>) {
-        let Some(albums) = self.loaded_albums().cloned() else {
-            return;
-        };
-        self.index = Arc::new(album_index(&albums, None));
-        self._index_task = Task::ready(());
-        self.apply_filter(cx);
-        let Some(book) = self.session.reading_book() else {
-            return;
-        };
-        self._index_task = cx.spawn(async move |this, cx| {
-            let index = cx
-                .background_spawn(async move {
-                    book.read(|speller| album_index(&albums, Some(speller)))
-                })
-                .await;
-            this.update(cx, |this, cx| {
-                this.index = Arc::new(index);
-                this.apply_filter(cx);
-            })
-            .ok();
-        });
+    fn choose_direction(&mut self, is_descending: bool, cx: &mut Context<Self>) {
+        self.album_list.choose_direction(is_descending);
+        self.sync(cx);
     }
 
     pub fn selected_album(&self) -> Option<&AlbumId> {
@@ -309,15 +275,8 @@ impl Library {
             return;
         }
         self.revealing = None;
-        if let Some(position) = self.visible.iter().position(|ix| {
-            self.loaded_albums()
-                .and_then(|albums| albums.get(*ix))
-                .is_some_and(|candidate| candidate.id() == &album)
-        }) {
-            self.albums_scroll
-                .scroll_to_item(position, ScrollStrategy::Nearest);
-        }
         self.selected_album = Some(album.clone());
+        self.scroll_to_selected_album();
         self.selected_song = None;
         self.songs_scroll.scroll_to_item(0, ScrollStrategy::Top);
         self.album.show(album);
@@ -329,16 +288,23 @@ impl Library {
     /// during the first sync, comes into view once a sync brings it.
     pub fn reveal_album(&mut self, album: AlbumId, window: &mut Window, cx: &mut Context<Self>) {
         let position = self
-            .loaded_albums()
+            .listed_albums()
             .and_then(|albums| albums.iter().position(|listed| listed.id() == &album));
-        if position.is_some_and(|position| !self.visible.contains(&position)) {
+        let is_hidden = position.is_some_and(|position| {
+            self.shown
+                .as_ref()
+                .is_some_and(|shown| !shown.visible().contains(&position))
+        });
+        if is_hidden {
             self.filter
                 .update(cx, |filter, cx| filter.set_value("", window, cx));
-            self.apply_filter(cx);
+            self.filter_changed(cx);
         }
         self.select_album(album.clone(), cx);
         self.revealing = position.is_none().then_some(album);
-        // Selecting the album already selected does not scroll
+        self.gives_up_revealing = false;
+        // Selecting the album already selected does not scroll, and an album the filter hid
+        // comes into view once the albums show in their new order
         self.scroll_to_selected_album();
         self.albums_focus.focus(window, cx);
     }
@@ -374,7 +340,7 @@ impl Library {
     }
 
     fn move_album(&mut self, motion: Motion, cx: &mut Context<Self>) {
-        let len = self.visible.len();
+        let len = self.visible_len();
         let page = page_rows(&self.albums_scroll, len);
         let Some(position) = motion.apply(self.selected_position(), len, page) else {
             return;
@@ -496,7 +462,7 @@ impl Library {
     fn selected_album_listing(&self) -> Option<&Album> {
         let selected = self.selected_album.as_ref()?;
         let listed = self
-            .loaded_albums()
+            .listed_albums()
             .and_then(|albums| albums.iter().find(|album| album.id() == selected));
         listed.or(self
             .detail
@@ -530,9 +496,9 @@ impl Library {
     }
 
     fn render_albums(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let count = self.loaded_albums().map(|albums| albums.len());
+        let count = self.listed_albums().map(|albums| albums.len());
         // While nothing shows, the list itself shows a spinner
-        let updating = count.is_some() && self.status.is_running();
+        let updating = count.is_some() && self.status.is_updating();
         let error = self.status.failure().map(SharedString::from);
         v_flex()
             .size_full()
@@ -546,7 +512,7 @@ impl Library {
             .child(ListFilter::new(&self.filter))
             .when_some(error, |this, error| {
                 this.child(RefreshFailure::new(
-                    "Couldn't refresh the library",
+                    alerts::SYNC_FAILED,
                     error,
                     Button::new("retry-refresh")
                         .label("Retry")
@@ -559,25 +525,27 @@ impl Library {
     }
 
     fn render_sort_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let current = self.sort;
-        let option = |label: &'static str, is_checked: bool, sort: AlbumSort| {
+        let current = self.status.sort();
+        let order = |label: &'static str, order: AlbumOrder| {
             let owner = cx.entity().downgrade();
+            Some(SortOption::new(
+                label,
+                current.order == order,
+                move |_, cx| {
+                    owner
+                        .update(cx, |this, cx| this.choose_order(order, cx))
+                        .ok();
+                },
+            ))
+        };
+        let direction = |label: &'static str, is_descending: bool| {
+            let owner = cx.entity().downgrade();
+            let is_checked = current.is_descending == is_descending;
             Some(SortOption::new(label, is_checked, move |_, cx| {
-                owner.update(cx, |this, cx| this.set_sort(sort, cx)).ok();
+                owner
+                    .update(cx, |this, cx| this.choose_direction(is_descending, cx))
+                    .ok();
             }))
-        };
-        let order = |label, order| {
-            let sort = if current.order == order {
-                current
-            } else {
-                AlbumSort::chosen(order)
-            };
-            option(label, current.order == order, sort)
-        };
-        let direction = |label, is_descending| {
-            let mut sort = current;
-            sort.is_descending = is_descending;
-            option(label, current.is_descending == is_descending, sort)
         };
         sort_menu(
             "sort-albums",
@@ -637,9 +605,11 @@ impl Library {
     }
 
     fn render_album_rows(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let albums = match &self.albums {
-            Albums::Loading => return centered(Spinner::new()).into_any_element(),
-            Albums::Failed(error) => {
+        let shown = match (&self.albums, &self.shown) {
+            (Shelf::Loading, _) | (Shelf::Loaded(_), None) => {
+                return centered(Spinner::new()).into_any_element();
+            }
+            (Shelf::Failed(error), _) => {
                 return LoadFailure::new(
                     "Couldn't load albums",
                     SharedString::from(error.clone()),
@@ -652,17 +622,16 @@ impl Library {
                 )
                 .into_any_element();
             }
-            Albums::Loaded(albums) => albums.clone(),
+            (Shelf::Loaded(_), Some(shown)) => shown.clone(),
         };
-        if albums.is_empty() {
+        if shown.items().is_empty() {
             return centered(muted_text("This server has no albums.", cx)).into_any_element();
         }
-        if self.visible.is_empty() {
+        if shown.visible().is_empty() {
             let note = self.session.missing_readings_note();
             return no_matches("No albums match the filter.", note, cx).into_any_element();
         }
 
-        let visible = self.visible.clone();
         let selected = self.selected_album.clone();
         let is_focused = self.albums_focus.is_focused(window);
         let owner = cx.entity().downgrade();
@@ -670,10 +639,10 @@ impl Library {
         row_list(
             "album-list",
             "Albums",
-            visible.len(),
+            shown.visible().len(),
             &self.albums_scroll,
             move |position| {
-                let album = albums.get(*visible.get(position)?)?;
+                let album = shown.get(position)?;
                 Some(AlbumRow::new(
                     album,
                     selected.as_ref() == Some(album.id()),
@@ -745,13 +714,10 @@ impl Library {
             AlbumDetailSnapshot::Loaded(loaded) => loaded,
         };
         let album = loaded.album();
-        let total = album
-            .duration()
-            .or_else(|| loaded.songs().iter().map(Song::duration).sum());
         let summary = join_details([
             album.year().map(|year| year.to_string()),
             Some(format_song_count(loaded.songs().len())),
-            total.map(format_duration),
+            loaded.duration().map(format_duration),
         ]);
 
         v_flex()
@@ -817,8 +783,7 @@ impl Library {
         if loaded.songs().is_empty() {
             return centered(muted_text("This album has no songs.", cx)).into_any_element();
         }
-        let songs = loaded.songs().clone();
-        let album_artist = loaded.album().artist().map(Arc::from);
+        let loaded = loaded.clone();
         let selected = self.selected_song.clone();
         let now_playing = self.now_playing.clone();
         let is_focused = self.songs_focus.is_focused(window);
@@ -827,14 +792,14 @@ impl Library {
         row_list(
             "songs",
             "Songs",
-            songs.len(),
+            loaded.songs().len(),
             &self.songs_scroll,
             move |ix| {
-                let song = songs.get(ix)?;
+                let song = loaded.songs().get(ix)?;
                 Some(SongRow {
                     song: song.clone(),
                     ix,
-                    album_artist: album_artist.clone(),
+                    is_by_another_artist: loaded.is_by_another_artist(song),
                     state: now_playing.as_ref().and_then(|now| now.state_of(song.id())),
                     is_selected: selected.as_ref() == Some(song.id()),
                     is_focused,
@@ -865,7 +830,6 @@ impl Render for Library {
             .on_action(cx.listener(|this, _: &FocusFilter, window, cx| {
                 this.filter.update(cx, |input, cx| input.focus(window, cx));
             }))
-            .on_action(cx.listener(|this, _: &Refresh, _, _| this.refresh_library()))
             .child(MasterDetail::new(
                 "library-panes",
                 &self.panes,

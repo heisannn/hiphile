@@ -337,3 +337,114 @@ fn an_artists_songs_come_album_by_album(cx: &mut TestAppContext) {
     // Two albums of two songs each
     assert_eq!(songs.unwrap().len(), 4);
 }
+
+/// Miles Davis's page with two albums of two songs, `top_songs` and `similar`.
+fn page_of(top_songs: usize, similar: Vec<Artist>) -> ArtistPage {
+    let albums: Vec<Album> = [album_json("a2", 1970), album_json("a1", 1959)]
+        .into_iter()
+        .map(|album| serde_json::from_value(album).unwrap())
+        .collect();
+    ArtistPage {
+        id: ArtistId::new("m"),
+        name: Some("Miles Davis".to_owned()),
+        cover_art: None,
+        albums: Shelf::Loaded(albums.into()),
+        top_songs: Shelf::Loaded(songs(top_songs).into()),
+        similar: Shelf::Loaded(similar.into()),
+        is_only_on_songs: false,
+    }
+}
+
+#[test]
+fn sections_with_nothing_to_say_go_and_those_under_way_stay() {
+    use ArtistSection::{Albums, Similar, TopSongs};
+    assert_eq!(page_of(0, Vec::new()).sections(), [Albums]);
+
+    let mut page = page_of(3, vec![listed("b", "Bill Evans")]);
+    assert_eq!(page.sections(), [TopSongs, Albums, Similar]);
+
+    page.top_songs = Shelf::Failed("offline".into());
+    page.similar = Shelf::Loading;
+    page.albums = Shelf::Loaded(Arc::from([]));
+    assert_eq!(page.sections(), [TopSongs, Albums, Similar]);
+}
+
+#[test]
+fn an_artist_only_on_songs_shows_them_in_place_of_albums() {
+    let mut page = page_of(7, Vec::new());
+    page.albums = Shelf::Loaded(Arc::from([]));
+    page.is_only_on_songs = true;
+
+    assert_eq!(page.sections(), [ArtistSection::Songs]);
+    assert_eq!(page.album_count(), None);
+    assert_eq!(page.song_count(), Some(7));
+    assert!(page.has_songs());
+}
+
+#[test]
+fn a_few_top_songs_show_until_all_are_asked_for() {
+    let page = page_of(10, Vec::new());
+    assert_eq!(page.top_songs_on_show(false).len(), 5);
+    assert_eq!(page.top_songs_on_show(true).len(), 10);
+    assert!(page.has_more_top_songs());
+
+    let page = page_of(5, Vec::new());
+    assert_eq!(page.top_songs_on_show(false).len(), 5);
+    assert!(!page.has_more_top_songs());
+}
+
+#[test]
+fn the_picture_falls_back_to_the_first_album_then_the_first_song() {
+    let cover = |id: &str| Some(CoverArtId::new(id));
+    let mut page = page_of(1, Vec::new());
+    page.albums = Shelf::Loaded(Arc::from([serde_json::from_value::<Album>(
+        json!({ "id": "a", "name": "a", "coverArt": "album" }),
+    )
+    .unwrap()]));
+    page.top_songs = Shelf::Loaded(Arc::from([serde_json::from_value::<Song>(
+        json!({ "id": "s", "title": "s", "coverArt": "song" }),
+    )
+    .unwrap()]));
+
+    assert_eq!(page.picture(), cover("album").as_ref());
+    page.albums = Shelf::Loading;
+    assert_eq!(page.picture(), cover("song").as_ref());
+    page.cover_art = cover("artist");
+    assert_eq!(page.picture(), cover("artist").as_ref());
+}
+
+#[test]
+fn the_songs_count_only_when_every_album_says_how_many() {
+    let mut page = page_of(0, Vec::new());
+    assert_eq!((page.album_count(), page.song_count()), (Some(2), Some(4)));
+
+    let untold: Album = serde_json::from_value(json!({ "id": "x", "name": "x" })).unwrap();
+    let mut albums = page.albums.items().to_vec();
+    albums.push(untold);
+    page.albums = Shelf::Loaded(albums.into());
+    assert_eq!((page.album_count(), page.song_count()), (Some(3), None));
+
+    page.albums = Shelf::Loading;
+    assert_eq!((page.album_count(), page.song_count()), (None, None));
+    assert!(!page.has_songs());
+}
+
+#[test]
+fn an_artist_becomes_a_record_once_their_name_is_known() {
+    let mut page = page_of(0, Vec::new());
+    let artist = page.as_artist().unwrap();
+    assert_eq!(
+        (artist.name(), artist.album_count()),
+        ("Miles Davis", Some(2))
+    );
+
+    page.name = None;
+    assert_eq!(page.as_artist(), None);
+}
+
+#[test]
+fn a_song_names_its_artist_only_when_it_is_someone_else() {
+    let page = page_of(0, Vec::new());
+    assert!(!page.is_by_another_artist(&songs(1)[0]));
+    assert!(page.is_by_another_artist(&song_by("g", "guest", "Blue", 1)));
+}

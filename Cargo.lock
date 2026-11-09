@@ -86,7 +86,7 @@ dependencies = [
 name = "account"
 version = "0.4.0"
 dependencies = [
- "config 0.4.0",
+ "gpui-host",
  "gpui-kit",
  "hiphile-core",
  "session",
@@ -362,16 +362,12 @@ version = "0.4.0"
 dependencies = [
  "actions",
  "catalog",
- "client",
- "futures",
- "fuzzy",
  "gpui-host",
  "gpui-kit",
  "hiphile-core",
  "serde_json",
  "session",
  "subsonic",
- "tempfile",
  "ui",
 ]
 
@@ -3996,7 +3992,6 @@ dependencies = [
  "playlists",
  "presence",
  "search",
- "session",
  "settings",
  "songs",
  "subsonic",
@@ -4819,12 +4814,9 @@ name = "library"
 version = "0.4.0"
 dependencies = [
  "actions",
- "client",
- "fuzzy",
  "gpui-host",
  "gpui-kit",
  "hiphile-core",
- "net",
  "serde_json",
  "session",
  "subsonic",
@@ -6438,7 +6430,6 @@ name = "playlists"
 version = "0.4.0"
 dependencies = [
  "actions",
- "fuzzy",
  "gpui-host",
  "gpui-kit",
  "hiphile-core",
@@ -9304,7 +9295,6 @@ dependencies = [
  "bytes",
  "catalog",
  "futures",
- "gpui-host",
  "gpui-kit",
  "hiphile-core",
  "net",

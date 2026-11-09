@@ -52,10 +52,6 @@ fn song_ids(view: &Entity<QueueView>, cx: &mut VisualTestContext) -> Vec<String>
     })
 }
 
-fn entry_id(view: &Entity<QueueView>, ix: usize, cx: &mut VisualTestContext) -> EntryId {
-    cx.update(|_, cx| view.read(cx).queue().entries()[ix].id())
-}
-
 fn selected_ix(view: &Entity<QueueView>, cx: &mut VisualTestContext) -> Option<usize> {
     cx.update(|_, cx| {
         let this = view.read(cx);
@@ -152,30 +148,6 @@ fn an_entry_dragged_up_lands_before_the_row_dropped_on(cx: &mut TestAppContext) 
 
     assert_eq!(song_ids(&view, cx), ["c", "a", "b"]);
     assert_eq!(selected_ix(&view, cx), Some(0));
-}
-
-#[gpui_kit::test]
-fn a_menus_commands_follow_where_the_entry_is(cx: &mut TestAppContext) {
-    let (view, cx) = queue(&["a", "b", "c"], 1, cx);
-    let (first, current, last) = (
-        entry_id(&view, 0, cx),
-        entry_id(&view, 1, cx),
-        entry_id(&view, 2, cx),
-    );
-
-    let commands =
-        |id, cx: &mut VisualTestContext| cx.update(|_, cx| view.read(cx).entry_commands(id));
-    let of_first = commands(first, cx);
-    assert!(of_first.play_next && of_first.remove && of_first.move_down);
-    assert!(!of_first.move_up);
-
-    let of_current = commands(current, cx);
-    assert!(of_current.move_up && of_current.move_down);
-    assert!(!of_current.play_next && !of_current.remove);
-
-    let of_last = commands(last, cx);
-    assert!(of_last.play_next && of_last.remove && of_last.move_up);
-    assert!(!of_last.move_down);
 }
 
 #[gpui_kit::test]

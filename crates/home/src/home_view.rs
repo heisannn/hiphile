@@ -21,8 +21,8 @@ use gpui_kit::{
 use hiphile_core::Shelf;
 use hiphile_core::favorites::Favorite;
 use hiphile_core::home::{
-    AlbumShelf, DailyRecommendations, HomeShelves, Item, RecommendedStatus, ReloadFailed,
-    ShelvesStatus,
+    AlbumShelf, DailyRecommendations, HomeSection, HomeShelves, Item, MAX_COLUMNS,
+    RecommendedStatus, ReloadFailed, ShelvesStatus, sections,
 };
 use subsonic::{Album, AlbumId, PlaylistId, Song, SongId, StarTarget};
 use ui::card_grid::{GridMotion as Motion, card_row, columns_for, media_card, step};
@@ -39,7 +39,6 @@ use crate::{
     SelectLeft, SelectRight, ShowInLibrary,
 };
 
-const NEW_ALBUM_ROWS: usize = 2;
 /// The same as the library's album cover, so that opening the album needs no
 /// second image.
 const CARD_COVER_PIXELS: u32 = 256;
@@ -103,11 +102,6 @@ impl Home {
             // Focus changes the selection treatment
             cx.on_focus(&focus, window, |_, _, cx| cx.notify()),
             cx.on_blur(&focus, window, |_, _, cx| cx.notify()),
-            cx.observe_window_activation(window, |this, window, _| {
-                if window.is_window_active() {
-                    this.recommendations.renew();
-                }
-            }),
         ];
         let recommended_changes =
             gpui_host::observe(recommendations.subscribe(), cx, Self::follow_recommended);
@@ -177,60 +171,47 @@ impl Home {
         }
     }
 
-    /// A shelf other than the new albums with nothing to show goes away, as a server
-    /// with no plays or albums yet has nothing to say about it.
     fn parts(&self) -> Vec<Part> {
         let mut parts = Vec::new();
-        match &self.recommended {
-            Shelf::Loaded(albums) if albums.is_empty() => {}
-            Shelf::Loaded(albums) => {
-                parts.push(Part::RecommendedHeading);
-                parts.push(Part::AlbumRow(
-                    AlbumShelf::Recommended,
-                    0..albums.len().min(self.columns.max(1)),
-                ));
+        for section in sections(&self.recommended, &self.recent, &self.most_played) {
+            match section {
+                HomeSection::Recommended => {
+                    parts.push(Part::RecommendedHeading);
+                    parts
+                        .extend(self.album_parts(AlbumShelf::Recommended, Part::RecommendedStatus));
+                }
+                HomeSection::RecentlyPlayed => {
+                    parts.push(Part::RecentHeading);
+                    match self.recent.items().len() {
+                        0 => parts.push(Part::RecentStatus),
+                        songs => parts.extend((0..songs).map(Part::Song)),
+                    }
+                }
+                HomeSection::MostPlayed => {
+                    parts.push(Part::MostPlayedHeading);
+                    parts.extend(self.album_parts(AlbumShelf::MostPlayed, Part::MostPlayedStatus));
+                }
+                HomeSection::NewAlbums => {
+                    parts.push(Part::NewAlbumsHeading);
+                    parts.extend(self.album_parts(AlbumShelf::New, Part::NewAlbumsStatus));
+                }
             }
-            Shelf::Loading | Shelf::Failed(_) => {
-                parts.extend([Part::RecommendedHeading, Part::RecommendedStatus]);
-            }
-        }
-        match &self.recent {
-            Shelf::Loaded(songs) if songs.is_empty() => {}
-            Shelf::Loaded(songs) => {
-                parts.push(Part::RecentHeading);
-                parts.extend((0..songs.len()).map(Part::Song));
-            }
-            Shelf::Loading | Shelf::Failed(_) => {
-                parts.extend([Part::RecentHeading, Part::RecentStatus]);
-            }
-        }
-        match &self.most_played {
-            Shelf::Loaded(albums) if albums.is_empty() => {}
-            Shelf::Loaded(albums) => {
-                parts.push(Part::MostPlayedHeading);
-                parts.push(Part::AlbumRow(
-                    AlbumShelf::MostPlayed,
-                    0..albums.len().min(self.columns.max(1)),
-                ));
-            }
-            Shelf::Loading | Shelf::Failed(_) => {
-                parts.extend([Part::MostPlayedHeading, Part::MostPlayedStatus]);
-            }
-        }
-        parts.push(Part::NewAlbumsHeading);
-        let albums = self.new_albums.items().len();
-        if albums == 0 {
-            parts.push(Part::NewAlbumsStatus);
-        } else {
-            let columns = self.columns.max(1);
-            let shown = albums.min(columns * NEW_ALBUM_ROWS);
-            parts.extend(
-                (0..shown).step_by(columns).map(|start| {
-                    Part::AlbumRow(AlbumShelf::New, start..(start + columns).min(shown))
-                }),
-            );
         }
         parts
+    }
+
+    /// The shelf's rows of as many cards as fit, or `status` while it has none.
+    fn album_parts(&self, shelf: AlbumShelf, status: Part) -> Vec<Part> {
+        let albums = self.albums(shelf).len();
+        if albums == 0 {
+            return vec![status];
+        }
+        let columns = self.columns.max(1);
+        let shown = albums.min(columns * shelf.rows());
+        (0..shown)
+            .step_by(columns)
+            .map(|start| Part::AlbumRow(shelf, start..(start + columns).min(shown)))
+            .collect()
     }
 
     fn albums(&self, shelf: AlbumShelf) -> &[Album] {
@@ -466,7 +447,7 @@ impl Home {
         window: &Window,
         cx: &mut App,
     ) {
-        let columns = columns_for(width / window.rem_size());
+        let columns = columns_for(width / window.rem_size()).min(MAX_COLUMNS);
         let Some(home) = this.upgrade() else {
             return;
         };
@@ -498,10 +479,8 @@ impl Home {
         }
     }
 
-    /// The heading, with a way to reload once there are albums to replace:
-    /// until then the status below it shows the wait or offers to retry.
     fn render_recommended_heading(&self, cx: &mut Context<Self>) -> AnyElement {
-        if self.recommended.items().is_empty() {
+        if !self.recommended_status.is_reloadable() {
             return section_heading("Recommended").into_any_element();
         }
         section_heading_with_action(
@@ -524,7 +503,9 @@ impl Home {
                 Button::new("retry-recommended")
                     .label("Retry")
                     .small()
-                    .on_click(cx.listener(|this, _, _, _| this.recommendations.pick())),
+                    .on_click(
+                        cx.listener(|this, _, _, _| this.shelves.retry(HomeSection::Recommended)),
+                    ),
                 cx,
             ),
             Shelf::Loading | Shelf::Loaded(_) => section_loading("Loading recommendations", cx),
@@ -538,7 +519,9 @@ impl Home {
                 Button::new("retry-recent")
                     .label("Retry")
                     .small()
-                    .on_click(cx.listener(|this, _, _, _| this.shelves.reload_recently_played())),
+                    .on_click(cx.listener(|this, _, _, _| {
+                        this.shelves.retry(HomeSection::RecentlyPlayed);
+                    })),
                 cx,
             ),
             Shelf::Loading | Shelf::Loaded(_) => {
@@ -554,7 +537,9 @@ impl Home {
                 Button::new("retry-most-played")
                     .label("Retry")
                     .small()
-                    .on_click(cx.listener(|this, _, _, _| this.shelves.reload_most_played())),
+                    .on_click(
+                        cx.listener(|this, _, _, _| this.shelves.retry(HomeSection::MostPlayed)),
+                    ),
                 cx,
             ),
             Shelf::Loading | Shelf::Loaded(_) => section_loading("Loading most played albums", cx),
@@ -568,7 +553,9 @@ impl Home {
                 Button::new("retry-new-albums")
                     .label("Retry")
                     .small()
-                    .on_click(cx.listener(|this, _, _, _| this.shelves.reload_new_albums())),
+                    .on_click(
+                        cx.listener(|this, _, _, _| this.shelves.retry(HomeSection::NewAlbums)),
+                    ),
                 cx,
             ),
             Shelf::Loading => section_loading("Loading new albums", cx),

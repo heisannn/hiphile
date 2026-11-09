@@ -21,7 +21,6 @@ actions!(
         AddToQueue,
         Back,
         FocusFilter,
-        Refresh,
         AddToPlaylist
     ]
 );
@@ -35,10 +34,10 @@ struct AddAlbumToPlaylist {
 
 /// Call before building the menu bar.
 pub fn init(cx: &mut App) {
-    let (find, refresh, add_to_playlist, play) = if cx.platform_info().is_mac() {
-        ("cmd-f", "cmd-r", "cmd-p", "cmd-enter")
+    let (find, add_to_playlist, play) = if cx.platform_info().is_mac() {
+        ("cmd-f", "cmd-p", "cmd-enter")
     } else {
-        ("ctrl-f", "ctrl-r", "ctrl-p", "ctrl-enter")
+        ("ctrl-f", "ctrl-p", "ctrl-enter")
     };
     for context in [ALBUMS_CONTEXT, SONGS_CONTEXT] {
         bind_list_navigation(context, cx);
@@ -57,6 +56,5 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("left", Back, Some(SONGS_CONTEXT)),
         KeyBinding::new("escape", Back, Some(SONGS_CONTEXT)),
         KeyBinding::new(find, FocusFilter, Some(LIBRARY_CONTEXT)),
-        KeyBinding::new(refresh, Refresh, Some(LIBRARY_CONTEXT)),
     ]);
 }

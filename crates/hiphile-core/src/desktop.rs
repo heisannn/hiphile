@@ -6,6 +6,7 @@ mod discord;
 mod media;
 
 pub use discord::{DiscordNotice, DiscordStatus};
+pub(crate) use media::WeakControls;
 pub use media::{MediaNotice, SystemMediaControls};
 
 use std::time::Duration;
@@ -73,16 +74,19 @@ impl Workspace {
 
     /// Shows what the player plays in the system's media controls, as
     /// [`MediaControls::connect`] gives them for the app's window, and passes their commands on.
+    /// [`crate::Hiphile::shutdown`] clears them.
     pub fn connect_media_controls(
         &self,
         controls: (MediaControls, async_channel::Receiver<MediaCommand>),
     ) -> SystemMediaControls {
-        SystemMediaControls::new(
+        let controls = SystemMediaControls::new(
             self.executor().clone(),
             self.player().clone(),
             self.session().clone(),
             self.covers().cloned(),
             controls,
-        )
+        );
+        self.keep_media_controls(controls.downgrade());
+        controls
     }
 }

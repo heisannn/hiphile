@@ -32,7 +32,8 @@ actions!(
         ShowPlaylists,
         ShowFavorites,
         GoBack,
-        GoForward
+        GoForward,
+        Refresh
     ]
 );
 
@@ -156,7 +157,7 @@ fn install_app_commands(cx: &mut App) {
         KeyBinding::new(show_favorites, ShowFavorites, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new(go_back, GoBack, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new(go_forward, GoForward, Some(WORKSPACE_CONTEXT)),
-        KeyBinding::new(refresh, library::Refresh, Some(WORKSPACE_CONTEXT)),
+        KeyBinding::new(refresh, Refresh, Some(WORKSPACE_CONTEXT)),
         KeyBinding::new(
             new_playlist,
             actions::NewPlaylist::empty(),
@@ -196,7 +197,7 @@ pub(crate) fn set_menus(
             MenuItem::action("Quit hiphile", Quit),
         ]),
         Menu::new("Library").items([
-            MenuItem::action("Refresh Library", library::Refresh),
+            MenuItem::action("Refresh Library", Refresh),
             MenuItem::separator(),
             MenuItem::action("New Playlist…", actions::NewPlaylist::empty()),
             MenuItem::action("Save Queue as Playlist…", SaveQueue),

@@ -8,7 +8,6 @@ license.workspace = true
 
 [dependencies]
 actions.workspace = true
-fuzzy.workspace = true
 gpui-host.workspace = true
 gpui-kit.workspace = true
 hiphile-core.workspace = true
@@ -21,9 +20,6 @@ workspace = true
 
 [dev-dependencies]
 catalog.workspace = true
-client.workspace = true
-futures.workspace = true
 gpui-kit = { workspace = true, features = ["test-support"] }
 hiphile-core = { workspace = true, features = ["test-support"] }
 serde_json.workspace = true
-tempfile.workspace = true

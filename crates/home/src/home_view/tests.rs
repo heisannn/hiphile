@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::net::TcpListener;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -476,78 +475,6 @@ fn space_reloads_the_recommendations(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn todays_kept_pick_shows_again_with_no_new_pick(cx: &mut TestAppContext) {
-    let dir = tempfile::tempdir().unwrap();
-    let catalog = catalog_in(&dir);
-    catalog
-        .put_recommended("alice", &today(), &recommended(2))
-        .unwrap();
-    let (home, cx) = home_with(Some(catalog), cx);
-
-    cx.update(|_, cx| assert_eq!(shown(home.read(cx)), ["r0", "r1"]));
-}
-
-#[gpui_kit::test]
-fn yesterdays_kept_pick_shows_while_a_new_one_is_made(cx: &mut TestAppContext) {
-    let dir = tempfile::tempdir().unwrap();
-    let catalog = catalog_in(&dir);
-    catalog
-        .put_recommended("alice", "2000-01-01", &recommended(1))
-        .unwrap();
-    let (home, cx) = home_with(Some(catalog), cx);
-
-    cx.update(|_, cx| assert_eq!(shown(home.read(cx)), ["r0"]));
-}
-
-#[gpui_kit::test]
-fn another_users_kept_pick_does_not_show(cx: &mut TestAppContext) {
-    let dir = tempfile::tempdir().unwrap();
-    let catalog = catalog_in(&dir);
-    catalog
-        .put_recommended("bob", &today(), &recommended(1))
-        .unwrap();
-    let (home, cx) = home_with(Some(catalog), cx);
-
-    cx.update(|_, cx| assert!(shown(home.read(cx)).is_empty()));
-}
-
-/// A server that takes a while to drop each request, so that a request can be seen on its way.
-fn slow_server() -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", listener.local_addr().unwrap());
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(500));
-                drop(stream);
-            });
-        }
-    });
-    url
-}
-
-#[gpui_kit::test]
-fn coming_back_to_the_window_on_another_day_picks_again(cx: &mut TestAppContext) {
-    let dir = tempfile::tempdir().unwrap();
-    let catalog = catalog_in(&dir);
-    catalog
-        .put_recommended("alice", "2000-01-01", &recommended(1))
-        .unwrap();
-    let (home, cx) = home_on(&slow_server(), Some(catalog), cx);
-    // The pick on opening went wrong, which may be tried again in a while
-    cx.executor().advance_clock(Duration::from_secs(60 * 60));
-    cx.deactivate_window();
-    cx.run_until_parked();
-    assert!(!is_recommending(&home, cx));
-
-    cx.update(|window, _| window.activate_window());
-    cx.run_until_parked();
-
-    assert!(is_recommending(&home, cx));
-    settle(&home, cx);
-}
-
-#[gpui_kit::test]
 fn the_arrow_keys_move_through_the_songs_into_the_albums(cx: &mut TestAppContext) {
     let (home, cx) = home(cx);
     update(&home, cx, |home, _| {
@@ -678,6 +605,8 @@ fn the_cards_across_follow_the_width_of_the_screen(cx: &mut TestAppContext) {
 
     assert_eq!(columns(cx, 80. * 16.), 7);
     assert_eq!(columns(cx, 46. * 16.), 4);
+    // No more than the shelves have albums for
+    assert_eq!(columns(cx, 300. * 16.), MAX_COLUMNS);
 }
 
 #[gpui_kit::test]

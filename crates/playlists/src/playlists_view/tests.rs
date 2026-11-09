@@ -253,6 +253,35 @@ fn deleting_the_selected_playlist_selects_the_one_in_its_place(cx: &mut TestAppC
 }
 
 #[gpui_kit::test]
+fn deleting_the_open_playlist_of_a_list_that_failed_leaves_nothing_selected(
+    cx: &mut TestAppContext,
+) {
+    let server = two_playlists();
+    server.refuse("getPlaylists");
+    let (view, cx) = view_on(&server, cx);
+    wait_until(cx, |cx| {
+        cx.update(|_, cx| matches!(view.read(cx).shown.list(), PlaylistList::Failed(_)))
+    });
+    select_playlist(&view, "a", cx);
+    wait_until(cx, |cx| {
+        cx.update(|_, cx| view.read(cx).loaded_detail().is_some())
+    });
+
+    cx.update(|window, cx| {
+        view.update(cx, |this, cx| {
+            this.delete_playlist(PlaylistId::new("a"), window, cx);
+        });
+    });
+
+    cx.update(|_, cx| {
+        let this = view.read(cx);
+        assert_eq!(this.selected, None);
+        assert_eq!(*this.shown.detail(), PlaylistDetail::None);
+    });
+    wait_for_request(&server, "deletePlaylist", 1, cx);
+}
+
+#[gpui_kit::test]
 fn the_new_playlist_dialog_stays_until_its_save_is_done(cx: &mut TestAppContext) {
     let server = two_playlists();
     let (view, cx) = loaded_from(&server, cx);
@@ -465,7 +494,7 @@ fn a_command_given_while_songs_load_runs_when_they_arrive(cx: &mut TestAppContex
     select_playlist(&view, "b", cx);
     cx.update(|window, cx| {
         view.update(cx, |this, cx| {
-            this.on_playlist(SongsCommand::Play, window, cx);
+            this.on_playlist(AlbumAction::Play, window, cx);
         });
     });
     cx.run_until_parked();
@@ -610,6 +639,33 @@ fn the_songs_of_a_readonly_playlist_cant_be_dragged(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn the_songs_of_a_playlist_that_diverged_cant_be_dragged_or_moved(cx: &mut TestAppContext) {
+    let server = two_playlists();
+    let (view, cx) = loaded_from(&server, cx);
+    server.refuse("createPlaylist");
+    server.hold("getPlaylist");
+    select_ix(&view, 0, cx);
+    focus_songs(&view, cx);
+    cx.simulate_keystrokes("alt-down");
+    wait_until(cx, |cx| {
+        cx.update(|_, cx| view.read(cx).shown.is_diverged())
+    });
+    let moves = Rc::new(Cell::new(0));
+    cx.update(|_, cx| {
+        let moves = moves.clone();
+        cx.on_action(move |_: &MoveDown, _| moves.set(moves.get() + 1));
+    });
+
+    cx.simulate_keystrokes("alt-down");
+    assert_eq!(moves.get(), 1);
+    drag_toward(0, 2, &view, cx);
+
+    cx.update(|_, cx| assert!(!cx.has_active_drag()));
+    drop_on(2, &view, cx);
+    server.release("getPlaylist");
+}
+
+#[gpui_kit::test]
 fn the_songs_of_an_editable_playlist_can_be_dragged(cx: &mut TestAppContext) {
     let server = two_playlists();
     let (view, cx) = loaded_from(&server, cx);
@@ -687,7 +743,7 @@ fn revealing_a_playlist_the_filter_hides_clears_the_filter(cx: &mut TestAppConte
         view.update(cx, |this, cx| {
             this.filter
                 .update(cx, |filter, cx| filter.set_value("alpha", window, cx));
-            this.apply_filter(cx);
+            this.apply_filter(window, cx);
         });
     });
 

@@ -17,6 +17,8 @@ const SIMILAR_ARTISTS: u32 = 6;
 /// list with the arrow keys should not ask about every artist.
 const SERVER_DELAY: Duration = Duration::from_millis(250);
 const ALBUMS_AT_ONCE: usize = 8;
+/// How many top songs show until a host asks for all of them.
+const TOP_SONGS_COLLAPSED: usize = 5;
 
 /// One artist's page.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,6 +35,108 @@ pub struct ArtistPage {
     /// Whether the artist has no albums of their own, only songs on others', which `top_songs`
     /// then holds in place of what the server ranks.
     pub is_only_on_songs: bool,
+}
+
+/// A part of an artist's page, in the order they show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArtistSection {
+    TopSongs,
+    /// The songs of an artist with no albums of their own, in place of their top songs and their
+    /// albums.
+    Songs,
+    Albums,
+    Similar,
+}
+
+impl ArtistPage {
+    /// Top songs and similar artists with nothing to show go away: a server without an outside
+    /// service to ask has nothing to say about them. A section loading or failed keeps its place.
+    pub fn sections(&self) -> Vec<ArtistSection> {
+        let mut sections = Vec::new();
+        if !self.top_songs.has_loaded_nothing() {
+            sections.push(if self.is_only_on_songs {
+                ArtistSection::Songs
+            } else {
+                ArtistSection::TopSongs
+            });
+        }
+        if !self.is_only_on_songs {
+            sections.push(ArtistSection::Albums);
+        }
+        if !self.similar.has_loaded_nothing() {
+            sections.push(ArtistSection::Similar);
+        }
+        sections
+    }
+
+    /// The top songs that show: the first few, unless `is_expanded`.
+    pub fn top_songs_on_show(&self, is_expanded: bool) -> &[Song] {
+        let songs = self.top_songs.items();
+        if is_expanded {
+            songs
+        } else {
+            &songs[..songs.len().min(TOP_SONGS_COLLAPSED)]
+        }
+    }
+
+    /// Whether more top songs show expanded than collapsed.
+    pub fn has_more_top_songs(&self) -> bool {
+        self.top_songs.items().len() > TOP_SONGS_COLLAPSED
+    }
+
+    /// The artist's own picture, or else the cover of their first album or their first song.
+    pub fn picture(&self) -> Option<&CoverArtId> {
+        self.cover_art
+            .as_ref()
+            .or_else(|| self.albums.items().first().and_then(Album::cover_art))
+            .or_else(|| self.top_songs.items().first().and_then(Song::cover_art))
+    }
+
+    /// How many albums of their own, once they are loaded.
+    pub fn album_count(&self) -> Option<usize> {
+        match &self.albums {
+            _ if self.is_only_on_songs => None,
+            Shelf::Loaded(albums) => Some(albums.len()),
+            Shelf::Loading | Shelf::Failed(_) => None,
+        }
+    }
+
+    /// How many songs, from the albums' counts, unless one of them does not say. An artist with
+    /// no albums has the songs they are on.
+    pub fn song_count(&self) -> Option<usize> {
+        if self.is_only_on_songs {
+            return Some(self.top_songs.items().len());
+        }
+        let Shelf::Loaded(albums) = &self.albums else {
+            return None;
+        };
+        let songs: Option<u32> = albums.iter().map(Album::song_count).sum();
+        songs.map(|songs| songs as usize)
+    }
+
+    /// Whether there is anything to play.
+    pub fn has_songs(&self) -> bool {
+        !self.albums.items().is_empty() || self.is_only_on_songs
+    }
+
+    /// Whether `song` is by another artist than this one, so that its own is worth naming.
+    pub fn is_by_another_artist(&self, song: &Song) -> bool {
+        song.artist_id() != Some(&self.id)
+    }
+
+    /// The artist as their page has them, once their name is known, as a favorite needs a name.
+    pub fn as_artist(&self) -> Option<Artist> {
+        let name = self.name.clone()?;
+        let albums = self
+            .album_count()
+            .and_then(|count| u32::try_from(count).ok());
+        Some(Artist::new(
+            self.id.clone(),
+            name,
+            self.cover_art.clone(),
+            albums,
+        ))
+    }
 }
 
 /// The page of the artist on show, if any: their albums, from the saved library and then the

@@ -1,4 +1,4 @@
-use account::{SignIn, Start};
+use account::SignIn;
 use actions::{
     AddToPlaylist, ChoosePlaylist, EnqueueSongs, NewPlaylist, PlaySongs, ShowAlbum, ShowArtist,
     ToggleFavoriteOf,
@@ -21,15 +21,16 @@ use gpui_kit::{
     Pixels, Render, Stateful, Styled as _, Subscription, Task, WeakEntity, Window, div,
     prelude::FluentBuilder as _, px,
 };
+use hiphile_core::alerts::{Alert, AlertKind, Alerts};
 use hiphile_core::desktop::{DiscordStatus, MediaNotice, SystemMediaControls};
-use hiphile_core::favorites::{FavoritesLoad, FavoritesNotice, FavoritesState};
-use hiphile_core::library::{Albums, LibraryActivity, LibraryNotice, LibrarySync, SyncStatus};
+use hiphile_core::favorites::FavoritesState;
+use hiphile_core::library::LibraryActivity;
 use hiphile_core::navigation::{Destination, History, Location};
 use hiphile_core::playlists::PlaylistsState;
 use hiphile_core::settings::QueueSettings;
 use hiphile_core::{Hiphile, HiphileSnapshot, Workspace};
 use home::Home;
-use library::{Library, LibraryEvent, Refresh};
+use library::{Library, LibraryEvent};
 use playback::PlayerSnapshot;
 use player::{
     CloseLyrics, CycleRepeat, LyricsView, MiniPlayer, NextSong, Panels, Player, PreviousSong,
@@ -39,7 +40,6 @@ use player::{
 use playlists::{Playlists, PlaylistsEvent};
 use presence::Presence;
 use search::{OpenSearch, Search, SearchEvent};
-use session::{Readings, ReadingsFailed, ReadingsState};
 use settings::OpenSettings;
 use songs::Songs;
 use subsonic::{AlbumId, ArtistId, SongId};
@@ -48,8 +48,8 @@ use updater::{UpdateState, Updater};
 
 use crate::library_activity::ActivityNotice;
 use crate::{
-    GoBack, GoForward, ShowAlbums, ShowArtists, ShowFavorites, ShowHome, ShowPlaylists, ShowSongs,
-    SignOut,
+    GoBack, GoForward, Refresh, ShowAlbums, ShowArtists, ShowFavorites, ShowHome, ShowPlaylists,
+    ShowSongs, SignOut,
 };
 
 /// When first shown, in rem.
@@ -74,7 +74,7 @@ pub struct AppShell {
     /// Whether the queue shows beside the library when the window is wide
     /// enough for it.
     queue_shown: bool,
-    _readings_failures: Task<()>,
+    _alerts: Task<()>,
     _signing_in: Task<()>,
     _system_appearance_changes: Subscription,
     _updater_changes: Option<Task<()>>,
@@ -114,19 +114,19 @@ struct WorkspaceScreen {
     _discord: DiscordStatus,
     _media: SystemMediaControls,
     _media_notices: Task<()>,
-    _quit: Subscription,
     _player_changes: Task<()>,
     _library_events: Subscription,
-    _library_notices: Task<()>,
+    _alerts: Task<()>,
     _artists_events: Subscription,
     _playlists_events: Subscription,
     _playlist_choices: Task<()>,
-    _favorites_changes: (Task<()>, Task<()>),
+    _favorites_changes: Task<()>,
     _search_events: Subscription,
     _activity_changes: Task<()>,
     _mini_player_changes: Subscription,
     _skip_changes: Task<()>,
     _focus_lost: Subscription,
+    _activation: Subscription,
 }
 
 impl WorkspaceScreen {
@@ -173,35 +173,19 @@ impl WorkspaceScreen {
     }
 }
 
-/// Says that the dictionaries could not be had, which only Settings would show.
-fn tell_readings_failed(error: &str, window: &mut Window, cx: &mut App) {
-    let message = format!("{error} Try again in Settings.");
-    window.push_notification((NotificationType::Error, message), cx);
-}
-
-/// Says each time the dictionaries could not be had, also when that was before there was a
-/// window to say so in.
-fn follow_readings_failures(
-    readings: &Readings,
-    window: &Window,
-    cx: &mut Context<AppShell>,
-) -> Task<()> {
-    let notices = readings.notices();
-    if let ReadingsState::Failed(error) = readings.status().state().clone()
-        && notices.is_empty()
-    {
-        cx.defer_in(window, move |_, window, cx| {
-            tell_readings_failed(&error, window, cx);
+/// Puts up each alert, those told before the shell followed them first.
+fn follow_alerts(alerts: Alerts, window: &Window, cx: &mut Context<AppShell>) -> Task<()> {
+    let Alerts { earlier, later, .. } = alerts;
+    if !earlier.is_empty() {
+        cx.defer_in(window, move |this, window, cx| {
+            for alert in earlier {
+                this.tell(alert, window, cx);
+            }
         });
     }
-    gpui_host::subscribe_in(
-        notices,
-        window,
-        cx,
-        |_, failed: ReadingsFailed, window, cx| {
-            tell_readings_failed(failed.error(), window, cx);
-        },
-    )
+    gpui_host::subscribe_in(later, window, cx, |this, alert, window, cx| {
+        this.tell(alert, window, cx);
+    })
 }
 
 impl AppShell {
@@ -213,10 +197,12 @@ impl AppShell {
     ) -> Self {
         window.set_window_title("hiphile");
         let focus = cx.focus_handle();
-        let screen = Self::sign_in(&hiphile, Start::Resume, window, cx);
+        let screen = Self::sign_in(&hiphile, window, cx);
         let queue_shown = true;
         crate::set_menus(queue_shown, false, false, None, false, RepeatMode::Off, cx);
-        let readings_failures = follow_readings_failures(hiphile.readings(), window, cx);
+        let alerts = follow_alerts(hiphile.alerts(), window, cx);
+        // The dictionaries start downloading as the app opens
+        hiphile.readings();
         let signing_in =
             gpui_host::observe_in(hiphile.subscribe(), window, cx, Self::follow_signing_in);
         Self {
@@ -228,7 +214,7 @@ impl AppShell {
             focus,
             screen,
             queue_shown,
-            _readings_failures: readings_failures,
+            _alerts: alerts,
             _signing_in: signing_in,
             _updater_changes: updater
                 .as_ref()
@@ -237,13 +223,8 @@ impl AppShell {
         }
     }
 
-    fn sign_in(
-        hiphile: &Hiphile,
-        start: Start,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Screen {
-        Screen::SignIn(cx.new(|cx| SignIn::new(hiphile.clone(), start, window, cx)))
+    fn sign_in(hiphile: &Hiphile, window: &mut Window, cx: &mut Context<Self>) -> Screen {
+        Screen::SignIn(cx.new(|cx| SignIn::new(hiphile.clone(), window, cx)))
     }
 
     /// Shows the workspace of whoever signed in, and the form again once nobody is.
@@ -265,8 +246,10 @@ impl AppShell {
         let session = core.session().clone();
         let (shelves, recommendations) = (core.shelves().clone(), core.recommendations().clone());
         let home = cx.new(|cx| Home::new(session.clone(), shelves, recommendations, window, cx));
-        let library =
-            cx.new(|cx| Library::new(session.clone(), core.library().clone(), window, cx));
+        let library = cx.new(|cx| {
+            let (sync, albums) = (core.library().clone(), core.albums().clone());
+            Library::new(session.clone(), sync, albums, window, cx)
+        });
         let artists = cx.new(|cx| {
             let (list, detail) = (core.artists().clone(), core.artist_detail().clone());
             Artists::new(session.clone(), list, detail, window, cx)
@@ -299,14 +282,6 @@ impl AppShell {
                     }
                 }
             });
-        // Quitting may not drop the workspace, and the system keeps what the controls showed
-        let quit = cx.on_app_quit({
-            let media = media.clone();
-            move |_, _| {
-                media.clear();
-                async {}
-            }
-        });
         let player_changes = follow_player(
             core.player(),
             NowPlayingScreens {
@@ -320,7 +295,7 @@ impl AppShell {
             cx,
         );
         let library_events = cx.subscribe(&library, Self::on_library_event);
-        let library_notices = follow_sync_failures(core.library(), window, cx);
+        let alerts = follow_alerts(core.alerts(), window, cx);
         let artists_events = cx.subscribe(&artists, |this, _, event, cx| match event {
             ArtistsEvent::LeftArtist(artist) => {
                 this.remember(Location::Artists(Some(artist.clone())), cx);
@@ -333,6 +308,13 @@ impl AppShell {
         let focus_lost = cx.on_focus_lost(window, |this, window, cx| {
             if let Screen::Workspace(workspace) = &this.screen {
                 workspace.focus_destination(window, cx);
+            }
+        });
+        let activation = cx.observe_window_activation(window, |this, window, _| {
+            if let Screen::Workspace(workspace) = &this.screen
+                && window.is_window_active()
+            {
+                workspace.core.app_activated();
             }
         });
         let workspace = WorkspaceScreen {
@@ -355,10 +337,9 @@ impl AppShell {
             _discord: discord,
             _media: media,
             _media_notices: media_notices,
-            _quit: quit,
             _player_changes: player_changes,
             _library_events: library_events,
-            _library_notices: library_notices,
+            _alerts: alerts,
             _artists_events: artists_events,
             _playlists_events: playlists_events,
             _playlist_choices: playlist_choices,
@@ -368,6 +349,7 @@ impl AppShell {
             _mini_player_changes: mini_player_changes,
             _skip_changes: skip_changes,
             _focus_lost: focus_lost,
+            _activation: activation,
         };
         workspace.focus_destination(window, cx);
         self.screen = Screen::Workspace(Box::new(workspace));
@@ -386,10 +368,8 @@ impl AppShell {
             SearchEvent::ShowArtist(artist) => self.show_artist(artist, window, cx),
             SearchEvent::ShowAlbum(album) => self.show_album(album, window, cx),
             SearchEvent::PlaySong(song) => {
-                if let Some(core) = self.core()
-                    && !core.play(std::slice::from_ref(song), 0)
-                {
-                    notify_skipped(window, cx);
+                if let Some(core) = self.core() {
+                    core.play(std::slice::from_ref(song), 0);
                 }
             }
         }
@@ -413,50 +393,27 @@ impl AppShell {
         }
     }
 
-    /// The favorites' screen, and what passes them on to the other screens and the user.
+    /// The favorites' screen, and what passes them on to the other screens.
     fn favorites(
         core: &Workspace,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> (Entity<Favorites>, (Task<()>, Task<()>)) {
+    ) -> (Entity<Favorites>, Task<()>) {
         let state = core.favorites();
         let view = cx.new(|cx| Favorites::new(core.session().clone(), state.clone(), window, cx));
-        let notices = state.notices();
-        // The workspace starts loading before the shell follows it, so a failure may already
-        // have been told to no one
-        if let FavoritesLoad::Failed(error) = state.snapshot().load().clone()
-            && notices.is_empty()
-        {
-            cx.defer_in(window, move |this, window, cx| {
-                this.on_favorites_notice(FavoritesNotice::LoadFailed(error), window, cx);
-            });
-        }
-        let notices = gpui_host::subscribe_in(notices, window, cx, Self::on_favorites_notice);
-        (view, (follow_favorites(state, cx), notices))
+        (view, follow_favorites(state, cx))
     }
 
-    fn on_favorites_notice(
-        &mut self,
-        notice: FavoritesNotice,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let FavoritesNotice::LoadFailed(error) = notice else {
+    /// Puts up `alert`, unless the screen showing tells of it itself.
+    fn tell(&self, alert: Alert, window: &mut Window, cx: &mut App) {
+        if alert.told_on.is_some() && alert.told_on == self.destination() {
             return;
-        };
-        // The favorites' own screen says so where the list would be
-        if !self.is_showing_favorites() {
-            let message =
-                format!("Couldn't load favorites. {error} Choose Refresh Library to try again.");
-            window.push_notification((NotificationType::Error, message), cx);
         }
-    }
-
-    fn is_showing_favorites(&self) -> bool {
-        matches!(
-            &self.screen,
-            Screen::Workspace(workspace) if matches!(workspace.destination, Destination::Favorites)
-        )
+        let kind = match alert.kind {
+            AlertKind::Error => NotificationType::Error,
+            AlertKind::Info => NotificationType::Info,
+        };
+        window.push_notification((kind, alert.message), cx);
     }
 
     fn on_library_event(
@@ -524,16 +481,16 @@ impl AppShell {
             return;
         }
         workspace.destination = destination;
+        workspace.core.showing(destination);
         match destination {
-            Destination::Home => workspace.core.recommendations().renew(),
-            // Another device may have changed them meanwhile
-            Destination::Playlists => workspace.core.playlists().refresh(),
-            Destination::Favorites => workspace.core.favorites().refresh(),
             Destination::Artists => workspace
                 .artists
                 .update(cx, |artists, cx| artists.activate(cx)),
             Destination::Songs => workspace.songs.update(cx, |songs, cx| songs.activate(cx)),
-            Destination::Albums => {}
+            Destination::Home
+            | Destination::Albums
+            | Destination::Playlists
+            | Destination::Favorites => {}
         }
         workspace.focus_destination(window, cx);
         self.update_menus(cx);
@@ -637,30 +594,6 @@ impl AppShell {
         }
     }
 
-    /// Fetches what the screen showing is about again, for the screens that
-    /// do not run it themselves.
-    fn refresh(&self) {
-        let Screen::Workspace(workspace) = &self.screen else {
-            return;
-        };
-        match workspace.destination {
-            Destination::Playlists => workspace.core.playlists().refresh(),
-            Destination::Favorites => workspace.core.favorites().refresh(),
-            _ => workspace.core.library().refresh(),
-        }
-    }
-
-    /// Tries favorites that failed to load again from any screen, whose stars
-    /// and menus are waiting on them. The favorites' own screen reads them
-    /// anyway.
-    fn retry_favorites(&self) {
-        if let Screen::Workspace(workspace) = &self.screen
-            && !self.is_showing_favorites()
-        {
-            workspace.core.favorites().reload_if_failed();
-        }
-    }
-
     fn update_playlists(
         &self,
         window: &mut Window,
@@ -688,7 +621,7 @@ impl AppShell {
         // The window keeps its notices, and this one would never hear the end
         window.remove_notification::<ActivityNotice>(cx);
         self.focus.focus(window, cx);
-        self.screen = Self::sign_in(&self.hiphile, Start::Fresh, window, cx);
+        self.screen = Self::sign_in(&self.hiphile, window, cx);
         self.update_menus(cx);
         cx.notify();
     }
@@ -708,33 +641,19 @@ impl AppShell {
         }
     }
 
-    fn play_songs(&mut self, action: &PlaySongs, window: &mut Window, cx: &mut Context<Self>) {
+    fn play_songs(&mut self, action: &PlaySongs, _: &mut Window, _: &mut Context<Self>) {
         let Some(core) = self.core() else {
             return;
         };
-        let is_queued = match action.start_ix() {
+        match action.start_ix() {
             Some(start_ix) => core.play(action.songs(), start_ix),
             None => core.play_whole(action.songs()),
         };
-        if !is_queued {
-            notify_skipped(window, cx);
-        }
     }
 
-    fn enqueue_songs(
-        &mut self,
-        action: &EnqueueSongs,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let placement = match action.placement() {
-            actions::Placement::Next => player::Placement::Next,
-            actions::Placement::Last => player::Placement::Last,
-        };
-        if let Some(core) = self.core()
-            && !core.enqueue(action.songs(), placement)
-        {
-            notify_skipped(window, cx);
+    fn enqueue_songs(&mut self, action: &EnqueueSongs, _: &mut Window, _: &mut Context<Self>) {
+        if let Some(core) = self.core() {
+            core.enqueue(action.songs(), action.placement());
         }
     }
 
@@ -1087,51 +1006,6 @@ fn follow_library_activity(
     })
 }
 
-/// Tells a sync's failures on the screens that do not show them themselves, which open on the
-/// home screen.
-fn follow_sync_failures(
-    sync: &LibrarySync,
-    window: &mut Window,
-    cx: &mut Context<AppShell>,
-) -> Task<()> {
-    // The workspace starts its sync before the screens exist, so a failure may already have
-    // been told to no one
-    if let Some(error) = failed_sync(&sync.status()) {
-        window.push_notification((NotificationType::Error, sync_failure(error)), cx);
-    }
-    gpui_host::subscribe_in(
-        sync.notices(),
-        window,
-        cx,
-        move |this, notice, window, cx| match notice {
-            LibraryNotice::SyncFailed(error) => {
-                // The albums' screen says so itself
-                if let Screen::Workspace(workspace) = &this.screen
-                    && workspace.destination != Destination::Albums
-                {
-                    window.push_notification((NotificationType::Error, sync_failure(&error)), cx);
-                }
-            }
-            LibraryNotice::AlbumsSynced
-            | LibraryNotice::ArtistsSynced
-            | LibraryNotice::SongsSynced
-            | LibraryNotice::SyncFinished
-            | LibraryNotice::StageSynced(..) => {}
-        },
-    )
-}
-
-fn failed_sync(status: &SyncStatus) -> Option<&str> {
-    match status.albums() {
-        Albums::Failed(error) => Some(error),
-        _ => status.failure(),
-    }
-}
-
-fn sync_failure(error: &str) -> String {
-    format!("Couldn't refresh the library. {error}")
-}
-
 /// The other screens' copy, by which they dim the songs that are skipped.
 fn follow_skip_instrumentals(queue: &QueueSettings, cx: &mut Context<AppShell>) -> Task<()> {
     let changes = queue.subscribe();
@@ -1255,12 +1129,6 @@ fn follow_favorites<V: 'static>(favorites: &FavoritesState, cx: &mut Context<V>)
     })
 }
 
-fn notify_skipped(window: &mut Window, cx: &mut App) {
-    let message =
-        "Instrumentals are being skipped. Turn off Skip instrumentals in Settings to play them.";
-    window.push_notification((NotificationType::Info, message), cx);
-}
-
 /// Tests play made-up songs, which must not reach the user's status.
 fn presence() -> Presence {
     if cfg!(test) {
@@ -1365,9 +1233,11 @@ impl Render for AppShell {
                 .on_action(cx.listener(|this, action: &ShowArtist, window, cx| {
                     this.show_artist(action.artist(), window, cx);
                 }))
-                // On the way in, as the albums' screen runs Refresh itself
-                .capture_action(cx.listener(|this, _: &Refresh, _, _| this.retry_favorites()))
-                .on_action(cx.listener(|this, _: &Refresh, _, _| this.refresh()))
+                .on_action(cx.listener(|this, _: &Refresh, _, _| {
+                    if let Screen::Workspace(workspace) = &this.screen {
+                        workspace.core.refresh(workspace.destination);
+                    }
+                }))
                 .on_action(cx.listener(|this, action: &AddToPlaylist, _, _| {
                     if let Screen::Workspace(workspace) = &this.screen {
                         workspace

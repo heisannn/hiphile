@@ -18,9 +18,13 @@ use tokio::sync::watch;
 
 use executor::{Publish, Published};
 
+use super::Freshness;
+use r8brain::PerNumber;
+
 pub use choices::Choice;
-pub use r8brain::{R8BRAIN_PHASES, R8BRAIN_QUALITIES};
-pub use soxr::{SOXR_INTERPOLATIONS, SOXR_PHASES, SOXR_QUALITIES};
+pub use dsd::{DsdWarning, PcmSetting};
+pub use r8brain::{R8BRAIN_PHASES, R8BRAIN_QUALITIES, R8brainNumber, R8brainSetting};
+pub use soxr::{SOXR_INTERPOLATIONS, SOXR_PHASES, SOXR_QUALITIES, SoxrSetting};
 
 /// Device ids hold a colon, so none is equal to this.
 pub const SYSTEM_DEFAULT: &str = "system-default";
@@ -41,6 +45,8 @@ pub struct AudioSnapshot {
     rubato: ResamplingQuality,
     /// Kept while another resampler is in use, to come back to.
     r8brain: R8brainParameters,
+    /// What each number's field holds while it is typed into, until Enter or leaving it.
+    r8brain_typed: PerNumber<Option<String>>,
     /// Kept while another resampler is in use, to come back to.
     soxr: SoxrParameters,
     dsd: DsdOutput,
@@ -71,13 +77,17 @@ impl AudioSnapshot {
         self.transitions.crossfade.as_secs().to_string()
     }
 
-    /// Why some songs will not crossfade, when the device has to switch its rate between them.
+    /// Why some songs will not crossfade: DSD is on, or the device has to switch its rate
+    /// between them.
     pub fn crossfade_note(&self) -> Option<&'static str> {
-        (!self.transitions.crossfade.is_zero()
-            && !matches!(self.output.sample_rate(), SampleRate::Fixed(_)))
-        .then_some(
-            "Songs at another sample rate play apart. Set a fixed Sample rate to crossfade them too.",
-        )
+        self.dsd_note(PcmSetting::Crossfade).or_else(|| {
+            (!self.transitions.crossfade.is_zero()
+                && !matches!(self.output.sample_rate(), SampleRate::Fixed(_)))
+            .then_some(
+                "Songs at another sample rate play apart. Set a fixed Sample rate to crossfade \
+                 them too.",
+            )
+        })
     }
 
     pub fn has_devices(&self) -> bool {
@@ -214,6 +224,7 @@ pub struct AudioSettings(Arc<Inner>);
 struct Inner {
     executor: Executor,
     /// `None` without a home directory: choices then last until quitting.
+    store: Option<config::Store>,
     saver: Option<Saver<Changes>>,
     state: Published<State>,
 }
@@ -229,6 +240,7 @@ struct State {
     written_dsd: DsdOutput,
     /// What the change under way has changed.
     unsaved: Unsaved,
+    r8brain_settles: PerNumber<Task<()>>,
     is_listing: bool,
     _list: Task<()>,
     #[cfg(test)]
@@ -348,6 +360,7 @@ impl AudioSettings {
                 quality => quality,
             },
             r8brain,
+            r8brain_typed: Default::default(),
             soxr,
             dsd: dsd.clone(),
             devices: None,
@@ -355,7 +368,7 @@ impl AudioSettings {
             save_error,
         };
         Self(Arc::new_cyclic(|this: &Weak<Inner>| Inner {
-            saver: store.map(|store| {
+            saver: store.clone().map(|store| {
                 let this = this.clone();
                 Saver::new(executor.clone(), move |changes: Changes| {
                     let saved = write(&store, &changes);
@@ -369,12 +382,14 @@ impl AudioSettings {
                 })
             }),
             executor,
+            store,
             state: Published::new(State {
                 settings,
                 written_r8brain: r8brain,
                 written_soxr: soxr,
                 written_dsd: dsd,
                 unsaved: Unsaved::default(),
+                r8brain_settles: std::array::from_fn(|_| Task::ready(())),
                 is_listing: false,
                 _list: Task::ready(()),
                 #[cfg(test)]
@@ -451,6 +466,15 @@ impl AudioSettings {
         });
     }
 
+    /// Lists the devices now and again every two seconds for as long as it is held, so that a
+    /// device plugged in meanwhile shows up.
+    pub fn keep_fresh(&self) -> Freshness {
+        self.list_devices();
+        Freshness::keep(&self.0.executor, Arc::downgrade(&self.0), |this| {
+            AudioSettings(this).list_devices();
+        })
+    }
+
     /// `value` is one of [`AudioSnapshot::device_options`].
     pub fn set_device(&self, value: &str) {
         self.change(|state| state.set_device(value));
@@ -470,15 +494,6 @@ impl AudioSettings {
         self.change(|state| state.select_resampler(ix));
     }
 
-    pub fn set_soxr_parameters(&self, parameters: SoxrParameters) {
-        self.change(|state| state.set_soxr_parameters(parameters));
-    }
-
-    /// A field's change can settle after another resampler was chosen, and that one stays.
-    pub fn set_r8brain_parameters(&self, parameters: R8brainParameters) {
-        self.change(|state| state.set_r8brain_parameters(parameters));
-    }
-
     /// `ix` is into [`RUBATO_QUALITIES`], and Rubato resamples at it. Custom starts from the
     /// values Rubato had, so choosing it changes nothing until one of them is changed.
     pub fn select_rubato_quality(&self, ix: usize) {
@@ -495,49 +510,78 @@ impl AudioSettings {
         self.change(|state| state.set_window(value));
     }
 
-    pub fn set_dsd(&self, dsd: DsdOutput) {
-        self.change(|state| state.set_dsd(dsd));
+    /// Writes what is still waiting for its turn, and what was typed into a number's field,
+    /// counted as Enter would, which nothing would write once the app has quit. Blocks on the
+    /// disk.
+    pub fn save_before_quitting(&self) {
+        let (Some(store), Some(saver)) = (&self.0.store, &self.0.saver) else {
+            return;
+        };
+        let changes = self.0.state.update(|state| {
+            state.commit_every_r8brain_number();
+            let unsaved = mem::take(&mut state.unsaved);
+            let waiting = saver.take_waiting();
+            if unsaved.is_any() {
+                Some(state.changes(unsaved, waiting))
+            } else {
+                waiting
+            }
+        });
+        if let Some(changes) = changes {
+            write(store, &changes).ok();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pretend_listed(&self, devices: Vec<OutputDevice>) {
+        self.0
+            .state
+            .update(|state| state.on_devices_listed(Ok(devices)));
     }
 }
 
 impl Inner {
     fn save(&self, state: &mut State, unsaved: Unsaved) {
-        let Some(saver) = &self.saver else {
-            return;
-        };
-        let settings = &state.settings;
-        let written = (
-            state.written_r8brain,
-            state.written_soxr,
-            state.written_dsd.clone(),
-        );
-        saver.save_with(|waiting| {
-            let (unsaved, r8brain, soxr, dsd) = match waiting {
-                Some(waiting) => (
-                    waiting.unsaved.and(unsaved),
-                    waiting.r8brain.0,
-                    waiting.soxr.0,
-                    waiting.dsd.0,
-                ),
-                None => (unsaved, written.0, written.1, written.2),
-            };
-            Changes {
-                unsaved,
-                output: settings.output.clone(),
-                transitions: settings.transitions,
-                quality: settings.quality,
-                r8brain: (r8brain, settings.r8brain),
-                soxr: (soxr, settings.soxr),
-                dsd: (dsd, settings.dsd.clone()),
-            }
-        });
-        state.written_r8brain = state.settings.r8brain;
-        state.written_soxr = state.settings.soxr;
-        state.written_dsd = state.settings.dsd.clone();
+        if let Some(saver) = &self.saver {
+            saver.save_with(|waiting| state.changes(unsaved, waiting));
+        }
     }
 }
 
 impl State {
+    /// What a write is to do for `unsaved`, on top of what still waits for one. The settings
+    /// then count as written.
+    fn changes(&mut self, unsaved: Unsaved, waiting: Option<Changes>) -> Changes {
+        let settings = &self.settings;
+        let (unsaved, r8brain, soxr, dsd) = match waiting {
+            Some(waiting) => (
+                waiting.unsaved.and(unsaved),
+                waiting.r8brain.0,
+                waiting.soxr.0,
+                waiting.dsd.0,
+            ),
+            None => (
+                unsaved,
+                self.written_r8brain,
+                self.written_soxr,
+                self.written_dsd.clone(),
+            ),
+        };
+        let changes = Changes {
+            unsaved,
+            output: settings.output.clone(),
+            transitions: settings.transitions,
+            quality: settings.quality,
+            r8brain: (r8brain, settings.r8brain),
+            soxr: (soxr, settings.soxr),
+            dsd: (dsd, settings.dsd.clone()),
+        };
+        self.written_r8brain = settings.r8brain;
+        self.written_soxr = settings.soxr;
+        self.written_dsd = settings.dsd.clone();
+        changes
+    }
+
     fn set_trim_silence(&mut self, is_on: bool) {
         if self.settings.transitions.trim_silence != is_on {
             self.settings.transitions.trim_silence = is_on;
@@ -630,11 +674,13 @@ impl State {
         }
     }
 
+    /// A change can come after another resampler was chosen, and that one stays.
     fn set_r8brain_parameters(&mut self, parameters: R8brainParameters) {
         if self.settings.r8brain == parameters {
             return;
         }
-        self.settings.r8brain = parameters;
+        let before = mem::replace(&mut self.settings.r8brain, parameters);
+        self.drop_r8brain_typing_changed_from(&before);
         self.unsaved.r8brain = true;
         if self.settings.uses_r8brain() {
             self.set_quality(ResamplingQuality::R8brain(parameters));

@@ -8,7 +8,7 @@ use subsonic::{CoverArtId, Song};
 use tokio::sync::broadcast;
 
 use super::{COVER_PIXELS, REFRESH};
-use crate::follow;
+use crate::{covers, follow};
 
 const NOTICES: usize = 16;
 
@@ -168,26 +168,27 @@ impl DiscordStatus {
             return;
         };
         state.sought_cover = Some(cover.clone());
-        let url = self.0.session.cover_art_url(&cover, COVER_PIXELS);
-        let net = self.0.session.client().net().clone();
-        let covers = self.0.covers.clone();
+        let image = covers::cover_image(
+            &self.0.executor,
+            self.0.session.client().net().clone(),
+            self.0.covers.clone(),
+            self.0.session.cover_art_url(&cover, COVER_PIXELS),
+        );
         let host = self.0.cover_host.clone();
-        // The cover cache and the record of links are on the disk
-        let link = self.0.executor.spawn_blocking(move || {
-            block_on(async {
-                let image = session::cover_image(&net, covers.as_ref(), &url).await?;
-                Some(host.link(&image, &key).await)
-            })
-        });
+        let executor = self.0.executor.clone();
         let weak = self.downgrade();
         self.0
             .executor
             .spawn(async move {
                 // Without the image, it is the server that failed, which the rest
                 // of the app shows.
-                let Some(link) = link.await else {
+                let Some(image) = image.await else {
                     return;
                 };
+                // The record of links is on the disk
+                let link = executor
+                    .spawn_blocking(move || block_on(host.link(&image, &key)))
+                    .await;
                 let Some(this) = weak.upgrade() else {
                     return;
                 };

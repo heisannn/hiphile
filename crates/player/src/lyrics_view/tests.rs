@@ -7,7 +7,8 @@ use serde_json::json;
 use config::LyricsHighlight;
 use futures::FutureExt as _;
 use hiphile_core::favorites::Favorite;
-use lyrics::{FindLyrics, Lookup, Lyrics, TimedLine};
+use lyrics::timing::lit_lines;
+use lyrics::{FindLyrics, Lookup, Lyrics};
 
 use super::lines::{CURRENT_LINE_AT, SCROLL_DURATION, line_runs};
 use super::*;
@@ -62,6 +63,7 @@ struct Stand {
     /// What lookups were asked about, and what they find; once those run out,
     /// a lookup finds nothing for as long as the test goes on.
     finds: Finds,
+    _songs: Task<()>,
 }
 
 #[derive(Clone, Default)]
@@ -145,6 +147,7 @@ fn stand(
             player
         });
         let lyrics = CurrentLyrics::with_find_lyrics(gpui_host::executor(cx), finds.source());
+        let songs = crate::testing::follow_songs(player.read(cx).core(), &lyrics, cx);
         let view = cx.new(|cx| LyricsView::new(player.clone(), lyrics, cx));
         let focus = cx.focus_handle();
         focus.focus(window, cx);
@@ -153,6 +156,7 @@ fn stand(
             view,
             focus,
             finds,
+            _songs: songs,
         }
     });
     cx.simulate_resize(size(px(width), px(height)));
@@ -502,6 +506,7 @@ fn the_sync_button_sits_over_the_lines_and_keeps_its_click_from_them(cx: &mut Te
         player.fill_queue(&[long_song], 0);
         player.pretend_playing(true, cx);
     });
+    cx.run_until_parked();
     open_with(&stand, lyrics(40), cx);
 
     let scroll = cx.read(|cx| lines(&view, cx).scroll.clone());
@@ -612,7 +617,7 @@ fn a_failed_lookup_says_so_and_can_be_retried(cx: &mut TestAppContext) {
     cx.read(|cx| assert!(matches!(lookup(&view, cx), Lookup::Failed(..))));
 
     finds.answer_with(Ok(lyrics(2)));
-    update_lines(&view, cx, |lines, cx| lines.retry(cx));
+    update_lines(&view, cx, |lines, _| lines.retry());
     draw(cx);
     cx.read(|cx| assert!(matches!(lookup(&view, cx), Lookup::Done(..))));
     assert_eq!(finds.asked().len(), 2);
@@ -868,76 +873,30 @@ fn zooming_keeps_the_proportions() {
     assert!(zoomed.details_top + px(20.) * DETAILS_HEIGHT <= room.height);
 }
 
-fn first_timed_line(found: &Lyrics) -> &TimedLine {
-    let Lyrics::Timed(found) = found else {
+#[test]
+fn a_part_takes_its_colour_from_how_lit_it_is() {
+    let found = lyrics(2);
+    let Lyrics::Timed(found) = &found else {
         panic!("expected timed lyrics");
     };
-    &found.lines()[0]
-}
-
-#[test]
-fn only_the_parts_begun_are_colored_and_fading_is_noticed() {
-    let found = lyrics(2);
-    let line = first_timed_line(&found);
-    let (dim, bright) = (
-        gpui_kit::hsla(0., 0., 0.5, 1.),
-        gpui_kit::hsla(0., 0., 1., 1.),
-    );
-
-    let (runs, is_fading) = line_runs(line, secs(9.), true, LyricsHighlight::ByWord, dim, bright);
-    assert!(runs.is_empty() && !is_fading);
-
-    let (runs, is_fading) = line_runs(line, secs(11.), true, LyricsHighlight::ByWord, dim, bright);
-    assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0].0, 0.."line ".len());
-    assert_eq!(runs[0].1.color, Some(bright));
-    assert!(!is_fading);
-
-    let (runs, is_fading) = line_runs(
-        line,
-        secs(12.06),
-        true,
-        LyricsHighlight::ByWord,
-        dim,
-        bright,
-    );
-    assert_eq!(runs.len(), 2);
-    assert_eq!(runs[1].0, "line ".len().."line 0".len());
-    assert!(is_fading);
-}
-
-#[test]
-fn by_line_the_whole_line_lights_as_one() {
-    let found = lyrics(2);
-    let line = first_timed_line(&found);
     let (dim, bright) = (
         gpui_kit::hsla(0., 0., 0.5, 1.),
         gpui_kit::hsla(0., 0., 1., 1.),
     );
     let runs_at = |seconds| {
-        line_runs(
-            line,
-            secs(seconds),
-            true,
-            LyricsHighlight::ByLine,
-            dim,
-            bright,
-        )
+        let lit = lit_lines(found, secs(seconds), true, LyricsHighlight::ByWord);
+        line_runs(lit.line(0), dim, bright)
     };
 
-    let (runs, is_fading) = runs_at(9.);
-    assert!(runs.is_empty() && !is_fading);
-
-    // The whole line, while the second part has yet to start
-    let (runs, is_fading) = runs_at(11.);
+    assert!(runs_at(9.).is_empty());
+    let runs = runs_at(11.);
     assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0].0, 0..line.text().len());
-    assert!(!is_fading);
-
-    // A part starting is nothing to fade for
-    let (runs, is_fading) = runs_at(12.05);
-    assert_eq!(runs.len(), 1);
-    assert!(!is_fading);
+    assert_eq!(runs[0].0, 0.."line ".len());
+    assert_eq!(runs[0].1.color, Some(bright));
+    let runs = runs_at(12.06);
+    assert_eq!(runs.len(), 2);
+    assert_ne!(runs[1].1.color, Some(bright));
+    assert_ne!(runs[1].1.color, Some(dim));
 }
 
 #[gpui_kit::test]

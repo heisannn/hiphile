@@ -33,6 +33,12 @@ impl RecommendedStatus {
     pub fn is_recommending(&self) -> bool {
         self.is_recommending
     }
+
+    /// Whether albums show that a reload would replace. Until then their shelf shows the wait or
+    /// offers to try again.
+    pub fn is_reloadable(&self) -> bool {
+        !self.albums.items().is_empty()
+    }
 }
 
 /// Sent when a pick the user asked for went wrong and left the albums on show, which look the

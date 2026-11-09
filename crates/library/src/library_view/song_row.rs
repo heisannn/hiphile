@@ -20,8 +20,8 @@ use crate::{AddToQueue, Open, PlayNext};
 pub(super) struct SongRow {
     pub(super) song: Song,
     pub(super) ix: usize,
-    /// The album's artist, which the row names only where the song's differs.
-    pub(super) album_artist: Option<Arc<str>>,
+    /// Whether the row names the song's artist.
+    pub(super) is_by_another_artist: bool,
     pub(super) state: Option<PlayState>,
     pub(super) is_selected: bool,
     pub(super) is_focused: bool,
@@ -34,7 +34,7 @@ impl RenderOnce for SongRow {
         let Self {
             song,
             ix,
-            album_artist,
+            is_by_another_artist,
             state,
             is_selected,
             is_focused,
@@ -44,7 +44,7 @@ impl RenderOnce for SongRow {
         let muted_foreground = cx.theme().muted_foreground;
         let title = SharedString::from(song.title().to_owned());
         let artist = song_artist_link(&song)
-            .filter(|_| song.artist() != album_artist.as_deref())
+            .filter(|_| is_by_another_artist)
             .map(|artist| artist.small());
         let has_artist = song.artist_id().is_some();
         let number = song

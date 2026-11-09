@@ -178,3 +178,21 @@ fn an_incomplete_first_load_shows_what_it_found() {
     finish_recently_played(&mut shelf, Ok(found));
     assert_eq!(shelf.items().len(), 1);
 }
+
+#[gpui_kit::test]
+fn a_retry_loads_again_the_shelf_that_failed(cx: &mut TestAppContext) {
+    let (shelves, recommendations) = shelves_with(session(NOWHERE), cx);
+    wait_for(cx, || {
+        !is_loading(&shelves.status()) && !recommendations.status().is_recommending()
+    });
+    assert!(matches!(shelves.status().most_played(), Shelf::Failed(_)));
+
+    shelves.retry(HomeSection::MostPlayed);
+    assert_eq!(*shelves.status().most_played(), Shelf::Loading);
+    shelves.retry(HomeSection::Recommended);
+    assert!(recommendations.status().is_recommending());
+
+    wait_for(cx, || {
+        !is_loading(&shelves.status()) && !recommendations.status().is_recommending()
+    });
+}

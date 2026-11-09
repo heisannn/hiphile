@@ -15,7 +15,7 @@ use gpui_kit::{
     prelude::FluentBuilder as _,
 };
 use hiphile_core::favorites::Favorite;
-use playback::{EntryId, Queue};
+use playback::{EntryId, EntryState, Queue};
 use subsonic::{Song, StarTarget};
 use ui::list_navigation::{ListNavigationExt as _, Motion, page_rows};
 use ui::{
@@ -109,20 +109,6 @@ impl QueueView {
     fn select_entry(&mut self, id: EntryId, cx: &mut Context<Self>) {
         if let Some(ix) = self.queue().position(id) {
             self.select(ix, cx);
-        }
-    }
-
-    fn entry_commands(&self, id: EntryId) -> EntryCommands {
-        let queue = self.queue();
-        let (Some(ix), current_ix) = (queue.position(id), queue.current_ix()) else {
-            return EntryCommands::default();
-        };
-        let is_current = current_ix == Some(ix);
-        EntryCommands {
-            play_next: current_ix.is_some() && !is_current,
-            move_up: ix > 0,
-            move_down: ix + 1 < queue.len(),
-            remove: !is_current,
         }
     }
 
@@ -249,8 +235,6 @@ impl QueueView {
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let queue = self.queue();
         let len = queue.len();
-        // Clear keeps the current entry, so only more than that clears
-        let clearable = len > usize::from(queue.current_ix().is_some());
         h_flex()
             .h_10()
             .flex_none()
@@ -281,7 +265,7 @@ impl QueueView {
                     .ghost()
                     .xsmall()
                     .label("Clear")
-                    .disabled(!clearable)
+                    .disabled(!queue.is_clearable())
                     .on_click(cx.listener(|this, _, _, _| this.core.clear_queue())),
             )
             .into_any_element()
@@ -333,7 +317,7 @@ impl QueueView {
                 .into_any_element();
         }
         let entries = queue.snapshot();
-        let current_ix = queue.current_ix();
+        let queue = queue.clone();
         let playing = snapshot.is_playing();
         let selected = self.selected;
         let is_focused = self.focus.is_focused(window);
@@ -346,14 +330,13 @@ impl QueueView {
             &self.scroll,
             move |ix| {
                 let entry = entries.get(ix)?;
-                let is_current = current_ix == Some(ix);
+                let entry_state = queue.entry_state(ix);
                 Some(EntryRow {
                     id: entry.id(),
                     song: entry.item().clone(),
                     ix,
-                    state: is_current.then(|| PlayState::new(playing)),
-                    // With nothing current, playback ran off the end
-                    is_played: current_ix.is_none_or(|current| ix < current),
+                    state: (entry_state == EntryState::Current).then(|| PlayState::new(playing)),
+                    is_played: entry_state == EntryState::Played,
                     is_selected: selected == Some(entry.id()),
                     is_focused,
                     owner: owner.clone(),
@@ -364,14 +347,6 @@ impl QueueView {
         .size_full()
         .into_any_element()
     }
-}
-
-#[derive(Clone, Copy, Default)]
-struct EntryCommands {
-    play_next: bool,
-    move_up: bool,
-    move_down: bool,
-    remove: bool,
 }
 
 /// A screen reader's name for an entry's row, which says what the row shows.
@@ -481,7 +456,7 @@ impl RenderOnce for EntryRow {
             .context_menu(move |menu, window, cx| {
                 let commands = owner
                     .upgrade()
-                    .map(|this| this.read(cx).entry_commands(id))
+                    .and_then(|this| this.read(cx).queue().commands_for(id))
                     .unwrap_or_default();
                 let menu = menu
                     .action_context(focus.clone())

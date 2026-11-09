@@ -89,6 +89,25 @@ fn a_song_is_named_once_and_its_position_shown_while_it_plays() {
 }
 
 #[test]
+fn an_hour_or_more_is_written_as_the_app_writes_it() {
+    let test = Test::new();
+    let player = test.player();
+    let long: Song = serde_json::from_value(json!({
+        "id": "long",
+        "title": "long",
+        "duration": 4_000,
+    }))
+    .unwrap();
+    player.fill_queue(&[long], 0);
+    player.pretend_playing(true);
+    let mut report = Report::default();
+
+    let (_, _, progress) = look(&mut report, &player, Duration::from_secs(3_662));
+
+    assert_eq!(progress, "\r  1:01:02 / 1:06:40");
+}
+
+#[test]
 fn a_failed_song_ends_the_line_is_told_and_asks_for_the_next() {
     let test = Test::new();
     let player = test.player();

@@ -18,6 +18,9 @@ use crate::{
 const RESTART_THRESHOLD: Duration = Duration::from_secs(3);
 const SEEK_STEP: Duration = Duration::from_secs(10);
 const VOLUME_STEP: f32 = 0.1;
+/// Where unmuting at `0.0` goes with no level above it known: halfway, so that it is heard
+/// without being loud at a DAC turned up.
+const AUDIBLE_VOLUME: f32 = 0.5;
 /// How often a song playing is looked at, to tell when it has been listened to enough to count
 /// as played.
 const TALLY_INTERVAL: Duration = Duration::from_millis(250);
@@ -28,6 +31,9 @@ pub enum PlayerNotice {
     /// A play of a song has been reported to the server, as far as it could
     /// be, so what the server says was played last may have changed.
     Played,
+    /// Songs to play or queue were left out, as instrumentals are skipped,
+    /// and nothing changed.
+    Skipped,
 }
 
 /// What the player shows of itself. The position is not in it: it changes all the time, so it is
@@ -158,6 +164,16 @@ impl PlayerSnapshot {
     pub fn is_volume_locked(&self) -> bool {
         self.is_volume_locked
     }
+
+    /// Whether nothing is heard, muted or at `0.0`, which [`Player::toggle_mute`] then ends.
+    pub fn is_silent(&self) -> bool {
+        self.is_muted || self.volume == 0.0
+    }
+
+    /// Whether [`Player::seek_to`] can move the song.
+    pub fn is_seekable(&self) -> bool {
+        self.is_started() && self.duration().is_some()
+    }
 }
 
 /// Plays the queue through the audio engine. Every command changes the snapshot before it
@@ -208,6 +224,8 @@ struct Core {
     /// Play was asked for with nothing loaded, so the next load rises from silence
     rises_at_load: bool,
     tally: PlayTally,
+    /// The last level kept above `0.0`, which unmuting at `0.0` goes back to.
+    audible: f32,
     /// Looks at the song while it plays, for the tally.
     _tally: Option<Task<()>>,
     _open: Task<()>,
@@ -309,6 +327,7 @@ impl Player {
                 dop_start: DopStart::default(),
                 rises_at_load: false,
                 tally: PlayTally::default(),
+                audible: if volume > 0.0 { volume } else { AUDIBLE_VOLUME },
                 _tally: None,
                 _open: Task::ready(()),
                 _announce: Task::ready(()),
@@ -416,6 +435,9 @@ impl Player {
             if let Some(saver) = &self.0.volume_saver {
                 saver.save(core.shown.volume);
             }
+            if core.shown.volume > 0.0 {
+                core.audible = core.shown.volume;
+            }
         });
     }
 
@@ -437,20 +459,35 @@ impl Player {
         self.save_volume();
     }
 
+    /// Mutes, or makes the song heard again: at `0.0` that brings back the last level kept above
+    /// it, and keeps that for the next launch.
     pub fn toggle_mute(&self) {
-        self.0.core.update(|core| {
+        let is_raised = self.0.core.update(|core| {
             if core.shown.is_volume_locked {
-                return;
+                return false;
             }
-            core.shown.is_muted = !core.shown.is_muted;
+            if !core.shown.is_silent() {
+                core.shown.is_muted = true;
+                core.apply_volume();
+                return false;
+            }
+            core.shown.is_muted = false;
+            let is_raised = core.shown.volume == 0.0;
+            if is_raised {
+                core.shown.volume = core.audible;
+            }
             core.apply_volume();
+            is_raised
         });
+        if is_raised {
+            self.save_volume();
+        }
     }
 
     /// Leaves out the songs that are skipped. Changes nothing and returns `false`
     /// when the song at `start_ix` is one of them.
     pub fn play(&self, songs: &[Song], start_ix: usize) -> bool {
-        self.change(|core| {
+        let is_played = self.change(|core| {
             if songs
                 .get(start_ix)
                 .is_some_and(|song| is_skipped(song, core.is_skipping))
@@ -469,13 +506,14 @@ impl Player {
             core.shown.queue.replace(kept, kept_start_ix);
             core.play_current(self);
             true
-        })
+        });
+        self.tell_if_skipped(is_played)
     }
 
     /// Leaves out the songs that are skipped. Changes nothing and returns `false`
     /// when that is all of them.
     pub fn play_whole(&self, songs: &[Song]) -> bool {
-        self.change(|core| {
+        let is_played = self.change(|core| {
             let kept = without_skipped(songs, core.is_skipping);
             if kept.is_empty() && !songs.is_empty() {
                 return false;
@@ -483,7 +521,8 @@ impl Player {
             core.shown.queue.replace_from_start(kept);
             core.play_current(self);
             true
-        })
+        });
+        self.tell_if_skipped(is_played)
     }
 
     /// Adds `songs` to the queue at `placement`. When nothing is playing or
@@ -495,7 +534,7 @@ impl Player {
     /// Leaves out the songs that are skipped. Changes nothing and returns `false`
     /// when that is all of them.
     pub fn enqueue(&self, songs: &[Song], placement: Placement) -> bool {
-        self.change(|core| {
+        let is_queued = self.change(|core| {
             let had_current = core.shown.has_song();
             let kept = without_skipped(songs, core.is_skipping);
             if core.shown.queue.insert(kept, placement).is_none() {
@@ -509,7 +548,17 @@ impl Player {
                 core.play_current(self);
             }
             true
-        })
+        });
+        self.tell_if_skipped(is_queued)
+    }
+
+    /// Passes `is_kept` on, telling [`PlayerNotice::Skipped`] when it is `false`.
+    fn tell_if_skipped(&self, is_kept: bool) -> bool {
+        if !is_kept {
+            // Fails only when nobody listens
+            self.0.notices.send(PlayerNotice::Skipped).ok();
+        }
+        is_kept
     }
 
     pub fn play_entry(&self, id: EntryId) {

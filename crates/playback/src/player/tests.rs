@@ -83,6 +83,25 @@ fn skipped_songs_stay_out_of_the_queue(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn each_command_left_with_nothing_but_skipped_songs_says_so(cx: &mut TestAppContext) {
+    let player = idle_player(cx);
+    player.set_skip_instrumentals(true);
+    let inst = named_song("a [instrumental]");
+    player.fill_queue(&[named_song("b")], 0);
+    player.pretend_playing(true);
+    let mut notices = player.notices();
+
+    player.play(std::slice::from_ref(&inst), 0);
+    player.play_whole(std::slice::from_ref(&inst));
+    player.enqueue(std::slice::from_ref(&inst), Placement::Last);
+    player.enqueue(&[named_song("c")], Placement::Last);
+    player.enqueue(&[], Placement::Last);
+
+    let told: Vec<_> = std::iter::from_fn(|| notices.try_recv().ok()).collect();
+    assert_eq!(told, [PlayerNotice::Skipped; 3]);
+}
+
+#[gpui_kit::test]
 fn turning_on_skipping_takes_out_what_waits_but_not_what_plays(cx: &mut TestAppContext) {
     let player = idle_player(cx);
     player.fill_queue(
@@ -291,6 +310,57 @@ fn muting_keeps_the_level_and_moving_it_unmutes(cx: &mut TestAppContext) {
     player.toggle_mute();
     player.set_volume(0.0);
     assert!(player.snapshot().is_muted());
+}
+
+#[gpui_kit::test]
+fn unmuting_at_no_volume_brings_back_the_level_kept_before(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = config::Store::at(dir.path());
+    let player = player_saving_to(&store, cx);
+    player.set_volume(0.7);
+    player.save_volume();
+    player.set_volume(0.2);
+    player.set_volume(0.0);
+    player.save_volume();
+    assert!(player.snapshot().is_silent());
+
+    player.toggle_mute();
+    assert!(!player.snapshot().is_silent());
+    assert_eq!(player.snapshot().volume(), 0.7);
+    cx.run_until_parked();
+    assert_eq!(store.volume().unwrap(), Some(0.7));
+
+    player.toggle_mute();
+    assert!(player.snapshot().is_muted());
+    player.set_volume(0.0);
+    player.toggle_mute();
+    assert!(!player.snapshot().is_muted());
+    assert_eq!(player.snapshot().volume(), 0.7);
+}
+
+#[gpui_kit::test]
+fn unmuting_at_no_volume_with_no_level_known_goes_halfway(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = config::Store::at(dir.path());
+    store.save_volume(0.0).unwrap();
+    let player = player_saving_to(&store, cx);
+    assert!(player.snapshot().is_silent());
+
+    player.toggle_mute();
+    assert_eq!(player.snapshot().volume(), 0.5);
+    assert!(!player.snapshot().is_muted());
+}
+
+#[gpui_kit::test]
+fn only_a_started_song_with_a_duration_is_seekable(cx: &mut TestAppContext) {
+    let player = idle_player(cx);
+    let untimed: Song = serde_json::from_value(json!({ "id": "u", "title": "u" })).unwrap();
+    player.fill_queue(&[named_song("a")], 0);
+    assert!(!player.snapshot().is_seekable());
+    player.pretend_playing(false);
+    assert!(player.snapshot().is_seekable());
+    player.fill_queue(&[untimed], 0);
+    assert!(!player.snapshot().is_seekable());
 }
 
 #[gpui_kit::test]

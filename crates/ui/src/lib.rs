@@ -5,7 +5,6 @@ mod cover_art;
 mod cover_cache;
 mod details;
 mod drag_preview;
-mod duration;
 mod favorite_button;
 mod http;
 pub mod list_navigation;
@@ -27,13 +26,13 @@ pub use cover_art::CoverArt;
 pub use cover_cache::CoverCache;
 pub use details::{format_album_count, format_song_count, join_details};
 pub use drag_preview::DragPreview;
-pub use duration::format_duration;
 pub use favorite_button::favorite_button;
+pub use hiphile_core::format::format_duration;
 pub use load_state::{LoadFailure, centered, muted_text, no_matches};
 pub use master_detail::{
     DetailHeader, ListFilter, ListPaneHeader, MasterDetail, RefreshFailure, filter_input,
 };
-pub use network::{on_readings_changed, set_http_client};
+pub use network::set_http_client;
 pub use now_playing::{NowPlaying, PlayState, PlayStateIcon};
 pub use reorder::ReorderExt;
 pub use row_list::row_list;

@@ -1,7 +1,7 @@
 use fuzzy::{Index, Speller};
 use subsonic::Playlist;
 
-pub(crate) fn playlist_index(playlists: &[Playlist], speller: Option<&dyn Speller>) -> Index {
+pub(super) fn playlist_index(playlists: &[Playlist], speller: Option<&dyn Speller>) -> Index {
     Index::new(
         playlists.iter().map(|playlist| {
             let name = Some(playlist.name());

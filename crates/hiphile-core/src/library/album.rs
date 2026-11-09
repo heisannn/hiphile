@@ -1,4 +1,5 @@
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 use executor::{Executor, Publish, Published, Task};
 use session::Session;
@@ -48,6 +49,19 @@ impl LoadedAlbum {
 
     pub fn songs(&self) -> &Arc<[Song]> {
         &self.songs
+    }
+
+    /// The album's, or else the sum of its songs', unless one of them does not say.
+    pub fn duration(&self) -> Option<Duration> {
+        self.album
+            .duration()
+            .or_else(|| self.songs.iter().map(Song::duration).sum())
+    }
+
+    /// Whether `song` is by another artist than the album, as on a compilation, so that its own
+    /// is worth naming.
+    pub fn is_by_another_artist(&self, song: &Song) -> bool {
+        song.artist() != self.album.artist()
     }
 }
 

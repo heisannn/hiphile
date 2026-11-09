@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 
-pub use current::{CurrentLyrics, FindLyrics, Lookup, LyricsSnapshot};
+pub use current::{CurrentLyrics, FindLyrics, Lookup, LyricsSnapshot, Wanted};
 use matching::says_who;
 pub use model::{Lyrics, PlainLyrics, TimedLine, TimedLyrics, TimedTextElement};
 #[cfg(any(test, feature = "test-support"))]

@@ -7,15 +7,15 @@ use subsonic::{Album, Song};
 use tokio::sync::watch;
 
 use super::daily::DailyRecommendations;
+use super::layout::{AlbumShelf, HomeSection};
 use super::recent::most_recent;
 use crate::Shelf;
 
-/// How many of the most played albums the home screen asks for, for the widest window. The
-/// recommendations leave them out.
-pub(crate) const MOST_PLAYED: u32 = 12;
-/// How many of the new albums the home screen asks for, for the widest window. The
-/// recommendations leave them out.
-pub(crate) const NEW_ALBUMS: u32 = 24;
+/// How many of the most played albums the home screen asks for. The recommendations leave them
+/// out.
+pub(crate) const MOST_PLAYED: u32 = AlbumShelf::MostPlayed.room() as u32;
+/// How many of the new albums the home screen asks for. The recommendations leave them out.
+pub(crate) const NEW_ALBUMS: u32 = AlbumShelf::New.room() as u32;
 const RECENT_SONGS: usize = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -140,6 +140,17 @@ impl HomeShelves {
 
     pub fn reload_new_albums(&self) {
         self.0.state.update(|state| self.load_new_albums(state));
+    }
+
+    /// Loads a shelf that failed again, the recommendations included. Their reload is for
+    /// albums on show, which a pick that fails leaves there.
+    pub fn retry(&self, section: HomeSection) {
+        match section {
+            HomeSection::Recommended => self.0.recommendations.pick(),
+            HomeSection::RecentlyPlayed => self.reload_recently_played(),
+            HomeSection::MostPlayed => self.reload_most_played(),
+            HomeSection::NewAlbums => self.reload_new_albums(),
+        }
     }
 
     fn load_recently_played(&self, state: &mut State) {

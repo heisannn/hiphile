@@ -44,6 +44,25 @@ impl<T> Entry<T> {
     }
 }
 
+/// The commands that would change an entry where it is now, as
+/// [`Queue::move_to_next`], [`Queue::move_entry`] and [`Queue::remove`] take
+/// them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct EntryCommands {
+    pub play_next: bool,
+    pub move_up: bool,
+    pub move_down: bool,
+    pub remove: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntryState {
+    Played,
+    Current,
+    Upcoming,
+}
+
 /// The same song may appear more than once, so the current entry is a
 /// position, not a song ID. `T` is whatever the owner needs per entry: an ID
 /// for the CLI, a full `Song` for a view that shows titles.
@@ -373,6 +392,31 @@ impl<T: Clone> Queue<T> {
         }
     }
 
+    pub fn commands_for(&self, id: EntryId) -> Option<EntryCommands> {
+        let ix = self.position(id)?;
+        let is_current = self.current_ix == Some(ix);
+        Some(EntryCommands {
+            play_next: self.current_ix.is_some() && !is_current,
+            move_up: ix > 0,
+            move_down: ix + 1 < self.entries.len(),
+            remove: !is_current,
+        })
+    }
+
+    /// The state of the entry at `ix`, by its place against the current one.
+    pub fn entry_state(&self, ix: usize) -> EntryState {
+        match self.current_ix {
+            Some(current) if ix == current => EntryState::Current,
+            Some(current) if ix > current => EntryState::Upcoming,
+            _ => EntryState::Played,
+        }
+    }
+
+    /// Whether [`clear`](Self::clear) would remove anything.
+    pub fn is_clearable(&self) -> bool {
+        self.entries.len() > usize::from(self.current_ix.is_some())
+    }
+
     /// Removes every entry but the current one, or all of them with none current.
     pub fn clear(&mut self) {
         let kept: Vec<_> = self
@@ -626,6 +670,63 @@ mod tests {
         assert_eq!(items(&queue), ["b", "a", "d", "c"]);
         assert_eq!(queue.current().copied(), Some("b"));
         assert!(!queue.move_to_next(id_of(&queue, 0)));
+    }
+
+    #[test]
+    fn a_menus_commands_follow_where_the_entry_is() {
+        let queue = queue(&["a", "b", "c"], 1);
+        let commands = |ix| queue.commands_for(id_of(&queue, ix)).unwrap();
+
+        let of_first = commands(0);
+        assert!(of_first.play_next && of_first.remove && of_first.move_down);
+        assert!(!of_first.move_up);
+
+        let of_current = commands(1);
+        assert!(of_current.move_up && of_current.move_down);
+        assert!(!of_current.play_next && !of_current.remove);
+
+        let of_last = commands(2);
+        assert!(of_last.play_next && of_last.remove && of_last.move_up);
+        assert!(!of_last.move_down);
+    }
+
+    #[test]
+    fn with_nothing_current_no_entry_can_be_put_next_and_all_have_played() {
+        let mut queue = queue(&["a", "b"], 1);
+        let gone = id_of(&queue, 0);
+        queue.advance();
+        let commands = queue.commands_for(id_of(&queue, 1)).unwrap();
+        assert!(!commands.play_next && commands.remove && commands.move_up);
+        assert_eq!(queue.entry_state(1), EntryState::Played);
+
+        queue.remove(gone);
+        assert_eq!(queue.commands_for(gone), None);
+    }
+
+    #[test]
+    fn entries_before_the_current_one_have_played() {
+        let queue = queue(&["a", "b", "c"], 1);
+        let states: Vec<_> = (0..3).map(|ix| queue.entry_state(ix)).collect();
+        assert_eq!(
+            states,
+            [
+                EntryState::Played,
+                EntryState::Current,
+                EntryState::Upcoming
+            ]
+        );
+    }
+
+    #[test]
+    fn only_more_than_the_current_entry_is_clearable() {
+        let mut queue = queue(&["a", "b"], 1);
+        assert!(queue.is_clearable());
+        queue.clear();
+        assert!(!queue.is_clearable());
+        queue.advance();
+        assert!(queue.is_clearable());
+        queue.clear();
+        assert!(!queue.is_clearable());
     }
 
     #[test]
