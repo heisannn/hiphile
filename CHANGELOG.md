@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/heisannn/hiphile/compare/v0.4.0...v0.5.0) - 2026-11-09
+
+### Added
+
+- *(dsp)* add crossfeed and balance
+- *(library)* sort artists, albums and songs by date added and release date
+
+### Fixed
+
+- *(player)* keep the position moving after the mini player closes
+
+### Other
+
+- *(core)* move what the views still decided into the core
+- *(core)* load the lists, an album's detail and the caches in the core
+- *(core)* make Hiphile the app's core and open the workspace in it
+- *(playback)* move the player into playback, free of GPUI
+- *(core)* move the library sync, the search index and the recommendations into the core
+- *(core)* move favorites, playlists and skipping instrumentals into the core
+- *(settings)* move the settings models into hiphile-core
+- *(session)* free session, signing in and the dictionaries of GPUI
+- *(core)* move the GPUI host into gpui-host and let views follow the core
+- *(updater)* run the updater on the injected executor, free of GPUI
+- *(core)* move the logic that never needed GPUI into the core
+- *(gpui)* update gpui-kit to 0.9.1
+- *(core)* add the executor the core runs on and a serial saver
+
 ## [0.4.0](https://github.com/heisannn/hiphile/compare/v0.3.0...v0.4.0) - 2026-11-08
 
 ### Added
