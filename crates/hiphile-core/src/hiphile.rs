@@ -37,11 +37,12 @@ impl Caches {
     }
 }
 
-/// Whether someone is signed in, and as whom.
+/// Whether someone is signed in, as whom, and with whom else they could be.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HiphileSnapshot {
     workspace: Option<Workspace>,
     is_signing_in: bool,
+    profiles: Arc<[config::Profile]>,
 }
 
 impl HiphileSnapshot {
@@ -58,6 +59,12 @@ impl HiphileSnapshot {
     /// Who is signed in.
     pub fn profile(&self) -> Option<&config::Profile> {
         self.workspace.as_ref().map(Workspace::profile)
+    }
+
+    /// Those signed in with and not signed out of since, in the order first signed in with, the
+    /// one signed in among them.
+    pub fn profiles(&self) -> &[config::Profile] {
+        &self.profiles
     }
 }
 
@@ -98,8 +105,11 @@ struct State {
     shown: HiphileSnapshot,
     /// `None` when there is nowhere to keep songs or their limit could not be read.
     song_cache: Option<playback::SongCache>,
-    /// Counts the attempts to sign in, so that one that ends late cannot end its successor.
+    /// Counts the attempts to sign in, the switches and signing out, so that one that ends late
+    /// cannot end its successor, and a switch whose password comes late cannot start after them.
     attempt_id: u64,
+    /// Of the attempt under way.
+    calling_off: Option<futures::future::AbortHandle>,
     /// Whether whoever signed in last may still be signed in again without asking: once, and
     /// not after signing out, as a password in the settings file would sign them straight back in.
     may_resume: bool,
@@ -112,6 +122,15 @@ pub enum SignInRefused {
     Invalid(Invalid),
     /// Another attempt is under way, which decides.
     SigningIn,
+}
+
+/// Why switching to a profile did not sign in with it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SwitchFailed {
+    /// None is saved for it, so only a typed one signs in with it.
+    NoPassword,
+    /// What went wrong signing in, for the user.
+    SignIn(String),
 }
 
 impl Publish for State {
@@ -152,9 +171,13 @@ impl Hiphile {
         let accounts = Accounts::new(executor.clone(), net.clone(), share(&store), keychain);
         let this = Self(Arc::new(Inner {
             state: Published::new(State {
-                shown: HiphileSnapshot::default(),
+                shown: HiphileSnapshot {
+                    profiles: accounts.profiles().into(),
+                    ..HiphileSnapshot::default()
+                },
                 song_cache,
                 attempt_id: 0,
+                calling_off: None,
                 may_resume: true,
             }),
             executor,
@@ -250,46 +273,60 @@ impl Hiphile {
     }
 
     /// Checks what was typed before anything else, and takes no attempt while another is under
-    /// way. Signed in, the workspace opens and the profile and the password are remembered for
-    /// next time; the error says what went wrong for the user. Dropping the task calls the
-    /// attempt off.
+    /// way. Signed in, the workspace opens in place of any other, and the profile and the
+    /// password are remembered for next time; the error says what went wrong for the user.
+    /// Dropping the task calls the attempt off, and signing out does too, which ends it with `Ok`.
     pub fn sign_in(
         &self,
         address: &str,
         username: &str,
         password: &str,
     ) -> Result<Task<Result<(), String>>, SignInRefused> {
-        self.0.state.update(|state| {
-            if state.shown.is_signing_in {
-                return Err(SignInRefused::SigningIn);
-            }
-            let attempt = self
-                .0
-                .accounts
-                .sign_in(address, username, password)
-                .map_err(SignInRefused::Invalid)?;
-            state.shown.is_signing_in = true;
-            state.attempt_id += 1;
-            let ending = Attempt {
-                hiphile: self.downgrade(),
-                id: state.attempt_id,
-            };
-            Ok(self.0.executor.spawn(async move {
-                let SignedIn {
-                    session, profile, ..
-                } = attempt.await?;
-                if let Some(this) = ending.hiphile.upgrade() {
-                    this.signed_in(ending.id, session, profile);
-                }
-                Ok(())
-            }))
-        })
+        self.0
+            .state
+            .update(|state| self.start_signing_in(state, address, username, password))
     }
 
-    /// Signs in as whoever did last with the password saved for them, as [`Self::sign_in`] does,
-    /// once for as long as the core lives. `None` after the first call, after signing out, and
-    /// when nobody has signed in before. Ends with `Ok` also when no password was saved, or when
-    /// another attempt was under way, which then decides. Dropping the task calls it off, as
+    fn start_signing_in(
+        &self,
+        state: &mut State,
+        address: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<Task<Result<(), String>>, SignInRefused> {
+        if state.shown.is_signing_in {
+            return Err(SignInRefused::SigningIn);
+        }
+        let attempt = self
+            .0
+            .accounts
+            .sign_in(address, username, password)
+            .map_err(SignInRefused::Invalid)?;
+        let (attempt, calling_off) = futures::future::abortable(attempt);
+        state.shown.is_signing_in = true;
+        state.attempt_id += 1;
+        state.calling_off = Some(calling_off);
+        let ending = Attempt {
+            hiphile: self.downgrade(),
+            id: state.attempt_id,
+        };
+        Ok(self.0.executor.spawn(async move {
+            let Ok(signed_in) = attempt.await else {
+                return Ok(());
+            };
+            let SignedIn {
+                session, profile, ..
+            } = signed_in?;
+            if let Some(this) = ending.hiphile.upgrade() {
+                this.signed_in(ending.id, session, profile);
+            }
+            Ok(())
+        }))
+    }
+
+    /// Signs in as whoever did last, as [`Self::switch_to`] does, once for as long as the core
+    /// lives. `None` after the first call, after signing out, and when nobody has signed in
+    /// before. Ends with `Ok` also when no password was saved. Dropping the task calls it off, as
     /// when the user starts typing instead.
     pub fn resume(&self) -> Option<Task<Result<(), String>>> {
         if !self
@@ -299,25 +336,57 @@ impl Hiphile {
         {
             return None;
         }
-        let profile = self.0.accounts.last_profile()?;
-        let lookup = self.0.accounts.saved_password(profile.clone());
-        let this = self.downgrade();
+        let switching = self.switch_to(self.0.accounts.last_profile()?);
         Some(self.0.executor.spawn(async move {
-            let Some(password) = lookup.await else {
-                return Ok(());
-            };
-            let Some(attempt) = this
-                .upgrade()
-                .map(|this| this.sign_in(profile.server(), profile.username(), &password))
-            else {
-                return Ok(());
-            };
-            match attempt {
-                Ok(attempt) => attempt.await,
-                Err(SignInRefused::SigningIn) => Ok(()),
-                Err(SignInRefused::Invalid(invalid)) => Err(invalid.message().to_owned()),
+            match switching.await {
+                Ok(()) | Err(SwitchFailed::NoPassword) => Ok(()),
+                Err(SwitchFailed::SignIn(error)) => Err(error),
             }
         }))
+    }
+
+    /// Signs in with `profile` and the password saved for it, as [`Self::sign_in`] does, in place
+    /// of whoever is signed in, who stays until it succeeds. Ends with `Ok` at once when `profile`
+    /// is signed in already or another attempt is under way, which decides, and without signing in
+    /// when signing in, switching or signing out is asked for before the password is found.
+    /// Dropping the task calls it off.
+    pub fn switch_to(&self, profile: config::Profile) -> Task<Result<(), SwitchFailed>> {
+        let request = self.0.state.update(|state| {
+            let decided = state.shown.profile() == Some(&profile) || state.shown.is_signing_in;
+            (!decided).then(|| {
+                state.attempt_id += 1;
+                state.attempt_id
+            })
+        });
+        let Some(request) = request else {
+            return Task::ready(Ok(()));
+        };
+        let lookup = self.0.accounts.saved_password(profile.clone());
+        let this = self.downgrade();
+        self.0.executor.spawn(async move {
+            let password = lookup.await;
+            let Some(this) = this.upgrade() else {
+                return Ok(());
+            };
+            let attempt = this.0.state.update(|state| {
+                if state.attempt_id != request {
+                    return Ok(None);
+                }
+                let password = password.ok_or(SwitchFailed::NoPassword)?;
+                match this.start_signing_in(state, profile.server(), profile.username(), &password)
+                {
+                    Ok(attempt) => Ok(Some(attempt)),
+                    Err(SignInRefused::SigningIn) => Ok(None),
+                    Err(SignInRefused::Invalid(invalid)) => {
+                        Err(SwitchFailed::SignIn(invalid.message().to_owned()))
+                    }
+                }
+            })?;
+            match attempt {
+                Some(attempt) => attempt.await.map_err(SwitchFailed::SignIn),
+                None => Ok(()),
+            }
+        })
     }
 
     /// Opens a session on the server at `address` with `credentials` without signing in: nothing
@@ -348,16 +417,33 @@ impl Hiphile {
         player
     }
 
-    /// Closes the workspace, which stops playing, and forgets the saved password, so that signing
-    /// in again asks for it, unless the settings file has it. Nothing is resumed after it.
+    /// Calls off signing in and closes the workspace, which stops playing, takes its profile off
+    /// the profiles and forgets its saved password, so that signing in again asks for it, unless
+    /// the settings file has it. Nothing is resumed after it.
     pub fn sign_out(&self) {
-        let closed = self.0.state.update(|state| {
+        self.0.state.update(|state| {
             state.may_resume = false;
-            state.shown.workspace.take()
+            state.attempt_id += 1;
+            state.shown.is_signing_in = false;
+            if let Some(calling_off) = state.calling_off.take() {
+                calling_off.abort();
+            }
+            if let Some(closed) = state.shown.workspace.take() {
+                self.0.accounts.forget(closed.profile().clone());
+                state.shown.profiles = self.0.accounts.profiles().into();
+            }
         });
-        if let Some(closed) = closed {
-            self.0.accounts.forget_password(closed.profile().clone());
-        }
+    }
+
+    /// Takes `profile` off the profiles and forgets its saved password, as signing out does,
+    /// unless it is signed in.
+    pub fn forget(&self, profile: config::Profile) {
+        self.0.state.update(|state| {
+            if state.shown.profile() != Some(&profile) {
+                self.0.accounts.forget(profile);
+                state.shown.profiles = self.0.accounts.profiles().into();
+            }
+        });
     }
 
     /// Writes what is still waiting to be saved, restores the output device as the player found
@@ -383,10 +469,12 @@ impl Hiphile {
     fn signed_in(&self, attempt_id: u64, session: Session, profile: config::Profile) {
         let session = session.with_readings(self.readings().clone());
         self.0.state.update(|state| {
+            state.shown.profiles = self.0.accounts.profiles().into();
+            // Not when signing out called it off as it ended
             if state.attempt_id == attempt_id {
                 state.shown.is_signing_in = false;
+                self.open_workspace_in(state, session, profile);
             }
-            self.open_workspace_in(state, session, profile);
         });
     }
 

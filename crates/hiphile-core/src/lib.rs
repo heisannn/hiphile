@@ -26,7 +26,7 @@ pub mod test_support;
 mod testing;
 mod workspace;
 
-pub use hiphile::{Caches, Hiphile, HiphileSnapshot, SignInRefused};
+pub use hiphile::{Caches, Hiphile, HiphileSnapshot, SignInRefused, SwitchFailed};
 pub use shelf::Shelf;
 pub use shown::Shown;
 pub use workspace::Workspace;

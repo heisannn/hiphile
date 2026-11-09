@@ -23,9 +23,11 @@ pub struct Profile {
 }
 
 impl Profile {
+    /// The same for each way of writing the server's address that differs only in the case of
+    /// its scheme and host, or in slashes at its end.
     pub fn new(server: impl Into<String>, username: impl Into<String>) -> Self {
         Self {
-            server: server.into(),
+            server: server_address(&server.into()),
             username: username.into(),
         }
     }
@@ -699,6 +701,30 @@ struct Settings {
     discord_presence: Option<bool>,
     auto_update: Option<bool>,
     imgbb_api_key: Option<String>,
+    profiles: Option<Lenient<Vec<Lenient<SavedProfile>>>>,
+}
+
+/// A value read if it can be, so that one written wrong by hand loses only itself.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Lenient<T> {
+    Read(T),
+    Unread(serde::de::IgnoredAny),
+}
+
+impl<T> Lenient<T> {
+    fn read(self) -> Option<T> {
+        match self {
+            Self::Read(value) => Some(value),
+            Self::Unread(_) => None,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct SavedProfile {
+    server: Option<String>,
+    username: Option<String>,
 }
 
 const DSD_PARAMETER_KEYS: [&str; 12] = [
@@ -1138,6 +1164,14 @@ fn soxr_items(parameters: SoxrParameters) -> [(&'static str, Option<toml_edit::I
 /// discord_presence = false
 /// auto_update = false
 /// imgbb_api_key = "..."
+///
+/// [[profiles]]
+/// server = "https://music.example.com"
+/// username = "alice"
+///
+/// [[profiles]]
+/// server = "https://other.example.com"
+/// username = "bob"
 /// ```
 #[derive(Clone, Debug)]
 pub struct Store {
@@ -1175,6 +1209,27 @@ impl Store {
             .map(|(server, username)| Profile::new(server, username)))
     }
 
+    /// Those signed in with and not forgotten since, each once, in the order first saved.
+    /// Entries without a server and a username are left out.
+    pub fn profiles(&self) -> Result<Vec<Profile>, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        let saved = settings
+            .profiles
+            .and_then(Lenient::read)
+            .unwrap_or_default();
+        let mut profiles: Vec<Profile> = Vec::new();
+        for saved in saved.into_iter().filter_map(Lenient::read) {
+            let (Some(server), Some(username)) = (saved.server, saved.username) else {
+                continue;
+            };
+            let profile = Profile::new(server, username);
+            if !profiles.contains(&profile) {
+                profiles.push(profile);
+            }
+        }
+        Ok(profiles)
+    }
+
     /// The password written by hand in the file, if it belongs to `profile`.
     /// It is only for the file's own `server` and `username`, so it is never
     /// sent to a server named by an option or the environment. The app never
@@ -1183,8 +1238,10 @@ impl Store {
         let settings = self.read(
             config_rs::Environment::with_prefix(ENV_PREFIX).source(Some(Default::default())),
         )?;
-        let same_profile = settings.server.as_deref() == Some(profile.server())
-            && settings.username.as_deref() == Some(profile.username());
+        let same_profile = settings
+            .server
+            .zip(settings.username)
+            .is_some_and(|(server, username)| Profile::new(server, username) == *profile);
         Ok(settings
             .password
             .filter(|password| same_profile && !password.is_empty()))
@@ -1823,19 +1880,47 @@ impl Store {
             .map_err(read_error)
     }
 
-    /// Records `profile` in `config.toml`, keeping the file's other keys and
-    /// comments. A different profile removes `password`, which belonged to the
-    /// one it replaces.
-    pub fn save_profile(&self, profile: &Profile) -> Result<(), Error> {
+    /// Records `profile` in `config.toml` as the last one, and among the
+    /// profiles unless it is there, keeping the file's other keys and comments.
+    /// A different profile removes `password`, which belonged to the one it
+    /// replaces: that one comes back with it, for the password to be kept
+    /// elsewhere.
+    pub fn save_profile(&self, profile: &Profile) -> Result<Option<(Profile, String)>, Error> {
+        let mut replaced = None;
         self.edit(|document| {
-            let saved = |key| document.get(key).and_then(toml_edit::Item::as_str);
-            if saved("server") != Some(profile.server())
-                || saved("username") != Some(profile.username())
-            {
+            if !is_profile(document.as_table(), profile) {
+                let saved = |key| document.get(key).and_then(toml_edit::Item::as_str);
+                let password = saved("password").filter(|password| !password.is_empty());
+                replaced = saved("server").zip(saved("username")).zip(password).map(
+                    |((server, username), password)| {
+                        (Profile::new(server, username), password.to_owned())
+                    },
+                );
                 document.remove("password");
             }
             document["server"] = toml_edit::value(profile.server());
             document["username"] = toml_edit::value(profile.username());
+            let profiles = document
+                .entry("profiles")
+                .or_insert(toml_edit::Item::ArrayOfTables(Default::default()));
+            match ProfileList::of(profiles) {
+                Some(profiles) if !profiles.has(profile) => profiles.push(profile),
+                _ => {}
+            }
+        })?;
+        Ok(replaced)
+    }
+
+    /// Takes `profile` off the profiles. It stays the last one, if it is.
+    pub fn forget_profile(&self, profile: &Profile) -> Result<(), Error> {
+        self.edit(|document| {
+            let Some(mut profiles) = document.get_mut("profiles").and_then(ProfileList::of) else {
+                return;
+            };
+            profiles.remove(profile);
+            if profiles.is_empty() {
+                document.remove("profiles");
+            }
         })
     }
 
@@ -2114,6 +2199,109 @@ impl Store {
         std::fs::write(&temporary, document.to_string()).map_err(io_error(&temporary))?;
         std::fs::rename(&temporary, &path).map_err(io_error(&path))
     }
+}
+
+/// `server` with its scheme and host in lowercase, and without slashes at its end.
+fn server_address(server: &str) -> String {
+    let server = server.trim().trim_end_matches('/');
+    let Some((scheme, rest)) = server.split_once("://") else {
+        return server.to_owned();
+    };
+    let (host, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    format!(
+        "{}://{}{path}",
+        scheme.to_ascii_lowercase(),
+        host.to_ascii_lowercase()
+    )
+}
+
+/// The profiles in `config.toml`, changed in the form they are written in.
+enum ProfileList<'a> {
+    Tables(&'a mut toml_edit::ArrayOfTables),
+    Inline(&'a mut toml_edit::Array),
+}
+
+impl<'a> ProfileList<'a> {
+    /// `None` when `item` is neither, which is read as no profiles and left as it is.
+    fn of(item: &'a mut toml_edit::Item) -> Option<Self> {
+        match item {
+            toml_edit::Item::ArrayOfTables(tables) => Some(Self::Tables(tables)),
+            toml_edit::Item::Value(toml_edit::Value::Array(array)) => Some(Self::Inline(array)),
+            _ => None,
+        }
+    }
+
+    fn has(&self, profile: &Profile) -> bool {
+        match self {
+            Self::Tables(tables) => tables.iter().any(|table| is_profile(table, profile)),
+            Self::Inline(array) => array.iter().any(|value| is_inline_profile(value, profile)),
+        }
+    }
+
+    fn push(self, profile: &Profile) {
+        match self {
+            Self::Tables(tables) => {
+                let mut table = toml_edit::Table::new();
+                table["server"] = toml_edit::value(profile.server());
+                table["username"] = toml_edit::value(profile.username());
+                tables.push(table);
+            }
+            Self::Inline(array) => {
+                let mut table = toml_edit::InlineTable::new();
+                table.insert("server", profile.server().into());
+                table.insert("username", profile.username().into());
+                let indent = array
+                    .iter()
+                    .last()
+                    .and_then(|last| last.decor().prefix()?.as_str()?.rsplit_once('\n'))
+                    .map(|(_, indent)| format!("\n{indent}"));
+                let Some(indent) = indent else {
+                    array.push(table);
+                    return;
+                };
+                // On a line of its own as the last one is, after what followed that one, such as
+                // its comment
+                let trailing = array.trailing().as_str().unwrap_or_default().to_owned();
+                let mut value = toml_edit::Value::from(table);
+                value
+                    .decor_mut()
+                    .set_prefix(format!("{}{indent}", trailing.trim_end()));
+                array.set_trailing(
+                    trailing
+                        .rsplit_once('\n')
+                        .map_or_else(String::new, |(_, end)| format!("\n{end}")),
+                );
+                array.push_formatted(value);
+            }
+        }
+    }
+
+    fn remove(&mut self, profile: &Profile) {
+        match self {
+            Self::Tables(tables) => tables.retain(|table| !is_profile(table, profile)),
+            Self::Inline(array) => array.retain(|value| !is_inline_profile(value, profile)),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Tables(tables) => tables.is_empty(),
+            Self::Inline(array) => array.is_empty(),
+        }
+    }
+}
+
+fn is_profile(table: &dyn toml_edit::TableLike, profile: &Profile) -> bool {
+    let saved = |key| table.get(key).and_then(toml_edit::Item::as_str);
+    saved("server")
+        .zip(saved("username"))
+        .is_some_and(|(server, username)| Profile::new(server, username) == *profile)
+}
+
+fn is_inline_profile(value: &toml_edit::Value, profile: &Profile) -> bool {
+    value
+        .as_inline_table()
+        .is_some_and(|table| is_profile(table, profile))
 }
 
 /// How many bytes a cache limit of `gib` keeps, where `0` means no limit; `None`
@@ -3803,6 +3991,169 @@ mod tests {
     }
 
     #[test]
+    fn each_profile_saved_is_kept_once_in_the_order_first_saved() {
+        let store = temporary_store("profiles");
+        let alice = Profile::new("https://music.example.com", "alice");
+        let bob = Profile::new("https://other.example.com", "bob");
+        assert_eq!(store.profiles().unwrap(), []);
+
+        store.save_profile(&alice).unwrap();
+        store.save_profile(&bob).unwrap();
+        store.save_profile(&alice).unwrap();
+
+        assert_eq!(store.profiles().unwrap(), [alice.clone(), bob]);
+        assert_eq!(load(&store, &[]), Some(alice));
+    }
+
+    #[test]
+    fn a_forgotten_profile_is_no_longer_among_them_but_stays_the_last() {
+        let store = temporary_store("profiles-forgotten");
+        let alice = Profile::new("https://music.example.com", "alice");
+        let bob = Profile::new("https://music.example.com", "bob");
+        store.save_profile(&bob).unwrap();
+        store.save_profile(&alice).unwrap();
+
+        store.forget_profile(&alice).unwrap();
+        assert_eq!(store.profiles().unwrap(), std::slice::from_ref(&bob));
+        assert_eq!(load(&store, &[]), Some(alice));
+
+        store.forget_profile(&bob).unwrap();
+        assert_eq!(store.profiles().unwrap(), []);
+        let text = std::fs::read_to_string(store.config_path()).unwrap();
+        assert!(!text.contains("profiles"), "{text}");
+    }
+
+    #[test]
+    fn a_key_saved_after_the_profiles_is_read_as_a_setting() {
+        let store = temporary_store("profiles-then-volume");
+        let alice = Profile::new("https://music.example.com", "alice");
+        store.save_profile(&alice).unwrap();
+
+        store.save_volume(0.5).unwrap();
+
+        assert_eq!(read(&store, &[]).volume, Some(0.5));
+        assert_eq!(store.profiles().unwrap(), [alice]);
+    }
+
+    #[test]
+    fn profiles_written_inline_are_read_and_kept_when_another_is_saved() {
+        let store = temporary_store("profiles-inline");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        std::fs::write(
+            store.config_path(),
+            "profiles = [{ server = \"https://music.example.com\", username = \"alice\" }]\n",
+        )
+        .unwrap();
+        let alice = Profile::new("https://music.example.com", "alice");
+        assert_eq!(store.profiles().unwrap(), std::slice::from_ref(&alice));
+
+        let bob = Profile::new("https://other.example.com", "bob");
+        store.save_profile(&bob).unwrap();
+
+        assert_eq!(store.profiles().unwrap(), [alice, bob]);
+    }
+
+    #[test]
+    fn profiles_written_inline_stay_so_with_their_comments() {
+        let store = temporary_store("profiles-inline-comments");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        let written = "profiles = [\n  # Home\n  { server = \"https://music.example.com\", username = \"alice\" }, # Me\n]\n";
+        std::fs::write(store.config_path(), written).unwrap();
+        let alice = Profile::new("https://music.example.com", "alice");
+        let text = || std::fs::read_to_string(store.config_path()).unwrap();
+
+        store.save_profile(&alice).unwrap();
+        assert!(text().contains(written), "{}", text());
+
+        let bob = Profile::new("https://other.example.com", "bob");
+        store.save_profile(&bob).unwrap();
+        assert!(
+            text().contains(
+                "  # Home\n  { server = \"https://music.example.com\", username = \"alice\" }, # Me\n  { server = \"https://other.example.com\", username = \"bob\" },\n]"
+            ),
+            "{}",
+            text()
+        );
+        assert!(!text().contains("[[profiles"), "{}", text());
+
+        store.forget_profile(&alice).unwrap();
+        assert_eq!(store.profiles().unwrap(), [bob]);
+        assert!(text().starts_with("profiles = ["), "{}", text());
+    }
+
+    #[test]
+    fn a_profile_written_wrong_is_left_out_and_the_rest_still_read() {
+        let store = temporary_store("profiles-incomplete");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        std::fs::write(
+            store.config_path(),
+            "volume = 0.5\n\n[[profiles]]\nserver = \"https://music.example.com\"\n\n[[profiles]]\nserver = \"https://other.example.com\"\nusername = \"bob\"\n",
+        )
+        .unwrap();
+        let bob = Profile::new("https://other.example.com", "bob");
+
+        assert_eq!(store.profiles().unwrap(), std::slice::from_ref(&bob));
+        assert_eq!(store.volume().unwrap(), Some(0.5));
+
+        let alice = Profile::new("https://music.example.com", "alice");
+        store.save_profile(&alice).unwrap();
+        store.forget_profile(&bob).unwrap();
+        assert_eq!(store.profiles().unwrap(), [alice]);
+        let text = std::fs::read_to_string(store.config_path()).unwrap();
+        assert_eq!(text.matches("[[profiles]]").count(), 2, "{text}");
+    }
+
+    #[test]
+    fn profiles_written_as_something_else_are_none_and_left_as_they_are() {
+        let store = temporary_store("profiles-table");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        let written = "[profiles]\nserver = \"https://music.example.com\"\nusername = \"alice\"\n";
+        std::fs::write(store.config_path(), written).unwrap();
+
+        assert_eq!(store.profiles().unwrap(), []);
+        let bob = Profile::new("https://other.example.com", "bob");
+        store.save_profile(&bob).unwrap();
+        store.forget_profile(&bob).unwrap();
+
+        assert_eq!(load(&store, &[]), Some(bob));
+        let text = std::fs::read_to_string(store.config_path()).unwrap();
+        assert!(text.ends_with(written), "{text}");
+    }
+
+    #[test]
+    fn a_server_is_the_same_whatever_the_case_of_its_host_or_the_slashes_at_its_end() {
+        assert_eq!(
+            Profile::new("HTTPS://Music.Example.com/", "alice"),
+            Profile::new("https://music.example.com", "alice"),
+        );
+        assert_eq!(
+            Profile::new("https://music.example.com/Navidrome/", "alice").server(),
+            "https://music.example.com/Navidrome",
+        );
+        assert_ne!(
+            Profile::new("https://music.example.com", "Alice"),
+            Profile::new("https://music.example.com", "alice"),
+        );
+    }
+
+    #[test]
+    fn a_password_written_for_the_server_with_a_slash_at_its_end_is_still_its() {
+        let store = temporary_store("password-slash");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        std::fs::write(
+            store.config_path(),
+            "server = \"https://music.example.com/\"\nusername = \"alice\"\npassword = \"sesame\"\n",
+        )
+        .unwrap();
+        let alice = Profile::new("https://music.example.com", "alice");
+        assert_eq!(load(&store, &[]), Some(alice.clone()));
+        assert_eq!(store.password(&alice).unwrap().as_deref(), Some("sesame"));
+
+        store.save_profile(&alice).unwrap();
+        assert_eq!(store.password(&alice).unwrap().as_deref(), Some("sesame"));
+    }
+
+    #[test]
     fn saving_the_same_profile_keeps_the_password_and_another_removes_it() {
         let store = temporary_store("password-saved");
         let alice = Profile::new("https://music.example.com", "alice");
@@ -3813,12 +4164,17 @@ mod tests {
         )
         .unwrap();
 
-        store.save_profile(&alice).unwrap();
+        assert_eq!(store.save_profile(&alice).unwrap(), None);
         assert_eq!(store.password(&alice).unwrap().as_deref(), Some("sesame"));
 
         let bob = Profile::new("https://music.example.com", "bob");
-        store.save_profile(&bob).unwrap();
+        assert_eq!(
+            store.save_profile(&bob).unwrap(),
+            Some((alice.clone(), "sesame".to_owned()))
+        );
+        assert_eq!(store.password(&alice).unwrap(), None);
         assert_eq!(store.password(&bob).unwrap(), None);
+        assert_eq!(store.save_profile(&alice).unwrap(), None);
         assert_eq!(read(&store, &[]).password, None);
     }
 

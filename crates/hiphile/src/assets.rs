@@ -16,6 +16,7 @@ gpui_kit::assets::icon_assets!(
         PictureInPicture2,
         Repeat,
         Repeat1,
+        Server,
         Settings,
         Shuffle,
         SkipBack,

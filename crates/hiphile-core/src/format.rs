@@ -25,6 +25,16 @@ pub fn format_album_count(count: usize) -> String {
     }
 }
 
+/// Who on which server, as `alice@music.example.com`.
+pub fn format_profile(profile: &config::Profile) -> String {
+    let server = profile.server();
+    let server = ["https://", "http://"]
+        .into_iter()
+        .find_map(|scheme| server.strip_prefix(scheme))
+        .unwrap_or(server);
+    format!("{}@{}", profile.username(), server.trim_end_matches('/'))
+}
+
 pub fn join_details<S: AsRef<str>>(parts: impl IntoIterator<Item = Option<S>>) -> String {
     let parts: Vec<S> = parts.into_iter().flatten().collect();
     let parts: Vec<&str> = parts.iter().map(AsRef::as_ref).collect();
@@ -41,6 +51,20 @@ mod tests {
         assert_eq!(format_duration(Duration::from_millis(65_900)), "1:05");
         assert_eq!(format_duration(Duration::from_secs(3_599)), "59:59");
         assert_eq!(format_duration(Duration::from_secs(3_600 + 62)), "1:01:02");
+    }
+
+    #[test]
+    fn a_profile_is_who_at_which_server() {
+        let profile = |server| format_profile(&config::Profile::new(server, "alice"));
+        assert_eq!(
+            profile("https://music.example.com/"),
+            "alice@music.example.com"
+        );
+        assert_eq!(
+            profile("http://192.168.1.2:4533/navidrome"),
+            "alice@192.168.1.2:4533/navidrome"
+        );
+        assert_eq!(profile("music.example.com"), "alice@music.example.com");
     }
 
     #[test]

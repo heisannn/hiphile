@@ -1,4 +1,4 @@
-use account::SignIn;
+use account::{AddServer, SignIn, SignOut, SwitchServer};
 use actions::{
     AddToPlaylist, ChoosePlaylist, EnqueueSongs, NewPlaylist, PlaySongs, ShowAlbum, ShowArtist,
     ToggleFavoriteOf,
@@ -18,8 +18,8 @@ use gpui_kit::component::{
 use gpui_kit::{
     AnyElement, App, AppContext as _, Context, Div, Entity, FocusHandle, Focusable as _,
     InteractiveElement as _, IntoElement, MouseButton, NavigationDirection, ParentElement as _,
-    Pixels, Render, Stateful, Styled as _, Subscription, Task, WeakEntity, Window, div,
-    prelude::FluentBuilder as _, px,
+    Pixels, Render, SharedString, Stateful, Styled as _, Subscription, Task, WeakEntity, Window,
+    div, prelude::FluentBuilder as _, px,
 };
 use hiphile_core::alerts::{Alert, AlertKind, Alerts};
 use hiphile_core::desktop::{DiscordStatus, MediaNotice, SystemMediaControls};
@@ -28,7 +28,7 @@ use hiphile_core::library::LibraryActivity;
 use hiphile_core::navigation::{Destination, History, Location};
 use hiphile_core::playlists::PlaylistsState;
 use hiphile_core::settings::QueueSettings;
-use hiphile_core::{Hiphile, HiphileSnapshot, Workspace};
+use hiphile_core::{Hiphile, HiphileSnapshot, SwitchFailed, Workspace};
 use home::Home;
 use library::{Library, LibraryEvent};
 use playback::PlayerSnapshot;
@@ -48,8 +48,8 @@ use updater::{UpdateState, Updater};
 
 use crate::library_activity::ActivityNotice;
 use crate::{
-    GoBack, GoForward, Refresh, ShowAlbums, ShowArtists, ShowFavorites, ShowHome, ShowPlaylists,
-    ShowSongs, SignOut,
+    GoBack, GoForward, MenuState, Refresh, ShowAlbums, ShowArtists, ShowFavorites, ShowHome,
+    ShowPlaylists, ShowSongs,
 };
 
 /// When first shown, in rem.
@@ -76,6 +76,7 @@ pub struct AppShell {
     queue_shown: bool,
     _alerts: Task<()>,
     _signing_in: Task<()>,
+    _switching: Task<()>,
     _system_appearance_changes: Subscription,
     _updater_changes: Option<Task<()>>,
 }
@@ -198,14 +199,12 @@ impl AppShell {
         window.set_window_title("hiphile");
         let focus = cx.focus_handle();
         let screen = Self::sign_in(&hiphile, window, cx);
-        let queue_shown = true;
-        crate::set_menus(queue_shown, false, false, None, false, RepeatMode::Off, cx);
         let alerts = follow_alerts(hiphile.alerts(), window, cx);
         // The dictionaries start downloading as the app opens
         hiphile.readings();
         let signing_in =
             gpui_host::observe_in(hiphile.subscribe(), window, cx, Self::follow_signing_in);
-        Self {
+        let this = Self {
             _system_appearance_changes: settings::follow_system_appearance(
                 hiphile.settings().appearance().clone(),
                 window,
@@ -213,21 +212,25 @@ impl AppShell {
             hiphile,
             focus,
             screen,
-            queue_shown,
+            queue_shown: true,
             _alerts: alerts,
             _signing_in: signing_in,
+            _switching: Task::ready(()),
             _updater_changes: updater
                 .as_ref()
                 .map(|updater| gpui_host::notify_on_change(updater.subscribe(), cx)),
             updater,
-        }
+        };
+        this.update_menus(cx);
+        this
     }
 
     fn sign_in(hiphile: &Hiphile, window: &mut Window, cx: &mut Context<Self>) -> Screen {
         Screen::SignIn(cx.new(|cx| SignIn::new(hiphile.clone(), window, cx)))
     }
 
-    /// Shows the workspace of whoever signed in, and the form again once nobody is.
+    /// Shows the workspace of whoever signed in, and the form again once nobody is. The title
+    /// bar and the menus show who could be signed in instead.
     fn follow_signing_in(
         &mut self,
         signed_in: HiphileSnapshot,
@@ -240,6 +243,42 @@ impl AppShell {
             (None, Screen::Workspace(_)) => self.show_signed_out(window, cx),
             (None, Screen::SignIn(_)) => {}
         }
+        self.update_menus(cx);
+        cx.notify();
+    }
+
+    /// Signs in with `profile` in place of whoever is, asking for its password when none is
+    /// saved or signing in with it fails: on the form when nobody is signed in, and otherwise
+    /// over the workspace, which stays meanwhile.
+    fn switch_server(
+        &mut self,
+        profile: config::Profile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let switching = self.hiphile.switch_to(profile.clone());
+        self._switching = cx.spawn_in(window, async move |this, cx| {
+            let failure = match switching.await {
+                Ok(()) => return,
+                Err(SwitchFailed::NoPassword) => None,
+                Err(SwitchFailed::SignIn(error)) => Some(SharedString::from(error)),
+            };
+            this.update_in(cx, |this, window, cx| match &this.screen {
+                Screen::SignIn(sign_in) => sign_in.update(cx, |sign_in, cx| {
+                    sign_in.show_profile(&profile, failure, window, cx);
+                }),
+                Screen::Workspace(_) => {
+                    account::open_sign_in_dialog(
+                        &this.hiphile,
+                        Some(&profile),
+                        failure,
+                        window,
+                        cx,
+                    );
+                }
+            })
+            .ok();
+        });
     }
 
     fn open_workspace(&mut self, core: Workspace, window: &mut Window, cx: &mut Context<Self>) {
@@ -351,6 +390,8 @@ impl AppShell {
             _focus_lost: focus_lost,
             _activation: activation,
         };
+        // Each dialog belonged to the workspace this replaces, or signed in to this one
+        window.close_all_dialogs(cx);
         workspace.focus_destination(window, cx);
         self.screen = Screen::Workspace(Box::new(workspace));
         self.update_menus(cx);
@@ -439,15 +480,16 @@ impl AppShell {
             (shown.is_shuffled(), shown.repeat())
         });
         let is_lyrics_open = self.is_lyrics_open(cx);
-        crate::set_menus(
-            self.queue_shown && !is_lyrics_open,
-            is_lyrics_open,
-            self.is_mini_player_open(cx),
-            self.destination(),
+        let state = MenuState {
+            queue_shown: self.queue_shown && !is_lyrics_open,
+            lyrics_open: is_lyrics_open,
+            mini_player_open: self.is_mini_player_open(cx),
+            destination: self.destination(),
             shuffled,
             repeat,
-            cx,
-        );
+            accounts: &self.hiphile.snapshot(),
+        };
+        crate::set_menus(&state, cx);
     }
 
     /// Goes to `destination`; going back returns to where this leaves.
@@ -957,6 +999,10 @@ impl AppShell {
                             ),
                         )
                     })
+                    .children(
+                        account::server_menu(&self.hiphile.snapshot())
+                            .map(|menu| title_bar_controls().child(menu)),
+                    )
                     .child(
                         title_bar_controls().child(
                             Button::new("open-settings")
@@ -1174,6 +1220,7 @@ impl Render for AppShell {
             Screen::SignIn(_) => None,
         };
         let signed_in = matches!(self.screen, Screen::Workspace(_));
+        let signing_in = self.hiphile.snapshot().is_signing_in();
         let has_queue = self
             .core()
             .is_some_and(|core| core.snapshot().has_queued_songs());
@@ -1192,6 +1239,16 @@ impl Render for AppShell {
             .min_h_0()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            .when(!signing_in, |this| {
+                this.on_action(cx.listener(|this, action: &SwitchServer, window, cx| {
+                    this.switch_server(action.profile().clone(), window, cx);
+                }))
+            })
+            .when(signed_in && !signing_in, |this| {
+                this.on_action(cx.listener(|this, _: &AddServer, window, cx| {
+                    account::open_sign_in_dialog(&this.hiphile, None, None, window, cx);
+                }))
+            })
             .when(signed_in, |this| {
                 this.on_action(
                     cx.listener(|this, _: &SignOut, window, cx| this.sign_out(window, cx)),

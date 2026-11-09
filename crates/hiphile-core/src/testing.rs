@@ -12,6 +12,17 @@ use subsonic::{Album, Artist, ScanStatus, Song};
 /// A server that cannot be reached.
 pub(crate) const NOWHERE: &str = "http://127.0.0.1:9";
 
+/// A server that takes each request and never answers it.
+pub(crate) fn server_never_answering() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        // Held open, unanswered
+        let _requests: Vec<_> = listener.incoming().collect();
+    });
+    url
+}
+
 /// A server that gives `fields` in answer to anything.
 pub(crate) fn server_answering(fields: Value) -> String {
     server_answering_each(move |_| Some(fields.clone()))

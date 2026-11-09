@@ -48,6 +48,7 @@ struct Inner {
     /// always asks for the password.
     keychain: Option<config::Keychain>,
     last_profile: Mutex<Option<config::Profile>>,
+    profiles: Mutex<Vec<config::Profile>>,
 }
 
 impl Accounts {
@@ -61,18 +62,29 @@ impl Accounts {
         let last_profile = store
             .as_ref()
             .and_then(|store| store.last_profile().ok().flatten());
+        // A file that can't be read offers none, and signing in still adds to them
+        let profiles = store
+            .as_ref()
+            .and_then(|store| store.profiles().ok())
+            .unwrap_or_default();
         Self(Arc::new(Inner {
             executor,
             net,
             store,
             keychain,
             last_profile: Mutex::new(last_profile),
+            profiles: Mutex::new(profiles),
         }))
     }
 
     /// The profile last signed in with.
     pub fn last_profile(&self) -> Option<config::Profile> {
         lock(&self.0.last_profile).clone()
+    }
+
+    /// Those signed in with and not forgotten since, in the order first signed in with.
+    pub fn profiles(&self) -> Vec<config::Profile> {
+        lock(&self.0.profiles).clone()
     }
 
     /// The password written in the settings file for `profile`, or else the one in the
@@ -87,7 +99,9 @@ impl Accounts {
     }
 
     /// Checks what was typed before anything else. Signed in, the profile and the password are
-    /// remembered for next time; the error says what went wrong for the user.
+    /// remembered for next time, and the profile is among [`Self::profiles`]; the error says what
+    /// went wrong for the user. A password the settings file had for another profile moves to the
+    /// keychain, as the file keeps one only for the last.
     pub fn sign_in(
         &self,
         address: &str,
@@ -117,16 +131,26 @@ impl Accounts {
             let session = connecting.await?;
             let profile = config::Profile::new(address, username);
             let store = this.0.store.clone();
-            this.0
+            let replaced = this
+                .0
                 .executor
                 .spawn_blocking({
                     let profile = profile.clone();
                     // A failure only means the user types more next time
-                    move || store.map(|store| store.save_profile(&profile).ok())
+                    move || store.and_then(|store| store.save_profile(&profile).ok().flatten())
                 })
                 .await;
             this.remember_password(&profile, password);
+            if let Some((replaced, password)) = replaced {
+                this.remember_password(&replaced, password);
+            }
             *lock(&this.0.last_profile) = Some(profile.clone());
+            {
+                let mut profiles = lock(&this.0.profiles);
+                if !profiles.contains(&profile) {
+                    profiles.push(profile.clone());
+                }
+            }
             Ok(SignedIn { session, profile })
         }))
     }
@@ -176,14 +200,24 @@ impl Accounts {
         }))
     }
 
-    /// Signing in with `profile` then asks for the password, unless the settings file has it.
-    pub fn forget_password(&self, profile: config::Profile) {
-        let Some(keychain) = self.0.keychain.clone() else {
-            return;
-        };
+    /// Takes `profile` off [`Self::profiles`] and forgets its password: signing in with it then
+    /// asks for one, unless the settings file has it. It stays the last profile, if it is.
+    pub fn forget(&self, profile: config::Profile) {
+        lock(&self.0.profiles).retain(|saved| *saved != profile);
+        let store = self.0.store.clone();
+        let keychain = self.0.keychain.clone();
+        // A failure only offers the profile again from the next launch, or signs in with it
+        // without asking
         self.0
             .executor
-            .spawn_blocking(move || keychain.delete_password(&profile).ok())
+            .spawn_blocking(move || {
+                if let Some(store) = store {
+                    store.forget_profile(&profile).ok();
+                }
+                if let Some(keychain) = keychain {
+                    keychain.delete_password(&profile).ok();
+                }
+            })
             .detach();
     }
 

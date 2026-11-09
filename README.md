@@ -15,6 +15,7 @@ Hiphile is developed on macOS. Windows and Linux are not regularly tested.
 ## Features
 
 - **Library:** Browse albums, artists and songs, get daily recommendations on the home screen, edit playlists, and keep favorites.
+- **Servers:** Remembers the servers and users you sign in with, and switches between them from the title bar or **hiphile > Servers**.
 - **Playback:** Gapless playback, on PCM trimming the silence around songs, crossfade and fading on play and pause, repeat, shuffle and an editable queue.
 - **Audio output:** Choose an output device, and switch its sample rate automatically to match each file or a multiple of it. On macOS and Windows, keep other apps off the device with exclusive mode. On macOS, play as DSD up to DSD256 through DoP, with the filter and the modulator adjustable. See [how DSD output works](docs/dsd/implementation.md). Resample with Rubato, with a built-in port of r8brain-free-src, or with a built-in resampler that has the functions of libsoxr. See how [Rubato](docs/resampler/rubato.md), [r8brain](docs/resampler/r8brain.md) and [soxr](docs/resampler/soxr.md) work.
 - **DSP:** Crossfeed for headphones, with the presets of Boris Mikhaylov's [bs2b](https://bs2b.sourceforge.net/) or values of your own, and balance between the channels, on PCM and DSD alike. See [how they work](docs/dsp/design.md).
@@ -58,6 +59,7 @@ Change settings in the app under **hiphile > Settings…**. They are saved to
 | --- | --- | --- |
 | `server` | `HIPHILE_SERVER` | None |
 | `username` | `HIPHILE_USERNAME` | None |
+| `[[profiles]]` (each with `server` and `username`: the servers and users to switch between; signing out or **Remove Server** removes one) | None | None |
 | `output_device` | `HIPHILE_OUTPUT_DEVICE` | System default |
 | `sample_rate` (Hz, or `x2`, `x4`, `x8` or `x16` for that multiple of each file's rate, or the next lower one the device supports; on Windows, multiples need `exclusive_mode`) | `HIPHILE_SAMPLE_RATE` | Each file's rate |
 | `exclusive_mode` (`true` keeps other apps off the output device while playing or paused; macOS uses hog mode and Windows WASAPI exclusive mode) | `HIPHILE_EXCLUSIVE_MODE` | `false` |

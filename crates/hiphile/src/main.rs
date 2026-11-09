@@ -5,13 +5,15 @@ mod app_shell;
 mod assets;
 mod library_activity;
 
+use account::{AddServer, SignOut, SwitchServer};
 use gpui_kit::component::TitleBar;
 use gpui_kit::{
     App, AppContext as _, KeyBinding, Menu, MenuItem, WindowBounds, WindowOptions, actions, px,
     size,
 };
+use hiphile_core::format::format_profile;
 use hiphile_core::navigation::Destination;
-use hiphile_core::{Caches, Hiphile};
+use hiphile_core::{Caches, Hiphile, HiphileSnapshot};
 use player::{
     NextSong, PreviousSong, RepeatMode, SaveQueue, SeekBackward, SeekForward, SetRepeat,
     ToggleLyrics, ToggleMiniPlayer, ToggleMute, TogglePlayback, ToggleQueue, ToggleShuffle,
@@ -24,7 +26,6 @@ actions!(
     hiphile,
     [
         Quit,
-        SignOut,
         ShowHome,
         ShowAlbums,
         ShowArtists,
@@ -176,22 +177,46 @@ fn install_app_commands(cx: &mut App) {
     ]);
 }
 
-/// `queue_shown` checks View > Queue, `lyrics_open` View > Lyrics, `mini_player_open` View > Mini
-/// Player, `destination` the screen showing, if any, and `shuffled` and `repeat` their items in
-/// Controls. Call once the keys above are bound, and again when any of these change.
-pub(crate) fn set_menus(
-    queue_shown: bool,
-    lyrics_open: bool,
-    mini_player_open: bool,
-    destination: Option<Destination>,
-    shuffled: bool,
-    repeat: RepeatMode,
-    cx: &mut App,
-) {
+/// What the menus check, and the profiles hiphile > Servers switches to.
+pub(crate) struct MenuState<'a> {
+    /// Checks View > Queue.
+    pub(crate) queue_shown: bool,
+    /// Checks View > Lyrics.
+    pub(crate) lyrics_open: bool,
+    /// Checks View > Mini Player.
+    pub(crate) mini_player_open: bool,
+    /// The screen showing, if any, which View checks.
+    pub(crate) destination: Option<Destination>,
+    pub(crate) shuffled: bool,
+    pub(crate) repeat: RepeatMode,
+    pub(crate) accounts: &'a HiphileSnapshot,
+}
+
+/// Call once the keys above are bound, and again when what `state` holds changes.
+pub(crate) fn set_menus(state: &MenuState, cx: &mut App) {
+    let &MenuState {
+        queue_shown,
+        lyrics_open,
+        mini_player_open,
+        destination,
+        shuffled,
+        repeat,
+        accounts,
+    } = state;
+    let profiles = accounts.profiles();
+    let servers = profiles
+        .iter()
+        .map(|profile| {
+            MenuItem::action(format_profile(profile), SwitchServer::new(profile.clone()))
+                .checked(accounts.profile() == Some(profile))
+        })
+        .chain((!profiles.is_empty()).then(MenuItem::separator))
+        .chain([MenuItem::action("Add Server…", AddServer)]);
     cx.set_menus([
         Menu::new("hiphile").items([
             MenuItem::action("Settings…", settings::OpenSettings),
             MenuItem::separator(),
+            MenuItem::submenu(Menu::new("Servers").items(servers)),
             MenuItem::action("Sign Out", SignOut),
             MenuItem::separator(),
             MenuItem::action("Quit hiphile", Quit),

@@ -108,16 +108,36 @@ fn a_password_in_the_file_comes_before_the_keychain(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn a_forgotten_password_is_gone_from_the_keychain(cx: &mut TestAppContext) {
+fn the_profiles_are_read_when_made(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
+    let bob = config::Profile::new(SERVER, "bob");
+    let store = config::Store::at(dir.path());
+    store.save_profile(&alice()).unwrap();
+    store.save_profile(&bob).unwrap();
+
+    let accounts = accounts(&dir, &config::Keychain::in_memory(), cx);
+
+    assert_eq!(accounts.profiles(), [alice(), bob]);
+}
+
+#[gpui_kit::test]
+fn a_forgotten_profile_is_gone_with_its_password(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let bob = config::Profile::new(SERVER, "bob");
+    let store = config::Store::at(dir.path());
+    store.save_profile(&bob).unwrap();
+    store.save_profile(&alice()).unwrap();
     let keychain = config::Keychain::in_memory();
     keychain.set_password(&alice(), "sesame").unwrap();
     let accounts = accounts(&dir, &keychain, cx);
 
-    accounts.forget_password(alice());
+    accounts.forget(alice());
+    assert_eq!(accounts.profiles(), std::slice::from_ref(&bob));
     cx.run_until_parked();
 
     assert_eq!(keychain.password(&alice()).unwrap(), None);
+    assert_eq!(store.profiles().unwrap(), [bob]);
+    assert_eq!(accounts.last_profile(), Some(alice()));
 }
 
 #[test]

@@ -2,7 +2,7 @@ use gpui_kit::TestAppContext;
 use tempfile::TempDir;
 
 use super::*;
-use crate::testing::{NOWHERE, wait_for};
+use crate::testing::{NOWHERE, server_never_answering, wait_for};
 
 fn hiphile(store: Result<config::Store, config::Error>, cx: &mut TestAppContext) -> Hiphile {
     hiphile_keeping(store, Caches::None, cx)
@@ -354,4 +354,188 @@ fn dictionaries_that_could_not_be_had_are_told_to_a_host_that_follows_later(
     assert_eq!(earlier.len(), 1);
     assert!(earlier[0].message.ends_with(" Try again in Settings."));
     assert_eq!(earlier[0].told_on, None);
+}
+
+fn alice() -> config::Profile {
+    config::Profile::new(NOWHERE, "alice")
+}
+
+fn bob() -> config::Profile {
+    config::Profile::new(NOWHERE, "bob")
+}
+
+/// Signed in with alice and bob before, alice last.
+fn store_with_alice_and_bob() -> (TempDir, config::Store) {
+    let (dir, store) = store_with("romaji_search = false\n");
+    store.save_profile(&bob()).unwrap();
+    store.save_profile(&alice()).unwrap();
+    (dir, store)
+}
+
+fn hiphile_with_keychain(
+    store: config::Store,
+    keychain: &config::Keychain,
+    cx: &mut TestAppContext,
+) -> Hiphile {
+    let executor = cx.update(|cx| gpui_host::executor(cx));
+    let net = net::Client::new("hiphile-test").unwrap();
+    Hiphile::new(
+        executor,
+        net,
+        Ok(store),
+        Some(keychain.clone()),
+        Caches::None,
+    )
+}
+
+fn ended<T>(task: &mut Task<T>, cx: &mut TestAppContext) -> T {
+    let mut result = None;
+    wait_for(cx, || {
+        result = futures::FutureExt::now_or_never(&mut *task);
+        result.is_some()
+    });
+    result.unwrap()
+}
+
+#[gpui_kit::test]
+fn the_profiles_signed_in_with_before_are_there_from_the_start(cx: &mut TestAppContext) {
+    let (_dir, store) = store_with_alice_and_bob();
+
+    let hiphile = hiphile(Ok(store), cx);
+
+    assert_eq!(hiphile.snapshot().profiles(), [bob(), alice()]);
+}
+
+#[gpui_kit::test]
+fn switching_to_whoever_is_signed_in_leaves_their_workspace(cx: &mut TestAppContext) {
+    let (_dir, store) = store_with_alice_and_bob();
+    let hiphile = hiphile(Ok(store), cx);
+    hiphile.open_workspace(crate::test_support::session(NOWHERE), alice());
+    let workspace = hiphile.workspace();
+
+    let mut switching = hiphile.switch_to(alice());
+
+    assert_eq!(
+        futures::FutureExt::now_or_never(&mut switching),
+        Some(Ok(()))
+    );
+    assert!(!hiphile.snapshot().is_signing_in());
+    assert_eq!(hiphile.workspace(), workspace);
+    workspace.unwrap().shutdown();
+}
+
+#[gpui_kit::test]
+fn switching_to_someone_without_a_saved_password_asks_for_one(cx: &mut TestAppContext) {
+    // The workspace's requests answer from the network's own thread
+    cx.executor().allow_parking();
+    let (_dir, store) = store_with_alice_and_bob();
+    let hiphile = hiphile_with_keychain(store, &config::Keychain::in_memory(), cx);
+    hiphile.open_workspace(crate::test_support::session(NOWHERE), alice());
+
+    let mut switching = hiphile.switch_to(bob());
+
+    assert_eq!(ended(&mut switching, cx), Err(SwitchFailed::NoPassword));
+    assert_eq!(hiphile.snapshot().profile(), Some(&alice()));
+    hiphile.workspace().unwrap().shutdown();
+}
+
+#[gpui_kit::test]
+fn switching_signs_in_with_the_saved_password_while_the_workspace_stays(cx: &mut TestAppContext) {
+    // The server's answer comes from the network's own thread
+    cx.executor().allow_parking();
+    let (_dir, store) = store_with_alice_and_bob();
+    let keychain = config::Keychain::in_memory();
+    keychain.set_password(&bob(), "secret").unwrap();
+    let hiphile = hiphile_with_keychain(store, &keychain, cx);
+    hiphile.open_workspace(crate::test_support::session(NOWHERE), alice());
+
+    let mut switching = hiphile.switch_to(bob());
+
+    // With the password saved, as nothing answers there
+    let Err(SwitchFailed::SignIn(error)) = ended(&mut switching, cx) else {
+        panic!("signing in was not tried");
+    };
+    assert!(error.starts_with("Couldn't reach"), "{error}");
+    assert_eq!(hiphile.snapshot().profile(), Some(&alice()));
+    assert!(!hiphile.snapshot().is_signing_in());
+    hiphile.workspace().unwrap().shutdown();
+}
+
+#[gpui_kit::test]
+fn signing_out_takes_the_profile_off_the_others(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let (_dir, store) = store_with_alice_and_bob();
+    let hiphile = hiphile(Ok(store.clone()), cx);
+    hiphile.open_workspace(crate::test_support::session(NOWHERE), alice());
+
+    hiphile.sign_out();
+
+    assert_eq!(hiphile.snapshot().profiles(), [bob()]);
+    cx.run_until_parked();
+    assert_eq!(store.profiles().unwrap(), [bob()]);
+}
+
+#[gpui_kit::test]
+fn signing_out_calls_off_a_switch_under_way(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let (_dir, store) = store_with_alice_and_bob();
+    let carol = config::Profile::new(server_never_answering(), "carol");
+    let keychain = config::Keychain::in_memory();
+    keychain.set_password(&carol, "secret").unwrap();
+    let hiphile = hiphile_with_keychain(store, &keychain, cx);
+    hiphile.open_workspace(crate::test_support::session(NOWHERE), alice());
+    let mut switching = hiphile.switch_to(carol);
+    wait_for(cx, || hiphile.snapshot().is_signing_in());
+
+    hiphile.sign_out();
+
+    assert!(!hiphile.snapshot().is_signing_in());
+    assert_eq!(ended(&mut switching, cx), Ok(()));
+    assert_eq!(hiphile.workspace(), None);
+    assert_eq!(hiphile.snapshot().profiles(), [bob()]);
+}
+
+// Each run finds the two passwords in another order
+#[gpui_kit::test(iterations = 30)]
+fn a_switch_asked_for_while_resuming_finds_its_password_takes_its_place(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let (_dir, store) = store_with("romaji_search = false\n");
+    let carol = config::Profile::new(server_never_answering(), "carol");
+    store.save_profile(&bob()).unwrap();
+    store.save_profile(&carol).unwrap();
+    let keychain = config::Keychain::in_memory();
+    keychain.set_password(&carol, "secret").unwrap();
+    keychain.set_password(&bob(), "secret").unwrap();
+    let hiphile = hiphile_with_keychain(store, &keychain, cx);
+
+    let mut resuming = hiphile.resume().unwrap();
+    let mut switching = hiphile.switch_to(bob());
+
+    assert_eq!(ended(&mut resuming, cx), Ok(()));
+    // Tried with bob's password, as nothing answers there
+    let Err(SwitchFailed::SignIn(error)) = ended(&mut switching, cx) else {
+        panic!("signing in as bob was not tried");
+    };
+    assert!(error.starts_with("Couldn't reach"), "{error}");
+}
+
+#[gpui_kit::test]
+fn a_profile_forgotten_is_off_the_others_with_its_password_unless_signed_in(
+    cx: &mut TestAppContext,
+) {
+    cx.executor().allow_parking();
+    let (_dir, store) = store_with_alice_and_bob();
+    let keychain = config::Keychain::in_memory();
+    keychain.set_password(&bob(), "secret").unwrap();
+    let hiphile = hiphile_with_keychain(store.clone(), &keychain, cx);
+    hiphile.open_workspace(crate::test_support::session(NOWHERE), alice());
+
+    hiphile.forget(alice());
+    hiphile.forget(bob());
+
+    assert_eq!(hiphile.snapshot().profiles(), [alice()]);
+    cx.run_until_parked();
+    assert_eq!(store.profiles().unwrap(), [alice()]);
+    assert_eq!(keychain.password(&bob()).unwrap(), None);
+    hiphile.workspace().unwrap().shutdown();
 }
