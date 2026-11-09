@@ -1,6 +1,8 @@
 use gpui_kit::{Context, Task, Window};
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 
+use crate::update_in_window;
+
 /// Gives the view each notice sent after `notices` was made, as `cx.subscribe` does for an
 /// entity's events, for as long as the task is kept. A view that falls behind by more than the
 /// channel holds misses the oldest.
@@ -21,7 +23,7 @@ pub fn subscribe<V: 'static, E: Clone + 'static>(
     })
 }
 
-/// [`subscribe`] for a view that needs its window.
+/// [`subscribe`] for a view that needs a window. It is given `window`, and stops once that closes.
 pub fn subscribe_in<V: 'static, E: Clone + 'static>(
     mut notices: Receiver<E>,
     window: &Window,
@@ -30,9 +32,10 @@ pub fn subscribe_in<V: 'static, E: Clone + 'static>(
 ) -> Task<()> {
     cx.spawn_in(window, async move |this, cx| {
         while let Some(notice) = next(&mut notices).await {
-            let handled =
-                this.update_in(cx, |this, window, cx| on_notice(this, notice, window, cx));
-            if handled.is_err() {
+            let handled = update_in_window(&this, cx, |this, window, cx| {
+                on_notice(this, notice, window, cx)
+            });
+            if handled.is_none() {
                 break;
             }
         }
@@ -125,5 +128,26 @@ mod tests {
         sender.send(1).unwrap();
         cx.run_until_parked();
         assert_eq!(*heard.borrow(), [1]);
+    }
+
+    #[gpui_kit::test]
+    fn a_view_drawn_last_in_a_closed_window_gets_its_own_window(cx: &mut TestAppContext) {
+        let (sender, notices) = broadcast::channel(8);
+        let heard = Rc::new(RefCell::new(Vec::new()));
+        let (listener, cx) = cx.add_window_view(|window, cx| Listener {
+            heard: Vec::new(),
+            _notices: subscribe_in(notices, window, cx, {
+                let heard = heard.clone();
+                move |_, notice, window, _| {
+                    heard.borrow_mut().push((notice, window.window_handle()));
+                }
+            }),
+        });
+        let own_window = cx.update(|window, _| window.window_handle());
+        crate::testing::draw_in_closed_window(listener, cx);
+
+        sender.send(1).unwrap();
+        cx.run_until_parked();
+        assert_eq!(*heard.borrow(), [(1, own_window)]);
     }
 }

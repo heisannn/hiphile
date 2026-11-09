@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use futures::FutureExt as _;
 use gpui_kit::{Modifiers, MouseButton, TestAppContext, VisualTestContext};
@@ -434,6 +435,23 @@ fn the_close_key_seeks_to_where_a_drag_got_to(cx: &mut TestAppContext) {
         let in_bar = player.position_state().read(cx).value().end();
         assert!((in_bar - 0.5).abs() < 0.1, "{in_bar}");
     });
+}
+
+#[gpui_kit::test]
+fn the_position_moves_on_once_it_closes(cx: &mut TestAppContext) {
+    let (main, cx) = main_window(cx);
+    let mini = mini_player(&main, cx);
+    let player = player(&mini, cx);
+    // The main window here never draws the player, so this window drew it last
+    let _mini_cx = open(&mini, cx);
+    toggle(&mini, cx);
+
+    player.update(cx, |player, _| player.place_at(Duration::from_secs(50)));
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.run_until_parked();
+
+    let in_bar = cx.read(|cx| player.read(cx).position_state().read(cx).value().end());
+    assert_eq!(in_bar, 0.5);
 }
 
 #[gpui_kit::test]

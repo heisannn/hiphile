@@ -77,10 +77,10 @@ impl Player {
         let refresh = cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor().timer(POSITION_REFRESH).await;
-                if this
-                    .update_in(cx, |this, window, cx| this.refresh(window, cx))
-                    .is_err()
-                {
+                let refreshed = gpui_host::update_in_window(&this, cx, |this, window, cx| {
+                    this.refresh(window, cx)
+                });
+                if refreshed.is_none() {
                     break;
                 }
             }

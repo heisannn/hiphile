@@ -1,6 +1,8 @@
 use gpui_kit::{Context, Task, Window};
 use tokio::sync::watch;
 
+use crate::update_in_window;
+
 /// Notifies the view each time `changes` sees a new value, for as long as the task is kept.
 pub fn notify_on_change<V: 'static, T: 'static>(
     mut changes: watch::Receiver<T>,
@@ -36,7 +38,7 @@ pub fn observe<V: 'static, T: Clone + 'static>(
     })
 }
 
-/// [`observe`] for a view that needs its window.
+/// [`observe`] for a view that needs a window. It is given `window`, and stops once that closes.
 pub fn observe_in<V: 'static, T: Clone + 'static>(
     mut changes: watch::Receiver<T>,
     window: &Window,
@@ -46,8 +48,10 @@ pub fn observe_in<V: 'static, T: Clone + 'static>(
     cx.spawn_in(window, async move |this, cx| {
         while changes.changed().await.is_ok() {
             let value = latest(&mut changes);
-            let changed = this.update_in(cx, |this, window, cx| on_change(this, value, window, cx));
-            if changed.is_err() {
+            let changed = update_in_window(&this, cx, |this, window, cx| {
+                on_change(this, value, window, cx)
+            });
+            if changed.is_none() {
                 break;
             }
         }
@@ -133,5 +137,24 @@ mod tests {
         sender.send_replace(1);
         cx.run_until_parked();
         assert_eq!(*seen.borrow(), [1]);
+    }
+
+    #[gpui_kit::test]
+    fn a_view_drawn_last_in_a_closed_window_gets_its_own_window(cx: &mut TestAppContext) {
+        let (sender, changes) = watch::channel(0);
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let (follower, cx) = cx.add_window_view(|window, cx| Follower {
+            seen: Vec::new(),
+            _changes: observe_in(changes, window, cx, {
+                let seen = seen.clone();
+                move |_, value, window, _| seen.borrow_mut().push((value, window.window_handle()))
+            }),
+        });
+        let own_window = cx.update(|window, _| window.window_handle());
+        crate::testing::draw_in_closed_window(follower, cx);
+
+        sender.send_replace(1);
+        cx.run_until_parked();
+        assert_eq!(*seen.borrow(), [(1, own_window)]);
     }
 }

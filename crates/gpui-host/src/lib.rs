@@ -6,7 +6,11 @@
 mod changes;
 mod executor;
 mod notices;
+#[cfg(test)]
+mod testing;
+mod window;
 
 pub use changes::{notify_on_change, observe, observe_in};
 pub use executor::executor;
 pub use notices::{subscribe, subscribe_in};
+pub use window::update_in_window;
