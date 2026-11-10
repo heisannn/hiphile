@@ -235,6 +235,99 @@ fn opening_is_playing_unless_a_pause_came_meanwhile(cx: &mut TestAppContext) {
     assert!(!player.snapshot().is_playing());
 }
 
+fn fail_song(player: &Player, error: audio::Error) {
+    player
+        .0
+        .core
+        .update(|core| core.song_failed(player, &error));
+}
+
+fn resume_of(player: &Player) -> Option<Resume> {
+    read(player, |core| core.shown.resume)
+}
+
+#[gpui_kit::test]
+fn a_song_that_stops_arriving_picks_up_where_it_was(cx: &mut TestAppContext) {
+    let player = idle_player(cx);
+    player.fill_queue(&[named_song("a")], 0);
+    player.pretend_playing(true);
+
+    fail_song(&player, audio::Error::Read("connection reset".to_owned()));
+    assert_eq!(state(&player), State::Stopped);
+    assert!(player.snapshot().error().is_some());
+    assert_eq!(
+        resume_of(&player),
+        Some(Resume {
+            position: Duration::ZERO,
+            paused: false,
+        }),
+        "an idle engine is at zero; what matters is that the position is kept"
+    );
+
+    player.toggle_playback();
+    assert_eq!(state(&player), State::Opening);
+    assert!(resume_of(&player).is_some(), "Play did not start it over");
+}
+
+#[gpui_kit::test]
+fn a_song_that_cannot_be_decoded_starts_over(cx: &mut TestAppContext) {
+    let player = idle_player(cx);
+    player.fill_queue(&[named_song("a")], 0);
+    player.pretend_playing(true);
+
+    fail_song(&player, audio::Error::Decode("bad frame".to_owned()));
+    assert_eq!(state(&player), State::Stopped);
+    assert_eq!(resume_of(&player), None);
+}
+
+#[gpui_kit::test]
+fn a_kept_file_that_breaks_is_fetched_again_from_where_it_was(cx: &mut TestAppContext) {
+    let player = idle_player(cx);
+    player.fill_queue(&[named_song("a")], 0);
+    player.pretend_playing(true);
+    player.0.core.update(|core| core.loaded_kept = true);
+
+    fail_song(&player, audio::Error::Decode("bad frame".to_owned()));
+    assert_eq!(state(&player), State::Opening);
+    assert!(resume_of(&player).is_some());
+}
+
+#[gpui_kit::test]
+fn another_output_picks_up_only_what_the_output_stopped(cx: &mut TestAppContext) {
+    let stopped_by = |error: audio::Error, cx: &mut TestAppContext| {
+        let player = idle_player(cx);
+        player.fill_queue(&[named_song("a")], 0);
+        player.pretend_playing(true);
+        fail_song(&player, error);
+        assert_eq!(state(&player), State::Stopped);
+        player.set_output(OutputSettings::default());
+        player
+    };
+
+    let player = stopped_by(audio::Error::Output("gone".to_owned()), cx);
+    assert_eq!(state(&player), State::Opening);
+
+    let player = stopped_by(audio::Error::Read("connection reset".to_owned()), cx);
+    assert_eq!(state(&player), State::Stopped);
+    assert!(player.snapshot().error().is_some());
+
+    // A pause while the song opened leaves a position to pick up at, and then it fails to open
+    let player = idle_player(cx);
+    player.fill_queue(&[named_song("a")], 0);
+    player.0.core.update(|core| {
+        core.shown.state = State::Opening;
+        core.shown.resume = Some(Resume {
+            position: Duration::ZERO,
+            paused: true,
+        });
+        let song = core.shown.queue.current().cloned().unwrap();
+        core.fail(&song, "The server didn't answer.");
+    });
+    player.set_output(OutputSettings::default());
+    assert_eq!(state(&player), State::Stopped);
+    assert!(player.snapshot().error().is_some());
+}
+
 #[gpui_kit::test]
 fn every_change_is_published_at_once(cx: &mut TestAppContext) {
     let player = idle_player(cx);

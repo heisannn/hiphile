@@ -211,6 +211,9 @@ struct Core {
     /// Whether that load was opened ahead of its turn and has yet to start,
     /// so a failure may be out of date by now.
     loaded_ahead: bool,
+    /// Whether the output stopped the current song rather than the song itself, so that
+    /// another output picks it up.
+    output_failed: bool,
     /// The current song's download, which the next one waits for.
     arrival: Option<Arrival>,
     following: Option<Following>,
@@ -320,6 +323,7 @@ impl Player {
                 load: None,
                 loaded_kept: false,
                 loaded_ahead: false,
+                output_failed: false,
                 arrival: None,
                 following: None,
                 following_id: 0,
@@ -757,7 +761,7 @@ impl Core {
         }
         self.shown.is_volume_locked = is_dop;
         self.engine.set_output(output);
-        if self.shown.state == State::Stopped && self.shown.resume.is_some() {
+        if self.shown.state == State::Stopped && self.output_failed {
             self.open_current(this, false);
         }
     }
@@ -857,6 +861,7 @@ impl Core {
     }
 
     fn stop_playing(&mut self) {
+        self.output_failed = false;
         self.cancel_open();
         self.engine.stop_fading();
         self.load = None;
@@ -948,6 +953,7 @@ impl Core {
     }
 
     fn show_opening(&mut self) {
+        self.output_failed = false;
         self.shown.format = None;
         self.shown.buffering = false;
         self.shown.error = None;
@@ -1078,24 +1084,33 @@ impl Core {
             EventKind::OutputChanged(format) => self.shown.format = Some(format),
             EventKind::Buffering(buffering) => self.shown.buffering = buffering,
             EventKind::Ended { next } => self.song_ended(this, next),
-            // The song fetched again plays from a download, not a kept
-            // file, so a song is fetched again at most once per play.
-            EventKind::Failed(error) if self.loaded_kept && error.is_track_error() => {
-                self.open_current(this, true);
-            }
-            // It opened a while ago, and what stopped it then may have passed
-            EventKind::Failed(error) if self.loaded_ahead && error.is_track_error() => {
-                self.open_current(this, false);
-            }
-            EventKind::Failed(error) => {
-                // The output is at fault, not the song, so it can pick up
-                // once there is one that works.
-                self.shown.resume = (!error.is_track_error()).then(|| self.resume_point());
-                if let Some(song) = self.shown.queue.current().cloned() {
-                    self.fail(&song, &describe(&error));
-                }
-            }
+            EventKind::Failed(error) => self.song_failed(this, &error),
         }
+    }
+
+    fn song_failed(&mut self, this: &Player, error: &audio::Error) {
+        // The song fetched again plays from a download, not a kept
+        // file, so a song is fetched again at most once per play.
+        if self.loaded_kept && error.is_track_error() {
+            if self.shown.is_started() {
+                self.shown.resume = Some(self.resume_point());
+            }
+            self.open_current(this, true);
+            return;
+        }
+        // It opened a while ago, and what stopped it then may have passed
+        if self.loaded_ahead && error.is_track_error() {
+            self.open_current(this, false);
+            return;
+        }
+        let is_output = !error.is_track_error();
+        // A song whose bytes stopped arriving has nothing wrong with it either
+        let stopped_arriving = self.shown.is_started() && matches!(error, audio::Error::Read(_));
+        self.shown.resume = (is_output || stopped_arriving).then(|| self.resume_point());
+        if let Some(song) = self.shown.queue.current().cloned() {
+            self.fail(&song, &describe(error));
+        }
+        self.output_failed = is_output;
     }
 
     /// Looks at the song for as long as it plays.
@@ -1188,6 +1203,7 @@ impl Core {
 
     /// Stops on the failed song and says why, so Play retries it.
     fn fail(&mut self, song: &Song, reason: &str) {
+        self.output_failed = false;
         self.cancel_open();
         self.engine.stop();
         self.load = None;
