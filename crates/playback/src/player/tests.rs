@@ -377,6 +377,21 @@ fn a_volume_step_is_kept_for_the_next_launch(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn the_saved_volume_is_used_though_another_setting_cannot_be_read(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = config::Store::at(dir.path());
+    std::fs::write(
+        store.config_path(),
+        "volume = 0.2\ncrossfade_seconds = -1\n",
+    )
+    .unwrap();
+
+    let player = player_saving_to(&store, cx);
+
+    assert_eq!(player.snapshot().volume(), 0.2);
+}
+
+#[gpui_kit::test]
 fn a_dragged_volume_is_kept_only_once_let_go(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());

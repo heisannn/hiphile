@@ -635,73 +635,142 @@ pub struct Crossfeed {
 }
 
 /// The keys of `config.toml` this crate reads. Others are left alone.
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
+#[serde(default)]
 struct Settings {
     server: Option<String>,
     username: Option<String>,
     password: Option<String>,
-    volume: Option<f32>,
-    song_cache_gib: Option<f64>,
-    cover_cache_gib: Option<f64>,
+    volume: Typed<f32>,
+    song_cache_gib: Typed<f64>,
+    cover_cache_gib: Typed<f64>,
     output_device: Option<String>,
     sample_rate: Option<String>,
-    exclusive_mode: Option<bool>,
-    trim_silence: Option<bool>,
-    crossfade_seconds: Option<u32>,
-    crossfeed: Option<bool>,
+    exclusive_mode: Typed<bool>,
+    trim_silence: Typed<bool>,
+    crossfade_seconds: Typed<u32>,
+    crossfeed: Typed<bool>,
     crossfeed_preset: Option<String>,
-    crossfeed_cutoff_hz: Option<u32>,
-    crossfeed_separation_db: Option<f64>,
-    balance_db: Option<f64>,
-    play_pause_fade: Option<bool>,
-    skip_instrumentals: Option<bool>,
+    crossfeed_cutoff_hz: Typed<u32>,
+    crossfeed_separation_db: Typed<f64>,
+    balance_db: Typed<f64>,
+    play_pause_fade: Typed<bool>,
+    skip_instrumentals: Typed<bool>,
     resampling: Option<String>,
-    resampling_fft_size: Option<u32>,
+    resampling_fft_size: Typed<u32>,
     resampling_window: Option<String>,
     r8brain_quality: Option<String>,
-    r8brain_transition_band: Option<f64>,
-    r8brain_attenuation: Option<f64>,
+    r8brain_transition_band: Typed<f64>,
+    r8brain_attenuation: Typed<f64>,
     r8brain_phase: Option<String>,
-    r8brain_max_input_frames: Option<u32>,
-    r8brain_extended_fft: Option<bool>,
-    r8brain_whole_stepping: Option<bool>,
-    r8brain_filter_fractions: Option<u32>,
-    r8brain_filter_cache_size: Option<u32>,
-    r8brain_filter_bank_cache_size: Option<u32>,
+    r8brain_max_input_frames: Typed<u32>,
+    r8brain_extended_fft: Typed<bool>,
+    r8brain_whole_stepping: Typed<bool>,
+    r8brain_filter_fractions: Typed<u32>,
+    r8brain_filter_cache_size: Typed<u32>,
+    r8brain_filter_bank_cache_size: Typed<u32>,
     soxr_quality: Option<String>,
-    soxr_precision: Option<f64>,
-    soxr_passband_end: Option<f64>,
+    soxr_precision: Typed<f64>,
+    soxr_passband_end: Typed<f64>,
     soxr_phase: Option<String>,
-    soxr_double_precision: Option<bool>,
-    soxr_coef_table_kb: Option<u32>,
+    soxr_double_precision: Typed<bool>,
+    soxr_coef_table_kb: Typed<u32>,
     soxr_coef_interpolation: Option<String>,
-    soxr_min_dft_size: Option<u32>,
-    soxr_large_dft_size: Option<u32>,
+    soxr_min_dft_size: Typed<u32>,
+    soxr_large_dft_size: Typed<u32>,
     output_format: Option<String>,
     dop_device: Option<String>,
-    dsd_rate: Option<u16>,
+    dsd_rate: Typed<u16>,
     dsd_base_rate: Option<String>,
-    dsd_fade_in: Option<bool>,
+    dsd_fade_in: Typed<bool>,
     dsd_quality: Option<String>,
     dsd_filter: Option<String>,
-    dsd_sinc_length: Option<u32>,
-    dsd_fft_size: Option<u32>,
+    dsd_sinc_length: Typed<u32>,
+    dsd_fft_size: Typed<u32>,
     dsd_window: Option<String>,
-    dsd_cutoff: Option<f64>,
-    dsd_order: Option<u8>,
-    dsd_noise_gain: Option<f64>,
-    dsd_noise_band: Option<u32>,
-    dsd_optimized_zeros: Option<bool>,
-    dsd_dither_db: Option<f64>,
-    dsd_input_level_db: Option<f64>,
+    dsd_cutoff: Typed<f64>,
+    dsd_order: Typed<u8>,
+    dsd_noise_gain: Typed<f64>,
+    dsd_noise_band: Typed<u32>,
+    dsd_optimized_zeros: Typed<bool>,
+    dsd_dither_db: Typed<f64>,
+    dsd_input_level_db: Typed<f64>,
     dsd_limiter_ceiling_db: Option<String>,
     appearance: Option<String>,
     lyrics_highlight: Option<String>,
-    romaji_search: Option<bool>,
-    discord_presence: Option<bool>,
-    auto_update: Option<bool>,
+    romaji_search: Typed<bool>,
+    discord_presence: Typed<bool>,
+    auto_update: Typed<bool>,
     imgbb_api_key: Option<String>,
     profiles: Option<Lenient<Vec<Lenient<SavedProfile>>>>,
+}
+
+/// The value of a key that is not text: absent, read, or written in a way that cannot be read
+/// as `T`, which loses only that key.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum Typed<T> {
+    #[default]
+    Absent,
+    Read(T),
+    Unread,
+}
+
+impl<'de, T: serde::de::DeserializeOwned> Deserialize<'de> for Typed<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Through the value as the file or the environment gave it, so that a number in an
+        // environment variable, which is text there, is still read as one
+        let value = config_rs::Value::deserialize(deserializer)?;
+        Ok(T::deserialize(value).map_or(Self::Unread, Self::Read))
+    }
+}
+
+impl<T: PartialEq> PartialEq<Option<T>> for Typed<T> {
+    fn eq(&self, other: &Option<T>) -> bool {
+        match (self, other) {
+            (Self::Absent, None) => true,
+            (Self::Read(value), Some(other)) => value == other,
+            _ => false,
+        }
+    }
+}
+
+#[cfg(test)]
+impl<T> Typed<T> {
+    fn read(self) -> Option<T> {
+        match self {
+            Self::Read(value) => Some(value),
+            Self::Absent | Self::Unread => None,
+        }
+    }
+}
+
+/// What a key of this type must be, for the error about one that cannot be read.
+trait Expected {
+    const EXPECTED: &'static str;
+}
+
+impl Expected for bool {
+    const EXPECTED: &'static str = "`true` or `false`";
+}
+
+impl Expected for u8 {
+    const EXPECTED: &'static str = "a whole number, 0 or more";
+}
+
+impl Expected for u16 {
+    const EXPECTED: &'static str = "a whole number, 0 or more";
+}
+
+impl Expected for u32 {
+    const EXPECTED: &'static str = "a whole number, 0 or more";
+}
+
+impl Expected for f32 {
+    const EXPECTED: &'static str = "a number";
+}
+
+impl Expected for f64 {
+    const EXPECTED: &'static str = "a number";
 }
 
 /// A value read if it can be, so that one written wrong by hand loses only itself.
@@ -1267,8 +1336,8 @@ impl Store {
     /// The playback volume from `0.0` to `1.0`, if one was saved.
     pub fn volume(&self) -> Result<Option<f32>, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
-        Ok(settings
-            .volume
+        Ok(self
+            .typed("volume", settings.volume)?
             .filter(|volume| volume.is_finite())
             .map(|volume| volume.clamp(0.0, 1.0)))
     }
@@ -1278,13 +1347,17 @@ impl Store {
     /// reason to keep the default.
     pub fn song_cache_capacity(&self) -> Result<Option<u64>, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
-        self.cache_bytes("song_cache_gib", settings.song_cache_gib)
+        self.cache_bytes(
+            "song_cache_gib",
+            self.typed("song_cache_gib", settings.song_cache_gib)?,
+        )
     }
 
     pub fn song_cache_gib(&self) -> Result<Option<f64>, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
-        self.cache_bytes("song_cache_gib", settings.song_cache_gib)?;
-        Ok(settings.song_cache_gib)
+        let gib = self.typed("song_cache_gib", settings.song_cache_gib)?;
+        self.cache_bytes("song_cache_gib", gib)?;
+        Ok(gib)
     }
 
     /// How many bytes of covers may be kept on this computer, if the file says:
@@ -1292,13 +1365,17 @@ impl Store {
     /// reason to keep the default.
     pub fn cover_cache_capacity(&self) -> Result<Option<u64>, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
-        self.cache_bytes("cover_cache_gib", settings.cover_cache_gib)
+        self.cache_bytes(
+            "cover_cache_gib",
+            self.typed("cover_cache_gib", settings.cover_cache_gib)?,
+        )
     }
 
     pub fn cover_cache_gib(&self) -> Result<Option<f64>, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
-        self.cache_bytes("cover_cache_gib", settings.cover_cache_gib)?;
-        Ok(settings.cover_cache_gib)
+        let gib = self.typed("cover_cache_gib", settings.cover_cache_gib)?;
+        self.cache_bytes("cover_cache_gib", gib)?;
+        Ok(gib)
     }
 
     /// The id of the output device to play on, if one was chosen rather than the system's
@@ -1327,23 +1404,31 @@ impl Store {
     /// Whether to keep other apps off the output device while playing.
     pub fn exclusive_mode(&self) -> Result<bool, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
-        Ok(settings.exclusive_mode.unwrap_or(false))
+        Ok(self
+            .typed("exclusive_mode", settings.exclusive_mode)?
+            .unwrap_or(false))
     }
 
     pub fn trim_silence(&self) -> Result<bool, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
-        Ok(settings.trim_silence.unwrap_or(false))
+        Ok(self
+            .typed("trim_silence", settings.trim_silence)?
+            .unwrap_or(false))
     }
 
     pub fn play_pause_fade(&self) -> Result<bool, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
-        Ok(settings.play_pause_fade.unwrap_or(false))
+        Ok(self
+            .typed("play_pause_fade", settings.play_pause_fade)?
+            .unwrap_or(false))
     }
 
     /// How long songs overlap, up to [`LONGEST_CROSSFADE_SECONDS`]; `0` joins them.
     pub fn crossfade_seconds(&self) -> Result<u32, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
-        let seconds = settings.crossfade_seconds.unwrap_or(0);
+        let seconds = self
+            .typed("crossfade_seconds", settings.crossfade_seconds)?
+            .unwrap_or(0);
         if seconds > LONGEST_CROSSFADE_SECONDS {
             return Err(self.invalid("crossfade_seconds", "whole seconds from 0 to 12"));
         }
@@ -1372,20 +1457,24 @@ impl Store {
             }
         };
         Ok(Crossfeed {
-            is_on: settings.crossfeed.unwrap_or(false),
+            is_on: self
+                .typed("crossfeed", settings.crossfeed)?
+                .unwrap_or(false),
             preset,
         })
     }
 
     fn parse_crossfeed_filter(&self, settings: &Settings) -> Result<CrossfeedFilter, Error> {
         let bs2b = CrossfeedPreset::Bs2b.filter();
-        let cutoff_hz = settings.crossfeed_cutoff_hz.unwrap_or(bs2b.cutoff_hz);
+        let cutoff_hz = self
+            .typed("crossfeed_cutoff_hz", settings.crossfeed_cutoff_hz)?
+            .unwrap_or(bs2b.cutoff_hz);
         if !CROSSFEED_CUTOFFS_HZ.contains(&cutoff_hz) {
             return Err(self.invalid("crossfeed_cutoff_hz", "a whole number from 300 to 2000"));
         }
         // Tenths are what plays and what Settings shows
-        let separation_db = settings
-            .crossfeed_separation_db
+        let separation_db = self
+            .typed("crossfeed_separation_db", settings.crossfeed_separation_db)?
             .map_or(bs2b.separation_db, |db| (db * 10.0).round() / 10.0);
         if !CROSSFEED_SEPARATIONS_DB.contains(&separation_db) {
             return Err(self.invalid("crossfeed_separation_db", "a number from 1 to 15"));
@@ -1399,7 +1488,9 @@ impl Store {
     /// `0` unless the file says otherwise. See [`BALANCE_DBS`].
     pub fn balance_db(&self) -> Result<f64, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
-        let db = settings.balance_db.unwrap_or(0.0);
+        let db = self
+            .typed("balance_db", settings.balance_db)?
+            .unwrap_or(0.0);
         if !BALANCE_DBS.contains(&db) {
             return Err(self.invalid("balance_db", "a number from -12 to 12"));
         }
@@ -1451,24 +1542,32 @@ impl Store {
     /// downloaded for it. On unless the file says otherwise.
     pub fn romaji_search(&self) -> Result<bool, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
-        Ok(settings.romaji_search.unwrap_or(true))
+        Ok(self
+            .typed("romaji_search", settings.romaji_search)?
+            .unwrap_or(true))
     }
 
     pub fn skip_instrumentals(&self) -> Result<bool, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
-        Ok(settings.skip_instrumentals.unwrap_or(false))
+        Ok(self
+            .typed("skip_instrumentals", settings.skip_instrumentals)?
+            .unwrap_or(false))
     }
 
     /// On unless the file says otherwise.
     pub fn discord_presence(&self) -> Result<bool, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
-        Ok(settings.discord_presence.unwrap_or(true))
+        Ok(self
+            .typed("discord_presence", settings.discord_presence)?
+            .unwrap_or(true))
     }
 
     /// On unless the file says otherwise.
     pub fn auto_update(&self) -> Result<bool, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
-        Ok(settings.auto_update.unwrap_or(true))
+        Ok(self
+            .typed("auto_update", settings.auto_update)?
+            .unwrap_or(true))
     }
 
     pub fn imgbb_api_key(&self) -> Result<Option<String>, Error> {
@@ -1507,7 +1606,9 @@ impl Store {
                 .map(ResamplingQuality::Soxr),
             Some("custom") => {
                 let medium = ResamplingQuality::Medium;
-                let fft_size = settings.resampling_fft_size.unwrap_or(medium.fft_size());
+                let fft_size = self
+                    .typed("resampling_fft_size", settings.resampling_fft_size)?
+                    .unwrap_or(medium.fft_size());
                 if !RESAMPLING_FFT_SIZES.contains(&fft_size) {
                     return Err(invalid(
                         "resampling_fft_size",
@@ -1558,11 +1659,15 @@ impl Store {
 
     fn parse_soxr_filter(&self, settings: &Settings) -> Result<SoxrFilter, Error> {
         let preset = SoxrQuality::default().filter();
-        let precision = settings.soxr_precision.unwrap_or(preset.precision);
+        let precision = self
+            .typed("soxr_precision", settings.soxr_precision)?
+            .unwrap_or(preset.precision);
         if !SOXR_PRECISIONS.contains(&precision) {
             return Err(self.invalid("soxr_precision", "a number of bits from 15 to 33"));
         }
-        let passband_end = settings.soxr_passband_end.unwrap_or(preset.passband_end);
+        let passband_end = self
+            .typed("soxr_passband_end", settings.soxr_passband_end)?
+            .unwrap_or(preset.passband_end);
         if !SOXR_PASSBAND_ENDS.contains(&passband_end) {
             return Err(self.invalid(
                 "soxr_passband_end",
@@ -1583,15 +1688,17 @@ impl Store {
             precision,
             passband_end,
             phase,
-            double_precision: settings
-                .soxr_double_precision
+            double_precision: self
+                .typed("soxr_double_precision", settings.soxr_double_precision)?
                 .unwrap_or(preset.double_precision),
         })
     }
 
     fn parse_soxr_performance(&self, settings: &Settings) -> Result<SoxrPerformance, Error> {
         let default = SoxrPerformance::default();
-        let coef_table_kb = settings.soxr_coef_table_kb.unwrap_or(default.coef_table_kb);
+        let coef_table_kb = self
+            .typed("soxr_coef_table_kb", settings.soxr_coef_table_kb)?
+            .unwrap_or(default.coef_table_kb);
         if !SOXR_COEF_TABLE_KBS.contains(&coef_table_kb) {
             return Err(self.invalid("soxr_coef_table_kb", "a whole number from 1 to 65536"));
         }
@@ -1606,12 +1713,14 @@ impl Store {
                 ));
             }
         };
-        let min_dft_size = settings.soxr_min_dft_size.unwrap_or(default.min_dft_size);
+        let min_dft_size = self
+            .typed("soxr_min_dft_size", settings.soxr_min_dft_size)?
+            .unwrap_or(default.min_dft_size);
         if !SOXR_MIN_DFT_SIZES.contains(&min_dft_size) {
             return Err(self.invalid("soxr_min_dft_size", "a power of two from 256 to 32768"));
         }
-        let large_dft_size = settings
-            .soxr_large_dft_size
+        let large_dft_size = self
+            .typed("soxr_large_dft_size", settings.soxr_large_dft_size)?
             .unwrap_or(default.large_dft_size);
         if !SOXR_LARGE_DFT_SIZES.contains(&large_dft_size) {
             return Err(self.invalid("soxr_large_dft_size", "a power of two from 256 to 1048576"));
@@ -1646,13 +1755,15 @@ impl Store {
 
     fn parse_r8brain_filter(&self, settings: &Settings) -> Result<R8brainFilter, Error> {
         let high = R8brainQuality::High.filter();
-        let transition_band = settings
-            .r8brain_transition_band
+        let transition_band = self
+            .typed("r8brain_transition_band", settings.r8brain_transition_band)?
             .unwrap_or(high.transition_band);
         if !R8BRAIN_TRANSITION_BANDS.contains(&transition_band) {
             return Err(self.invalid("r8brain_transition_band", "a number from 0.5 to 45"));
         }
-        let attenuation = settings.r8brain_attenuation.unwrap_or(high.attenuation);
+        let attenuation = self
+            .typed("r8brain_attenuation", settings.r8brain_attenuation)?
+            .unwrap_or(high.attenuation);
         if !R8BRAIN_ATTENUATIONS.contains(&attenuation) {
             return Err(self.invalid("r8brain_attenuation", "a number from 49 to 218"));
         }
@@ -1661,7 +1772,10 @@ impl Store {
             Some("minimum") => R8brainPhase::Minimum,
             Some(_) => return Err(self.invalid("r8brain_phase", "\"linear\" or \"minimum\"")),
         };
-        let filter_fractions = settings.r8brain_filter_fractions;
+        let filter_fractions = self.typed(
+            "r8brain_filter_fractions",
+            settings.r8brain_filter_fractions,
+        )?;
         if filter_fractions.is_some_and(|fractions| !R8BRAIN_FILTER_FRACTIONS.contains(&fractions))
         {
             return Err(self.invalid("r8brain_filter_fractions", "a whole number from 5 to 65536"));
@@ -1670,8 +1784,8 @@ impl Store {
             transition_band,
             attenuation,
             phase,
-            whole_stepping: settings
-                .r8brain_whole_stepping
+            whole_stepping: self
+                .typed("r8brain_whole_stepping", settings.r8brain_whole_stepping)?
                 .unwrap_or(high.whole_stepping),
             filter_fractions,
         })
@@ -1679,8 +1793,11 @@ impl Store {
 
     fn parse_r8brain_performance(&self, settings: &Settings) -> Result<R8brainPerformance, Error> {
         let default = R8brainPerformance::default();
-        let max_input_frames = settings
-            .r8brain_max_input_frames
+        let max_input_frames = self
+            .typed(
+                "r8brain_max_input_frames",
+                settings.r8brain_max_input_frames,
+            )?
             .unwrap_or(default.max_input_frames);
         if !R8BRAIN_MAX_INPUT_FRAMES.contains(&max_input_frames) {
             return Err(self.invalid(
@@ -1688,14 +1805,20 @@ impl Store {
                 "a whole number from 1 to 1048576",
             ));
         }
-        let filter_cache_size = settings
-            .r8brain_filter_cache_size
+        let filter_cache_size = self
+            .typed(
+                "r8brain_filter_cache_size",
+                settings.r8brain_filter_cache_size,
+            )?
             .unwrap_or(default.filter_cache_size);
         if !R8BRAIN_CACHE_SIZES.contains(&filter_cache_size) {
             return Err(self.invalid("r8brain_filter_cache_size", "a whole number from 2 to 4096"));
         }
-        let filter_bank_cache_size = settings
-            .r8brain_filter_bank_cache_size
+        let filter_bank_cache_size = self
+            .typed(
+                "r8brain_filter_bank_cache_size",
+                settings.r8brain_filter_bank_cache_size,
+            )?
             .unwrap_or(default.filter_bank_cache_size);
         if !R8BRAIN_CACHE_SIZES.contains(&filter_bank_cache_size) {
             return Err(self.invalid(
@@ -1705,8 +1828,8 @@ impl Store {
         }
         Ok(R8brainPerformance {
             max_input_frames,
-            extended_fft: settings
-                .r8brain_extended_fft
+            extended_fft: self
+                .typed("r8brain_extended_fft", settings.r8brain_extended_fft)?
                 .unwrap_or(default.extended_fft),
             filter_cache_size,
             filter_bank_cache_size,
@@ -1719,8 +1842,8 @@ impl Store {
             Some("dsd") => true,
             Some(_) => return Err(self.invalid("output_format", "\"pcm\" or \"dsd\"")),
         };
-        let rate = settings
-            .dsd_rate
+        let rate = self
+            .typed("dsd_rate", settings.dsd_rate)?
             .map(|multiple| {
                 DsdRate::ALL
                     .into_iter()
@@ -1739,7 +1862,9 @@ impl Store {
             rate,
             matches_song_family,
             quality: self.parse_dsd_quality(settings)?,
-            fades_in: settings.dsd_fade_in.unwrap_or(true),
+            fades_in: self
+                .typed("dsd_fade_in", settings.dsd_fade_in)?
+                .unwrap_or(true),
         })
     }
 
@@ -1759,24 +1884,30 @@ impl Store {
 
     fn parse_dsd_parameters(&self, settings: &Settings) -> Result<DsdParameters, Error> {
         let high = DsdQuality::High.parameters();
-        let order = settings.dsd_order.unwrap_or(high.order);
+        let order = self
+            .typed("dsd_order", settings.dsd_order)?
+            .unwrap_or(high.order);
         if !DSD_ORDERS.contains(&order) {
             return Err(self.invalid("dsd_order", "3, 5, 7 or 9"));
         }
-        let noise_gain = settings.dsd_noise_gain.unwrap_or(high.noise_gain);
+        let noise_gain = self
+            .typed("dsd_noise_gain", settings.dsd_noise_gain)?
+            .unwrap_or(high.noise_gain);
         if !DSD_NOISE_GAINS.contains(&noise_gain) {
             return Err(self.invalid("dsd_noise_gain", "a number from 1.2 to 1.5"));
         }
-        let wide_noise_band = match settings.dsd_noise_band {
+        let wide_noise_band = match self.typed("dsd_noise_band", settings.dsd_noise_band)? {
             None | Some(20_000) => false,
             Some(48_000) => true,
             Some(_) => return Err(self.invalid("dsd_noise_band", "20000 or 48000")),
         };
-        let dither_db = settings.dsd_dither_db;
+        let dither_db = self.typed("dsd_dither_db", settings.dsd_dither_db)?;
         if dither_db.is_some_and(|dither_db| !DSD_DITHER_DBS.contains(&dither_db)) {
             return Err(self.invalid("dsd_dither_db", "a number from -160 to -20"));
         }
-        let input_level_db = settings.dsd_input_level_db.unwrap_or(high.input_level_db);
+        let input_level_db = self
+            .typed("dsd_input_level_db", settings.dsd_input_level_db)?
+            .unwrap_or(high.input_level_db);
         if !DSD_INPUT_LEVEL_DBS.contains(&input_level_db) {
             return Err(self.invalid("dsd_input_level_db", "a number from -24 to 6"));
         }
@@ -1797,7 +1928,9 @@ impl Store {
             order,
             noise_gain,
             wide_noise_band,
-            optimized_zeros: settings.dsd_optimized_zeros.unwrap_or(high.optimized_zeros),
+            optimized_zeros: self
+                .typed("dsd_optimized_zeros", settings.dsd_optimized_zeros)?
+                .unwrap_or(high.optimized_zeros),
             dither_db,
             input_level_db,
             limiter_ceiling_db,
@@ -1820,11 +1953,13 @@ impl Store {
         };
         match settings.dsd_filter.as_deref() {
             None | Some("sinc") => {
-                let length = settings.dsd_sinc_length.unwrap_or(1024);
+                let length = self
+                    .typed("dsd_sinc_length", settings.dsd_sinc_length)?
+                    .unwrap_or(1024);
                 if !DSD_SINC_LENGTHS.contains(&length) {
                     return Err(self.invalid("dsd_sinc_length", "256, 512, 1024 or 2048"));
                 }
-                let cutoff = settings.dsd_cutoff;
+                let cutoff = self.typed("dsd_cutoff", settings.dsd_cutoff)?;
                 if cutoff.is_some_and(|cutoff| !DSD_CUTOFFS.contains(&cutoff)) {
                     return Err(self.invalid("dsd_cutoff", "a number from 0.5 to 1"));
                 }
@@ -1835,13 +1970,25 @@ impl Store {
                 })
             }
             Some("fft") => {
-                let size = settings.dsd_fft_size.unwrap_or(4096);
+                let size = self
+                    .typed("dsd_fft_size", settings.dsd_fft_size)?
+                    .unwrap_or(4096);
                 if !RESAMPLING_FFT_SIZES.contains(&size) {
                     return Err(self.invalid("dsd_fft_size", "a power of two from 256 to 16384"));
                 }
                 Ok(DsdFilter::Fft { size, window })
             }
             Some(_) => Err(self.invalid("dsd_filter", "\"sinc\" or \"fft\"")),
+        }
+    }
+
+    /// The value of a key that is not text, or the error naming the key when what is written
+    /// for it cannot be read.
+    fn typed<T: Expected>(&self, key: &'static str, value: Typed<T>) -> Result<Option<T>, Error> {
+        match value {
+            Typed::Absent => Ok(None),
+            Typed::Read(value) => Ok(Some(value)),
+            Typed::Unread => Err(self.invalid(key, T::EXPECTED)),
         }
     }
 
@@ -3820,7 +3967,7 @@ mod tests {
         let store = temporary_store("song-cache");
         let capacity = |env: &[(&str, &str)]| {
             store
-                .cache_bytes("song_cache_gib", read(&store, env).song_cache_gib)
+                .cache_bytes("song_cache_gib", read(&store, env).song_cache_gib.read())
                 .map_err(|error| error.to_string())
         };
         assert_eq!(capacity(&[]), Ok(None));
@@ -3848,7 +3995,7 @@ mod tests {
         assert_eq!(read(&store, &[]).song_cache_gib, Some(0.5));
         assert_eq!(
             store
-                .cache_bytes("song_cache_gib", read(&store, &[]).song_cache_gib)
+                .cache_bytes("song_cache_gib", read(&store, &[]).song_cache_gib.read())
                 .unwrap(),
             Some(512 << 20)
         );
@@ -3941,10 +4088,67 @@ mod tests {
     }
 
     #[test]
+    fn a_key_that_cannot_be_read_loses_only_itself() {
+        let store = temporary_store("unread-key");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        std::fs::write(
+            store.config_path(),
+            "server = \"https://music.example.com\"\nusername = \"alice\"\nvolume = 0.2\n\
+             crossfade_seconds = -1\nexclusive_mode = \"maybe\"\nromaji_search = false\n",
+        )
+        .unwrap();
+        let settings = read(&store, &[]);
+        assert_eq!(settings.volume, Some(0.2));
+        assert_eq!(settings.romaji_search, Some(false));
+        assert_eq!(settings.trim_silence, None);
+        assert_eq!(
+            load(&store, &[]),
+            Some(Profile::new("https://music.example.com", "alice"))
+        );
+
+        assert_eq!(settings.crossfade_seconds, Typed::Unread);
+        assert!(matches!(
+            store.typed("crossfade_seconds", settings.crossfade_seconds),
+            Err(Error::InvalidSetting {
+                key: "crossfade_seconds",
+                expected: "a whole number, 0 or more",
+                ..
+            })
+        ));
+        assert!(matches!(
+            store.typed("exclusive_mode", settings.exclusive_mode),
+            Err(Error::InvalidSetting {
+                key: "exclusive_mode",
+                expected: "`true` or `false`",
+                ..
+            })
+        ));
+        assert_eq!(store.typed("volume", settings.volume).unwrap(), Some(0.2));
+    }
+
+    #[test]
+    fn a_number_in_the_environment_that_cannot_be_read_loses_only_itself() {
+        let store = temporary_store("unread-environment");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        std::fs::write(store.config_path(), "volume = 0.2\ncrossfade_seconds = 4\n").unwrap();
+        let settings = read(
+            &store,
+            &[
+                ("HIPHILE_CROSSFADE_SECONDS", "long"),
+                ("HIPHILE_VOLUME", "0.5"),
+                ("HIPHILE_EXCLUSIVE_MODE", "true"),
+            ],
+        );
+        assert_eq!(settings.crossfade_seconds, Typed::Unread);
+        assert_eq!(settings.volume, Some(0.5));
+        assert_eq!(settings.exclusive_mode, Some(true));
+    }
+
+    #[test]
     fn romaji_search_round_trips_and_is_on_unless_told_otherwise() {
         let store = temporary_store("romaji-search");
         store.save_volume(0.5).unwrap();
-        let is_on = |env: &[(&str, &str)]| read(&store, env).romaji_search.unwrap_or(true);
+        let is_on = |env: &[(&str, &str)]| read(&store, env).romaji_search.read().unwrap_or(true);
         assert!(is_on(&[]));
 
         store.save_romaji_search(false).unwrap();
@@ -3956,7 +4160,8 @@ mod tests {
     fn discord_presence_round_trips_and_is_on_unless_told_otherwise() {
         let store = temporary_store("discord-presence");
         store.save_volume(0.5).unwrap();
-        let is_on = |env: &[(&str, &str)]| read(&store, env).discord_presence.unwrap_or(true);
+        let is_on =
+            |env: &[(&str, &str)]| read(&store, env).discord_presence.read().unwrap_or(true);
         assert!(is_on(&[]));
 
         store.save_discord_presence(false).unwrap();
@@ -3968,7 +4173,7 @@ mod tests {
     fn auto_update_round_trips_and_is_on_unless_told_otherwise() {
         let store = temporary_store("auto-update");
         store.save_volume(0.5).unwrap();
-        let is_on = |env: &[(&str, &str)]| read(&store, env).auto_update.unwrap_or(true);
+        let is_on = |env: &[(&str, &str)]| read(&store, env).auto_update.read().unwrap_or(true);
         assert!(is_on(&[]));
 
         store.save_auto_update(false).unwrap();
