@@ -2194,6 +2194,12 @@ impl Store {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let path = self.config_path();
+        // What a link names is replaced, so that the link stays one
+        let path = if path.is_symlink() {
+            std::fs::canonicalize(&path).unwrap_or(path)
+        } else {
+            path
+        };
         let text = match std::fs::read_to_string(&path) {
             Ok(text) => text,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -2213,7 +2219,7 @@ impl Store {
             std::process::id(),
             TEMPORARY.fetch_add(1, Ordering::Relaxed)
         ));
-        std::fs::write(&temporary, document.to_string()).map_err(io_error(&temporary))?;
+        write_private(&temporary, &document.to_string(), &path).map_err(io_error(&temporary))?;
         std::fs::rename(&temporary, &path).map_err(io_error(&path))
     }
 }
@@ -2230,6 +2236,32 @@ fn server_address(server: &str) -> String {
         scheme.to_ascii_lowercase(),
         host.to_ascii_lowercase()
     )
+}
+
+/// Writes `text` to `path` for this user alone to read, then gives it the permissions of the
+/// file it is to replace, if there is one: the settings can hold a password and an API key,
+/// and the user may have chosen who reads them.
+#[cfg(unix)]
+fn write_private(path: &Path, text: &str, replaces: &Path) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(text.as_bytes())?;
+    match std::fs::metadata(replaces) {
+        Ok(metadata) => file.set_permissions(metadata.permissions()),
+        Err(_) => Ok(()),
+    }
+}
+
+#[cfg(not(unix))]
+fn write_private(path: &Path, text: &str, _replaces: &Path) -> std::io::Result<()> {
+    std::fs::write(path, text)
 }
 
 /// The profiles in `config.toml`, changed in the form they are written in.
@@ -4250,6 +4282,58 @@ mod tests {
             .filter(|entry| entry.as_ref().unwrap().path() != store.config_path())
             .count();
         assert_eq!(leftovers, 0, "temporary files were left behind");
+    }
+
+    #[cfg(unix)]
+    fn mode_of(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_settings_file_is_readable_by_its_user_alone() {
+        let store = temporary_store("permissions-new");
+        store.save_volume(0.5).unwrap();
+        assert_eq!(mode_of(&store.config_path()), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_keeps_the_permissions_the_file_has() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let store = temporary_store("permissions-kept");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        std::fs::write(store.config_path(), "volume = 1.0\n").unwrap();
+        for mode in [0o640, 0o600, 0o644] {
+            std::fs::set_permissions(store.config_path(), std::fs::Permissions::from_mode(mode))
+                .unwrap();
+            store.save_volume(0.5).unwrap();
+            assert_eq!(mode_of(&store.config_path()), mode);
+        }
+        assert_eq!(read(&store, &[]).volume, Some(0.5));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saving_through_a_link_keeps_the_link() {
+        let store = temporary_store("link");
+        let linked = temporary_store("link-target");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        std::fs::create_dir_all(linked.dir()).unwrap();
+        std::fs::write(linked.config_path(), "volume = 1.0\n").unwrap();
+        std::os::unix::fs::symlink(linked.config_path(), store.config_path()).unwrap();
+
+        store.save_volume(0.5).unwrap();
+
+        assert!(store.config_path().is_symlink());
+        assert_eq!(read(&linked, &[]).volume, Some(0.5));
+        assert_eq!(read(&store, &[]).volume, Some(0.5));
+        for dir in [store.dir(), linked.dir()] {
+            let files = std::fs::read_dir(dir).unwrap().count();
+            assert_eq!(files, 1, "temporary files were left behind in {dir:?}");
+        }
     }
 
     #[test]
