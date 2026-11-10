@@ -214,6 +214,10 @@ struct Core {
     /// Whether the output stopped the current song rather than the song itself, so that
     /// another output picks it up.
     output_failed: bool,
+    /// Whether [`Player::shutdown`] ended the engine, after which nothing plays.
+    is_shut_down: bool,
+    /// Whether the engine's thread ended by a fault, after which nothing can play.
+    is_engine_gone: bool,
     /// The current song's download, which the next one waits for.
     arrival: Option<Arrival>,
     following: Option<Following>,
@@ -324,6 +328,8 @@ impl Player {
                 loaded_kept: false,
                 loaded_ahead: false,
                 output_failed: false,
+                is_shut_down: false,
+                is_engine_gone: false,
                 arrival: None,
                 following: None,
                 following_id: 0,
@@ -348,6 +354,9 @@ impl Player {
                     return;
                 };
                 this.change(|core| core.on_engine_event(&this, event));
+            }
+            if let Some(this) = weak.upgrade() {
+                this.change(Core::engine_ended);
             }
         });
         this.0.core.update(|core| core._events = events);
@@ -692,7 +701,10 @@ impl Player {
     /// be saved. For when the app quits: quitting may not drop the player, and dropping it does
     /// not wait. The player plays nothing after.
     pub fn shutdown(&self) {
-        self.0.core.update(|core| core.engine.shutdown());
+        self.0.core.update(|core| {
+            core.is_shut_down = true;
+            core.engine.shutdown();
+        });
         if let (Some(store), Some(saver)) = (&self.0.store, &self.0.volume_saver)
             && let Some(volume) = saver.take_waiting()
         {
@@ -892,6 +904,10 @@ impl Core {
             self.stop_playing();
             return;
         };
+        if self.is_engine_gone {
+            self.fail(&song, ENGINE_GONE);
+            return;
+        }
         if self.dop_start == DopStart::Held {
             self.shown.resume.get_or_insert_default().paused = true;
         }
@@ -1113,6 +1129,23 @@ impl Core {
         self.output_failed = is_output;
     }
 
+    /// The engine's thread ended. Unless the player was shut down, a fault ended it, and
+    /// nothing plays until the app starts again.
+    fn engine_ended(&mut self) {
+        if self.is_shut_down {
+            return;
+        }
+        self.is_engine_gone = true;
+        self.shown.resume = None;
+        match self.shown.queue.current().cloned() {
+            Some(song) => self.fail(&song, ENGINE_GONE),
+            None => {
+                self.shown.error = Some(ENGINE_GONE.into());
+                self.shown.state = State::Stopped;
+            }
+        }
+    }
+
     /// Looks at the song for as long as it plays.
     fn keep_tally(&mut self, this: &Player) {
         if self.shown.state != State::Playing {
@@ -1223,6 +1256,8 @@ impl Publish for Core {
         &self.shown
     }
 }
+
+const ENGINE_GONE: &str = "Playback stopped unexpectedly. Quit hiphile and open it again.";
 
 /// The engine gain for a volume slider at `level`. Squared, so equal slider
 /// steps sound like roughly equal changes in loudness.

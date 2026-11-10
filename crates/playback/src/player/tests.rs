@@ -329,6 +329,50 @@ fn another_output_picks_up_only_what_the_output_stopped(cx: &mut TestAppContext)
 }
 
 #[gpui_kit::test]
+fn a_fault_in_the_engine_stops_the_player_and_says_so(cx: &mut TestAppContext) {
+    // The engine's thread wakes the test as it ends
+    cx.executor().allow_parking();
+    let player = idle_player(cx);
+    player.fill_queue(&[named_song("a")], 0);
+    player.pretend_playing(true);
+
+    read(&player, |core| core.engine.crash());
+    wait_until(&player, cx, "the fault to be told", |core| {
+        core.shown.state == State::Stopped && core.shown.error.is_some()
+    });
+
+    player.toggle_playback();
+    assert_eq!(state(&player), State::Stopped);
+    let error = player.snapshot().error().unwrap().to_owned();
+    assert!(error.ends_with(ENGINE_GONE), "{error}");
+}
+
+#[gpui_kit::test]
+fn a_fault_in_the_engine_with_nothing_queued_is_told_too(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let player = idle_player(cx);
+
+    read(&player, |core| core.engine.crash());
+    wait_until(&player, cx, "the fault to be told", |core| {
+        core.shown.error.is_some()
+    });
+
+    assert_eq!(player.snapshot().error(), Some(ENGINE_GONE));
+}
+
+#[gpui_kit::test]
+fn shutting_down_is_not_told_as_a_fault(cx: &mut TestAppContext) {
+    let player = idle_player(cx);
+    player.fill_queue(&[named_song("a")], 0);
+    player.pretend_playing(true);
+
+    player.shutdown();
+    cx.run_until_parked();
+
+    assert_eq!(player.snapshot().error(), None);
+}
+
+#[gpui_kit::test]
 fn every_change_is_published_at_once(cx: &mut TestAppContext) {
     let player = idle_player(cx);
     let mut changes = player.subscribe();

@@ -184,6 +184,8 @@ enum Command {
     /// Names the generation the stream was opened for.
     OutputFailed(Generation, String),
     Shutdown,
+    #[cfg(any(test, feature = "test-support"))]
+    Crash,
 }
 
 struct Shared {
@@ -475,6 +477,12 @@ impl Engine {
         dsp::Settings::from_bits(self.shared.dsp.load(Ordering::Relaxed))
     }
 
+    /// Makes the engine's thread panic, as a fault in it would.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn crash(&self) {
+        self.send(Command::Crash);
+    }
+
     /// From now on, including for the track playing and the one set to follow.
     pub fn set_transitions(&self, transitions: Transitions) {
         let millis = u64::try_from(transitions.crossfade.as_millis()).unwrap_or(u64::MAX);
@@ -755,6 +763,8 @@ fn serve(
                     Err((playback.generation, Error::Output(message)))
                 }),
             Some(Command::Shutdown) => return,
+            #[cfg(any(test, feature = "test-support"))]
+            Some(Command::Crash) => panic!("the engine was asked to crash"),
         };
         let result = result.and_then(|()| {
             current.as_mut().map_or(Ok(()), |playback| {
