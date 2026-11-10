@@ -93,8 +93,13 @@ impl Accounts {
         let store = self.0.store.clone();
         let keychain = self.0.keychain.clone();
         self.0.executor.spawn_blocking(move || {
-            password_in_file(store.as_ref(), &profile)
-                .or_else(|| keychain?.password(&profile).ok().flatten())
+            password_in_file(store.as_ref(), &profile).or_else(|| {
+                let keychain = keychain?;
+                keychain.password(&profile).ok().flatten().or_else(|| {
+                    let server = store.as_ref()?.server_as_written(&profile).ok().flatten()?;
+                    keychain.adopt_password(&profile, &server).ok().flatten()
+                })
+            })
         })
     }
 
@@ -211,11 +216,17 @@ impl Accounts {
         self.0
             .executor
             .spawn_blocking(move || {
+                if let Some(keychain) = keychain {
+                    let written = store
+                        .as_ref()
+                        .and_then(|store| store.server_as_written(&profile).ok().flatten());
+                    if let Some(server) = written {
+                        keychain.delete_password_as_written(&profile, &server).ok();
+                    }
+                    keychain.delete_password(&profile).ok();
+                }
                 if let Some(store) = store {
                     store.forget_profile(&profile).ok();
-                }
-                if let Some(keychain) = keychain {
-                    keychain.delete_password(&profile).ok();
                 }
             })
             .detach();

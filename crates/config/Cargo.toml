@@ -6,6 +6,9 @@ edition.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[features]
+test-support = []
+
 [dependencies]
 config-rs.workspace = true
 dirs.workspace = true

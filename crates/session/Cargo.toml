@@ -20,6 +20,7 @@ tokio = { workspace = true, features = ["sync"] }
 url.workspace = true
 
 [dev-dependencies]
+config = { workspace = true, features = ["test-support"] }
 gpui-host.workspace = true
 gpui-kit = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true

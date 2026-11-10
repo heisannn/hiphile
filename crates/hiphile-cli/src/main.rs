@@ -149,7 +149,7 @@ impl ServerArgs {
                     .or_else(|| {
                         core.hiphile
                             .last_profile()
-                            .filter(|profile| profile.server() == address)
+                            .filter(|profile| is_on(profile, &address))
                             .map(|profile| profile.username().to_owned())
                     })
                     .context("pass --username (or set HIPHILE_USERNAME)")?;
@@ -166,6 +166,10 @@ impl ServerArgs {
             .map_err(|invalid| anyhow::anyhow!("{}", invalid.message()))?;
         core.block_on(connecting).map_err(anyhow::Error::msg)
     }
+}
+
+fn is_on(profile: &config::Profile, address: &str) -> bool {
+    config::Profile::new(address, profile.username()) == *profile
 }
 
 fn saved_password(core: &Core, server: &str, username: &str) -> anyhow::Result<String> {
@@ -398,5 +402,18 @@ fn describe(song: &Song) -> String {
         (Some(artist), Some(album)) => format!("{artist} - {} ({album})", song.title()),
         (Some(artist), None) => format!("{artist} - {}", song.title()),
         _ => song.title().to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_saved_profile_is_on_its_server_however_the_address_is_written() {
+        let alice = config::Profile::new("https://music.example.com", "alice");
+        assert!(is_on(&alice, "https://music.example.com"));
+        assert!(is_on(&alice, "HTTPS://Music.Example.com/"));
+        assert!(!is_on(&alice, "https://other.example.com"));
     }
 }

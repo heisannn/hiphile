@@ -108,6 +108,52 @@ fn a_password_in_the_file_comes_before_the_keychain(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_password_kept_under_the_address_as_typed_is_still_found(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let typed = format!("{SERVER}/");
+    let file = format!("server = \"{typed}\"\nusername = \"alice\"\n");
+    std::fs::write(dir.path().join("config.toml"), file).unwrap();
+    let keychain = config::Keychain::in_memory();
+    keychain
+        .set_password_as_written("alice", &typed, "sesame")
+        .unwrap();
+    let accounts = accounts(&dir, &keychain, cx);
+
+    let mut saved = accounts.saved_password(alice());
+    cx.run_until_parked();
+    assert_eq!(
+        futures::FutureExt::now_or_never(&mut saved).flatten(),
+        Some("sesame".to_owned())
+    );
+    assert_eq!(
+        keychain.password(&alice()).unwrap().as_deref(),
+        Some("sesame")
+    );
+    assert_eq!(keychain.adopt_password(&alice(), &typed).unwrap(), None);
+}
+
+#[gpui_kit::test]
+fn forgetting_a_profile_removes_the_password_kept_under_the_address_as_typed(
+    cx: &mut TestAppContext,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let typed = format!("{SERVER}/");
+    let file = format!("server = \"{typed}\"\nusername = \"alice\"\n");
+    std::fs::write(dir.path().join("config.toml"), file).unwrap();
+    let keychain = config::Keychain::in_memory();
+    keychain
+        .set_password_as_written("alice", &typed, "sesame")
+        .unwrap();
+    let accounts = accounts(&dir, &keychain, cx);
+
+    accounts.forget(alice());
+    cx.run_until_parked();
+
+    assert_eq!(keychain.adopt_password(&alice(), &typed).unwrap(), None);
+    assert_eq!(keychain.password(&alice()).unwrap(), None);
+}
+
+#[gpui_kit::test]
 fn the_profiles_are_read_when_made(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let bob = config::Profile::new(SERVER, "bob");

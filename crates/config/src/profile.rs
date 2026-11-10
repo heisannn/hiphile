@@ -1247,6 +1247,23 @@ impl Store {
             .filter(|password| same_profile && !password.is_empty()))
     }
 
+    /// The file's `server` as it is written, when that is `profile`'s address written another
+    /// way and the file's `username` is `profile`'s. Versions up to 0.5.0 named the keychain's
+    /// entry after the address as it was typed.
+    pub fn server_as_written(&self, profile: &Profile) -> Result<Option<String>, Error> {
+        let settings = self.read(
+            config_rs::Environment::with_prefix(ENV_PREFIX).source(Some(Default::default())),
+        )?;
+        Ok(settings
+            .server
+            .zip(settings.username)
+            .filter(|(server, username)| {
+                Profile::new(server.as_str(), username.as_str()) == *profile
+            })
+            .map(|(server, _)| server.trim().to_owned())
+            .filter(|server| server != profile.server()))
+    }
+
     /// The playback volume from `0.0` to `1.0`, if one was saved.
     pub fn volume(&self) -> Result<Option<f32>, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
@@ -4134,6 +4151,28 @@ mod tests {
             Profile::new("https://music.example.com", "Alice"),
             Profile::new("https://music.example.com", "alice"),
         );
+    }
+
+    #[test]
+    fn the_server_as_written_is_told_only_when_it_is_written_another_way() {
+        let store = temporary_store("server-as-written");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        std::fs::write(
+            store.config_path(),
+            "server = \"HTTPS://Music.Example.com/\"\nusername = \"alice\"\n",
+        )
+        .unwrap();
+        let alice = Profile::new("https://music.example.com", "alice");
+        let bob = Profile::new("https://music.example.com", "bob");
+
+        assert_eq!(
+            store.server_as_written(&alice).unwrap().as_deref(),
+            Some("HTTPS://Music.Example.com/")
+        );
+        assert_eq!(store.server_as_written(&bob).unwrap(), None);
+
+        store.save_profile(&alice).unwrap();
+        assert_eq!(store.server_as_written(&alice).unwrap(), None);
     }
 
     #[test]
