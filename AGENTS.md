@@ -38,3 +38,18 @@ Leave tooling directives and machine-read comments as they are.
 
 - When a second view needs the same piece of UI, move it to `crates/ui` rather than copy it.
 - Put a view's tests in `<view>/tests.rs`.
+
+## Before committing
+
+Run what CI runs (`.github/workflows/ci.yml`):
+
+- `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- `cargo test --workspace --locked`
+- `script/check-gpui-free`
+
+After a change to `hiphile-core` or a crate under it, also run `script/check-mobile`.
+
+Tests that play through a device are `#[ignore]`d. Run one by its exact name with
+`HIPHILE_TEST_DEVICE` set to a loopback device, never the whole `--ignored` set: on a DAC, DoP
+plays at full level.

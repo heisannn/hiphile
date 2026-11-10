@@ -10,9 +10,14 @@ status=0
 for crate in "${crates[@]}"; do
   # A path spec, since crates.io also has packages named like ours (`config`)
   spec="path+file://$root/crates/$crate"
-  if cargo tree -p "$spec" -e normal --prefix none | grep -qi '^gpui'; then
+  if ! tree="$(cargo tree --locked -p "$spec" -e normal --prefix none)"; then
+    echo "error: could not list what $crate depends on" >&2
+    status=1
+    continue
+  fi
+  if grep -qi '^gpui' <<<"$tree"; then
     echo "error: $crate depends on GPUI" >&2
-    cargo tree -p "$spec" -e normal -i gpui-pre 2>/dev/null | head -20 >&2 || true
+    cargo tree --locked -p "$spec" -e normal -i gpui-pre 2>/dev/null | head -20 >&2 || true
     status=1
   fi
 done
