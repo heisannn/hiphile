@@ -1,8 +1,10 @@
 use anti_webui::core::event::NamedKey;
 use anti_webui::prelude::Role;
+use next_player::testing::{CoverServer, png};
 use next_ui::testing::{
-    NOWHERE, core, find, has_text, key, nodes, press, signed_in_core, start, wait_until,
+    NOWHERE, core, find, frames, has_text, key, nodes, press, signed_in_core, start, wait_until,
 };
+use serde_json::json;
 
 use super::*;
 
@@ -13,7 +15,7 @@ fn heading(text: &str) -> bool {
 #[test]
 fn signed_out_it_asks_to_sign_in_without_the_rail() {
     let (_core, hiphile) = core("");
-    let _ui = start(move || app(hiphile, signal(false), MenuBar::new()));
+    let _ui = start(move || app(hiphile, signal(false), MenuBar::new(), Reach::Window));
 
     assert!(heading("Sign In"));
     assert!(find(Role::Navigation, "Destinations").is_none());
@@ -22,7 +24,7 @@ fn signed_out_it_asks_to_sign_in_without_the_rail() {
 #[test]
 fn signed_in_the_rail_goes_to_each_destination() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
-    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new()));
+    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new(), Reach::Window));
     assert!(find(Role::Navigation, "Destinations").is_some());
     assert_eq!(find(Role::Button, "Home").unwrap().selected, Some(true));
 
@@ -40,7 +42,7 @@ fn signed_in_the_rail_goes_to_each_destination() {
 #[test]
 fn back_and_forward_retrace_the_destinations() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
-    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new()));
+    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new(), Reach::Window));
     assert!(find(Role::Button, "Back").unwrap().disabled);
 
     press(&mut ui, Role::Button, "Albums");
@@ -56,7 +58,7 @@ fn back_and_forward_retrace_the_destinations() {
 #[test]
 fn settings_open_over_the_window_and_escape_closes_them() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
-    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new()));
+    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new(), Reach::Window));
 
     press(&mut ui, Role::Button, "Settings");
     assert_eq!(nodes(Role::Dialog).len(), 1);
@@ -71,7 +73,7 @@ fn signing_out_from_the_servers_goes_back_to_signing_in() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
     let mut ui = start({
         let hiphile = hiphile.clone();
-        move || app(hiphile, signal(false), MenuBar::new())
+        move || app(hiphile, signal(false), MenuBar::new(), Reach::Window)
     });
 
     press(&mut ui, Role::Button, "Servers");
@@ -86,7 +88,7 @@ fn signing_out_from_the_servers_goes_back_to_signing_in() {
 fn the_rail_closes_in_a_narrow_window() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
     let _ui = next_ui::testing::start_at(
-        move || app(hiphile, signal(false), MenuBar::new()),
+        move || app(hiphile, signal(false), MenuBar::new(), Reach::Window),
         (900, 600),
     );
 
@@ -96,11 +98,41 @@ fn the_rail_closes_in_a_narrow_window() {
 #[test]
 fn adding_a_server_opens_signing_in_over_the_workspace() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
-    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new()));
+    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new(), Reach::Window));
 
     press(&mut ui, Role::Button, "Servers");
     press(&mut ui, Role::MenuItem, "Add Server…");
 
     assert!(find(Role::Heading, "Add Server").is_some());
     assert!(find(Role::Navigation, "Destinations").is_some());
+}
+
+#[test]
+fn signed_in_the_player_bar_is_at_the_bottom() {
+    let (_core, hiphile) = signed_in_core(NOWHERE);
+    let _ui = start(move || app(hiphile, signal(false), MenuBar::new(), Reach::Window));
+
+    let bar = find(Role::Toolbar, "Player").expect("the player bar");
+    assert_eq!(bar.bounds.y + bar.bounds.height, crate::WINDOW.1 as f32);
+}
+
+#[test]
+fn the_colors_follow_the_cover_of_what_plays() {
+    let server = CoverServer::new(png(16, |_, _| [200, 40, 40, 255]));
+    let (_core, hiphile) = signed_in_core(server.url());
+    let player = hiphile.workspace().unwrap().player().clone();
+    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new(), Reach::Window));
+    let before = color_scheme().primary;
+
+    let song = json!({ "id": "a", "title": "a", "coverArt": "al-a" });
+    player.fill_queue(&[serde_json::from_value(song).unwrap()], 0);
+    // The scheme cross-fades, which takes frames
+    for _ in 0..500 {
+        if color_scheme().primary != before {
+            break;
+        }
+        frames(&mut ui, 16);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_ne!(color_scheme().primary, before);
 }

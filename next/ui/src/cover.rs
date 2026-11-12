@@ -77,15 +77,20 @@ pub fn cover(url: Option<Arc<str>>, kind: CoverKind) -> Div {
     };
     let loaded = watch(url);
     frame.child(dyn_view(move || match loaded.get() {
-        Loaded::Found(source) => untrack(|| {
-            let source = match source {
-                CoverSource::File(path) => ImageSource::Path(path.into()),
-                CoverSource::Bytes(bytes) => ImageSource::Bytes(bytes),
-            };
-            image(source).absolute().inset(0).into_view()
-        }),
+        Loaded::Found(source) => {
+            untrack(|| image(image_of(source)).absolute().inset(0).into_view())
+        }
         Loaded::Loading | Loaded::Missing => untrack(|| placeholder(kind).into_view()),
     }))
+}
+
+/// The cover as `image` takes it. A kept cover is named by its file, by which AntiWebUI keeps what
+/// it decoded.
+pub fn image_of(source: CoverSource) -> ImageSource {
+    match source {
+        CoverSource::File(path) => ImageSource::Path(path.into()),
+        CoverSource::Bytes(bytes) => ImageSource::Bytes(bytes),
+    }
 }
 
 fn placeholder(kind: CoverKind) -> Div {

@@ -1,0 +1,31 @@
+[package]
+name = "next-player"
+description = "The player bar on AntiWebUI, and the colors taken from the cover of what plays."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+anti-webui.workspace = true
+anti-webui-md3e.workspace = true
+executor.workspace = true
+hiphile-core.workspace = true
+next-host.workspace = true
+next-ui.workspace = true
+playback.workspace = true
+subsonic.workspace = true
+tempfile = { workspace = true, optional = true }
+
+[features]
+# A server of covers, for the tests and the shots of what shows them
+test-support = ["dep:tempfile"]
+
+[dev-dependencies]
+next-player = { path = ".", features = ["test-support"] }
+next-ui = { workspace = true, features = ["test-support"] }
+playback = { workspace = true, features = ["test-support"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -16,16 +16,23 @@ anti-webui-md3e.workspace = true
 config.workspace = true
 executor.workspace = true
 hiphile-core = { workspace = true, features = ["desktop"] }
+media-controls.workspace = true
 net.workspace = true
 next-account.workspace = true
 next-host.workspace = true
 next-platform.workspace = true
+next-player.workspace = true
 next-ui.workspace = true
+presence.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 
 [dev-dependencies]
 hiphile-core = { workspace = true, features = ["desktop", "test-support"] }
+next-player = { workspace = true, features = ["test-support"] }
 next-ui = { workspace = true, features = ["test-support"] }
+playback = { workspace = true, features = ["test-support"] }
+serde_json.workspace = true
+subsonic.workspace = true
 tempfile.workspace = true
 
 [lints]
