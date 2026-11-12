@@ -135,8 +135,10 @@ md3e にも 287 か所ある。
   押された点に `portal` で大きさのある見えない要素を置き、そこに付ける（`next_ui::context_menu`）。
 - **スナックバーは 1 つずつ順に出る。** アクションのあるものは閉じるまで残り、後のものを止める。元に戻す
   スナックバーには `lasting` で時間を付ける。
-- **色を選ぶ部品が無い。** 設定の色は、widgets の `radio_group_with` の振る舞いに自前の見本の見た目を
-  載せる（`next/settings/src/swatches.rs`）。
+- **色を選ぶ部品が無い。** 見本からも、カラーピッカーでも選べない。設定の色は、widgets の
+  `radio_group_with` の振る舞いに自前の見本の見た目を載せる（`next/settings/src/swatches.rs`）。自分の色は、
+  widgets の `slider_with` に、色の変わり方を見せるトラックと、その色の thumb を載せて選ぶ
+  （`next/settings/src/color_picker.rs`）。
 - **寸法を外に出さない。** segmented list の角（`next/settings/src/group.rs` の `OUTER` と `INNER`）と、
   検索のバーの寸法（`next/search/src/results.rs` の `ROOM`）は、md3e の値を写して持つ。
 
@@ -149,6 +151,9 @@ md3e にも 287 か所ある。
   `anti-webui-wgpu/src/shader.wgsl:44`）。CSS のように隣り合う角の和で縮めないので、40×20 の箱の上の角を
   20 にしても半円にならない。設定の色の見本は、丸めた `overflow_hidden` の箱の中に四角を並べて切り抜く
   （`next/settings/src/swatches.rs`）。
+- **箱の背景は 1 色だけ。** `bg` は `Color` しか受け取らず、グラデーションは SVG の形の `fill` か、自前の
+  シェーダーで塗る。カラーピッカーのトラックは、丸めた `overflow_hidden` の箱の中で、縦横比を保たない
+  （`SvgAspect { align: None, .. }`）SVG の四角を箱いっぱいに伸ばし、線形のグラデーションで塗る。
 - **`virtual_list` は行の高さが 1 種類で、キー操作が無い。** `table` は 1 行しか選べない。
   `next_ui::row_list` が、曲についていく選択、Shift と ⌘ での選択、キーでの移動、ドラッグでの並べ替えを持つ。
   見出しの固定は無い。

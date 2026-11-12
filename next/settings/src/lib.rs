@@ -5,6 +5,7 @@
 mod audio_page;
 mod balance_slider;
 mod choice_field;
+mod color_picker;
 mod controls;
 mod discord_page;
 mod dsd_section;

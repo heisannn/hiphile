@@ -53,10 +53,8 @@ fn a_picked_color_leaves_the_cover_out() {
 
 #[test]
 fn each_picked_color_gives_tonal_spots_primary_in_its_own_hue() {
-    for (color, _) in THEME_COLORS {
-        let Some(hue) = picked_hue(color) else {
-            continue;
-        };
+    for (color, _) in THEME_COLORS.into_iter().skip(1) {
+        let hue = picked_hue(color);
         let primary = Hct::from_color(scheme(color, None, false).primary);
         let off = (primary.hue() - hue).rem_euclid(360.0);
         assert!(off.min(360.0 - off) < 5.0, "{color:?}: {}", primary.hue());
@@ -66,6 +64,30 @@ fn each_picked_color_gives_tonal_spots_primary_in_its_own_hue() {
             primary.chroma()
         );
     }
+}
+
+#[test]
+fn a_custom_color_keeps_its_hue_and_chroma_in_both_themes() {
+    for custom in [0x0000ff, 0xd5704f, 0x2e7d32, 0x9e9e9e] {
+        let wanted = Hct::from_argb(0xff00_0000 | custom);
+        for dark in [false, true] {
+            let colors = scheme(ThemeColor::Custom(custom), Some(rgb(0x2e86c1)), dark);
+            let shown = Hct::from_color(colors.primary_container);
+            let off = (shown.hue() - wanted.hue()).rem_euclid(360.0);
+            assert!(
+                wanted.chroma() < 5.0 || off.min(360.0 - off) < 3.0,
+                "{custom:06x}, dark {dark}: {}",
+                shown.hue()
+            );
+            assert!(
+                (shown.chroma() - wanted.chroma()).abs() < 6.0,
+                "{custom:06x}, dark {dark}: {}",
+                shown.chroma()
+            );
+        }
+    }
+    let blue = scheme(ThemeColor::Custom(0x0000ff), None, false);
+    assert_eq!(rgb_of(blue.primary_container), 0x0000ff);
 }
 
 #[test]

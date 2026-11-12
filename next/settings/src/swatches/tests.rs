@@ -1,5 +1,6 @@
 use anti_webui::core::event::NamedKey;
 use next_ui::testing::{find, focus, key, nodes, press, shows_keys, start};
+use next_ui::theme::seed;
 
 use super::*;
 
@@ -14,20 +15,35 @@ fn chosen_swatch() -> String {
 }
 
 fn start_with(color: ThemeColor) -> (anti_webui::core::Ui, Signal<ThemeColor>) {
-    let chosen = std::rc::Rc::new(std::cell::Cell::new(None));
+    let (ui, color, _) = start_with_custom(color, None);
+    (ui, color)
+}
+
+/// The swatches, with the custom color the settings have from before.
+fn start_with_custom(
+    color: ThemeColor,
+    custom: Option<u32>,
+) -> (
+    anti_webui::core::Ui,
+    Signal<ThemeColor>,
+    Signal<Option<u32>>,
+) {
+    let made = std::rc::Rc::new(std::cell::Cell::new(None));
     let ui = start({
-        let chosen = chosen.clone();
+        let made = made.clone();
         move || {
-            let color = signal(color);
-            chosen.set(Some(color));
+            let (color, custom) = (signal(color), signal(custom));
+            made.set(Some((color, custom)));
             swatches(
                 move || color.get(),
+                move || custom.get(),
                 move |picked| color.set(picked),
                 Schemes::new(|| false, signal(None)),
             )
         }
     });
-    (ui, chosen.get().expect("the view made"))
+    let (color, custom) = made.get().expect("the view made");
+    (ui, color, custom)
 }
 
 #[test]
@@ -39,7 +55,11 @@ fn there_is_a_swatch_for_each_color_and_the_chosen_one_is_checked() {
         .into_iter()
         .filter_map(|radio| radio.label)
         .collect();
-    let expected: Vec<_> = THEME_COLORS.iter().map(|(_, name)| *name).collect();
+    let expected: Vec<_> = THEME_COLORS
+        .iter()
+        .map(|(_, name)| *name)
+        .chain([CUSTOM])
+        .collect();
     assert_eq!(names, expected);
     assert_eq!(chosen_swatch(), "From the cover");
 }
@@ -59,11 +79,38 @@ fn the_arrow_keys_choose_the_next_color_and_go_around() {
     focus(&mut ui, Role::RadioGroup, "Color");
 
     key(&mut ui, NamedKey::ArrowLeft);
+    assert!(matches!(color.get_untracked(), ThemeColor::Custom(_)));
+    key(&mut ui, NamedKey::ArrowLeft);
     assert_eq!(color.get_untracked(), ThemeColor::Pink);
+    key(&mut ui, NamedKey::ArrowRight);
     key(&mut ui, NamedKey::ArrowRight);
     key(&mut ui, NamedKey::ArrowRight);
     assert_eq!(color.get_untracked(), ThemeColor::Red);
     assert_eq!(chosen_swatch(), "Red");
+}
+
+#[test]
+fn the_custom_color_starts_from_the_one_shown_and_then_stays() {
+    let (mut ui, color, custom) = start_with_custom(ThemeColor::Teal, None);
+
+    press(&mut ui, Role::Radio, CUSTOM);
+    let teal = rgb_of(seed(ThemeColor::Teal, None));
+    assert_eq!(color.get_untracked(), ThemeColor::Custom(teal));
+    assert_eq!(chosen_swatch(), CUSTOM);
+
+    custom.set(Some(0x123456));
+    press(&mut ui, Role::Radio, "Red");
+    press(&mut ui, Role::Radio, CUSTOM);
+    assert_eq!(color.get_untracked(), ThemeColor::Custom(0x123456));
+}
+
+#[test]
+fn the_keys_show_on_the_custom_swatch_too() {
+    let (mut ui, _) = start_with(ThemeColor::Pink);
+    focus(&mut ui, Role::RadioGroup, "Color");
+    key(&mut ui, NamedKey::ArrowRight);
+
+    assert!(shows_keys(Role::Radio, CUSTOM));
 }
 
 #[test]

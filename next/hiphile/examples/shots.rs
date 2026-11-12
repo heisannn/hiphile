@@ -86,17 +86,7 @@ fn main() {
                 |ui| settings(ui, page),
             );
         }
-        shot(
-            &folder.join(format!("settings-appearance-picked-{theme}.png")),
-            dark,
-            true,
-            |ui| {
-                settings(ui, "Appearance");
-                focus(ui, Role::RadioGroup, "Color");
-                key(ui, NamedKey::ArrowLeft);
-                frames(ui, 1000);
-            },
-        );
+        appearance_shots(&folder, theme, dark);
         for resampler in ["r8brain", "soxr"] {
             shot(
                 &folder.join(format!("settings-{resampler}-{theme}.png")),
@@ -177,6 +167,39 @@ fn main() {
         queue_shots(&folder, dark, theme, &covers);
         lyrics_shots(&folder, dark, theme, &covers);
     }
+}
+
+/// The colors that can be picked in Appearance: one of the swatches, then a custom one.
+fn appearance_shots(folder: &Path, theme: &str, dark: bool) {
+    shot(
+        &folder.join(format!("settings-appearance-picked-{theme}.png")),
+        dark,
+        true,
+        |ui| {
+            settings(ui, "Appearance");
+            focus(ui, Role::RadioGroup, "Color");
+            // Past the custom color, once the window has it
+            key(ui, NamedKey::ArrowLeft);
+            frames(ui, 100);
+            key(ui, NamedKey::ArrowLeft);
+            frames(ui, 1000);
+        },
+    );
+    shot(
+        &folder.join(format!("settings-appearance-custom-{theme}.png")),
+        dark,
+        true,
+        |ui| {
+            settings(ui, "Appearance");
+            press(ui, Role::Radio, "Custom");
+            frames(ui, 100);
+            focus(ui, Role::Slider, "Hue");
+            for _ in 0..3 {
+                key(ui, NamedKey::ArrowRight);
+            }
+            frames(ui, 1000);
+        },
+    );
 }
 
 /// The lyrics in windows of a few sizes, lit word by word partway into a line, and what stands in

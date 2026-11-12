@@ -29,6 +29,8 @@ pub const THEME_COLORS: [(ThemeColor, &str); 9] = [
 pub struct AppearanceSnapshot {
     appearance: Option<Appearance>,
     theme_color: ThemeColor,
+    /// What [`ThemeColor::Custom`] was given last, while it is chosen or since it was here.
+    custom_color: Option<u32>,
     /// Why the appearance could not be read or saved, or why nothing here will be saved.
     appearance_error: Option<String>,
     color_error: Option<String>,
@@ -42,6 +44,12 @@ impl AppearanceSnapshot {
 
     pub fn theme_color(&self) -> ThemeColor {
         self.theme_color
+    }
+
+    /// The color of [`ThemeColor::Custom`] chosen last, as `0xRRGGBB`, which stays when another
+    /// is chosen. `None` until one is.
+    pub fn custom_color(&self) -> Option<u32> {
+        self.custom_color
     }
 
     pub fn errors(&self) -> impl Iterator<Item = &str> {
@@ -143,6 +151,9 @@ impl AppearanceSettings {
                 return;
             }
             state.theme_color = color;
+            if let ThemeColor::Custom(rgb) = color {
+                state.custom_color = Some(rgb);
+            }
             // Under the lock, so that the choices reach the saver in the order they were made
             if let Some(saver) = &self.0.color_saver {
                 saver.save(color);
@@ -158,6 +169,7 @@ fn read_saved(
     let mut snapshot = AppearanceSnapshot {
         appearance: None,
         theme_color: ThemeColor::default(),
+        custom_color: None,
         appearance_error: None,
         color_error: None,
     };
@@ -175,7 +187,12 @@ fn read_saved(
         }
     }
     match store.theme_color() {
-        Ok(color) => snapshot.theme_color = color,
+        Ok(color) => {
+            snapshot.theme_color = color;
+            if let ThemeColor::Custom(rgb) = color {
+                snapshot.custom_color = Some(rgb);
+            }
+        }
         Err(error) => snapshot.color_error = Some(format!("Couldn't read the color: {error}.")),
     }
     (Some(store), snapshot)

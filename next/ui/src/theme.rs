@@ -11,14 +11,25 @@ use config::{Appearance, ThemeColor};
 pub const DEFAULT_SEED: Color = rgb(0x4f5bd5);
 
 /// The scheme the app is drawn with in `color`. A picked color gives tonal spot, the scheme
-/// Material You makes of a color the user picks, and the cover gives [`cover_scheme`].
-/// `cover_seed` is the seed of the cover of what plays, `None` while there is none.
+/// Material You makes of a color the user picks, and the cover gives [`cover_scheme`]. A custom
+/// color gives fidelity, whose primary container keeps the color's hue and chroma and moves its
+/// tone no further than contrast needs. `cover_seed` is the seed of the cover of what plays,
+/// `None` while there is none.
 pub fn scheme(color: ThemeColor, cover_seed: Option<Color>, dark: bool) -> ColorScheme {
     let seed = seed(color, cover_seed);
-    match color {
-        ThemeColor::Cover => cover_scheme(seed, dark),
-        _ => ColorScheme::from_seed(seed, dark),
-    }
+    let variant = match color {
+        ThemeColor::Cover => return cover_scheme(seed, dark),
+        ThemeColor::Custom(_) => SchemeVariant::Fidelity,
+        _ => SchemeVariant::TonalSpot,
+    };
+    ColorScheme::from_seed_with(
+        seed,
+        SchemeOptions {
+            variant,
+            dark,
+            contrast: 0.0,
+        },
+    )
 }
 
 /// The colors that show `color` where it can be picked: its seed over its tertiary and a light
@@ -49,13 +60,19 @@ pub fn swatch(color: ThemeColor, cover_seed: Option<Color>) -> Swatch {
     }
 }
 
-/// A picked color's seed is its hue at a chroma that shows clearly in a swatch: tonal spot takes
-/// nothing but the hue.
-fn seed(color: ThemeColor, cover_seed: Option<Color>) -> Color {
-    match picked_hue(color) {
-        Some(hue) => Hct::new(hue, 48.0, 50.0).to_color(),
-        None => cover_seed.unwrap_or(DEFAULT_SEED),
+/// The color the scheme of `color` is made from. A picked color's is its hue at a chroma that
+/// shows clearly in a swatch: tonal spot takes nothing but the hue.
+pub fn seed(color: ThemeColor, cover_seed: Option<Color>) -> Color {
+    match color {
+        ThemeColor::Cover => cover_seed.unwrap_or(DEFAULT_SEED),
+        ThemeColor::Custom(rgb) => Color::from_rgb(rgb),
+        picked => Hct::new(picked_hue(picked), 48.0, 50.0).to_color(),
     }
+}
+
+/// `color` as `0xRRGGBB`, to be kept as a [`ThemeColor::Custom`].
+pub fn rgb_of(color: Color) -> u32 {
+    Hct::from_color(color).to_argb() & 0x00ff_ffff
 }
 
 /// The scheme of the colors of a cover: the content variant, which keeps a seed taken from a cover
@@ -71,10 +88,9 @@ pub fn cover_scheme(seed: Color, dark: bool) -> ColorScheme {
     )
 }
 
-/// Where each color that can be picked is on HCT's circle of hues.
-fn picked_hue(color: ThemeColor) -> Option<f64> {
-    let hue = match color {
-        ThemeColor::Cover => return None,
+/// Where each of the colors that can be picked is on HCT's circle of hues.
+fn picked_hue(color: ThemeColor) -> f64 {
+    match color {
         ThemeColor::Red => 25.0,
         ThemeColor::Orange => 50.0,
         ThemeColor::Yellow => 90.0,
@@ -83,8 +99,8 @@ fn picked_hue(color: ThemeColor) -> Option<f64> {
         ThemeColor::Blue => 255.0,
         ThemeColor::Purple => 300.0,
         ThemeColor::Pink => 350.0,
-    };
-    Some(hue)
+        ThemeColor::Cover | ThemeColor::Custom(_) => unreachable!("{color:?} is not picked"),
+    }
 }
 
 /// What the window's scheme is made of besides the color chosen. Cheap to copy.
@@ -111,6 +127,11 @@ impl Schemes {
     /// The [`Swatch`] of `color` now. Reading it tracks it.
     pub fn swatch(&self, color: ThemeColor) -> Swatch {
         swatch(color, self.cover_seed_of(color))
+    }
+
+    /// What the scheme of `color` is made from now. Reading it tracks it.
+    pub fn seed(&self, color: ThemeColor) -> Color {
+        seed(color, self.cover_seed_of(color))
     }
 
     /// Only the cover's colors read it, and change with what plays.

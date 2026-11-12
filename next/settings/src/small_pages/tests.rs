@@ -1,7 +1,8 @@
 use anti_webui::core::access::Checked;
+use anti_webui::core::event::NamedKey;
 use anti_webui::prelude::Role;
 use config::{Appearance, LyricsHighlight, ThemeColor};
-use next_ui::testing::{core, find, has_text, press, start, wait_until};
+use next_ui::testing::{core, find, focus, has_text, key, press, start, wait_until};
 
 use super::*;
 
@@ -119,6 +120,44 @@ fn the_color_is_the_cover_until_one_is_chosen() {
     assert_eq!(appearance.snapshot().theme_color(), ThemeColor::Teal);
     wait_until(&mut ui, || is_checked(Role::Radio, "Teal"));
     assert!(!is_checked(Role::Radio, "From the cover"));
+}
+
+#[test]
+fn a_custom_color_is_picked_below_the_swatches_while_it_is_chosen() {
+    let (_core, hiphile) = core("");
+    let appearance = hiphile.settings().appearance().clone();
+    let mut ui = start({
+        let appearance = appearance.clone();
+        move || appearance_page_in_light(&appearance)
+    });
+    assert!(find(Role::Group, "Custom color").is_none());
+
+    press(&mut ui, Role::Radio, "Custom");
+    wait_until(&mut ui, || find(Role::Group, "Custom color").is_some());
+    focus(&mut ui, Role::Slider, "Tone");
+    key(&mut ui, NamedKey::End);
+    assert_eq!(
+        appearance.snapshot().theme_color(),
+        ThemeColor::Custom(0xffffff)
+    );
+
+    press(&mut ui, Role::Radio, "Teal");
+    wait_until(&mut ui, || find(Role::Group, "Custom color").is_none());
+    press(&mut ui, Role::Radio, "Custom");
+    assert_eq!(
+        appearance.snapshot().theme_color(),
+        ThemeColor::Custom(0xffffff)
+    );
+}
+
+#[test]
+fn a_custom_color_from_the_file_is_chosen_and_in_the_picker() {
+    let (_core, hiphile) = core("theme_color = \"#2e7d32\"\n");
+    let appearance = hiphile.settings().appearance().clone();
+    let _ui = start(move || appearance_page_in_light(&appearance));
+
+    assert!(is_checked(Role::Radio, "Custom"));
+    assert_eq!(crate::testing::value(Role::TextInput, "Hex"), "2e7d32");
 }
 
 #[test]

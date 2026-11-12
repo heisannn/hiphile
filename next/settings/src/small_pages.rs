@@ -1,12 +1,14 @@
 //! The pages with a setting or two: Queue, Lyrics and Appearance.
 
 use anti_webui::prelude::*;
+use config::ThemeColor;
 use hiphile_core::settings::{
     APPEARANCES, AppearanceSettings, AppearanceSnapshot, LYRICS_HIGHLIGHTS, LyricsSettings,
     LyricsSnapshot, QueueSettings, QueueSnapshot,
 };
 use next_ui::theme::Schemes;
 
+use crate::color_picker::color_picker;
 use crate::controls::{never, radios, switch_of};
 use crate::group::{Group, Row, page};
 use crate::swatches::swatches;
@@ -66,15 +68,36 @@ pub(crate) fn lyrics_page(lyrics: &LyricsSettings) -> Div {
 /// behind too. The colors that can be chosen show in `schemes`.
 pub(crate) fn appearance_page(appearance: &AppearanceSettings, schemes: Schemes) -> Div {
     let shown = next_host::follow(appearance.subscribe());
+    let chosen = memo(move || shown.with(AppearanceSnapshot::theme_color));
     let color = Row::new("Color", {
         let appearance = appearance.clone();
         move || {
-            let appearance = appearance.clone();
-            swatches(
-                move || shown.with(AppearanceSnapshot::theme_color),
-                move |color| appearance.set_theme_color(color),
+            let (choose, pick) = (appearance.clone(), appearance.clone());
+            let swatches = swatches(
+                move || chosen.get(),
+                move || shown.with(AppearanceSnapshot::custom_color),
+                move |color| choose.set_theme_color(color),
                 schemes,
-            )
+            );
+            let picker = show(
+                move || matches!(chosen.get(), ThemeColor::Custom(_)),
+                move || {
+                    let ThemeColor::Custom(start) = untrack(|| chosen.get()) else {
+                        unreachable!("the picker shows only for a custom color")
+                    };
+                    let pick = pick.clone();
+                    color_picker(start, move |rgb| {
+                        pick.set_theme_color(ThemeColor::Custom(rgb))
+                    })
+                },
+            );
+            div()
+                .flex()
+                .flex_col()
+                .gap(16.0_f32)
+                .w_full()
+                .child(swatches)
+                .child(picker)
         }
     })
     .stacked();

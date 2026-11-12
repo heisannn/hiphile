@@ -47,3 +47,19 @@ fn a_color_that_cannot_be_read_says_so_and_leaves_the_appearance() {
         errors[0]
     );
 }
+
+#[test]
+fn the_custom_color_stays_when_another_is_chosen() {
+    let cx = &TestExecutor::new();
+    let (_dir, store) = store_with("theme_color = \"#4f5bd5\"\n");
+    let settings = AppearanceSettings::new(cx.executor(), Ok(store.clone()));
+    assert_eq!(settings.snapshot().custom_color(), Some(0x4f5bd5));
+
+    settings.set_theme_color(ThemeColor::Custom(0x123456));
+    settings.set_theme_color(ThemeColor::Teal);
+    cx.run_until_parked();
+    let snapshot = settings.snapshot();
+    assert_eq!(snapshot.theme_color(), ThemeColor::Teal);
+    assert_eq!(snapshot.custom_color(), Some(0x123456));
+    assert_eq!(store.theme_color().unwrap(), ThemeColor::Teal);
+}

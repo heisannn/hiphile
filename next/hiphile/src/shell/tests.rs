@@ -1,5 +1,5 @@
 use anti_webui::core::event::{Key, Modifiers, NamedKey};
-use anti_webui::prelude::Role;
+use anti_webui::prelude::{Checked, Role};
 use next_player::testing::{CoverServer, png};
 use next_ui::testing::{
     NOWHERE, SavedLibrary, core, find, focus, frames, has_text, key, key_with, nodes, press,
@@ -113,7 +113,7 @@ fn the_theme_chosen_in_the_settings_shows_behind_them_at_once() {
 fn the_color_chosen_in_the_settings_colors_the_window() {
     use anti_webui_md3e::color_scheme;
     use config::ThemeColor;
-    use next_ui::theme::{DEFAULT_SEED, cover_scheme, scheme};
+    use next_ui::theme::{DEFAULT_SEED, cover_scheme, rgb_of, scheme, seed};
 
     let (_core, hiphile) = signed_in_core(NOWHERE);
     let appearance = hiphile.settings().appearance().clone();
@@ -131,9 +131,16 @@ fn the_color_chosen_in_the_settings_colors_the_window() {
 
     focus(&mut ui, Role::RadioGroup, "Color");
     key(&mut ui, NamedKey::ArrowRight);
+    // The custom color starts from the one the window shows
     wait_until(&mut ui, || {
-        appearance.snapshot().theme_color() == ThemeColor::Pink
+        find(Role::Radio, "Pink").and_then(|pink| pink.checked) == Some(Checked::True)
     });
+
+    press(&mut ui, Role::Radio, "Custom");
+    let custom = ThemeColor::Custom(rgb_of(seed(ThemeColor::Pink, None)));
+    wait_until(&mut ui, || appearance.snapshot().theme_color() == custom);
+    next_ui::testing::frames(&mut ui, 1000);
+    assert_eq!(color_scheme(), scheme(custom, None, true));
 
     press(&mut ui, Role::Radio, "From the cover");
     wait_until(&mut ui, || {
