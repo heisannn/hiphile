@@ -4271,7 +4271,6 @@ dependencies = [
  "net",
  "playback",
  "presence",
- "raw-window-handle",
  "serde_json",
  "session",
  "subsonic",

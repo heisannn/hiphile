@@ -138,23 +138,38 @@ pub struct MediaControls {
 
 impl MediaControls {
     /// Connects on behalf of `window`, and returns the commands the system
-    /// sends. Stays disconnected for a window with no native handle, as in tests,
-    /// whose made-up songs must not reach the system.
+    /// sends. Stays disconnected for a window with no native handle.
     pub fn connect(window: &impl HasWindowHandle) -> (Self, async_channel::Receiver<MediaCommand>) {
         let (commands, received) = async_channel::unbounded();
         let surface = window
             .window_handle()
             .ok()
             .and_then(|handle| attach(hwnd(handle.as_raw()), commands));
-        (
-            Self {
-                surface: surface.map(|surface| Box::new(surface) as Box<dyn Surface + Send>),
-                shown: None,
-                cover: None,
-                resends_position: !cfg!(target_os = "macos"),
-            },
-            received,
-        )
+        (Self::with_surface(surface), received)
+    }
+
+    /// Connects on behalf of the process, for a host that has no window handle to give. Windows
+    /// takes the controls only for a window, so there is no such call there.
+    #[cfg(not(windows))]
+    pub fn connect_without_window() -> (Self, async_channel::Receiver<MediaCommand>) {
+        let (commands, received) = async_channel::unbounded();
+        (Self::with_surface(attach(None, commands)), received)
+    }
+
+    /// Never reaches the system, so made-up songs, as in tests, can be shown. The commands never
+    /// come.
+    pub fn disconnected() -> (Self, async_channel::Receiver<MediaCommand>) {
+        let (_, received) = async_channel::unbounded();
+        (Self::with_surface(None), received)
+    }
+
+    fn with_surface(surface: Option<souvlaki::MediaControls>) -> Self {
+        Self {
+            surface: surface.map(|surface| Box::new(surface) as Box<dyn Surface + Send>),
+            shown: None,
+            cover: None,
+            resends_position: !cfg!(target_os = "macos"),
+        }
     }
 
     pub fn is_connected(&self) -> bool {
@@ -602,6 +617,20 @@ mod tests {
 
         controls.show_at(Some(&other_album), MINUTE, MediaStatus::Playing, start, now);
         assert_eq!(recording.take(), [metadata("d", false), playing(0)]);
+    }
+
+    #[test]
+    fn disconnected_controls_show_nothing() {
+        let (mut controls, commands) = MediaControls::disconnected();
+        assert!(!controls.is_connected());
+        controls.show(
+            Some(&song("a", "c")),
+            MINUTE,
+            MediaStatus::Playing,
+            Duration::ZERO,
+        );
+        assert!(controls.shown.is_none());
+        assert!(commands.is_closed());
     }
 
     #[test]
