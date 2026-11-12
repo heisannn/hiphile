@@ -125,7 +125,7 @@ fn start_with_menu_bar(hiphile: Hiphile) -> (Ui, MenuBar) {
     let ui = start(|| {
         let menu_bar = MenuBar::new();
         made.set(Some(menu_bar));
-        app(hiphile, signal(false), menu_bar)
+        app(hiphile, signal(false), menu_bar, crate::Reach::Window)
     });
     (ui, made.get().expect("the root to have run"))
 }

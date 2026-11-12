@@ -79,6 +79,10 @@ name = "next-platform"
 release = false
 
 [[package]]
+name = "next-player"
+release = false
+
+[[package]]
 name = "next-ui"
 release = false
 

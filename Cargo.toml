@@ -46,6 +46,7 @@ updater = { path = "crates/updater" }
 next-account = { path = "next/account" }
 next-host = { path = "next/host" }
 next-platform = { path = "next/platform" }
+next-player = { path = "next/player" }
 next-ui = { path = "next/ui" }
 
 anyhow = "1.0"

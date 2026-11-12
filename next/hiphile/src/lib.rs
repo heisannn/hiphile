@@ -3,11 +3,13 @@
 pub mod menu_bar;
 mod navigation;
 mod rail;
+mod reach;
 mod server_menu;
 mod settings_popup;
 mod shell;
 
 pub use menu_bar::MenuBar;
+pub use reach::Reach;
 pub use shell::app;
 
 /// The window's title, which the platform finds the window by.

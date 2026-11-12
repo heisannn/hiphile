@@ -7,6 +7,7 @@ use hiphile_core::settings::AppearanceSnapshot;
 use hiphile_core::{Hiphile, HiphileSnapshot, Workspace};
 use next_account::{sign_in, sign_in_dialog};
 use next_host::follow;
+use next_player::{Panels, cover_seed, now_playing_cover, player_bar};
 use next_ui::cover::install_covers;
 use next_ui::theme::{follow_theme, is_dark};
 use next_ui::type_scale::body;
@@ -17,16 +18,18 @@ use crate::MenuBar;
 use crate::menu_bar::Shown;
 use crate::navigation::{Navigation, index_of};
 use crate::rail::rail;
+use crate::reach::{Reach, show_outside};
 use crate::settings_popup::settings_popup;
 
 /// Narrower than this, the rail closes over its labels.
 const WIDE: f32 = 1000.0;
 
 /// What fills the window: signing in, or the workspace of whoever is signed in. Its colors follow
-/// the appearance chosen, and `system_is_dark` when that follows the system. The workspace takes
-/// what is chosen in `menu_bar`, and shows there where it is.
-pub fn app(hiphile: Hiphile, system_is_dark: Signal<bool>, menu_bar: MenuBar) -> Div {
+/// the appearance chosen, `system_is_dark` when that follows the system, and the cover of what
+/// plays. The workspace takes what is chosen in `menu_bar`, and shows there where it is.
+pub fn app(hiphile: Hiphile, system_is_dark: Signal<bool>, menu_bar: MenuBar, reach: Reach) -> Div {
     let appearance = follow(hiphile.settings().appearance().subscribe());
+    let seed = signal(None::<Color>);
     follow_theme(
         move || {
             is_dark(
@@ -34,7 +37,7 @@ pub fn app(hiphile: Hiphile, system_is_dark: Signal<bool>, menu_bar: MenuBar) ->
                 system_is_dark.get(),
             )
         },
-        || None,
+        move || seed.get(),
     );
     install_covers(hiphile.clone());
     let shown = follow(hiphile.subscribe());
@@ -51,7 +54,9 @@ pub fn app(hiphile: Hiphile, system_is_dark: Signal<bool>, menu_bar: MenuBar) ->
             let hiphile = hiphile.clone();
             match workspace.get() {
                 None => untrack(|| signed_out(hiphile)),
-                Some(workspace) => untrack(|| signed_in(hiphile, workspace, shown, menu_bar)),
+                Some(workspace) => {
+                    untrack(|| signed_in(hiphile, workspace, shown, menu_bar, seed, reach))
+                }
             }
         }))
         .child(snackbars.view())
@@ -70,7 +75,20 @@ fn signed_in(
     workspace: Workspace,
     shown: Signal<HiphileSnapshot>,
     menu_bar: MenuBar,
+    seed: Signal<Option<Color>>,
+    reach: Reach,
 ) -> Div {
+    let cover = now_playing_cover(&hiphile, &workspace);
+    let colors = cover_seed(cover);
+    effect(move || seed.set(colors.get()));
+    on_cleanup(move || {
+        if seed.is_alive() {
+            seed.set(None);
+        }
+    });
+    show_outside(&workspace, reach);
+    let player = workspace.player().clone();
+    let panels = Panels::new();
     let navigation = Navigation::new();
     effect(move || workspace.showing(navigation.destination()));
     let width = signal(crate::WINDOW.0 as f32);
@@ -112,7 +130,7 @@ fn signed_in(
                 .h_full()
                 .flex()
                 .flex_col()
-                .child(for_each(
+                .child(div().flex_1().min_h(0).flex().flex_col().child(for_each(
                     move || vec![navigation.destination()],
                     |destination| index_of(*destination),
                     move |destination| {
@@ -128,7 +146,8 @@ fn signed_in(
                             .child(app_bar(going(navigation), title, actions))
                             .child(pane(body))
                     },
-                )),
+                )))
+                .child(player_bar(player, cover, panels).mr(16)),
         )
         .child(settings_popup(settings_open))
         .child(sign_in_dialog(hiphile, sign_in_request))
@@ -145,7 +164,6 @@ fn pane(body: Div) -> Div {
         .flex_1()
         .min_h(0)
         .mr(16)
-        .mb(16)
         .rounded(28.0_f32)
         .overflow_hidden()
         .dyn_style(|s| s.bg(color_scheme().surface_container))

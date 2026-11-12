@@ -5610,7 +5610,12 @@ dependencies = [
  "next-account",
  "next-host",
  "next-platform",
+ "next-player",
  "next-ui",
+ "playback",
+ "presence",
+ "serde_json",
+ "subsonic",
  "tempfile",
  "tokio",
 ]
@@ -5633,6 +5638,23 @@ dependencies = [
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
+]
+
+[[package]]
+name = "next-player"
+version = "0.5.0"
+dependencies = [
+ "anti-webui",
+ "anti-webui-md3e",
+ "executor",
+ "hiphile-core",
+ "next-host",
+ "next-player",
+ "next-ui",
+ "playback",
+ "serde_json",
+ "subsonic",
+ "tempfile",
 ]
 
 [[package]]
