@@ -15,9 +15,9 @@ use hiphile_core::home::{AlbumShelf, HomeSection, Item, MAX_COLUMNS, ReloadFaile
 use hiphile_core::navigation::Destination;
 use next_host::{follow, notices};
 use next_ui::card_grid::{Card, GridMotion, card, card_row, columns_for, step};
-use next_ui::context_menu::ContextMenu;
+use next_ui::context_menu::{ContextMenu, pressed_at};
 use next_ui::cover::{CoverKind, cover};
-use next_ui::keymap::{Keystroke, handles_keys};
+use next_ui::keymap::{KeyBinding, KeyContext, bind_keys, key_context};
 use next_ui::link::{album_artist_link, artist_line};
 use next_ui::menus::{album_menu, show_in_albums_item, song_menu};
 use next_ui::now_playing::{NowPlaying, follow_now_playing, skippable, song_row_label};
@@ -41,10 +41,29 @@ const BOTTOM: f32 = 8.0;
 const RELOADING: f32 = 40.0;
 const RELOADING_INDICATOR: f32 = 20.0;
 
+/// Where Home's keys work.
+pub const HOME_CONTEXT: &str = "Home";
+
+thread_local! {
+    static BOUND: Cell<bool> = const { Cell::new(false) };
+}
+
 /// Home, which takes the focus when it comes on show.
 pub fn home(cx: &ScreenContext) -> Screen {
+    bind();
     let node = node_ref();
     Screen::new(Destination::Home.label(), pane(page(cx, node))).home(node)
+}
+
+/// Binds Home's keys once on this thread, as the keymap is the thread's.
+fn bind() {
+    if BOUND.with(|bound| bound.replace(true)) {
+        return;
+    }
+    let bindings = Asked::strokes()
+        .into_iter()
+        .map(|(stroke, asked)| KeyBinding::new(stroke, asked, HOME_CONTEXT));
+    bind_keys(bindings);
 }
 
 /// What a selection or a heading is scrolled to by.
@@ -153,7 +172,15 @@ fn page(cx: &ScreenContext, node: NodeRef) -> Div {
             },
         ))
         .child(page.menu.view());
-    handles_keys(view, move |stroke| page.take(stroke))
+    let context = {
+        let (asked, taken) = (page.clone(), page);
+        KeyContext::new(
+            HOME_CONTEXT,
+            move |key| asked.is_enabled(*key),
+            move |key| taken.take(key),
+        )
+    };
+    key_context(view, &context)
 }
 
 impl Page {
@@ -391,12 +418,7 @@ impl Page {
             let Some(target) = this.target(&item) else {
                 return;
             };
-            let scale = window_scale();
-            let at = PointF::new(
-                scale.to_logical(e.position.x),
-                scale.to_logical(e.position.y),
-            );
-            this.menu.open_at(at, this.menu_of(&target));
+            this.menu.open_at(pressed_at(e), this.menu_of(&target));
         }
     }
 
@@ -414,18 +436,21 @@ impl Page {
         }
     }
 
-    fn take(&self, stroke: &Keystroke) -> bool {
-        let Some(asked) = Asked::by(stroke) else {
-            return false;
-        };
+    /// Whether `asked` does something now. While a button on the page has the focus, Enter and its
+    /// modified forms are the button's.
+    fn is_enabled(&self, asked: Asked) -> bool {
         if asked.is_for_buttons() && !self.focused.get_untracked() {
             return false;
         }
         match asked {
-            Asked::Move(motion) => {
-                self.move_selection(motion);
-                true
-            }
+            Asked::Move(_) => true,
+            Asked::Do(intent) => self.command(intent).is_some(),
+        }
+    }
+
+    fn take(&self, asked: Asked) {
+        match asked {
+            Asked::Move(motion) => self.move_selection(motion),
             Asked::Do(intent) => self.run(intent),
         }
     }
@@ -457,23 +482,24 @@ impl Page {
         self.selection.set(Some(to));
     }
 
-    /// Whether it did `intent` to the selection, which it does only while the selection shows.
-    fn run(&self, intent: Intent) -> bool {
-        let Some(target) = self
+    fn run(&self, intent: Intent) {
+        self.send(self.command(intent));
+    }
+
+    /// What doing `intent` to the selection sends, which it does only while the selection shows.
+    fn command(&self, intent: Intent) -> Option<Command> {
+        let target = self
             .selection
             .get_untracked()
-            .and_then(|item| self.target(&item))
-        else {
-            return false;
-        };
+            .and_then(|item| self.target(&item))?;
         let known = self.cx.known;
         // Which way it goes is not known yet
         if intent == Intent::ToggleFavorite
             && untrack(|| known.is_favorite(&target.favorite().target())).is_none()
         {
-            return false;
+            return None;
         }
-        self.send(target.command(intent))
+        target.command(intent)
     }
 
     fn target(&self, item: &Item) -> Option<Target> {
@@ -483,12 +509,10 @@ impl Page {
         })
     }
 
-    fn send(&self, command: Option<Command>) -> bool {
-        let Some(command) = command else {
-            return false;
-        };
-        self.cx.commands.send(command);
-        true
+    fn send(&self, command: Option<Command>) {
+        if let Some(command) = command {
+            self.cx.commands.send(command);
+        }
     }
 }
 

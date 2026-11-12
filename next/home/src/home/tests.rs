@@ -10,6 +10,7 @@ use hiphile_core::favorites::Favorite;
 use hiphile_core::navigation::Location;
 use hiphile_core::test_support::HomeServer;
 use next_ui::cover::install_covers;
+use next_ui::keymap::Keystroke;
 use next_ui::testing::{
     TestCore, click_text, double_click, find, focus, key, key_with, middle_of, nodes, press,
     recording_commands, right_click, screen_context, signed_in_core, start_at, wait_until,

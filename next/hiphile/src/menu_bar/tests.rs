@@ -662,6 +662,10 @@ fn the_menu_bar_takes_no_key_the_window_binds() {
     let contexts: std::collections::HashSet<_> =
         bound.iter().map(|(_, context)| *context).collect();
     assert!(contexts.len() >= 7, "only {contexts:?} were bound");
+    assert!(
+        contexts.contains(next_home::HOME_CONTEXT),
+        "Home's keys were not bound"
+    );
 
     for (command, shortcut) in every_item() {
         let Some(shortcut) = shortcut else {

@@ -220,12 +220,10 @@ pub(crate) enum Asked {
 }
 
 impl Asked {
-    pub(crate) fn by(stroke: &Keystroke) -> Option<Self> {
-        if let Some(motion) = GridMotion::of(stroke) {
-            return Some(Self::Move(motion));
-        }
+    /// The keys, and what each asks for.
+    pub(crate) fn strokes() -> Vec<(Keystroke, Self)> {
         let enter = || Keystroke::named(anti_webui::prelude::NamedKey::Enter);
-        let bindings = [
+        let intents = [
             (enter(), Intent::Open),
             (enter().with_primary(), Intent::Play),
             (enter().with_alt(), Intent::Enqueue(Placement::Next)),
@@ -235,10 +233,11 @@ impl Asked {
             (Keystroke::primary('d'), Intent::ToggleFavorite),
             (Keystroke::primary('p'), Intent::ChoosePlaylist),
         ];
-        bindings
+        let moves = GridMotion::strokes().map(|(stroke, motion)| (stroke, Self::Move(motion)));
+        moves
             .into_iter()
-            .find(|(bound, _)| bound == stroke)
-            .map(|(_, intent)| Self::Do(intent))
+            .chain(intents.map(|(stroke, intent)| (stroke, Self::Do(intent))))
+            .collect()
     }
 
     /// Whether a button in the page that has the focus is pressed by the key instead, as Enter

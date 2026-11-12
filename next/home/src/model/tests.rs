@@ -255,7 +255,12 @@ fn what_has_nowhere_to_go_does_nothing() {
 #[test]
 fn the_keys_ask_for_what_the_gpui_app_bound_them_to() {
     let enter = || Keystroke::named(NamedKey::Enter);
-    let asked = |stroke: Keystroke| Asked::by(&stroke);
+    let asked = |stroke: Keystroke| {
+        Asked::strokes()
+            .into_iter()
+            .find(|(bound, _)| *bound == stroke)
+            .map(|(_, asked)| asked)
+    };
     assert_eq!(
         asked(Keystroke::named(NamedKey::ArrowRight)),
         Some(Asked::Move(GridMotion::Right))
