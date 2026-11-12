@@ -8,6 +8,7 @@ use anti_webui_md3e::color_scheme;
 use anti_webui_md3e::components::Ink;
 
 use crate::row_list::{ROW_HEIGHT, ROW_PADDING};
+use crate::selection::selection_fill;
 
 /// From the edge of the page to the row, which puts what the row shows on the line of the rest of
 /// the pane, as in a row list.
@@ -65,16 +66,7 @@ pub fn page_row(row: PageRow) -> Div {
     } = row;
     let selected = memo(move || selected());
     let focused = memo(move || focused());
-    let ink = Ink::new(
-        move |c| {
-            if selected.get() && focused.get() {
-                c.on_secondary_container
-            } else {
-                c.on_surface
-            }
-        },
-        || false,
-    );
+    let ink = Ink::new(|c| c.on_surface, || false);
     let frame = div()
         .flex()
         .flex_row()
@@ -94,12 +86,10 @@ pub fn page_row(row: PageRow) -> Div {
         })
         .dyn_style(move |s| {
             let c = color_scheme();
-            match (selected.get(), focused.get()) {
-                (true, true) => s
-                    .bg(c.secondary_container)
-                    .text_color(c.on_secondary_container),
-                (true, false) => s.bg(c.surface_container_highest).text_color(c.on_surface),
-                (false, _) => s.text_color(c.on_surface),
+            let s = s.text_color(c.on_surface);
+            match selection_fill(&c, selected.get(), focused.get()) {
+                Some(fill) => s.bg(fill),
+                None => s,
             }
         })
         .child(content.flex_1().min_w(0).h_full());

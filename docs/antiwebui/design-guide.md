@@ -79,7 +79,7 @@ Material 3 Expressive にデザインし直す Hiphile を、詰まったデス�
   | `surface_container_high` | ダイアログ、設定のポップアップ、検索のバー |
   | `on_surface_variant` | 詳細、補いの文字、選んでいないタブ |
   | `primary`、`on_primary` | 既定の決定、選択の強調、再生ボタン |
-  | `secondary_container`、`tertiary_container` | レールの目印、選んだメニューの項目など、部品が決めたもの |
+  | `secondary_container`、`tertiary_container` | レールの目印、選んだメニューの項目など、部品が決めたもの。選んだ行とカードの塗り |
   | `error`、`error_container` | 失敗と検証のエラーだけ |
   | `outline`、`outline_variant` | 枠線と区切り |
   | `scrim` | ダイアログとポップアップの後ろ |
@@ -297,6 +297,9 @@ Material 3 Expressive にデザインし直す Hiphile を、詰まったデス�
 - 選択は情報の一部。タブ、移動先、選べる行、絞り込みはずっと選んだ状態を見せる。
 - 選んだ移動先、行、タブは、その項目自身の面で示す：md3e の目印、塗り、強い文字の色。先頭の端の棒や片側の
   枠線を選択の印にしない。
+- 選んだ行とカードは `secondary_container` で塗り、キーがそのリストに無い間は塗りを弱める。弱めても、
+  ホバーの灰色の状態レイヤーと見分けられる色味を残す。文字の色は選んでも変えない。md3e の
+  `on_secondary_container` は詳細の `on_surface_variant` より弱く、タイトルが詳細より薄く見えるため。
 - 取り返しのつく操作とつかない操作を分ける。取り返しのつくものは元に戻すスナックバーにし、取り返しの
   つかない重い操作だけを `alert_dialog` で確かめ、その対象と結果を名乗る。
 

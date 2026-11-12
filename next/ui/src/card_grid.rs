@@ -11,6 +11,7 @@ use anti_webui_md3e::typography::TextStyle;
 use crate::keymap::Keystroke;
 use crate::pane::INSET;
 use crate::row_text::faded_end;
+use crate::selection::selection_fill;
 
 pub const CARD_MIN_WIDTH: f32 = 160.0;
 /// Between cards, across and down.
@@ -25,10 +26,6 @@ const ROUND: f32 = 10_000.0;
 /// A card's corners. A cover that fills the top of one is rounded as much: a picture cuts what is
 /// in it square, as if its card did not round it.
 const CORNER: f32 = 12.0;
-/// How much of the focused selection's fill an unfocused selection has. A card at rest is already
-/// filled as a selected row is without the focus.
-const UNFOCUSED_SELECTION: f32 = 0.5;
-
 /// How many cards fit across a pane `width` wide.
 pub fn columns_for(width: f32) -> usize {
     let room = width - INSET * 2.0 + CARD_GAP;
@@ -234,28 +231,12 @@ pub fn card(card: Card) -> Div {
             faded_end(
                 TextStyle::BODY_MEDIUM
                     .apply(div())
-                    .dyn_style(move |s| {
-                        let c = color_scheme();
-                        s.text_color(if selected.get() && focused.get() {
-                            c.on_secondary_container
-                        } else {
-                            c.on_surface_variant
-                        })
-                    })
+                    .dyn_style(|s| s.text_color(color_scheme().on_surface_variant))
                     .child(text(details)),
             )
         }))
         .children(line);
-    let ink = Ink::new(
-        move |c| {
-            if selected.get() && focused.get() {
-                c.on_secondary_container
-            } else {
-                c.on_surface
-            }
-        },
-        || false,
-    );
+    let ink = Ink::new(|c| c.on_surface, || false);
     let card = filled_card()
         .min_w(0)
         .cursor(CursorIcon::Pointer)
@@ -267,14 +248,9 @@ pub fn card(card: Card) -> Div {
         })
         .dyn_style(move |s| {
             let c = color_scheme();
-            match (selected.get(), focused.get()) {
-                (true, true) => s
-                    .bg(c.secondary_container)
-                    .text_color(c.on_secondary_container),
-                (true, false) => s.bg(c
-                    .surface_container_highest
-                    .mix(c.secondary_container, UNFOCUSED_SELECTION)),
-                (false, _) => s,
+            match selection_fill(&c, selected.get(), focused.get()) {
+                Some(fill) => s.bg(fill),
+                None => s,
             }
         })
         .child(cover)

@@ -107,6 +107,17 @@ fn main() {
             click_row(ui, "Low Tide", Modifiers::default().with_shift());
             click_row(ui, "Breakwater", Modifiers::PRIMARY);
         });
+        shot(&at("unfocused"), WIDE, dark, &server, skipping, |ui| {
+            click_row(ui, "Cedar", Modifiers::default());
+            let filter = find(Role::TextInput, "Filter Songs").expect("the filter");
+            let (x, y) = middle(&filter);
+            click(ui, x, y);
+            let (_, y) = middle(&row("Breakwater"));
+            ui.handle_event(WindowEvent::PointerMoved {
+                position: PointF::new(600.0 * SCALE as f32, y),
+                modifiers: Modifiers::default(),
+            });
+        });
         shot(&at("filtered"), NARROW, dark, &server, skipping, |ui| {
             let filter = find(Role::TextInput, "Filter Songs").expect("the filter");
             let (x, y) = middle(&filter);

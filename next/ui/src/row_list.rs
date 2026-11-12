@@ -13,6 +13,7 @@ use anti_webui_md3e::components::Ink;
 use hiphile_core::Shown;
 
 use crate::keymap::{Keystroke, handles_keys};
+use crate::selection::selection_fill;
 
 mod selection;
 
@@ -608,16 +609,7 @@ impl<S: RowSource, K: Clone + Eq + Hash + 'static> Place<S, K> {
                 selection,
             },
         );
-        let ink = Ink::new(
-            move |c| {
-                if selected.get() && focused.get() {
-                    c.on_secondary_container
-                } else {
-                    c.on_surface
-                }
-            },
-            || false,
-        );
+        let ink = Ink::new(|c| c.on_surface, || false);
         let frame = div()
             .absolute()
             .top(0)
@@ -637,12 +629,10 @@ impl<S: RowSource, K: Clone + Eq + Hash + 'static> Place<S, K> {
             })
             .dyn_style(move |s| {
                 let c = color_scheme();
-                match (selected.get(), focused.get()) {
-                    (true, true) => s
-                        .bg(c.secondary_container)
-                        .text_color(c.on_secondary_container),
-                    (true, false) => s.bg(c.surface_container_highest).text_color(c.on_surface),
-                    (false, _) => s.text_color(c.on_surface),
+                let s = s.text_color(c.on_surface);
+                match selection_fill(&c, selected.get(), focused.get()) {
+                    Some(fill) => s.bg(fill),
+                    None => s,
                 }
             })
             .on_click(self.click(id.clone()))

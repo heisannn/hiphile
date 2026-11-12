@@ -17,6 +17,7 @@ use next_ui::pane::INSET;
 use next_ui::row_cover::row_cover;
 use next_ui::row_list::{ROW_HEIGHT, ROW_PADDING};
 use next_ui::row_text::row_text;
+use next_ui::selection::selection_fill;
 use next_ui::type_scale::{error_text, muted_text};
 use subsonic::{AlbumId, ArtistId, SongId};
 
@@ -234,16 +235,7 @@ fn row(hit: Hit, place: Place, choose: Choose, cx: &ScreenContext) -> Div {
         }
     });
     let (content, label) = look(&hit, cx);
-    let ink = Ink::new(
-        move |c| {
-            if is_highlighted.get() {
-                c.on_secondary_container
-            } else {
-                c.on_surface
-            }
-        },
-        || false,
-    );
+    let ink = Ink::new(|c| c.on_surface, || false);
     let frame = div()
         .flex()
         .flex_row()
@@ -261,11 +253,10 @@ fn row(hit: Hit, place: Place, choose: Choose, cx: &ScreenContext) -> Div {
         })
         .dyn_style(move |s| {
             let c = color_scheme();
-            if is_highlighted.get() {
-                s.bg(c.secondary_container)
-                    .text_color(c.on_secondary_container)
-            } else {
-                s.text_color(c.on_surface)
+            let s = s.text_color(c.on_surface);
+            match selection_fill(&c, is_highlighted.get(), true) {
+                Some(fill) => s.bg(fill),
+                None => s,
             }
         })
         .on_click(move |_| choose(&hit))

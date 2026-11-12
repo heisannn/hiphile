@@ -1,8 +1,8 @@
 use super::*;
-use crate::testing::{signed_in_core, start};
+use crate::testing::{NOWHERE, signed_in_core, start};
 
 fn bounds_of_cover(kind: CoverKind) -> (f32, f32) {
-    let (_core, hiphile) = signed_in_core("http://127.0.0.1:9");
+    let (_core, hiphile) = signed_in_core(NOWHERE);
     let workspace = hiphile.workspace().expect("signed in");
     let _ui = start(move || {
         div().child(

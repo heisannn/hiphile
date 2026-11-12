@@ -28,6 +28,7 @@ pub mod row_text;
 mod screen;
 mod screen_context;
 pub mod section;
+pub mod selection;
 pub mod song_row;
 pub mod sort_menu;
 pub mod theme;
