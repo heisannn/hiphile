@@ -130,9 +130,9 @@ Expressive にデザインし直してみる。どんな感じになるかを見
 
 | クレート | 置き換えるもの | 持つもの |
 | --- | --- | --- |
-| `next-host` | `gpui-host`、`ui` の HTTP クライアントとカバーのキャッシュ | アプリの tokio ランタイムとその上の `Spawner`。`follow`、`notices`、`on_ui`。カバーの取得と共有。テストで落ち着くまで回す道具 |
+| `next-host` | `gpui-host`、`ui` の HTTP クライアント | アプリの tokio ランタイムとその上の `Spawner`。`follow`、`notices`、`on_ui` |
 | `next-platform` | GPUI の `set_menus` と、GPUI がしていたウィンドウの扱い | AppKit を直接呼ぶもの：メニューバー、メインウィンドウの枠・最小サイズ・前に出すこと・信号機ボタン、外観、動きを減らす設定、`LANG`。メインスレッドでだけ呼ぶ。`unsafe_code` はこのクレートのモジュールでだけ許し、それぞれに理由を書く。デスクトップ専用で、`hiphile-core` の下には入れない |
-| `next-ui` | `ui`、`actions` のメニューとグローバル | テーマとトークン、キーマップ、フォーカスを戻す仕組み、画面をまたぐコマンド、共通の部品 |
+| `next-ui` | `ui`、`actions` のメニューとグローバル、`ui` のカバーのキャッシュ | テーマとトークン、キーマップ、フォーカスを戻す仕組み、画面をまたぐコマンド、カバーの取得と共有、共通の部品、ビューのテストの道具 |
 | `next-account`、`next-home`、`next-library`、`next-artists`、`next-songs`、`next-playlists`、`next-favorites`、`next-search`、`next-player`、`next-settings` | 同じ名前のクレート | 1 つの画面、パネル、ポップアップずつ。テストは `<view>/tests.rs` |
 | `next-hiphile`（バイナリ `hiphile-next`） | `hiphile` | 起動、シェル、ルーティング、メニューバーのコマンド |
 
@@ -197,8 +197,8 @@ Expressive にデザインし直してみる。どんな感じになるかを見
 - コアに、なければ取得し、LRU を更新して、ファイルのパスを返す口を足す（例：
   `cover_file(request) -> Task<Option<PathBuf>>`）。キャッシュの無い構成（`Caches::None`）では
   バイト列を返し、同じカバーには同じ `Arc<[u8]>` を渡して、`img` のキャッシュが効くようにする。
-- `next-host` のカバーは、取得、同じカバーを使う行どうしでの共有、どの行も要らなくなったときの取り消し、
-  読み込み中の表示を受け持つ。
+- `next-ui` のカバー（`next_ui::cover`）は、取得、同じカバーを使う行どうしでの共有、どの行も要らなく
+  なったときの取り消し、読み込み中の表示を受け持つ。
 
 ### キーとメニュー
 
@@ -245,14 +245,16 @@ Expressive にデザインし直してみる。どんな感じになるかを見
   - 本物のネットワークのスレッドを待つための `allow_parking` を持つ。コアのテストで 43 か所使っている。
   - ブロックする仕事はその場で走らせる（GPUI と同じ）。
   - `spawn` が戻る前に仕事を poll しない（コアのルール 4）。
-  - 落とすと取り消す。
+  - 落とすと取り消す。そのとき走らずに残った仕事があればテストを失敗させる。最後の手順が積んだ仕事を
+    確かめずに終えないため。`allow_parking` のテストは、ほかのスレッドがいつ起こし終えるか分からないので
+    除く。
 
   `TestAppContext` と `cx.update` を使っているところは書き換えになるが、テストの筋は変えずに済む。
 - ビューのテストは、`hiphile_core::test_support` の偽のサーバーを使ってビューを `core::Ui` に載せ、合成
-  イベントを送り、`accessibility::snapshot()` でノードを探す。コアは決定的な executor で動かす。
-  `next-host` のテスト用の道具が、executor を park するまで回し、`ui_channel` を流し、フレームを進める
-  ことを、何も起きなくなるまで繰り返す。22 個の `debug_selector` は名前か役割になる。タイマーやばねは
-  進められないので、時間ではなく状態を確かめる。
+  イベントを送り、`accessibility::snapshot()` でノードを探す。コアはテストごとの tokio のランタイムで動き、
+  テストは画面に出たものを `next_ui::testing::wait_until` で待つ。決定的な executor へ移すかは決めていない。
+  22 個の `debug_selector` は名前か役割になる。タイマーやばねは進められないので、時間ではなく状態を
+  確かめる。
 - テストのコアはメディアコントロールにつながない。ハンドル無しでつなげるようにしたあとも、テストが
   実機の Now Playing に届かないようにする。`next-platform` はテストでは呼ばない。
 - CI は `macos-latest` でビューのテストを走らせる。`core::Ui` のテストに GPU は要らない。
@@ -268,7 +270,7 @@ Expressive にデザインし直してみる。どんな感じになるかを見
 | | 決まり |
 | --- | --- |
 | 色 | md3e の `ColorScheme` を種の色から `SchemeVariant::Content` で作る。種は再生中の曲のカバー（約 128 px に縮めたカバーにタスクで `dynamic::seed_colors` をかける）が既定で、Appearance で固定の色も選べる。どちらでも、アプリ全体がその配色に従う。曲が変わると `motion::slow_effects` で配色をクロスフェードする。Light、Dark、System は今と同じ。テーマの外に色のリテラルを書かない |
-| 文字 | md3e の `TextStyle` の段階を Roboto Flex で使い、日本語はシステムのフォールバック（`LANG` を入れたうえで Hiragino Sans）にする。まずは画面のタイトルを `HEADLINE_SMALL`、行のタイトルを `TITLE_SMALL`、詳細を `on_surface_variant` の `BODY_MEDIUM`、歌詞の行を `HEADLINE_LARGE` にする |
+| 文字 | md3e の `TextStyle` の段階を Roboto Flex で使い、日本語はシステムのフォールバック（`LANG` を入れたうえで Hiragino Sans）にする。まずは画面のタイトルを `TITLE_LARGE`、行のタイトルを `TITLE_SMALL`、詳細を `on_surface_variant` の `BODY_MEDIUM`、歌詞の行を `HEADLINE_LARGE` にする |
 | 密度 | 長いリストは Hiphile の行の寸法を使い、今と同じ高さ（カバー付きで 48 px）にする。md3e の 56 dp と 72 dp のリスト項目は設定と短いリストに使う |
 | 形 | md3e の角の丸み。ペインは大きな角と余白のある `surface_container`。`MaterialShape` は形に意味があるところだけ：再生ボタンの変形、読み込み。カバーは四角のまま、アーティストの写真は円にする。形では子を切り抜けないため（d15:303） |
 | 動き | md3e のばね（`fast`、`default`、`slow` × `spatial`、`effects`）。画面は md3e のショーケースと同じく、薄く現れて少し上がって入る。すぐ終わる操作では何も動かさない |
@@ -282,7 +284,7 @@ Expressive にデザインし直してみる。どんな感じになるかを見
 | 移動先 | タイトルバーのセグメントの `TabBar` | `wide_navigation_rail` の 6 項目：Home、Artists、Albums、Songs、Playlists、Favorites。広いウィンドウでは広げ（220 px）、狭いウィンドウでは畳む（96 px）。ヘッダーには、レールを開け閉めするメニューのボタンと、検索を開く FAB（広げたときは extended FAB）を置く |
 | サーバーと設定 | タイトルバーのサーバーのメニューと設定のボタン | ウィンドウの右上。画面のアプリバーかキューの見出しの右端に重ねる。設定はアイコンボタンでポップアップを開き、サーバーは `initials_avatar` のボタンから md3e の `menu`（サーバーの一覧、Add Server…、Sign Out）を出す。初めはレールの下端に置いたが、最小の高さ（560 px）のウィンドウでレールが入りきらず、右上に移した |
 | 検索 | ダイアログの中の `Command` パレット | md3e の `search_bar` と、その下に付く結果。レールの FAB とキーで開く |
-| 画面の見出し | 文字の見出し | 戻ると進む、画面のタイトル、並べ替えと絞り込みを持つ小さな `TopAppBar`。長いリストの上に大きく畳まるバーは置かない |
+| 画面の見出し | 文字の見出し | 戻ると進む、画面のタイトル、並べ替えを持つ小さなアプリバー（`next_ui::app_bar`。md3e の `TopAppBar` には戻ると進むの場所が無い）。絞り込みは一覧のペインの上に置く。長いリストの上に大きく畳まるバーは置かない |
 | Albums、Artists、Playlists | `MasterDetail` | `next_ui::list_detail` の一覧と詳細のペイン（`split_row` は比率で分け、px の最小と最大が無いので使わない）。詳細のヘッダーは大きなカバーと、`button_group` に入れた `extended_fab` の再生とトーンのシャッフル |
 | Home | カードの棚、最近再生した曲 | どの棚も `next_ui::card_grid` のカードの 1 行と、曲の行（`carousel` はキーとフォーカスが無く、縦のホイールを取るので使わない） |
 | Songs | ライブラリ全体の `uniform_list` | 詰めた行と並べ替えられる列の `row_list` |
@@ -292,8 +294,8 @@ Expressive にデザインし直してみる。どんな感じになるかを見
 | 歌詞 | 画面の上に重なり、カバーがバーから飛ぶ | ウィンドウ全体に出す。点いた語は色と不透明度で示し、ラテン文字には `GRAD` を足す。カバーは今と同じく飛ぶ |
 | ミニプレーヤー | 別のウィンドウ。カバー、位置、操作、歌詞の行、エラー | 後回し |
 | サインイン | フォーム | レールは出さない。枠線のテキストフィールド、表示を切り替えられるパスワード、塗りのボタン |
-| 設定 | 別のウィンドウの gpui-kit の設定ページ | 同じウィンドウのポップアップ。widgets の `modal_with` に md3e の面（`surface_container_high`、大きな角）を載せ、ウィンドウに合わせて広げる。md3e の `dialog` は最大幅 560 px で、ページの一覧と詳細が並ばないため。左にページの一覧（8 つはレールの目安 3〜7 を超える）、右にそのページ。グループは `segmented_list`。スイッチ、`dropdown_field`、ラジオボタン、中央を起点にしたバランスのスライダーを行の後ろに置く |
-| 通知 | `push_notification`（元に戻すとプログレス付き） | `snackbars`。元に戻すものは `lasting` で時間を付ける。同期の進み具合はアプリバーの下の `linear_progress` |
+| 設定 | 別のウィンドウの gpui-kit の設定ページ | 同じウィンドウのポップアップ。widgets の `modal_with` に md3e の面（`surface_container_high`、大きな角）を載せ、ウィンドウに合わせて広げる。md3e の `dialog` は最大幅 560 px で、ページの一覧と詳細が並ばないため。左にページの一覧、右にそのページ。ページは 7 つで、GPUI 版の Updates は、更新の仕組みがリリースの作業（[リリースするなら](#リリースするなら)）なので置かない。グループは `segmented_list`。スイッチ、`dropdown_field`、ラジオボタン、中央を起点にしたバランスのスライダーを行の後ろに置く |
+| 通知 | `push_notification`（元に戻すとプログレス付き） | `snackbars`。元に戻すものは `lasting` で時間を付ける。同期の進み具合は一覧のペインの見出しの `circular_progress` |
 | メニュー | gpui-kit のポップアップとコンテキストメニュー | サブメニューのある md3e の `menu`。ボタンに付けるか、ポインタの位置に出す |
 | ダイアログ | gpui-kit のダイアログ | `dialog` と `alert_dialog`。失敗しても開いたまま |
 | 読み込み | `Spinner` | ペインには `loading_indicator`、部品の中には `circular_progress` |
@@ -361,7 +363,7 @@ step 0 の検証：
 - 失敗しても開いたままの 5 つのダイアログ。元に戻すとプログレスの付いた通知。
 - キューとプレイリストのドラッグとキーでの並べ替え。
 - リストは並べ替えと絞り込みをまたいで選択を保ち、見える位置までスクロールする。
-- 設定のポップアップの 8 つのページと独自のフィールド：数値、r8brain のフィールド、キャッシュの上限、ImgBB のキー、
+- 設定のポップアップの 7 つのページと独自のフィールド：数値、r8brain のフィールド、キャッシュの上限、ImgBB のキー、
   バランス。
 - システムの外観に従うこと。
 - `accessibility_label` と役割はすべて残す。スクリーンリーダーは読まない。
