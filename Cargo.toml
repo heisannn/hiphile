@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+members = ["crates/*", "next/*"]
 default-members = ["crates/hiphile"]
 
 [workspace.package]
@@ -43,7 +43,14 @@ subsonic = { path = "crates/subsonic" }
 ui = { path = "crates/ui" }
 updater = { path = "crates/updater" }
 
+next-account = { path = "next/account" }
+next-host = { path = "next/host" }
+next-ui = { path = "next/ui" }
+
 anyhow = "1.0"
+# Pinned to a revision: upstream has no releases, and each update is made on purpose
+anti-webui = { git = "https://github.com/bea4dev/AntiWebUI", rev = "25e82a1d2a7a08658f0eede14cde47b34cce40a6", default-features = false, features = ["macos", "svg"] }
+anti-webui-md3e = { git = "https://github.com/bea4dev/AntiWebUI", rev = "25e82a1d2a7a08658f0eede14cde47b34cce40a6" }
 apple-native-keyring-store = { version = "1.0", features = ["keychain"] }
 async-channel = "2.5"
 base64 = "0.23"

@@ -1,0 +1,31 @@
+[package]
+name = "next-hiphile"
+description = "Hiphile on AntiWebUI with Material 3 Expressive, tried next to the GPUI app. Not released."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "hiphile-next"
+path = "src/main.rs"
+
+[dependencies]
+anti-webui.workspace = true
+anti-webui-md3e.workspace = true
+config.workspace = true
+executor.workspace = true
+hiphile-core = { workspace = true, features = ["desktop"] }
+net.workspace = true
+next-account.workspace = true
+next-host.workspace = true
+next-ui.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+
+[dev-dependencies]
+hiphile-core = { workspace = true, features = ["desktop", "test-support"] }
+next-ui = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "next-host"
+description = "The AntiWebUI side of the core: views that follow its handles on the UI thread."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+anti-webui.workspace = true
+executor.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["sync", "rt-multi-thread"] }
+
+[lints]
+workspace = true
