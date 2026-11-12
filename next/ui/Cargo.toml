@@ -15,6 +15,7 @@ config.workspace = true
 executor = { workspace = true, optional = true }
 futures = { workspace = true, optional = true }
 hiphile-core.workspace = true
+lyrics = { workspace = true, optional = true }
 net = { workspace = true, optional = true }
 next-host.workspace = true
 playback.workspace = true
@@ -30,6 +31,7 @@ test-support = [
   "dep:client",
   "dep:executor",
   "dep:futures",
+  "dep:lyrics",
   "dep:net",
   "dep:serde_json",
   "dep:tempfile",

@@ -7,7 +7,7 @@ use hiphile_core::settings::AppearanceSnapshot;
 use hiphile_core::{Hiphile, HiphileSnapshot, Workspace};
 use next_account::{sign_in, sign_in_dialog};
 use next_host::follow;
-use next_player::{Panels, cover_seed, now_playing_cover, player_bar, queue};
+use next_player::{Panels, cover_seed, lyrics_overlay, now_playing_cover, player_bar, queue};
 use next_search::search;
 use next_settings::settings_popup;
 use next_ui::cover::install_covers;
@@ -23,6 +23,7 @@ use crate::menu_bar::Shown;
 use crate::navigation::{Navigation, index_of};
 use crate::rail::rail;
 use crate::reach::{Reach, show_outside};
+use crate::top_end::top_end;
 
 mod commands;
 
@@ -33,20 +34,39 @@ const WIDE: f32 = 1000.0;
 /// What the screens keep beside the queue: a list and a detail at their least.
 const SCREENS_MIN_WIDTH: f32 = LIST_MIN_WIDTH + GAP + DETAIL_MIN_WIDTH;
 
+/// What the system asks of the window.
+#[derive(Clone, Copy)]
+pub struct System {
+    pub is_dark: Signal<bool>,
+    /// Whether what moves on its way somewhere goes there at once instead.
+    pub reduces_motion: Signal<bool>,
+}
+
+impl System {
+    /// A system that stays dark or light and asks for every motion.
+    pub fn fixed(is_dark: bool) -> Self {
+        Self {
+            is_dark: signal(is_dark),
+            reduces_motion: signal(false),
+        }
+    }
+}
+
 /// What fills the window: signing in, or the workspace of whoever is signed in. Its colors follow
-/// the appearance chosen, `system_is_dark` when that follows the system, and the cover of what
-/// plays. The workspace takes what is chosen in `menu_bar`, and shows there where it is.
-pub fn app(hiphile: Hiphile, system_is_dark: Signal<bool>, menu_bar: MenuBar, reach: Reach) -> Div {
+/// the appearance chosen, the system's when that follows it, and the cover of what plays. The
+/// workspace takes what is chosen in `menu_bar`, and shows there where it is.
+pub fn app(hiphile: Hiphile, system: System, menu_bar: MenuBar, reach: Reach) -> Div {
     let appearance = follow(hiphile.settings().appearance().subscribe());
     let seed = signal(None::<Color>);
     follow_theme(
         move || {
             is_dark(
                 appearance.with(AppearanceSnapshot::appearance),
-                system_is_dark.get(),
+                system.is_dark.get(),
             )
         },
         move || seed.get(),
+        move || system.reduces_motion.get(),
     );
     install_covers(hiphile.clone());
     let shown = follow(hiphile.subscribe());
@@ -64,7 +84,14 @@ pub fn app(hiphile: Hiphile, system_is_dark: Signal<bool>, menu_bar: MenuBar, re
             match workspace.get() {
                 None => untrack(|| signed_out(hiphile)),
                 Some(workspace) => untrack(|| {
-                    signed_in(hiphile, workspace, shown, snackbars, menu_bar, seed, reach)
+                    let parts = Parts {
+                        snackbars,
+                        menu_bar,
+                        seed,
+                        reach,
+                        reduces_motion: system.reduces_motion,
+                    };
+                    signed_in(hiphile, workspace, shown, parts)
                 }),
             }
         }))
@@ -79,15 +106,29 @@ fn signed_out(hiphile: Hiphile) -> Div {
         .child(moves_window(div().absolute().top(0).left(0).right(0).h(44)))
 }
 
+/// What the workspace's window is made with besides the workspace.
+struct Parts {
+    snackbars: Snackbars,
+    menu_bar: MenuBar,
+    /// Where the colors taken from the cover go.
+    seed: Signal<Option<Color>>,
+    reach: Reach,
+    reduces_motion: Signal<bool>,
+}
+
 fn signed_in(
     hiphile: Hiphile,
     workspace: Workspace,
     shown: Signal<HiphileSnapshot>,
-    snackbars: Snackbars,
-    menu_bar: MenuBar,
-    seed: Signal<Option<Color>>,
-    reach: Reach,
+    parts: Parts,
 ) -> Div {
+    let Parts {
+        snackbars,
+        menu_bar,
+        seed,
+        reach,
+        reduces_motion,
+    } = parts;
     let cover = now_playing_cover(&hiphile, &workspace);
     let colors = cover_seed(cover);
     effect(move || seed.set(colors.get()));
@@ -111,6 +152,7 @@ fn signed_in(
     let settings_open = signal(false);
     let search_open = signal(false);
     let sign_in_request = signal(None);
+    let top_end_width = signal(0.0_f32);
     let shell = Shell::new(
         &hiphile,
         workspace,
@@ -121,6 +163,13 @@ fn signed_in(
     );
     let cx = shell.context();
     let (panels, dialogs, covers) = (shell.panels, shell.dialogs, cx.covers);
+    // The lyrics are of the song playing
+    let has_song = memo(move || playing.with(|playing| playing.has_song()));
+    effect(move || {
+        if !has_song.get() {
+            untrack(|| panels.lyrics.set_if_changed(false));
+        }
+    });
     menu_bar.attach(cx.commands.clone(), move || {
         let (has_song, has_queue, shuffled, repeat) = playing.with(|playing| {
             (
@@ -144,24 +193,22 @@ fn signed_in(
             shuffled,
             repeat: Some(repeat),
             queue_fits: panels.queue_fits(),
-            queue_shown: panels.is_queue_shown(),
+            queue_shown: panels.is_queue_in_view(),
+            lyrics_open: panels.lyrics.get(),
         }
     });
+    // What the lyrics cover takes no keys and no Tab
+    let covered = move || panels.is_covered();
     div()
         .size_full()
+        .relative()
         .flex()
         .flex_row()
         .on_resized(move |w, _| width.set(w))
-        .child(rail(
-            navigation,
-            expanded,
-            hiphile.clone(),
-            shown,
-            cx.commands.clone(),
-            sign_in_request,
-        ))
+        .child(rail(navigation, expanded, cx.commands.clone()).disabled(covered))
         .child(
             div()
+                .disabled(covered)
                 .flex_1()
                 .min_w(0)
                 .h_full()
@@ -189,11 +236,23 @@ fn signed_in(
                                         actions,
                                         body,
                                     } = screen(destination, navigation.location(), &cx);
+                                    // The queue's own bar takes the window's top end while it shows
+                                    let bar = div().flex_none().dyn_style(move |s| {
+                                        s.pr(if panels.is_queue_shown() {
+                                            0.0
+                                        } else {
+                                            top_end_width.get()
+                                        })
+                                    });
                                     div()
                                         .size_full()
                                         .flex()
                                         .flex_col()
-                                        .child(app_bar(going(navigation), title, actions))
+                                        .child(bar.child(app_bar(
+                                            going(navigation),
+                                            title,
+                                            actions,
+                                        )))
                                         .child(room_for(body, panels))
                                 }
                             },
@@ -204,8 +263,16 @@ fn signed_in(
                         })),
                 )
                 .child(player_bar(player, cover, panels).mr(16))
+                .child(top_end(
+                    hiphile.clone(),
+                    shown,
+                    cx.commands.clone(),
+                    sign_in_request,
+                    top_end_width,
+                ))
                 .child(search(&cx, search_open)),
         )
+        .child(lyrics_overlay(&cx, cover, panels, reduces_motion))
         .child(shell.dialogs.view(&cx))
         .child(settings_popup(hiphile.clone(), settings_open))
         .child(sign_in_dialog(hiphile, sign_in_request))

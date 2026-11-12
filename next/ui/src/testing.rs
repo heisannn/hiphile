@@ -334,6 +334,18 @@ pub fn signed_in_core(server: &str) -> (TestCore, hiphile_core::Hiphile) {
     (core, hiphile)
 }
 
+/// As [`signed_in_core`], with the lyrics that `find_lyrics` finds.
+pub fn signed_in_core_with_lyrics(
+    server: &str,
+    find_lyrics: lyrics::FindLyrics,
+) -> (TestCore, hiphile_core::Hiphile) {
+    let (mut core, hiphile) = core("");
+    let session = hiphile_core::test_support::session(server);
+    core.nets.push(session.client().net().clone());
+    hiphile.open_workspace_with_lyrics(session, config::Profile::new(server, "alice"), find_lyrics);
+    (core, hiphile)
+}
+
 /// Commands that are kept in the order they are sent, for the test to read.
 pub fn recording_commands() -> (Commands, Rc<RefCell<Vec<Command>>>) {
     let sent = Rc::new(RefCell::new(Vec::new()));

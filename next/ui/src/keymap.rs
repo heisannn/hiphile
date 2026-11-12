@@ -100,6 +100,24 @@ fn keymap<C: 'static>() -> Rc<Bindings<C>> {
     any.downcast().expect("kept under its own type")
 }
 
+/// What had the focus before something took it, for giving it back once that goes, as a modal
+/// popup does by itself.
+pub struct FocusBefore(Option<NodeId>);
+
+impl FocusBefore {
+    /// What has the focus now.
+    pub fn now() -> Self {
+        Self(focus::focused())
+    }
+
+    /// Gives the focus back, if what had it is still in the window.
+    pub fn give_back(self) {
+        if let Some(node) = self.0 {
+            focus::give(node);
+        }
+    }
+}
+
 /// A context: its name in bindings, which commands are enabled in it, and how it runs them. Cheap
 /// to clone.
 pub struct KeyContext<C> {

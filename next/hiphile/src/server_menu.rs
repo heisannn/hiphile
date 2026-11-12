@@ -48,7 +48,7 @@ pub(crate) fn server_menu(
                 vec![switching, vec![add], vec![sign_out]],
                 MenuStyle::new()
                     .anchor(anchor)
-                    .placement(Placement::AboveStart),
+                    .placement(Placement::BelowEnd),
             )
         })
     });

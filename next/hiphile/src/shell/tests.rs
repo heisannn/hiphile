@@ -16,7 +16,7 @@ fn heading(text: &str) -> bool {
 #[test]
 fn signed_out_it_asks_to_sign_in_without_the_rail() {
     let (_core, hiphile) = core("");
-    let _ui = start(move || app(hiphile, signal(false), MenuBar::new(), Reach::Window));
+    let _ui = start(move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window));
 
     assert!(heading("Sign In"));
     assert!(find(Role::Navigation, "Destinations").is_none());
@@ -25,7 +25,7 @@ fn signed_out_it_asks_to_sign_in_without_the_rail() {
 #[test]
 fn signed_in_the_rail_goes_to_each_destination() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
-    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new(), Reach::Window));
+    let mut ui = start(move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window));
     assert!(find(Role::Navigation, "Destinations").is_some());
     assert_eq!(find(Role::Button, "Home").unwrap().selected, Some(true));
 
@@ -43,7 +43,7 @@ fn signed_in_the_rail_goes_to_each_destination() {
 #[test]
 fn back_and_forward_retrace_the_destinations() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
-    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new(), Reach::Window));
+    let mut ui = start(move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window));
     assert!(find(Role::Button, "Back").unwrap().disabled);
 
     press(&mut ui, Role::Button, "Albums");
@@ -59,7 +59,7 @@ fn back_and_forward_retrace_the_destinations() {
 #[test]
 fn settings_open_over_the_window_and_escape_closes_them() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
-    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new(), Reach::Window));
+    let mut ui = start(move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window));
 
     press(&mut ui, Role::Button, "Settings");
     assert_eq!(nodes(Role::Dialog).len(), 1);
@@ -76,7 +76,7 @@ fn the_theme_chosen_in_the_settings_shows_behind_them_at_once() {
 
     let (_core, hiphile) = signed_in_core(NOWHERE);
     let appearance = hiphile.settings().appearance().clone();
-    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new(), Reach::Window));
+    let mut ui = start(move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window));
     let surface = |dark| scheme(DEFAULT_SEED, dark).surface;
     assert_eq!(color_scheme().surface, surface(false));
 
@@ -99,7 +99,7 @@ fn signing_out_from_the_servers_goes_back_to_signing_in() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
     let mut ui = start({
         let hiphile = hiphile.clone();
-        move || app(hiphile, signal(false), MenuBar::new(), Reach::Window)
+        move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window)
     });
 
     press(&mut ui, Role::Button, "Servers");
@@ -111,10 +111,37 @@ fn signing_out_from_the_servers_goes_back_to_signing_in() {
 }
 
 #[test]
+fn in_the_smallest_window_the_rail_fits_and_the_screens_actions_keep_clear_of_the_settings() {
+    let (_core, hiphile) = signed_in_core(NOWHERE);
+    let mut ui = next_ui::testing::start_at(
+        move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window),
+        crate::SMALLEST_WINDOW,
+    );
+    press(&mut ui, Role::Button, "Songs");
+    let sort = || {
+        nodes(Role::Button).into_iter().find(|node| {
+            node.label
+                .as_deref()
+                .is_some_and(|label| label.starts_with("Sort"))
+        })
+    };
+    wait_until(&mut ui, || sort().is_some());
+    let (width, height) = crate::SMALLEST_WINDOW;
+
+    let favorites = find(Role::Button, "Favorites").expect("the last destination");
+    assert!(favorites.bounds.bottom() <= height as f32);
+    let settings = find(Role::Button, "Settings").expect("the settings");
+    assert!(sort().expect("the sort").bounds.right() <= settings.bounds.x);
+    let servers = find(Role::Button, "Servers").expect("the servers");
+    assert!(settings.bounds.right() <= servers.bounds.x);
+    assert!(servers.bounds.right() <= width as f32);
+}
+
+#[test]
 fn the_rail_closes_in_a_narrow_window() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
     let _ui = next_ui::testing::start_at(
-        move || app(hiphile, signal(false), MenuBar::new(), Reach::Window),
+        move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window),
         (900, 600),
     );
 
@@ -124,7 +151,7 @@ fn the_rail_closes_in_a_narrow_window() {
 #[test]
 fn adding_a_server_opens_signing_in_over_the_workspace() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
-    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new(), Reach::Window));
+    let mut ui = start(move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window));
 
     press(&mut ui, Role::Button, "Servers");
     press(&mut ui, Role::MenuItem, "Add Server…");
@@ -136,7 +163,7 @@ fn adding_a_server_opens_signing_in_over_the_workspace() {
 #[test]
 fn signed_in_the_player_bar_is_at_the_bottom() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
-    let _ui = start(move || app(hiphile, signal(false), MenuBar::new(), Reach::Window));
+    let _ui = start(move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window));
 
     let bar = find(Role::Toolbar, "Player").expect("the player bar");
     assert_eq!(bar.bounds.y + bar.bounds.height, crate::WINDOW.1 as f32);
@@ -147,7 +174,7 @@ fn the_colors_follow_the_cover_of_what_plays() {
     let server = CoverServer::new(png(16, |_, _| [200, 40, 40, 255]));
     let (_core, hiphile) = signed_in_core(server.url());
     let player = hiphile.workspace().unwrap().player().clone();
-    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new(), Reach::Window));
+    let mut ui = start(move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window));
     let before = color_scheme().primary;
 
     let song = json!({ "id": "a", "title": "a", "coverArt": "al-a" });
@@ -178,7 +205,7 @@ fn focus_role() -> Option<Role> {
 #[test]
 fn the_rail_opens_the_search_over_the_screens_with_the_focus_in_it() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
-    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new(), Reach::Window));
+    let mut ui = start(move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window));
     press(&mut ui, Role::Button, "Albums");
 
     press(&mut ui, Role::Button, "Search");
@@ -201,7 +228,7 @@ fn choosing_an_album_in_the_search_goes_to_it() {
         ..SavedLibrary::default()
     };
     let (_core, hiphile, _catalog) = signed_in_core_with_library(NOWHERE, &library);
-    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new(), Reach::Window));
+    let mut ui = start(move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window));
     press(&mut ui, Role::Button, "Search");
 
     typed(&mut ui, "kind of blue");
@@ -216,7 +243,7 @@ fn choosing_an_album_in_the_search_goes_to_it() {
 #[test]
 fn the_queue_opens_from_the_bar_beside_the_screens() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
-    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new(), Reach::Window));
+    let mut ui = start(move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window));
 
     press(&mut ui, Role::ToggleButton, "Queue");
 

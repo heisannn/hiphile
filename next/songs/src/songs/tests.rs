@@ -332,8 +332,11 @@ fn clicking_headings_sorts_and_clicking_again_turns_it_around() {
     });
 
     click_heading(&mut shown, "Time");
+    // The rows are already in this order by album
+    wait_until(&mut shown.ui, || {
+        find(Role::Button, "Sort by Time, Ascending").is_some()
+    });
     wait_for_rows(&mut shown, ["Cherokee", "Blues", "Airegin"]);
-    assert!(find(Role::Button, "Sort by Time, Ascending").is_some());
     click_heading(&mut shown, "Time, Ascending");
     wait_for_rows(&mut shown, ["Airegin", "Blues", "Cherokee"]);
 }

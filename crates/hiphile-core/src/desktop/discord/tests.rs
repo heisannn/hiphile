@@ -85,6 +85,7 @@ fn the_status_follows_the_discord_settings() {
         cache: None,
         covers: None,
         song_cache: None,
+        find_lyrics: None,
     };
     let workspace = crate::Workspace::new(
         crate::test_support::session(NOWHERE),

@@ -85,6 +85,24 @@ pub fn cover(url: Option<Arc<str>>, kind: CoverKind) -> Div {
     }))
 }
 
+/// The cover at `url` filling its box once it has come, and nothing before then or when there is
+/// none: for laying over a smaller one that is already there.
+pub fn cover_over(url: Arc<str>) -> Div {
+    let loaded = watch(url);
+    div().child(dyn_view(move || match loaded.get() {
+        Loaded::Found(source) => {
+            untrack(|| picture_at_once(image_of(source)).size_full().into_view())
+        }
+        Loaded::Loading | Loaded::Missing => untrack(|| div().into_view()),
+    }))
+}
+
+/// `source` filling its box as soon as it is decoded, with no surface under it and no fade, unlike
+/// md3e's `image`: for a picture already in view, such as one moving from where it was.
+pub fn picture_at_once(source: impl IntoImageSource) -> Img {
+    img(source).object_fit(ObjectFit::Cover).select_none()
+}
+
 /// The cover as `image` takes it. A kept cover is named by its file, by which AntiWebUI keeps what
 /// it decoded.
 pub fn image_of(source: CoverSource) -> ImageSource {

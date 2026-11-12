@@ -28,6 +28,7 @@ fn workspace_with(executor: Executor, settings: &Settings, session: Session) -> 
         cache: None,
         covers: None,
         song_cache: None,
+        find_lyrics: None,
     };
     Workspace::new(session, config::Profile::new(NOWHERE, "alice"), parts)
 }

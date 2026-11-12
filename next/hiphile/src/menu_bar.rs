@@ -33,6 +33,7 @@ pub(crate) struct Shown {
     pub(crate) repeat: Option<RepeatMode>,
     pub(crate) queue_fits: bool,
     pub(crate) queue_shown: bool,
+    pub(crate) lyrics_open: bool,
 }
 
 impl MenuBar {
@@ -139,6 +140,7 @@ pub fn menus() -> Vec<Menu<Command>> {
                     Command::ToggleQueue,
                     Shortcut::command('u').option(),
                 ),
+                Item::command("Lyrics", Command::ToggleLyrics, Shortcut::command('l')),
             ])
             .collect(),
         ),
@@ -200,8 +202,11 @@ fn state_of(shown: &Shown, command: &Command) -> ItemState {
         Command::Show(location) => {
             ItemState::enabled(free).checked(shown.destination == Some(location.destination()))
         }
-        Command::GoBack => ItemState::enabled(free && shown.can_go_back),
-        Command::GoForward => ItemState::enabled(free && shown.can_go_forward),
+        // Back closes the lyrics first
+        Command::GoBack => ItemState::enabled(free && (shown.can_go_back || shown.lyrics_open)),
+        Command::GoForward => {
+            ItemState::enabled(free && shown.can_go_forward && !shown.lyrics_open)
+        }
         Command::TogglePlayback
         | Command::Next
         | Command::Previous
@@ -210,6 +215,9 @@ fn state_of(shown: &Shown, command: &Command) -> ItemState {
         Command::SaveQueue => ItemState::enabled(free && shown.has_queue),
         Command::ToggleQueue => {
             ItemState::enabled(free && shown.queue_fits).checked(shown.queue_shown)
+        }
+        Command::ToggleLyrics => {
+            ItemState::enabled(free && shown.has_song).checked(shown.lyrics_open)
         }
         Command::ToggleShuffle => ItemState::enabled(free).checked(shown.shuffled),
         Command::SetRepeat(repeat) => {

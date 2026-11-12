@@ -8,16 +8,17 @@ use anti_webui::app::headless;
 use anti_webui::core::Ui;
 use anti_webui::core::access::{AccessAction, perform};
 use anti_webui::core::event::{Key, Modifiers, NamedKey, WindowEvent};
-use anti_webui::core::geometry::PointF;
-use anti_webui::prelude::{Role, signal};
+use anti_webui::core::geometry::{PointF, Scale, SizeI};
+use anti_webui::prelude::Role;
 use anti_webui_md3e::color_scheme;
 use hiphile_core::Hiphile;
 use hiphile_core::test_support::{LibraryServer, PlaylistsServer};
-use next_hiphile::{MenuBar, Reach, SMALLEST_WINDOW, WINDOW, app};
+use next_hiphile::{MenuBar, Reach, SMALLEST_WINDOW, System, WINDOW, app};
 use next_player::testing::{CoverServer, png};
 use next_ui::testing::{
     NOWHERE, SavedLibrary, click, click_with, core, find, frames, has_text, key, key_with, press,
-    signed_in_core, signed_in_core_with_library, typed, wait_until,
+    scroll, signed_in_core, signed_in_core_with_library, signed_in_core_with_lyrics, typed,
+    wait_until,
 };
 use next_ui::theme::{DEFAULT_SEED, scheme};
 use serde_json::{Value, json};
@@ -163,7 +164,217 @@ fn main() {
             |_| {},
         );
         queue_shots(&folder, dark, theme, &covers);
+        lyrics_shots(&folder, dark, theme, &covers);
     }
+}
+
+/// The lyrics in windows of a few sizes, lit word by word partway into a line, and what stands in
+/// for them.
+fn lyrics_shots(folder: &Path, dark: bool, theme: &str, covers: &CoverServer) {
+    let timed = || Ok(lyrics::lyrics_from_richsync_body(&made_up_lyrics()));
+    for (name, size) in [
+        ("lyrics", WINDOW),
+        ("lyrics-wide", WIDE_WINDOW),
+        ("lyrics-smallest", SMALLEST_WINDOW),
+    ] {
+        lyrics_shot(
+            &folder.join(format!("{name}-{theme}.png")),
+            dark,
+            covers,
+            size,
+            timed(),
+            open_lyrics,
+        );
+    }
+    lyrics_shot(
+        &folder.join(format!("lyrics-scrolled-{theme}.png")),
+        dark,
+        covers,
+        WINDOW,
+        timed(),
+        |ui| {
+            open_lyrics(ui);
+            let scale = SCALE as f32;
+            for _ in 0..6 {
+                scroll(ui, 900.0 * scale, 400.0 * scale, -60.0 * scale);
+            }
+            frames(ui, 900);
+        },
+    );
+    let (_core, hiphile) = lyrics_playing(covers, Some(timed()));
+    render_in_motion(
+        &folder.join(format!("lyrics-flight-{theme}.png")),
+        dark,
+        hiphile,
+        WINDOW,
+        |ui| {
+            wait_for_cover_colors(ui, dark);
+            // Once there and back, for the large cover to have come
+            open_lyrics(ui);
+            ui.wait_for_images(std::time::Duration::from_secs(30));
+            key(ui, NamedKey::Escape);
+            frames(ui, 900);
+            press(ui, Role::ToggleButton, "Lyrics");
+            frames(ui, 70);
+        },
+    );
+    if dark {
+        return;
+    }
+    let found = |lyrics| Some(Ok(lyrics));
+    for (name, answer) in [
+        ("lyrics-plain", found(plain_lyrics())),
+        ("lyrics-none", found(lyrics::Lyrics::NotFound)),
+        ("lyrics-failed", Some(Err(lyrics::Error::InvalidResponse))),
+        ("lyrics-loading", None),
+    ] {
+        lyrics_shot_with(
+            &folder.join(format!("{name}-{theme}.png")),
+            dark,
+            covers,
+            answer,
+            open_lyrics,
+        );
+    }
+}
+
+fn open_lyrics(ui: &mut Ui) {
+    press(ui, Role::ToggleButton, "Lyrics");
+    frames(ui, 900);
+}
+
+fn lyrics_shot(
+    path: &Path,
+    dark: bool,
+    covers: &CoverServer,
+    size: (i32, i32),
+    found: Result<lyrics::Lyrics, lyrics::Error>,
+    drive: impl FnOnce(&mut Ui),
+) {
+    lyrics_shot_at(path, dark, covers, size, Some(found), drive);
+}
+
+fn lyrics_shot_with(
+    path: &Path,
+    dark: bool,
+    covers: &CoverServer,
+    answer: Option<Result<lyrics::Lyrics, lyrics::Error>>,
+    drive: impl FnOnce(&mut Ui),
+) {
+    lyrics_shot_at(path, dark, covers, WINDOW, answer, drive);
+}
+
+/// The lyrics of a song stopped partway through its third line, which `answer` finds, or which
+/// never come for `None`, drawn as soon as `drive` is done.
+fn lyrics_shot_at(
+    path: &Path,
+    dark: bool,
+    covers: &CoverServer,
+    size: (i32, i32),
+    answer: Option<Result<lyrics::Lyrics, lyrics::Error>>,
+    drive: impl FnOnce(&mut Ui),
+) {
+    let (_core, hiphile) = lyrics_playing(covers, answer);
+    render_after(path, dark, hiphile, size, 0, move |ui| {
+        wait_for_cover_colors(ui, dark);
+        drive(ui);
+    });
+}
+
+/// Signed in on a song stopped partway through its third line, whose lyrics `answer` finds, or
+/// never come for `None`.
+fn lyrics_playing(
+    covers: &CoverServer,
+    answer: Option<Result<lyrics::Lyrics, lyrics::Error>>,
+) -> (next_ui::testing::TestCore, Hiphile) {
+    use futures::FutureExt as _;
+    let answer = std::sync::Mutex::new(answer);
+    let find: lyrics::FindLyrics =
+        std::sync::Arc::new(move |_| match answer.lock().unwrap().take() {
+            Some(answer) => futures::future::ready(answer).boxed(),
+            None => futures::future::pending().boxed(),
+        });
+    let (core, hiphile) = signed_in_core_with_lyrics(covers.url(), find);
+    let player = hiphile.workspace().expect("signed in").player().clone();
+    player.fill_queue(&[song()], 0);
+    player.place_at(std::time::Duration::from_millis(19_700));
+    (core, hiphile)
+}
+
+fn wait_for_cover_colors(ui: &mut Ui, dark: bool) {
+    let default = scheme(DEFAULT_SEED, dark).primary;
+    for _ in 0..500 {
+        if color_scheme().primary != default {
+            break;
+        }
+        frames(ui, 16);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    frames(ui, 300);
+}
+
+/// Lyrics made up for the shots, a line each 4.5 seconds from ten seconds in, timed word by
+/// word, in English and in Japanese.
+fn made_up_lyrics() -> String {
+    const LINES: [&str; 14] = [
+        "Lanterns drift along the harbor",
+        "潮が 引くたび 光が 揺れる",
+        "Every ferry carries someone home",
+        "名前の ない 夜を 越えていく",
+        "Hold the signal, hold the shore",
+        "波の 音だけが 道しるべ",
+        "We were glass and we were light",
+        "まだ 消えない 灯りを 抱いて",
+        "Count the beacons one by one",
+        "遠い 岬で 誰かが 呼ぶ",
+        "Till the tide gives back the sun",
+        "朝が 来るまで ここに いるよ",
+        "Lanterns drift along the harbor",
+        "潮が 引くたび 光が 揺れる",
+    ];
+    let lines: Vec<Value> = LINES
+        .iter()
+        .enumerate()
+        .map(|(ix, line)| {
+            let start = 10.0 + ix as f64 * 4.5;
+            let words: Vec<&str> = line.split(' ').collect();
+            let step = 3.6 / words.len() as f64;
+            let parts: Vec<Value> = words
+                .iter()
+                .enumerate()
+                .map(|(at, word)| {
+                    let shown = if line.is_ascii() && at + 1 < words.len() {
+                        format!("{word} ")
+                    } else {
+                        (*word).to_owned()
+                    };
+                    json!({ "c": shown, "o": at as f64 * step })
+                })
+                .collect();
+            let text: String = parts
+                .iter()
+                .map(|part| part["c"].as_str().unwrap())
+                .collect();
+            json!({ "ts": start, "te": start + 4.2, "x": text, "l": parts })
+        })
+        .collect();
+    Value::Array(lines).to_string()
+}
+
+fn plain_lyrics() -> lyrics::Lyrics {
+    let text = [
+        "Lanterns drift along the harbor",
+        "潮が引くたび 光が揺れる",
+        "Every ferry carries someone home",
+        "名前のない夜を 越えていく",
+        "",
+        "Hold the signal, hold the shore",
+        "波の音だけが 道しるべ",
+        "We were glass and we were light",
+        "まだ消えない 灯りを抱いて",
+    ]
+    .join("\n");
+    lyrics::plain_lyrics(&text, Some("Words made up for these pictures"))
 }
 
 /// The queue where it fits in windows of a few sizes, with rows selected, and empty.
@@ -554,6 +765,50 @@ fn render(
     size: (i32, i32),
     drive: impl FnOnce(&mut Ui),
 ) {
+    render_after(path, dark, hiphile, size, 900, drive);
+}
+
+/// Draws the window just as `drive` leaves it, which `render` cannot: once pictures have come, the
+/// headless renderer plays a second of frames before it draws.
+fn render_in_motion(
+    path: &Path,
+    dark: bool,
+    hiphile: Hiphile,
+    size: (i32, i32),
+    drive: impl FnOnce(&mut Ui),
+) {
+    use anti_webui::wgpu::{Gpu, Renderer, wgpu::TextureFormat};
+    let (width, height) = (
+        (size.0 as f64 * SCALE) as u32,
+        (size.1 as f64 * SCALE) as u32,
+    );
+    let gpu = Gpu::headless().expect("a GPU to draw with");
+    let mut renderer = Renderer::new(&gpu.device, TextureFormat::Rgba8Unorm);
+    let mut ui = Ui::new(move || app(hiphile, System::fixed(dark), MenuBar::new(), Reach::Window));
+    ui.handle_event(WindowEvent::Resized {
+        size: SizeI::new(width as i32, height as i32),
+        scale: Scale::from_f64(SCALE),
+    });
+    ui.handle_event(WindowEvent::Focused(true));
+    ui.update();
+    frames(&mut ui, 100);
+    drive(&mut ui);
+    ui.update();
+    let scene = ui.paint(std::time::Instant::now());
+    let pixels = gpu.render_to_rgba(&mut renderer, &scene);
+    headless::write_png(path, width, height, &pixels).expect("the shot written");
+    println!("{}", path.display());
+}
+
+/// Draws the window `settle` milliseconds after `drive` is done.
+fn render_after(
+    path: &Path,
+    dark: bool,
+    hiphile: Hiphile,
+    size: (i32, i32),
+    settle: u64,
+    drive: impl FnOnce(&mut Ui),
+) {
     let (width, height) = (
         (size.0 as f64 * SCALE) as u32,
         (size.1 as f64 * SCALE) as u32,
@@ -562,11 +817,11 @@ fn render(
         width,
         height,
         SCALE,
-        move || app(hiphile, signal(dark), MenuBar::new(), Reach::Window),
+        move || app(hiphile, System::fixed(dark), MenuBar::new(), Reach::Window),
         |ui| {
             frames(ui, 100);
             drive(ui);
-            frames(ui, 900);
+            frames(ui, settle);
         },
     )
     .expect("a GPU to draw with");

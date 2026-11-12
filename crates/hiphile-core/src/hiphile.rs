@@ -472,13 +472,29 @@ impl Hiphile {
     }
 
     /// Opens a workspace on `session` as if `profile` had signed in, for tests of the core and of
-    /// the views: signing in for real opens the user's own catalog and plays.
+    /// the views: signing in for real opens the user's own catalog and plays. It finds no lyrics,
+    /// without asking the lyrics services.
     #[cfg(any(test, feature = "test-support"))]
     pub fn open_workspace(&self, session: Session, profile: config::Profile) {
+        let nothing: lyrics::FindLyrics = std::sync::Arc::new(|_| {
+            use futures::FutureExt as _;
+            async { Ok(lyrics::Lyrics::NotFound) }.boxed()
+        });
+        self.open_workspace_with_lyrics(session, profile, nothing);
+    }
+
+    /// As [`Self::open_workspace`], with the lyrics that `find_lyrics` finds.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn open_workspace_with_lyrics(
+        &self,
+        session: Session,
+        profile: config::Profile,
+        find_lyrics: lyrics::FindLyrics,
+    ) {
         let session = session.with_readings(self.readings().clone());
-        self.0
-            .state
-            .update(|state| self.open_workspace_in(state, session, profile));
+        self.0.state.update(|state| {
+            self.open_workspace_in(state, session, profile, Some(find_lyrics));
+        });
     }
 
     /// Opens the workspace and ends the attempt `attempt_id` in one change, so that no host sees
@@ -490,12 +506,18 @@ impl Hiphile {
             // Not when signing out called it off as it ended
             if state.attempt_id == attempt_id {
                 state.shown.is_signing_in = false;
-                self.open_workspace_in(state, session, profile);
+                self.open_workspace_in(state, session, profile, None);
             }
         });
     }
 
-    fn open_workspace_in(&self, state: &mut State, session: Session, profile: config::Profile) {
+    fn open_workspace_in(
+        &self,
+        state: &mut State,
+        session: Session,
+        profile: config::Profile,
+        find_lyrics: Option<lyrics::FindLyrics>,
+    ) {
         let parts = Parts {
             executor: self.0.executor.clone(),
             settings: self.0.settings.clone(),
@@ -503,6 +525,7 @@ impl Hiphile {
             cache: self.0.cache.clone(),
             covers: self.0.covers.clone(),
             song_cache: state.song_cache.clone(),
+            find_lyrics,
         };
         state.shown.workspace = Some(Workspace::new(session, profile, parts));
     }
