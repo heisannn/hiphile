@@ -158,6 +158,12 @@ impl DiscordSettings {
         });
     }
 
+    /// What the field last held, as the key it becomes: the key in effect until something is
+    /// typed, and what was typed while it settles.
+    pub fn typed_key(&self) -> Option<String> {
+        self.0.state.read(|state| state.typed.clone())
+    }
+
     /// The key becomes what is left of `text` once no other has come for a moment.
     pub fn set_typed(&self, text: &str) {
         let this = Arc::downgrade(&self.0);
@@ -299,6 +305,23 @@ mod tests {
         settings.set_upload_error(Some("gone"));
 
         assert_eq!(settings.snapshot().errors().count(), 0);
+    }
+
+    #[test]
+    fn what_was_typed_is_read_back_before_it_settles() {
+        let cx = &TestExecutor::new();
+        let executor = cx.executor();
+        let mut saved = presence(true);
+        saved.key = Some("saved".to_owned());
+        let settings = DiscordSettings::with(executor, None, saved);
+        assert_eq!(settings.typed_key().as_deref(), Some("saved"));
+
+        settings.set_typed(" abc ");
+        assert_eq!(settings.typed_key().as_deref(), Some("abc"));
+        assert_eq!(settings.snapshot().imgbb_key(), Some("saved"));
+
+        cx.advance_clock(SETTLE);
+        assert_eq!(settings.snapshot().imgbb_key(), Some("abc"));
     }
 
     #[test]
