@@ -9,6 +9,8 @@ use anti_webui_md3e::typography::TextStyle;
 use hiphile_core::format::format_duration;
 use playback::PlayerSnapshot;
 
+use crate::reading::keep_reading;
+
 /// How often the position is read while there is a song: the core does not tell of it.
 pub(crate) const REFRESH: Duration = Duration::from_millis(250);
 /// How long the wavy line takes to come to a new place, short enough to follow a drag.
@@ -24,18 +26,23 @@ const GAP: f32 = 4.0;
 const TIME: f32 = 44.0;
 
 /// Dragging along the line shows where the song would go, and seeks there when let go; the keys
-/// seek at once.
-pub(crate) fn position_line(player: playback::Player, shown: Signal<PlayerSnapshot>) -> Div {
+/// seek at once. While `is_covered`, the line keeps still, as nothing of it can be seen.
+pub(crate) fn position_line(
+    player: playback::Player,
+    shown: Signal<PlayerSnapshot>,
+    is_covered: impl Fn() -> bool + 'static,
+) -> Div {
     let has_song = memo(move || shown.with(PlayerSnapshot::has_song));
     let duration = memo(move || shown.with(PlayerSnapshot::duration));
     let is_seekable = memo(move || shown.with(PlayerSnapshot::is_seekable));
-    let is_playing = memo(move || shown.with(PlayerSnapshot::is_playing));
+    let waves = memo(move || shown.with(PlayerSnapshot::is_playing) && !is_covered());
     let is_buffering = memo(move || shown.with(PlayerSnapshot::is_buffering));
     let position = signal(player.position());
-    keep_reading(player.clone(), position, has_song);
+    keep_reading(player.clone(), position, REFRESH, move || has_song.get());
 
     // Where a drag has got to, as a fraction of the song
     let scrub = signal(None::<f32>);
+    let is_held = Rc::new(Cell::new(false));
     let entry = memo(move || shown.with(|shown| shown.queue().current_id()));
     effect(move || {
         entry.get();
@@ -51,29 +58,30 @@ pub(crate) fn position_line(player: playback::Player, shown: Signal<PlayerSnapsh
         (Some(fraction), Some(duration)) => duration.mul_f32(fraction),
         _ => position.get(),
     };
-    let value = Binding::new(fraction, move |fraction| {
-        if untrack(|| is_seekable.get()) {
-            scrub.set(Some(fraction));
+    let seek = move |fraction: f32| {
+        let target = untrack(|| duration.get()).map(|duration| duration.mul_f32(fraction));
+        if let Some(target) = target.and_then(|target| player.seek_to(target)) {
+            position.set(target);
         }
-    });
+    };
+    let value = {
+        let (is_held, seek) = (is_held.clone(), seek.clone());
+        Binding::new(fraction, move |fraction| {
+            if !untrack(|| is_seekable.get()) {
+                return;
+            }
+            if is_held.get() {
+                scrub.set(Some(fraction));
+            } else {
+                seek(fraction);
+            }
+        })
+    };
     let options = SliderOptions::new().inset(HANDLE / 2.0);
     let seek_bar = slider_with(value, 0.0, 1.0, options, move |state| {
-        // Let go, or moved by a key
-        effect(move || {
-            let (is_dragging, wanted) = (state.dragging(), scrub.get());
-            if let (false, Some(fraction)) = (is_dragging, wanted) {
-                untrack(|| {
-                    scrub.set(None);
-                    let target = duration.get().map(|duration| duration.mul_f32(fraction));
-                    if let Some(target) = target.and_then(|target| player.seek_to(target)) {
-                        position.set(target);
-                    }
-                });
-            }
-        });
         let can_move = move || is_seekable.get();
         let line = dyn_view(move || {
-            if is_playing.get() {
+            if waves.get() {
                 untrack(|| wavy_line(fraction))
             } else {
                 untrack(|| flat_line(state, fraction, can_move))
@@ -82,9 +90,19 @@ pub(crate) fn position_line(player: playback::Player, shown: Signal<PlayerSnapsh
         lane(can_move)
             .child(line)
             .child(handle(state, fraction, can_move))
-            // Before the slider's own, which would let go and seek
-            .on_grab(move |grab| {
-                if grab.phase == GrabPhase::Cancel {
+            // Before the slider's own, so that what the press moves to waits for the release
+            .on_grab(move |grab| match grab.phase {
+                GrabPhase::Start => is_held.set(true),
+                GrabPhase::Move => {}
+                GrabPhase::End => {
+                    is_held.set(false);
+                    if let Some(fraction) = scrub.get_untracked() {
+                        scrub.set(None);
+                        seek(fraction);
+                    }
+                }
+                GrabPhase::Cancel => {
+                    is_held.set(false);
                     scrub.set(None);
                 }
             })
@@ -259,53 +277,6 @@ pub(crate) fn handle(
                 })
         },
     )
-}
-
-/// Keeps `position` to where the song is, reading it every [`REFRESH`] while there is a song.
-fn keep_reading(player: playback::Player, position: Signal<Duration>, has_song: Memo<bool>) {
-    let next: Rc<Cell<Option<Timeout>>> = Rc::default();
-    let called_off = next.clone();
-    on_cleanup(move || {
-        if let Some(next) = called_off.take() {
-            next.cancel();
-        }
-    });
-    effect(move || {
-        let has_song = has_song.get();
-        untrack(|| {
-            if let Some(next) = next.take() {
-                next.cancel();
-            }
-            if has_song {
-                read(&player, position);
-                read_after(player.clone(), position, next.clone());
-            }
-        });
-    });
-}
-
-fn read(player: &playback::Player, position: Signal<Duration>) {
-    let now = player.position();
-    if position.get_untracked() != now {
-        position.set(now);
-    }
-}
-
-/// Timers run outside any owner, which keeps no cleanup for them: each one after the first is
-/// called off through `next` alone.
-fn read_after(
-    player: playback::Player,
-    position: Signal<Duration>,
-    next: Rc<Cell<Option<Timeout>>>,
-) {
-    let again = next.clone();
-    next.set(Some(set_timeout(REFRESH, move || {
-        if !position.is_alive() {
-            return;
-        }
-        read(&player, position);
-        read_after(player, position, again);
-    })));
 }
 
 #[cfg(test)]

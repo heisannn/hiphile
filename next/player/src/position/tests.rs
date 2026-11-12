@@ -21,7 +21,9 @@ fn shown_line() -> (TestCore, Ui, playback::Player) {
     let shown = player.clone();
     let ui = start(move || {
         let snapshot = follow(shown.subscribe());
-        div().w(600.0_f32).child(position_line(shown, snapshot))
+        div()
+            .w(600.0_f32)
+            .child(position_line(shown, snapshot, || false))
     });
     (core, ui, player)
 }

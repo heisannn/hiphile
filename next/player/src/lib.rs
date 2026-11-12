@@ -9,6 +9,7 @@ mod lyrics_view;
 mod panels;
 mod position;
 mod queue;
+mod reading;
 mod volume;
 
 pub use bar::player_bar;

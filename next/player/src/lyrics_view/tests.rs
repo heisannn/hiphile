@@ -2,6 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anti_webui::core::Ui;
 use anti_webui::core::access::{AccessNode, Checked, snapshot};
@@ -125,7 +126,9 @@ pub(super) fn stand(size: (i32, i32)) -> Stand {
         sent,
     };
     // The workspace tells the lyrics of the song from the core's threads
-    wait_until(&mut stand.ui, || find(Role::Button, "Lyrics").is_some());
+    wait_until(&mut stand.ui, || {
+        find(Role::Button, "Show Lyrics").is_some()
+    });
     stand
 }
 
@@ -144,13 +147,25 @@ impl Stand {
     pub(super) fn settle(&mut self) {
         frames(&mut self.ui, 1500);
     }
+
+    /// Draws the frames of `milliseconds` from `start`, taken before what is drawn began to move.
+    /// A motion steps by the time since its last frame, and by none for a frame from before it
+    /// began, so the first frame times it from `start` however long the test took to come to it.
+    pub(super) fn frames_from(&mut self, start: Instant, milliseconds: u64) {
+        for t in (0..=milliseconds).step_by(8) {
+            let now = start + Duration::from_millis(t);
+            self.ui.animate(now);
+            self.ui.update();
+            let _ = self.ui.paint(now);
+        }
+    }
 }
 
 /// The cover that opens the lyrics, in the bar or over it.
 fn covers() -> Vec<AccessNode> {
     nodes(Role::Button)
         .into_iter()
-        .filter(|node| node.label.as_deref() == Some("Lyrics"))
+        .filter(|node| matches!(node.label.as_deref(), Some("Show Lyrics" | "Hide Lyrics")))
         .collect()
 }
 
@@ -229,8 +244,9 @@ fn turning_back_midway_goes_on_from_where_the_cover_is() {
     frames(&mut stand.ui, 100);
     let before = flying_cover().unwrap();
 
+    let closed = Instant::now();
     stand.close();
-    frames(&mut stand.ui, 16);
+    stand.frames_from(closed, 16);
     let after = flying_cover().unwrap();
     assert!((after.y - before.y).abs() < 40.0, "{before:?} to {after:?}");
 }
@@ -424,6 +440,9 @@ fn a_lookup_that_failed_says_so_and_can_be_tried_again() {
     wait_until(&mut stand.ui, || {
         find(Role::Heading, "Lyrics didn't load").is_some()
     });
+    assert!(next_ui::testing::has_text(
+        "The lyrics services aren't answering as they should. Try again later."
+    ));
     press(&mut stand.ui, Role::Button, "Retry");
     wait_until(&mut stand.ui, || find(Role::Button, "line 1").is_some());
     assert_eq!(stand.finds.asked(), 2);
@@ -463,7 +482,7 @@ fn while_loading_it_says_so() {
     let mut stand = stand(WINDOW);
     stand.open();
     wait_until(&mut stand.ui, || {
-        find(Role::ProgressBar, "Loading lyrics").is_some()
+        find(Role::ProgressBar, "Loading Lyrics").is_some()
     });
 }
 
