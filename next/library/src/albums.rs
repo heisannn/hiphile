@@ -38,12 +38,13 @@ mod keys;
 const SONG_ROW_HEIGHT: f32 = ROW_HEIGHT;
 
 /// The albums the library keeps, beside the songs of the one that `location` names, with the order
-/// of the albums to choose in the bar. With none named, the first is shown in place.
-pub fn albums(location: Signal<Location>, cx: &ScreenContext) -> Screen {
+/// of the albums to choose in the bar. With none named, the first is shown in place. The list is as
+/// wide as `split` says.
+pub fn albums(location: Signal<Location>, split: Split, cx: &ScreenContext) -> Screen {
     keys::bind();
     let model = Model::new(location, cx);
     let body = list_detail(
-        Split::new(),
+        split,
         album_list::album_list(&model),
         album_detail::album_detail(&model),
     )
@@ -101,15 +102,7 @@ impl Model {
         let status = follow(list.subscribe());
         let detail = AlbumDetail::new(next_host::executor(), workspace.session().clone());
         let album = follow(detail.subscribe());
-        let player = follow(workspace.player().subscribe());
-        let now_playing = memo(move || {
-            player.with(|player| {
-                NowPlaying::new(
-                    player.current_song().map(|song| song.id().clone()),
-                    player.is_playing(),
-                )
-            })
-        });
+        let now_playing = cx.known.now_playing();
         let here = memo(move || match location.get() {
             Location::Albums(album) => Some(album),
             _ => None,
@@ -130,7 +123,7 @@ impl Model {
             album_rows: node_ref(),
             song_rows: node_ref(),
             waiting: Rc::default(),
-            menu: ContextMenu::new(),
+            menu: ContextMenu::new(cx.overlays),
             now_playing,
         }
     }
@@ -166,15 +159,32 @@ impl Model {
         let this = self.clone();
         effect(move || {
             let cursor = this.albums.cursor();
-            let several = this.albums.with(|selected| selected.len() > 1);
+            let several = this.albums.with(|selected| {
+                let listed = this.status.with_untracked(|status| {
+                    status.shown().map_or(0, |shown| {
+                        selected.count_in(
+                            (0..shown.visible().len())
+                                .filter_map(|position| shown.get(position))
+                                .map(Album::id),
+                        )
+                    })
+                });
+                listed > 1
+            });
             untrack(|| this.follow_album_selection(cursor, several));
         });
-        let songs = self.songs;
+        let (songs, album) = (self.songs, self.album);
         effect(move || {
             let cursor = songs.cursor();
-            if songs.with(|selected| selected.len() > 1)
-                && let Some(cursor) = cursor
-            {
+            let several = songs.with(|selected| {
+                let listed = album.with_untracked(|album| {
+                    album.loaded().map_or(0, |loaded| {
+                        selected.count_in(loaded.songs().iter().map(Song::id))
+                    })
+                });
+                listed > 1
+            });
+            if several && let Some(cursor) = cursor {
                 untrack(|| songs.select(cursor));
             }
         });
@@ -201,9 +211,9 @@ impl Model {
     fn follow_location(&self, wanted: Option<AlbumId>) {
         let asked = self.asked.take();
         let Some(album) = wanted else {
-            // Coming here with none named keeps what was on show. The selection shows it in place:
-            // this runs in the effect that reads the location, which a change made while it runs
-            // does not run again
+            // Coming here with none named keeps the album the list is on, or else shows the first.
+            // The selection shows it in place: this runs in the effect that reads the location,
+            // which a change made while it runs does not run again
             match self.albums.cursor().or_else(|| self.first_visible()) {
                 Some(album) => self.albums.select(album),
                 None => {
@@ -441,6 +451,65 @@ impl Model {
         self.song_rows.focus();
     }
 
+    /// Whether `key` does something on the album list now, to the album on show.
+    fn is_enabled_on_albums(&self, key: AlbumsKey) -> bool {
+        match key {
+            AlbumsKey::Open => self
+                .loaded_songs()
+                .is_some_and(|songs| !songs.is_empty() && self.loaded_album_is_on_show()),
+            AlbumsKey::Play
+            | AlbumsKey::PlayNext
+            | AlbumsKey::AddToQueue
+            | AlbumsKey::AddToPlaylist => self.selected().is_some() && !self.has_no_songs(),
+            AlbumsKey::GoToArtist => self
+                .album_on_show()
+                .is_some_and(|album| album.artist_id().is_some()),
+            AlbumsKey::ToggleFavorite => self
+                .album_on_show()
+                .is_some_and(|album| self.is_known(&Favorite::Album(album))),
+            AlbumsKey::Back => false,
+        }
+    }
+
+    /// Whether `key` does something on the songs now, to the song the selection is on.
+    fn is_enabled_on_songs(&self, key: AlbumsKey) -> bool {
+        if key == AlbumsKey::Back {
+            return true;
+        }
+        let Some((songs, at)) = self.song_at_cursor() else {
+            return false;
+        };
+        let song = &songs[at];
+        match key {
+            AlbumsKey::PlayNext | AlbumsKey::AddToQueue | AlbumsKey::AddToPlaylist => true,
+            AlbumsKey::GoToArtist => song.artist_id().is_some(),
+            AlbumsKey::ToggleFavorite => self.is_known(&Favorite::Song(song.clone())),
+            AlbumsKey::Open | AlbumsKey::Play | AlbumsKey::Back => false,
+        }
+    }
+
+    /// Whether the songs of the album on show are had, and there are none.
+    fn has_no_songs(&self) -> bool {
+        self.loaded_album_is_on_show() && self.loaded_songs().is_some_and(|songs| songs.is_empty())
+    }
+
+    /// Whether what the detail has loaded is the album on show. Tracks both.
+    fn loaded_album_is_on_show(&self) -> bool {
+        let Some(selected) = self.selected() else {
+            return false;
+        };
+        self.album.with(|album| {
+            album
+                .loaded()
+                .is_some_and(|loaded| loaded.album().id() == &selected)
+        })
+    }
+
+    /// Whether the favorites are known, which says which way toggling `favorite` goes.
+    fn is_known(&self, favorite: &Favorite) -> bool {
+        self.cx.known.is_favorite(&favorite.target()).is_some()
+    }
+
     fn take_album_key(&self, key: AlbumsKey) {
         let commands = &self.cx.commands;
         match key {
@@ -522,6 +591,7 @@ fn order_menu(model: &Model) -> Div {
         )
     };
     sort_menu(
+        model.cx.overlays,
         move || sort.get().is_descending,
         vec![
             vec![

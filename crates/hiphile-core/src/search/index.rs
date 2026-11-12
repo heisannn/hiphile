@@ -162,7 +162,7 @@ impl SearchIndex {
             return;
         }
         let Some(catalog) = self.0.session.catalog().cloned() else {
-            let error = "There's no saved library to search.".to_owned();
+            let error = "There's no library saved on this computer to search. Check that the disk has free space, then sign out and sign in again.".to_owned();
             state.status.library = IndexState::Failed(error);
             return;
         };

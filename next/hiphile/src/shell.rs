@@ -1,12 +1,14 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use anti_webui::core::reactive::effect_with;
 use anti_webui::prelude::*;
 use anti_webui_md3e::color_scheme;
 use anti_webui_md3e::components::{IconButtonStyle, Snackbars, snackbars, styled_icon_button};
 use anti_webui_md3e::icons;
+use config::Pane;
 use hiphile_core::navigation::{Destination, Location};
-use hiphile_core::settings::AppearanceSnapshot;
+use hiphile_core::settings::{AppearanceSnapshot, PaneWidths};
 use hiphile_core::{Hiphile, HiphileSnapshot, Workspace};
 use next_account::{sign_in, sign_in_dialog};
 use next_host::follow;
@@ -15,18 +17,19 @@ use next_search::search;
 use next_settings::settings_popup;
 use next_ui::cover::install_covers;
 use next_ui::keymap::keeps_focus;
-use next_ui::list_detail::{DETAIL_MIN_WIDTH, LIST_MIN_WIDTH};
+use next_ui::list_detail::{DETAIL_MIN_WIDTH, LIST_MIN_WIDTH, Split};
 use next_ui::pane::GAP;
 use next_ui::theme::{follow_theme, is_dark};
 use next_ui::type_scale::body;
 use next_ui::window::moves_window;
-use next_ui::{Screen, ScreenContext, app_bar};
+use next_ui::{Command, Commands, Screen, ScreenContext, app_bar};
 
 use crate::MenuBar;
 use crate::menu_bar::Shown;
 use crate::navigation::{Navigation, index_of};
 use crate::rail::rail;
 use crate::reach::{Reach, show_outside};
+use crate::server_menu::server_menu;
 use crate::top_end::top_end;
 
 mod commands;
@@ -56,9 +59,10 @@ impl System {
     }
 }
 
-/// What fills the window: signing in, or the workspace of whoever is signed in. Its colors follow
-/// the appearance chosen, the system's when that follows it, and the cover of what plays. The
-/// workspace takes what is chosen in `menu_bar`, and shows there where it is.
+/// What fills the window: signing in, or the workspace of whoever is signed in, and the settings
+/// over either. Its colors follow the appearance chosen, the system's when that follows it, and
+/// the cover of what plays. The window takes what is chosen in `menu_bar`, and shows there where
+/// it is.
 pub fn app(hiphile: Hiphile, system: System, menu_bar: MenuBar, reach: Reach) -> Div {
     let appearance = follow(hiphile.settings().appearance().subscribe());
     let seed = signal(None::<Color>);
@@ -76,6 +80,8 @@ pub fn app(hiphile: Hiphile, system: System, menu_bar: MenuBar, reach: Reach) ->
     let shown = follow(hiphile.subscribe());
     let workspace = memo(move || shown.with(|shown| shown.workspace().cloned()));
     let snackbars = snackbars();
+    let settings_open = signal(false);
+    let settings = settings_popup(hiphile.clone(), settings_open);
     body(div())
         .size_full()
         .relative()
@@ -86,7 +92,7 @@ pub fn app(hiphile: Hiphile, system: System, menu_bar: MenuBar, reach: Reach) ->
         .child(dyn_view(move || {
             let hiphile = hiphile.clone();
             match workspace.get() {
-                None => untrack(|| signed_out(hiphile)),
+                None => untrack(|| signed_out(hiphile, menu_bar, settings_open)),
                 Some(workspace) => untrack(|| {
                     let parts = Parts {
                         snackbars,
@@ -94,20 +100,34 @@ pub fn app(hiphile: Hiphile, system: System, menu_bar: MenuBar, reach: Reach) ->
                         seed,
                         reach,
                         reduces_motion: system.reduces_motion,
+                        settings_open,
                     };
                     signed_in(hiphile, workspace, shown, parts)
                 }),
             }
         }))
+        .child(settings)
         .child(snackbars.view())
 }
 
-fn signed_out(hiphile: Hiphile) -> Div {
+/// Signing in, and the settings, which are all that `menu_bar` can choose meanwhile.
+fn signed_out(hiphile: Hiphile, menu_bar: MenuBar, settings_open: Signal<bool>) -> Div {
+    let commands = Commands::new(move |command| {
+        if command == Command::OpenSettings {
+            settings_open.set(true);
+        }
+    });
+    menu_bar.attach(commands.clone(), move || Shown {
+        attached: true,
+        covered: settings_open.get(),
+        ..Shown::default()
+    });
     div()
         .size_full()
         .relative()
         .child(sign_in(hiphile))
         .child(moves_window(div().absolute().top(0).left(0).right(0).h(44)))
+        .child(top_end(commands, None))
 }
 
 /// What the workspace's window is made with besides the workspace.
@@ -118,6 +138,7 @@ struct Parts {
     seed: Signal<Option<Color>>,
     reach: Reach,
     reduces_motion: Signal<bool>,
+    settings_open: Signal<bool>,
 }
 
 fn signed_in(
@@ -132,6 +153,7 @@ fn signed_in(
         seed,
         reach,
         reduces_motion,
+        settings_open,
     } = parts;
     let cover = now_playing_cover(&hiphile, &workspace);
     let colors = cover_seed(cover);
@@ -145,6 +167,7 @@ fn signed_in(
     let player = workspace.player().clone();
     let playing = follow(player.subscribe());
     let navigation = Navigation::new();
+    let splits = Splits::new(hiphile.settings().pane_widths());
     effect({
         let workspace = workspace.clone();
         move || workspace.showing(navigation.destination())
@@ -153,7 +176,6 @@ fn signed_in(
     let wide = memo(move || width.get() >= WIDE);
     let expanded = signal(true);
     effect(move || expanded.set(wide.get()));
-    let settings_open = signal(false);
     let search_open = signal(false);
     let sign_in_request = signal(None);
     let top_end_width = signal(0.0_f32);
@@ -166,7 +188,7 @@ fn signed_in(
         snackbars,
     );
     let cx = shell.context();
-    let (panels, dialogs, covers) = (shell.panels, shell.dialogs, cx.covers);
+    let (panels, dialogs, overlays) = (shell.panels, shell.dialogs, cx.overlays);
     // The lyrics are of the song playing
     let has_song = memo(move || playing.with(|playing| playing.has_song()));
     effect(move || {
@@ -184,6 +206,7 @@ fn signed_in(
             )
         });
         Shown {
+            attached: true,
             destination: Some(navigation.destination()),
             can_go_back: navigation.can_go_back(),
             can_go_forward: navigation.can_go_forward(),
@@ -191,7 +214,7 @@ fn signed_in(
                 || search_open.get()
                 || sign_in_request.with(Option::is_some)
                 || dialogs.is_open()
-                || covers.any(),
+                || overlays.any(),
             has_song,
             has_queue,
             shuffled,
@@ -204,6 +227,10 @@ fn signed_in(
     // What the lyrics cover takes no keys and no Tab
     let covered = move || panels.is_covered();
     let screen_home = Rc::new(Cell::new(None::<NodeRef>));
+    let servers = server_menu(hiphile.clone(), shown, sign_in_request, overlays);
+    // Its place among the children is its place for Tab, after the screen it is over
+    let top_end = top_end(cx.commands.clone(), Some(servers))
+        .on_resized(move |w, _| top_end_width.set_if_changed(w));
     let root = div()
         .size_full()
         .relative()
@@ -232,29 +259,23 @@ fn signed_in(
                         })
                         .child(screens(
                             navigation,
+                            splits,
                             &cx,
                             panels,
                             top_end_width,
                             screen_home.clone(),
                         ))
+                        .child(top_end)
                         .child(show(move || panels.is_queue_shown(), {
                             let cx = cx.clone();
                             move || queue(&cx, panels).mr(GAP)
                         })),
                 )
                 .child(player_bar(player, cover, panels).mr(16))
-                .child(top_end(
-                    hiphile.clone(),
-                    shown,
-                    cx.commands.clone(),
-                    sign_in_request,
-                    top_end_width,
-                ))
                 .child(search(&cx, search_open)),
         )
         .child(lyrics_overlay(&cx, cover, panels, reduces_motion))
         .child(shell.dialogs.view(&cx))
-        .child(settings_popup(hiphile.clone(), settings_open))
         .child(sign_in_dialog(hiphile, sign_in_request));
     // A menu that closes, a row that goes and a press on what takes no focus each leave the focus
     // nowhere, where no key reaches the screens
@@ -265,6 +286,7 @@ fn signed_in(
 /// has the focus.
 fn screens(
     navigation: Navigation,
+    splits: Splits,
     cx: &ScreenContext,
     panels: Panels,
     top_end_width: Signal<f32>,
@@ -280,7 +302,7 @@ fn screens(
                 actions,
                 body,
                 home: screen_home,
-            } = screen(destination, navigation.location(), &cx);
+            } = screen(destination, navigation.location(), splits, &cx);
             home.set(screen_home);
             // The queue's own bar takes the window's top end while it shows
             let bar = div().flex_none().dyn_style(move |s| {
@@ -301,14 +323,53 @@ fn screens(
 }
 
 /// What `destination` shows, which reads from `location` what is selected on it.
-fn screen(destination: Destination, location: Signal<Location>, cx: &ScreenContext) -> Screen {
+fn screen(
+    destination: Destination,
+    location: Signal<Location>,
+    splits: Splits,
+    cx: &ScreenContext,
+) -> Screen {
     match destination {
         Destination::Home => next_home::home(cx),
-        Destination::Artists => next_artists::artists(location, cx),
-        Destination::Albums => next_library::albums(location, cx),
+        Destination::Artists => next_artists::artists(location, splits.artists, cx),
+        Destination::Albums => next_library::albums(location, splits.albums, cx),
         Destination::Songs => next_songs::songs(cx),
-        Destination::Playlists => next_playlists::playlists(location, cx),
+        Destination::Playlists => next_playlists::playlists(location, splits.playlists, cx),
         Destination::Favorites => next_favorites::favorites(cx),
+    }
+}
+
+/// The widths the user gave the screens' lists, which last while other screens show and from one
+/// launch to the next.
+#[derive(Clone, Copy)]
+struct Splits {
+    artists: Split,
+    albums: Split,
+    playlists: Split,
+}
+
+impl Splits {
+    fn new(widths: &PaneWidths) -> Self {
+        let saved = widths.snapshot();
+        let split = |pane| {
+            let split = saved
+                .width(pane)
+                .map_or_else(Split::new, Split::with_list_width);
+            let widths = widths.clone();
+            effect_with(move |was: Option<f32>| {
+                let width = split.list_width();
+                if was.is_some_and(|was| was != width) {
+                    widths.set_width(pane, width);
+                }
+                width
+            });
+            split
+        };
+        Self {
+            artists: split(Pane::ArtistList),
+            albums: split(Pane::AlbumList),
+            playlists: split(Pane::PlaylistList),
+        }
     }
 }
 

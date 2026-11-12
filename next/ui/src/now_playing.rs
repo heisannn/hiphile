@@ -5,8 +5,7 @@ use anti_webui::prelude::*;
 use anti_webui_md3e::color_scheme;
 use anti_webui_md3e::components::sized_icon;
 use anti_webui_md3e::icons;
-use hiphile_core::Workspace;
-use subsonic::{Song, SongId};
+use subsonic::SongId;
 
 /// The icon's size, and the width of its lane, which is there with no icon too, so that what comes
 /// after it stays in line.
@@ -45,17 +44,6 @@ impl NowPlaying {
     pub fn state_of(&self, song: &SongId) -> Option<PlayState> {
         (&self.song == song).then_some(self.state)
     }
-}
-
-/// What the player of `workspace` is on, for as long as the current owner lives.
-pub fn follow_now_playing(workspace: &Workspace) -> Memo<Option<NowPlaying>> {
-    let shown = next_host::follow(workspace.player().subscribe());
-    memo(move || {
-        shown.with(|shown| {
-            let song = shown.current_song().map(|song| song.id().clone());
-            NowPlaying::new(song, shown.is_playing())
-        })
-    })
 }
 
 /// The icon of `state`, in a lane of its own. It says nothing to assistive technology, as the
@@ -99,11 +87,6 @@ pub fn song_row_label(title: &str, state: Option<PlayState>, is_skipped: bool) -
     };
     let skipped = if is_skipped { ", skipped" } else { "" };
     format!("{title}{state}{skipped}")
-}
-
-/// Whether the player passes `song` over, given whether it skips instrumentals.
-pub fn is_skipped(song: &Song, is_skipping: bool) -> bool {
-    playback::is_skipped(song, is_skipping)
 }
 
 /// `content`, faded while `skipped` says so. It is what a row holds, not the row itself, whose

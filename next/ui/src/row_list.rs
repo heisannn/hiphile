@@ -12,8 +12,10 @@ use anti_webui_md3e::color_scheme;
 use anti_webui_md3e::components::Ink;
 use hiphile_core::Shown;
 
+use crate::context_menu::pressed_at;
+use crate::focus_ring::inner_focus_ring;
 use crate::keymap::{Keystroke, handles_keys};
-use crate::selection::selection_fill;
+use crate::selection::{CORNER, KeysShown, selection_fill, shows_keys_on};
 
 mod selection;
 
@@ -118,13 +120,18 @@ impl<K: Clone + Eq + Hash + 'static> Selection<K> {
             .with(|selected| ids.into_iter().filter(|id| selected.contains(id)).collect())
     }
 
-    /// Selects `id` and nothing else.
+    /// Selects `id` and nothing else. What reads the selection is told only if that changes it.
     pub fn select(&self, id: K) {
-        self.0.update(|selected| selected.select_only(id));
+        if !self.0.with_untracked(|selected| selected.is_only(&id)) {
+            self.0.update(|selected| selected.select_only(id));
+        }
     }
 
+    /// What reads the selection is told only if something was selected.
     pub fn clear(&self) {
-        self.0.update(Selected::clear);
+        if !self.0.with_untracked(Selected::is_cleared) {
+            self.0.update(Selected::clear);
+        }
     }
 }
 
@@ -266,6 +273,36 @@ struct Shared<S: RowSource, K: 'static> {
     id: IdOf<S, K>,
     /// Where each id is, made when first asked for after the rows change.
     positions: RefCell<Option<Rc<HashMap<K, usize>>>>,
+    /// The cursor and where its row was before the rows last changed without it, which the keys
+    /// go on from. The cursor itself stays, as a filter that hides its row is not a choice of
+    /// another row.
+    cursor_was: RefCell<Option<(K, usize)>>,
+}
+
+impl<S: RowSource, K: Clone + Eq + Hash + 'static> Shared<S, K> {
+    /// Where the keys move from: the cursor's row, or the row now where that was while it is not
+    /// shown.
+    fn cursor_place(&self, cursor: Option<&K>) -> Option<usize> {
+        let cursor = cursor?;
+        self.position_of(cursor).or_else(|| {
+            let last = self.len().checked_sub(1)?;
+            let was = self.cursor_was.borrow();
+            let (id, at) = was.as_ref()?;
+            (id == cursor).then(|| (*at).min(last))
+        })
+    }
+
+    /// The row the keys are on: the cursor's place, or else where a step lands, which is the row
+    /// of `start` or the first.
+    fn keys_place(
+        &self,
+        cursor: Option<&K>,
+        start: Option<&dyn Fn() -> Option<K>>,
+    ) -> Option<usize> {
+        self.cursor_place(cursor)
+            .or_else(|| self.position_of(&start?()?))
+            .or_else(|| (self.len() > 0).then_some(0))
+    }
 }
 
 impl<S: RowSource, K: Clone + Eq + Hash + 'static> Order<K> for Shared<S, K> {
@@ -328,11 +365,15 @@ pub fn row_list<S: RowSource, K: Clone + Eq + Hash + 'static>(list: RowList<S, K
     let selection = selection.unwrap_or_else(Selection::new);
     let node = node.unwrap_or_else(node_ref);
     let focused = signal(false);
+    // What has the focus is the list; the row the keys are on shows it, as md3e's tabs show their
+    // row's
+    let keyed = KeysShown::new();
     let shown = signal(untrack(|| rows()));
     let shared = Rc::new(Shared {
         rows: shown,
         id: id.clone(),
         positions: RefCell::default(),
+        cursor_was: RefCell::default(),
     });
     {
         let shared = shared.clone();
@@ -341,6 +382,17 @@ pub fn row_list<S: RowSource, K: Clone + Eq + Hash + 'static>(list: RowList<S, K
             untrack(|| follow_rows(&shared, now, selection, node, row_height));
         });
     }
+    let keys_on = {
+        let (shared, start) = (shared.clone(), keys_start.clone());
+        memo(move || {
+            if !keyed.get() {
+                return None;
+            }
+            shown.with(|_| ());
+            let cursor = selection.cursor();
+            shared.keys_place(cursor.as_ref(), start.as_deref())
+        })
+    };
     let me = NEXT_LIST.with(|next| next.replace(next.get() + 1));
     let drop_at = signal(None::<(usize, bool)>);
     let place = Place {
@@ -348,6 +400,7 @@ pub fn row_list<S: RowSource, K: Clone + Eq + Hash + 'static>(list: RowList<S, K
         selection,
         is_single,
         focused,
+        keys_on,
         node,
         row,
         row_label,
@@ -373,8 +426,9 @@ pub fn row_list<S: RowSource, K: Clone + Eq + Hash + 'static>(list: RowList<S, K
         if is_single { a } else { a.multiselectable() }
     })
     .on_focus_change(move |on| focused.set(on));
+    let list = keyed.follow(list);
     handles_keys(list, move |stroke| {
-        take_key(
+        let took = take_key(
             stroke,
             &shared,
             selection,
@@ -385,11 +439,16 @@ pub fn row_list<S: RowSource, K: Clone + Eq + Hash + 'static>(list: RowList<S, K
                 on_open: on_open.as_deref(),
                 start: keys_start.as_deref(),
             },
-        )
+        );
+        if took {
+            keyed.used_a_key();
+        }
+        took
     })
 }
 
-/// Keeps the ids' positions to the rows, and the cursor in view if it was before they changed.
+/// Keeps the ids' positions to the rows, where the cursor was for when its row goes, and the
+/// cursor in view if it was before they changed.
 fn follow_rows<S: RowSource, K: Clone + Eq + Hash + 'static>(
     shared: &Shared<S, K>,
     rows: S,
@@ -400,6 +459,11 @@ fn follow_rows<S: RowSource, K: Clone + Eq + Hash + 'static>(
     let cursor = selection
         .0
         .with_untracked(|selected| selected.cursor().cloned());
+    if let Some(cursor) = &cursor
+        && let Some(at) = shared.position_of(cursor)
+    {
+        shared.cursor_was.replace(Some((cursor.clone(), at)));
+    }
     let before = cursor.as_ref().and_then(|cursor| {
         in_view(node, row_height).find(|position| shared.id_at(*position).as_ref() == Some(cursor))
     });
@@ -507,9 +571,11 @@ fn take_key<S: RowSource, K: Clone + Eq + Hash + 'static>(
     if m.ctrl || m.alt || m.logo {
         return false;
     }
+    let cursor = selection.cursor();
     let motion = match key {
+        // Not where the keys go on from once the cursor's row is hidden: that was not chosen
         NamedKey::Enter if !m.shift => {
-            let (Some(open), Some(cursor)) = (on_open, selection.cursor()) else {
+            let (Some(open), Some(cursor)) = (on_open, cursor) else {
                 return false;
             };
             if shared.position_of(&cursor).is_none() {
@@ -526,11 +592,9 @@ fn take_key<S: RowSource, K: Clone + Eq + Hash + 'static>(
         NamedKey::End => Motion::Last,
         _ => return false,
     };
-    let has_cursor = selection
-        .cursor()
-        .is_some_and(|cursor| shared.position_of(&cursor).is_some());
+    let place = shared.cursor_place(cursor.as_ref());
     let start = keys_start
-        .filter(|_| !has_cursor && matches!(motion, Motion::By(_) | Motion::Pages(_)))
+        .filter(|_| place.is_none() && matches!(motion, Motion::By(_) | Motion::Pages(_)))
         .and_then(untrack)
         .and_then(|id| Some((shared.position_of(&id)?, id)));
     let to = match start {
@@ -540,9 +604,10 @@ fn take_key<S: RowSource, K: Clone + Eq + Hash + 'static>(
         }
         None => {
             let page = rows_in_view(node, row_height);
+            let extend = m.shift && !is_single;
             selection
                 .0
-                .update(|selected| selected.move_by(motion, m.shift && !is_single, shared, page))
+                .update(|selected| selected.move_by(motion, extend, place, shared, page))
         }
     };
     if let Some(to) = to {
@@ -564,6 +629,8 @@ struct Place<S: RowSource, K: 'static> {
     selection: Selection<K>,
     is_single: bool,
     focused: Signal<bool>,
+    /// The row the keys are on while the focus shows.
+    keys_on: Memo<Option<usize>>,
     node: NodeRef,
     row: Look<S, K>,
     row_label: Option<LabelOf<S>>,
@@ -609,7 +676,10 @@ impl<S: RowSource, K: Clone + Eq + Hash + 'static> Place<S, K> {
                 selection,
             },
         );
+        let keys_on = self.keys_on;
+        let is_keyed = memo(move || keys_on.get() == Some(position));
         let ink = Ink::new(|c| c.on_surface, || false);
+        shows_keys_on(&ink, is_keyed);
         let frame = div()
             .absolute()
             .top(0)
@@ -619,7 +689,7 @@ impl<S: RowSource, K: Clone + Eq + Hash + 'static> Place<S, K> {
             .flex()
             .flex_row()
             .items_center()
-            .rounded(12.0_f32)
+            .rounded(CORNER)
             .access(move |a| {
                 let a = a.role(Role::ListOption).selected(selected.get());
                 match label.as_ref().and_then(|label| label()) {
@@ -629,7 +699,7 @@ impl<S: RowSource, K: Clone + Eq + Hash + 'static> Place<S, K> {
             })
             .dyn_style(move |s| {
                 let c = color_scheme();
-                let s = s.text_color(c.on_surface);
+                let s = inner_focus_ring(s.text_color(c.on_surface), is_keyed.get(), &c);
                 match selection_fill(&c, selected.get(), focused.get()) {
                     Some(fill) => s.bg(fill),
                     None => s,
@@ -687,14 +757,7 @@ impl<S: RowSource, K: Clone + Eq + Hash + 'static> Place<S, K> {
                 selection.select(id.clone());
             }
             node.focus();
-            let scale = window_scale();
-            open(
-                id.clone(),
-                PointF::new(
-                    scale.to_logical(e.position.x),
-                    scale.to_logical(e.position.y),
-                ),
-            );
+            open(id.clone(), pressed_at(e));
         }
     }
 

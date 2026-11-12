@@ -1,11 +1,10 @@
-use std::cell::Cell;
 use std::sync::Arc;
 
 use anti_webui::prelude::{NamedKey, untrack};
 use anti_webui_md3e::components::MenuItem;
 use hiphile_core::navigation::Location;
 use next_ui::favorite_songs::{are_favorites, favorite_songs_item, toggle_favorite_songs};
-use next_ui::keymap::{KeyBinding, KeyContext, Keystroke, bind_keys, keystroke_for};
+use next_ui::keymap::{KeyBinding, KeyContext, Keystroke, bind_keys, is_bound, keystroke_for};
 use next_ui::menus::{
     Songs, add_to_playlist_item, go_to_album_item, go_to_artist_item, queue_items,
 };
@@ -30,10 +29,7 @@ pub(super) enum SongCommand {
 
 /// Binds the keys of the rows on this thread, the first time it is called there.
 pub(super) fn bind_song_keys() {
-    thread_local! {
-        static BOUND: Cell<bool> = const { Cell::new(false) };
-    }
-    if BOUND.with(|bound| bound.replace(true)) {
+    if is_bound::<SongCommand>() {
         return;
     }
     let enter = || Keystroke::named(NamedKey::Enter);

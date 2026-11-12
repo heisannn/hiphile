@@ -6,13 +6,16 @@ use anti_webui::core::access::snapshot;
 use anti_webui::core::event::WindowEvent;
 use anti_webui::core::geometry::{Scale, SizeI};
 use anti_webui::prelude::*;
-use hiphile_core::Workspace;
 use hiphile_core::favorites::Favorite;
 use hiphile_core::navigation::{Destination, Location};
 use hiphile_core::test_support::LibraryServer;
+use hiphile_core::{Hiphile, Workspace};
+use next_ui::keymap::Keystroke;
+use next_ui::list_detail::Split;
 use next_ui::testing::{
-    TestCore, click_text, find, focus, frames, has_text, key, key_with, middle_of, nodes, press,
-    right_click, screen_context, signed_in_core, start, typed, wait_until,
+    SavedLibrary, TestCore, click_text, find, focus, frames, has_text, key, key_with, middle_of,
+    nodes, press, right_click, screen_context, signed_in_core, signed_in_core_with_library, start,
+    typed, wait_until,
 };
 use next_ui::{AlbumAction, Command, Commands};
 use playback::Placement;
@@ -65,6 +68,8 @@ struct Albums {
     sent: Rc<RefCell<Vec<Command>>>,
     /// Whether the screen is there, as while the window shows Albums.
     here: Signal<bool>,
+    /// The keys that did nothing in the screen and went on to the window.
+    passed: Rc<RefCell<Vec<Keystroke>>>,
     workspace: Workspace,
     server: LibraryServer,
     _core: TestCore,
@@ -73,11 +78,17 @@ struct Albums {
 /// Albums on `server` at `at`.
 fn on(server: LibraryServer, at: Location) -> Albums {
     let (core, hiphile) = signed_in_core(server.url());
+    on_core(server, core, hiphile, at)
+}
+
+/// Albums on `server` at `at`, signed in to it through `hiphile`.
+fn on_core(server: LibraryServer, core: TestCore, hiphile: Hiphile, at: Location) -> Albums {
     let workspace = hiphile.workspace().expect("signed in");
     let location = signal(at);
     let here = signal(true);
     let left = Rc::new(RefCell::new(Vec::new()));
     let sent = Rc::new(RefCell::new(Vec::new()));
+    let passed = Rc::new(RefCell::new(Vec::new()));
     let commands = {
         let (left, sent, workspace) = (left.clone(), sent.clone(), workspace.clone());
         Commands::new(move |command: Command| {
@@ -96,20 +107,32 @@ fn on(server: LibraryServer, at: Location) -> Albums {
             }
         })
     };
-    let ui = start(move || {
-        let cx = screen_context(&hiphile, commands);
-        div().size_full().flex().flex_col().child(show(
-            move || here.get(),
-            move || {
-                let screen = albums(location, &cx);
-                div()
-                    .size_full()
-                    .flex()
-                    .flex_col()
-                    .child(div().flex().flex_row().children(screen.actions))
-                    .child(screen.body.flex_1().min_h(0))
-            },
-        ))
+    let ui = start({
+        let passed = passed.clone();
+        move || {
+            let cx = screen_context(&hiphile, commands);
+            // Kept between visits, as the shell keeps it
+            let split = Split::new();
+            let window = div().size_full().flex().flex_col().on_key_down(move |e| {
+                if !e.is_default_prevented() {
+                    passed
+                        .borrow_mut()
+                        .push(Keystroke::new(e.key.clone(), e.modifiers));
+                }
+            });
+            window.child(show(
+                move || here.get(),
+                move || {
+                    let screen = albums(location, split, &cx);
+                    div()
+                        .size_full()
+                        .flex()
+                        .flex_col()
+                        .child(div().flex().flex_row().children(screen.actions))
+                        .child(screen.body.flex_1().min_h(0))
+                },
+            ))
+        }
     });
     let mut albums = Albums {
         ui,
@@ -117,6 +140,7 @@ fn on(server: LibraryServer, at: Location) -> Albums {
         left,
         sent,
         here,
+        passed,
         workspace,
         server,
         _core: core,
@@ -141,6 +165,18 @@ impl Albums {
     }
 
     /// Waits for the songs of `album` to show.
+    /// Waits until whether the album on show and its songs are favorites is known.
+    fn wait_for_the_favorites(&mut self) {
+        self.wait_for(|| {
+            let favorites: Vec<_> = snapshot()
+                .nodes
+                .into_iter()
+                .filter(|node| node.label.as_deref() == Some("Favorite"))
+                .collect();
+            !favorites.is_empty() && favorites.iter().all(|favorite| !favorite.disabled)
+        });
+    }
+
     fn wait_for_songs(&mut self, title: &str) {
         let title = title.to_owned();
         self.wait_for(move || {
@@ -232,6 +268,11 @@ fn focused() -> Option<(Role, String)> {
     Some((node.role, node.label.unwrap_or_default()))
 }
 
+fn list_width() -> f64 {
+    let handle = find(Role::Separator, "List Width").expect("the handle");
+    handle.value.expect("a width").now
+}
+
 fn has_focus(role: Role, label: &str) -> bool {
     focused() == Some((role, label.to_owned()))
 }
@@ -250,6 +291,24 @@ fn rows_of(list: &str) -> Vec<String> {
     tree.nodes
         .iter()
         .filter(|node| node.role == Role::ListOption && children.contains(&node.id))
+        .filter_map(|node| node.label.clone())
+        .collect()
+}
+
+/// The names of the selected rows of `list`.
+fn selected_of(list: &str) -> Vec<String> {
+    let tree = snapshot();
+    let Some(list) = tree
+        .nodes
+        .iter()
+        .find(|node| node.role == Role::ListBox && node.label.as_deref() == Some(list))
+    else {
+        return Vec::new();
+    };
+    let children = list.children.clone();
+    tree.nodes
+        .iter()
+        .filter(|node| children.contains(&node.id) && node.selected == Some(true))
         .filter_map(|node| node.label.clone())
         .collect()
 }
@@ -413,14 +472,14 @@ fn the_end_of_a_sync_gives_up_on_an_album_it_did_not_bring() {
 #[test]
 fn the_list_says_while_a_sync_brings_it_up_to_date() {
     let mut albums = showing_alpha();
-    assert!(find(Role::ProgressBar, "Updating the library").is_none());
+    assert!(find(Role::ProgressBar, "Updating Library").is_none());
 
     albums.server.hold("getAlbumList2");
     albums.workspace.refresh(Destination::Albums);
-    albums.wait_for(|| find(Role::ProgressBar, "Updating the library").is_some());
+    albums.wait_for(|| find(Role::ProgressBar, "Updating Library").is_some());
 
     albums.server.release("getAlbumList2");
-    albums.wait_for(|| find(Role::ProgressBar, "Updating the library").is_none());
+    albums.wait_for(|| find(Role::ProgressBar, "Updating Library").is_none());
 }
 
 /// Albums whose server refuses the list, with focus on Retry.
@@ -534,6 +593,7 @@ fn the_playlist_key_asks_which_playlist_takes_the_album() {
 #[test]
 fn the_keys_go_to_the_album_or_the_song_with_the_focus() {
     let mut albums = showing_alpha();
+    albums.wait_for_the_favorites();
     albums.primary_char('d', false);
     albums.key(NamedKey::ArrowRight);
     albums.key(NamedKey::ArrowDown);
@@ -601,12 +661,40 @@ fn an_album_without_songs_is_not_played() {
         LibraryServer::new(vec![album("a", "Alpha", &[])]),
         Location::Albums(None),
     );
-    albums.wait_for(|| has_text("This album has no songs."));
+    albums.wait_for(|| has_text("No songs"));
 
     albums.primary(NamedKey::Enter);
+    albums.key(NamedKey::ArrowRight);
 
     assert!(albums.sent().is_empty());
     assert!(find(Role::Button, "Play").is_some_and(|play| play.disabled));
+    assert_eq!(
+        *albums.passed.borrow(),
+        [
+            Keystroke::named(NamedKey::Enter).with_primary(),
+            Keystroke::named(NamedKey::ArrowRight),
+        ]
+    );
+    assert!(has_focus(Role::ListBox, "Albums"));
+}
+
+#[test]
+fn the_list_comes_back_as_wide_as_it_was_left() {
+    let mut albums = showing_alpha();
+    let first = list_width();
+    focus(&mut albums.ui, Role::Separator, "List Width");
+    albums.key(NamedKey::ArrowRight);
+    let widened = list_width();
+    assert!(widened > first, "{widened} from {first}");
+    albums.here.set(false);
+    albums.go(Location::Home);
+
+    albums.go(at("a"));
+    albums.here.set(true);
+    albums.settle();
+    albums.wait_for_songs("Alpha");
+
+    assert_eq!(list_width(), widened);
 }
 
 #[test]
@@ -621,6 +709,46 @@ fn a_failed_album_loads_again_on_retry() {
     albums.wait_for_songs("Alpha");
 
     assert_eq!(rows_of("Songs"), ["One", "Two"]);
+}
+
+/// Alpha of the year `year`, played last at `played`.
+fn alpha_of(year: u32, played: &str) -> Value {
+    let mut alpha = album("a", "Alpha", &["One", "Two", "Three"]);
+    alpha["year"] = json!(year);
+    alpha["played"] = json!(played);
+    alpha
+}
+
+#[test]
+fn the_servers_version_of_a_saved_album_changes_it_in_place() {
+    let saved = alpha_of(2020, "2026-11-01T20:00:00Z");
+    let server = LibraryServer::new(vec![alpha_of(2021, "2026-11-12T20:00:00Z")]);
+    server.hold("getAlbum");
+    let library = SavedLibrary {
+        albums: vec![serde_json::from_value(saved.clone()).unwrap()],
+        ..SavedLibrary::default()
+    };
+    let (core, hiphile, catalog) = signed_in_core_with_library(server.url(), &library);
+    catalog
+        .put_album(&serde_json::from_value(saved).unwrap())
+        .unwrap();
+    let mut albums = on_core(server, core, hiphile, at("a"));
+    albums.wait_for(|| has_text("2020 · 3 songs · 9:00"));
+    focus(&mut albums.ui, Role::ListBox, "Songs");
+    albums.key(NamedKey::ArrowDown);
+    albums.key(NamedKey::ArrowDown);
+    assert_eq!(selected_of("Songs"), ["Two"]);
+    let list = find(Role::ListBox, "Songs").expect("the songs").id;
+
+    albums.server.release("getAlbum");
+    albums.wait_for(|| has_text("2021 · 3 songs · 9:00"));
+
+    assert_eq!(
+        find(Role::ListBox, "Songs").map(|songs| songs.id),
+        Some(list)
+    );
+    assert!(has_focus(Role::ListBox, "Songs"));
+    assert_eq!(selected_of("Songs"), ["Two"]);
 }
 
 #[test]

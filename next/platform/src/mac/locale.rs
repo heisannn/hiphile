@@ -2,9 +2,10 @@ use std::ffi::c_void;
 use std::mem::{MaybeUninit, size_of};
 use std::process::Command;
 
-/// The name of the user's locale, such as `ja_JP`, or else their first language, such as `ja-JP`.
-/// `defaults` reads them in a process of its own: read here, through `NSLocale`, CFPreferences
-/// would start threads to talk to `cfprefsd`, and setting `LANG` would no longer be safe.
+/// The name of the locale to choose glyphs by, such as `ja_JP`, from the user's locale and their
+/// languages as `crate::locale::locale_for` says. `defaults` reads them in a process of its own:
+/// read here, through `NSLocale`, CFPreferences would start threads to talk to `cfprefsd`, and
+/// setting `LANG` would no longer be safe.
 pub(crate) fn user_locale() -> Option<String> {
     let global = |key: &str| {
         let read = Command::new("/usr/bin/defaults")
@@ -16,11 +17,8 @@ pub(crate) fn user_locale() -> Option<String> {
             .then(|| String::from_utf8(read.stdout).ok())
             .flatten()
     };
-    if let Some(locale) = global("AppleLocale") {
-        return Some(locale.trim().to_owned());
-    }
-    let languages = global("AppleLanguages")?;
-    crate::locale::first_language(&languages).map(str::to_owned)
+    let locale = global("AppleLocale").map(|locale| locale.trim().to_owned());
+    crate::locale::locale_for(locale, || global("AppleLanguages"))
 }
 
 /// Sets `LANG` to `lang` if this is the process's only thread. Whether it did.

@@ -6,6 +6,7 @@ use anti_webui_md3e::color_scheme;
 use anti_webui_md3e::components::{Ink, sized_icon};
 use anti_webui_md3e::icons::Symbol;
 use anti_webui_md3e::motion::{default_effects, fast_spatial};
+use next_ui::focus_ring::focus_ring;
 
 /// How an [`icon_control`] looks, after the icon buttons of `anti_webui_md3e`, whose icon is chosen
 /// once and for all.
@@ -164,13 +165,7 @@ pub(crate) fn icon_control(
             } else {
                 s.bg(background).text_color(content)
             };
-            if focused.get() && !disabled() {
-                s.outline(3.0_f32)
-                    .outline_offset(2.0_f32)
-                    .outline_color(c.secondary)
-            } else {
-                s
-            }
+            focus_ring(s, focused.get() && !disabled(), &c)
         })
         .child(glyph);
     ink.paint(ink.listen(root)).disabled(disabled)

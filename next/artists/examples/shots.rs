@@ -17,6 +17,7 @@ use hiphile_core::navigation::Location;
 use hiphile_core::test_support::ArtistsServer;
 use next_artists::artists;
 use next_ui::cover::install_covers;
+use next_ui::list_detail::Split;
 use next_ui::pane::GAP;
 use next_ui::testing::{focus, frames, key, press, screen_context, scroll, signed_in_core};
 use next_ui::theme::{DEFAULT_SEED, scheme};
@@ -152,7 +153,7 @@ fn shot(
                 actions,
                 body: pane,
                 ..
-            } = artists(location, &cx);
+            } = artists(location, Split::new(), &cx);
             window(title, actions, pane)
         },
         move |ui| {

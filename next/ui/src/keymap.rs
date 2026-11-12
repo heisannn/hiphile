@@ -79,6 +79,12 @@ pub fn bind_keys<C: 'static>(bindings: impl IntoIterator<Item = KeyBinding<C>>) 
     keymap::<C>().borrow_mut().extend(bindings);
 }
 
+/// Whether this thread's keymap binds `C` yet, for a screen that binds its keys as it is first made
+/// on a thread.
+pub fn is_bound<C: 'static>() -> bool {
+    !keymap::<C>().borrow().is_empty()
+}
+
 /// Every stroke bound on this thread, whatever its command, with its context.
 pub fn bound_strokes() -> Vec<(Keystroke, &'static str)> {
     STROKES.with(|strokes| strokes.borrow().clone())
@@ -267,7 +273,10 @@ pub fn handles_keys(element: Div, take: impl Fn(&Keystroke) -> bool + 'static) -
 /// nothing.
 pub fn keeps_focus(root: Div, fallback: impl Fn() -> Option<NodeRef> + 'static) -> Div {
     KEEPER.with(|keeper| *keeper.borrow_mut() = Some(Rc::new(fallback)));
-    on_cleanup(|| drop(KEEPER.with(|keeper| keeper.borrow_mut().take())));
+    on_cleanup(|| {
+        drop(KEEPER.with(|keeper| keeper.borrow_mut().take()));
+        focus::unhook_root();
+    });
     // The window's own root holds `root`, and is all that a key reaches while nothing has the
     // focus. It is there once the window is laid out.
     root.on_resized(|_, _| focus::on_root_key_down(give_back_key))

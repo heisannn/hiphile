@@ -11,14 +11,14 @@ use hiphile_core::search::{Hit, Results, SearchStatus};
 use next_ui::ScreenContext;
 use next_ui::cover::CoverKind;
 use next_ui::details::join_details;
-use next_ui::load_state::{centered, no_matches, pane_loading};
+use next_ui::load_state::{LIBRARY, load_failure, no_matches, pane_loading};
 use next_ui::now_playing::{skippable, song_row_label};
 use next_ui::pane::INSET;
 use next_ui::row_cover::row_cover;
 use next_ui::row_list::{ROW_HEIGHT, ROW_PADDING};
 use next_ui::row_text::row_text;
 use next_ui::selection::selection_fill;
-use next_ui::type_scale::{error_text, muted_text};
+use next_ui::type_scale::muted_text;
 use subsonic::{AlbumId, ArtistId, SongId};
 
 use crate::search::Choose;
@@ -41,7 +41,8 @@ pub(crate) enum Found {
     /// The library is read for the first time, and there is nothing to search meanwhile.
     Reading,
     Failed(String),
-    NoMatches,
+    /// What is typed, trimmed, finds nothing.
+    NoMatches(String),
     Hits(Arc<Results>),
 }
 
@@ -58,7 +59,7 @@ impl Found {
         }
         let results = status.results();
         if results.sections.is_empty() {
-            Self::NoMatches
+            Self::NoMatches(query.trim().to_owned())
         } else {
             Self::Hits(results.clone())
         }
@@ -69,7 +70,7 @@ impl Found {
             Self::Nothing => Kind::Nothing,
             Self::Reading => Kind::Reading,
             Self::Failed(error) => Kind::Failed(error.clone()),
-            Self::NoMatches => Kind::NoMatches,
+            Self::NoMatches(query) => Kind::NoMatches(query.clone()),
             Self::Hits(_) => Kind::Hits,
         }
     }
@@ -81,7 +82,7 @@ enum Kind {
     Nothing,
     Reading,
     Failed(String),
-    NoMatches,
+    NoMatches(String),
     Hits,
 }
 
@@ -122,11 +123,17 @@ pub(crate) fn results(
         .flex_col()
         .child(dyn_view(move || match kind.get() {
             Kind::Nothing => untrack(|| div().into_view()),
-            Kind::Reading => untrack(|| standing_in(pane_loading("Loading Library")).into_view()),
-            Kind::Failed(error) => untrack(|| standing_in(centered(error_text(error))).into_view()),
-            Kind::NoMatches => untrack(|| {
+            Kind::Reading => untrack(|| standing_in(pane_loading(LIBRARY.loading())).into_view()),
+            Kind::Failed(error) => untrack(|| {
+                let index = cx.workspace.search().clone();
+                standing_in(load_failure(LIBRARY.load_failed(), error, move || {
+                    index.open()
+                }))
+                .into_view()
+            }),
+            Kind::NoMatches(query) => untrack(|| {
                 let note = cx.workspace.session().missing_readings_note();
-                standing_in(no_matches("Nothing matches.", note)).into_view()
+                standing_in(no_matches(move || query.clone(), note)).into_view()
             }),
             Kind::Hits => {
                 untrack(|| sections(results, highlighted, choose.clone(), &cx).into_view())

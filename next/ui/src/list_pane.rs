@@ -11,14 +11,9 @@ use anti_webui_md3e::icons;
 use anti_webui_md3e::typography::TextStyle;
 
 use crate::load_state::retry_button;
-use crate::pane::INSET;
+use crate::pane::{BUTTON_PADDING, INSET, LINE};
 use crate::type_scale::{error_text, muted_text, styled_text};
 
-/// As high as a small icon button.
-const LINE: f32 = 40.0;
-/// What a small icon button has between its edge and its icon, which brings it closer to the edge
-/// than text for its icon to line up.
-const BUTTON_PADDING: f32 = 8.0;
 const UPDATING: f32 = 20.0;
 
 /// What [`list_header`] shows.
@@ -93,8 +88,8 @@ pub fn list_header(header: ListHeader) -> Div {
 }
 
 /// The field that filters a list, bound to `value`. `label` says what it filters, such as "Filter
-/// Albums". Escape empties it.
-pub fn list_filter(value: Signal<String>, label: impl Into<String>) -> Div {
+/// Albums". Escape empties it, and Enter goes on to `list`.
+pub fn list_filter(value: Signal<String>, label: impl Into<String>, list: NodeRef) -> Div {
     let is_empty = move || value.with(String::is_empty);
     let clear = move || value.set(String::new());
     let field = outlined_text_field(
@@ -113,11 +108,15 @@ pub fn list_filter(value: Signal<String>, label: impl Into<String>) -> Div {
     )
     .w_full()
     .on_key_down(move |e| {
-        if matches!(e.key, Key::Named(NamedKey::Escape)) && !untrack(is_empty) {
-            e.stop_propagation();
-            e.prevent_default();
-            clear();
+        let m = e.modifiers;
+        let plain = !(m.shift || m.ctrl || m.alt || m.logo);
+        match e.key {
+            Key::Named(NamedKey::Escape) if !untrack(is_empty) => clear(),
+            Key::Named(NamedKey::Enter) if plain => list.focus(),
+            _ => return,
         }
+        e.stop_propagation();
+        e.prevent_default();
     });
     div()
         .flex()

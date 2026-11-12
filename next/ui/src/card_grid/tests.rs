@@ -3,7 +3,7 @@ use std::cell::Cell;
 use anti_webui::prelude::NamedKey;
 
 use super::*;
-use crate::testing::{click_text, find, nodes, start};
+use crate::testing::{click_text, find, nodes, shows_keys, start};
 
 fn rows() -> Vec<Vec<&'static str>> {
     vec![vec!["s1"], vec!["s2"], vec!["a1", "a2", "a3"], vec!["a4"]]
@@ -88,20 +88,15 @@ fn columns_follow_the_width_and_never_reach_zero() {
 }
 
 #[test]
-fn keys_with_modifiers_are_not_moves() {
-    assert_eq!(
-        GridMotion::of(&Keystroke::named(NamedKey::ArrowDown)),
-        Some(GridMotion::Down)
-    );
-    assert_eq!(
-        GridMotion::of(&Keystroke::named(NamedKey::End)),
-        Some(GridMotion::Last)
-    );
-    assert_eq!(
-        GridMotion::of(&Keystroke::named(NamedKey::ArrowDown).with_shift()),
-        None
-    );
-    assert_eq!(GridMotion::of(&Keystroke::character('j')), None);
+fn the_moves_are_the_arrows_and_the_page_keys_alone() {
+    let strokes = GridMotion::strokes();
+
+    assert!(strokes.contains(&(Keystroke::named(NamedKey::ArrowDown), GridMotion::Down)));
+    assert!(strokes.contains(&(Keystroke::named(NamedKey::End), GridMotion::Last)));
+    assert!(strokes.iter().all(|(stroke, _)| {
+        let m = stroke.modifiers();
+        !(m.shift || m.ctrl || m.alt || m.logo)
+    }));
 }
 
 #[test]
@@ -124,6 +119,48 @@ fn a_card_is_an_option_that_says_whether_it_is_selected() {
     selected.set(true);
     ui.update();
     assert_eq!(find(Role::ListOption, "Blue").unwrap().selected, Some(true));
+}
+
+#[test]
+fn the_card_the_keys_are_on_shows_it() {
+    let keyed = signal(false);
+    let mut ui = start(move || {
+        card_row(
+            4,
+            vec![
+                card(Card::new(div(), "Blue").keyed_when(move || keyed.get())),
+                card(Card::new(div(), "Red")),
+            ],
+        )
+    });
+    assert!(!shows_keys(Role::ListOption, "Blue"));
+
+    keyed.set(true);
+    ui.update();
+
+    assert!(shows_keys(Role::ListOption, "Blue"));
+    assert!(!shows_keys(Role::ListOption, "Red"));
+}
+
+#[test]
+fn what_is_in_a_card_takes_its_own_clicks_while_the_keys_are_on_it() {
+    let clicks = Rc::new(Cell::new(0));
+    let counted = clicks.clone();
+    let mut ui = start(move || {
+        card(
+            Card::new(div(), "Blue")
+                .line(
+                    div()
+                        .child(text("Someone"))
+                        .on_click(move |_| counted.set(counted.get() + 1)),
+                )
+                .keyed_when(|| true),
+        )
+    });
+
+    click_text(&mut ui, "Someone");
+
+    assert_eq!(clicks.get(), 1);
 }
 
 #[test]

@@ -1,6 +1,7 @@
 /// Gives the process a `LANG` from the user's locale when it has no locale in its environment, as
 /// an app opened from Finder does not. AntiWebUI reads `LC_ALL`, `LC_CTYPE` and then `LANG` for the
-/// language it chooses glyphs by, such as Japanese kanji over Chinese hanzi.
+/// language it chooses glyphs by, such as Japanese kanji over Chinese hanzi, so a locale such as
+/// `en_JP` gives way to the first of the user's languages that has glyphs of its own for Han.
 ///
 /// Call first in `main`. Once another thread runs it leaves the environment alone, since setting it
 /// could race with that thread reading it. Elsewhere than on macOS it does nothing.
@@ -30,16 +31,62 @@ fn lang_for(identifier: &str) -> Option<String> {
     (starts_with_language && named).then(|| format!("{name}.UTF-8"))
 }
 
-/// The first language of a list as `defaults read` prints one, such as `en-JP` of
-/// `("en-JP", "ja-JP")`. A name without a hyphen comes without quotes.
+/// The locale to choose glyphs by: `locale`, the user's, unless its language has no glyphs of its
+/// own for Han and one of `languages` does, or else the first of them. `languages` is the list as
+/// `defaults read` prints it, read only if needed.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub(crate) fn first_language(list: &str) -> Option<&str> {
-    list.trim()
-        .strip_prefix('(')?
-        .strip_suffix(')')?
+pub(crate) fn locale_for(
+    locale: Option<String>,
+    languages: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    if locale.as_deref().is_some_and(has_own_han) {
+        return locale;
+    }
+    let list = languages().unwrap_or_default();
+    let listed = languages_in(&list);
+    let chosen = listed.iter().find(|language| has_own_han(language));
+    match (chosen, locale) {
+        (Some(language), _) => Some(locale_of(language)),
+        (None, Some(locale)) => Some(locale),
+        (None, None) => listed.first().map(|language| locale_of(language)),
+    }
+}
+
+/// Whether the language of `identifier` has glyphs of its own for Han: Japanese, Chinese or
+/// Korean.
+fn has_own_han(identifier: &str) -> bool {
+    let language = identifier.split(['-', '_', '@']).next().unwrap_or_default();
+    matches!(language, "ja" | "zh" | "ko")
+}
+
+/// The languages of a list as `defaults read` prints one, such as `en-JP` and `ja-JP` of
+/// `("en-JP", "ja-JP")`. A name without a hyphen comes without quotes.
+fn languages_in(list: &str) -> Vec<&str> {
+    let Some(inside) = list
+        .trim()
+        .strip_prefix('(')
+        .and_then(|list| list.strip_suffix(')'))
+    else {
+        return Vec::new();
+    };
+    inside
         .split(',')
         .map(|language| language.trim().trim_matches('"'))
-        .find(|language| !language.is_empty())
+        .filter(|language| !language.is_empty())
+        .collect()
+}
+
+/// The locale a language names, as macOS writes one: `zh-Hans_CN` for `zh-Hans-CN`.
+fn locale_of(language: &str) -> String {
+    match language.rsplit_once('-') {
+        Some((before, region))
+            if region.len() == 2 && region.chars().all(|c| c.is_ascii_alphabetic())
+                || region.len() == 3 && region.chars().all(|c| c.is_ascii_digit()) =>
+        {
+            format!("{before}_{region}")
+        }
+        _ => language.to_owned(),
+    }
 }
 
 #[cfg(test)]

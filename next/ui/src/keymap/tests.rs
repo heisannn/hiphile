@@ -2,7 +2,9 @@ use anti_webui::core::Ui;
 use anti_webui::prelude::*;
 
 use super::*;
-use crate::testing::{click, focus, key, key_with, start, typed};
+use anti_webui_md3e::components::{menu, menu_item};
+
+use crate::testing::{click, focus, frames, key, key_with, press, start, typed};
 
 #[derive(Clone, Debug, PartialEq)]
 enum Test {
@@ -17,6 +19,7 @@ const INNER: &str = "Inner";
 /// What ran, and in which context.
 type Ran = Signal<Vec<(&'static str, Test)>>;
 
+#[derive(Clone, Copy)]
 struct Window {
     ran: Ran,
     inner_enabled: Signal<bool>,
@@ -217,6 +220,64 @@ fn a_key_with_nothing_focused_goes_where_the_focus_last_was() {
 
     assert_eq!(window.ran(), [(INNER, Test::Open)]);
     assert_eq!(focused_label().as_deref(), Some("Inner"));
+}
+
+#[test]
+fn a_window_made_after_one_closed_gives_the_focus_back_as_well() {
+    bind_keys([KeyBinding::new(
+        Keystroke::named(NamedKey::Enter),
+        Test::Open,
+        INNER,
+    )]);
+    let closed = Window::new();
+    let mut ui = start(move || closed.view(true));
+    focus(&mut ui, Role::Group, "Inner");
+    ui.close();
+
+    let window = Window::new();
+    let mut ui = start(move || window.view(true));
+    focus(&mut ui, Role::Group, "Inner");
+    focus(&mut ui, Role::Button, "Inner Button");
+    blur(&mut ui);
+    enter(&mut ui);
+
+    assert_eq!(window.ran(), [(INNER, Test::Open)]);
+    assert_eq!(focused_label().as_deref(), Some("Inner"));
+}
+
+#[test]
+fn once_a_menu_that_leaves_the_window_its_keys_closes_they_go_where_the_focus_was() {
+    bind_keys([KeyBinding::new(
+        Keystroke::named(NamedKey::Enter),
+        Test::Open,
+        INNER,
+    )]);
+    let window = Window::new();
+    let open = signal(false);
+    let view = {
+        let inner = window.view(false);
+        keeps_focus(
+            div()
+                .size_full()
+                .child(inner)
+                .child(div().w(80).h(30).child(menu(
+                    move || open.get(),
+                    move || open.set(false),
+                    vec![vec![menu_item("Play").on_click(move || open.set(false))]],
+                ))),
+            || None,
+        )
+    };
+    let mut ui = start(move || view);
+    focus(&mut ui, Role::Group, "Inner");
+
+    open.set(true);
+    frames(&mut ui, 400);
+    press(&mut ui, Role::MenuItem, "Play");
+    frames(&mut ui, 400);
+    enter(&mut ui);
+
+    assert_eq!(window.ran(), [(INNER, Test::Open)]);
 }
 
 #[test]

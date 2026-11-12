@@ -14,10 +14,11 @@ use hiphile_core::navigation::Location;
 use next_host::{Pending, Scope, follow};
 use next_ui::card_grid::{GridMotion, columns_for, step};
 use next_ui::context_menu::ContextMenu;
-use next_ui::keymap::{KeyBinding, Keystroke, bind_keys};
+use next_ui::keymap::{KeyBinding, Keystroke, bind_keys, is_bound};
 use next_ui::list_detail::{Split, list_detail};
-use next_ui::now_playing::{NowPlaying, follow_now_playing};
+use next_ui::now_playing::NowPlaying;
 use next_ui::row_list::{ROW_HEIGHT, Selection, scroll_to_row};
+use next_ui::selection::KeysShown;
 use next_ui::sort_menu::{SortOption, sort_menu};
 use next_ui::{AlbumAction, Command, Screen, ScreenContext};
 use playback::Placement;
@@ -52,13 +53,9 @@ pub enum ArtistsCommand {
     Move(GridMotion),
 }
 
-thread_local! {
-    static BOUND: Cell<bool> = const { Cell::new(false) };
-}
-
 /// Adds the keys of the screen to this thread's keymap, once.
 fn bind_artists_keys() {
-    if BOUND.with(|bound| bound.replace(true)) {
+    if is_bound::<ArtistsCommand>() {
         return;
     }
     use ArtistsCommand::*;
@@ -75,17 +72,7 @@ fn bind_artists_keys() {
         .into_iter()
         .chain([(Keystroke::named(NamedKey::ArrowRight), Open)])
         .map(|(stroke, command)| KeyBinding::new(stroke, command, ARTISTS_CONTEXT));
-    let moves = [
-        (NamedKey::ArrowUp, GridMotion::Up),
-        (NamedKey::ArrowDown, GridMotion::Down),
-        (NamedKey::ArrowLeft, GridMotion::Left),
-        (NamedKey::ArrowRight, GridMotion::Right),
-        (NamedKey::PageUp, GridMotion::PageUp),
-        (NamedKey::PageDown, GridMotion::PageDown),
-        (NamedKey::Home, GridMotion::First),
-        (NamedKey::End, GridMotion::Last),
-    ]
-    .map(|(key, motion)| (Keystroke::named(key), Move(motion)));
+    let moves = GridMotion::strokes().map(|(stroke, motion)| (stroke, Move(motion)));
     let on_page = on_either
         .into_iter()
         .chain([
@@ -189,6 +176,7 @@ pub(crate) struct View {
     pub(crate) list_node: NodeRef,
     pub(crate) page_node: NodeRef,
     pub(crate) page_focused: Signal<bool>,
+    pub(crate) page_keys: KeysShown,
     pub(crate) layout: Rc<PageLayout>,
     /// The artist the page was last made to show.
     shown_artist: RefCell<Option<ArtistId>>,
@@ -204,12 +192,17 @@ pub(crate) struct View {
 }
 
 /// The artists, beside the page of the one where the window is, which `location` says. Choosing
-/// another sends [`Command::Show`], and moving through the list [`Command::ShowInPlace`].
-pub fn artists(location: Signal<Location>, cx: &ScreenContext) -> Screen {
-    artists_view(location, cx).1
+/// another sends [`Command::Show`], and moving through the list [`Command::ShowInPlace`]. The list
+/// is as wide as `split` says.
+pub fn artists(location: Signal<Location>, split: Split, cx: &ScreenContext) -> Screen {
+    artists_view(location, split, cx).1
 }
 
-pub(crate) fn artists_view(location: Signal<Location>, cx: &ScreenContext) -> (Rc<View>, Screen) {
+pub(crate) fn artists_view(
+    location: Signal<Location>,
+    split: Split,
+    cx: &ScreenContext,
+) -> (Rc<View>, Screen) {
     bind_artists_keys();
     let list = cx.workspace.artists().clone();
     let detail = cx.workspace.artist_detail().clone();
@@ -235,11 +228,12 @@ pub(crate) fn artists_view(location: Signal<Location>, cx: &ScreenContext) -> (R
         top_songs_expanded: signal(false),
         fetching: signal(None),
         action: RefCell::default(),
-        menu: ContextMenu::new(),
-        now_playing: follow_now_playing(&cx.workspace),
+        menu: ContextMenu::new(cx.overlays),
+        now_playing: cx.known.now_playing(),
         list_node: node_ref(),
         page_node: node_ref(),
         page_focused: signal(false),
+        page_keys: KeysShown::new(),
         layout: Rc::new(PageLayout::new()),
         shown_artist: RefCell::default(),
         listed: RefCell::default(),
@@ -286,8 +280,8 @@ pub(crate) fn artists_view(location: Signal<Location>, cx: &ScreenContext) -> (R
         }
     });
     view.focus_list();
-    let body = list_detail(Split::new(), list::list_pane(&view), page::page_pane(&view))
-        .child(view.menu.view());
+    let body =
+        list_detail(split, list::list_pane(&view), page::page_pane(&view)).child(view.menu.view());
     let screen = Screen::new("Artists", body)
         .action(sort(&view))
         .home(view.list_node);
@@ -315,6 +309,7 @@ fn sort(view: &Rc<View>) -> Div {
         )
     };
     sort_menu(
+        view.cx.overlays,
         move || sort.get().is_descending,
         vec![
             vec![
@@ -621,6 +616,22 @@ impl View {
             .then_some(item)
     }
 
+    /// Whether the keys are on `item` while the page's focus shows: the selected one, or the first
+    /// with none.
+    pub(crate) fn has_keys_on(&self, item: &Item) -> bool {
+        if !self.page_keys.get() || !self.page_focused.get() {
+            return false;
+        }
+        match self.item.get() {
+            Some(selected) => selected == *item,
+            None => self
+                .rows()
+                .first()
+                .and_then(|(_, row)| row.first())
+                .is_some_and(|first| first == item),
+        }
+    }
+
     fn is_at_row_start(&self) -> bool {
         let Some(item) = self.item_on_show() else {
             return true;
@@ -853,6 +864,7 @@ impl View {
 
     pub(crate) fn run_on_page(&self, command: ArtistsCommand) {
         use ArtistsCommand::*;
+        self.page_keys.used_a_key();
         match command {
             Move(GridMotion::Left) if self.is_at_row_start() => self.focus_list(),
             Move(motion) => self.move_item(motion),

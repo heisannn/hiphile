@@ -5,6 +5,8 @@ use std::cell::Cell;
 
 use anti_webui::core::tree::{Document, NodeId, with_doc};
 use anti_webui::prelude::*;
+use anti_webui_md3e::color_scheme;
+use anti_webui_md3e::components::{ButtonStyle, styled_button};
 use anti_webui_md3e::typography::TextStyle;
 
 use crate::type_scale::styled_text;
@@ -28,19 +30,26 @@ pub fn dialog_actions() -> Div {
         .pt(8.0_f32)
 }
 
+/// The text button for what a dialog can't undo, in the color for errors.
+///
+/// md3e's buttons take no colors of their own, so this lays the label's over a text button's; the
+/// state layer under the pointer keeps the text button's color.
+pub fn irreversible_button(label: impl IntoTextSource) -> Div {
+    styled_button(label, ButtonStyle::text()).dyn_style(|s| s.text_color(color_scheme().error))
+}
+
 /// `field`, an `outlined_text_field`, whose input takes the focus as the dialog opens, with the
 /// caret after what it holds.
 pub fn focused_field(field: Div) -> Div {
-    once_laid_out(field, |doc, id| {
-        let Some(input) = first_input(doc, id) else {
-            return;
-        };
-        if let Some(edit) = doc.get_mut(input).and_then(|node| node.edit_mut()) {
-            let end = edit.text.len();
-            edit.select_range(end, end);
-        }
-        doc.pending_focus = Some(Some(input));
-    })
+    once_laid_out(field, focus_input)
+}
+
+/// Gives the focus to the input of the `outlined_text_field` that `field` is attached to, with the
+/// caret after what it holds.
+pub fn focus_field(field: NodeRef) {
+    if let Some(id) = field.get() {
+        with_doc(|doc| focus_input(doc, id));
+    }
 }
 
 /// Focuses what `target` finds in `node` once `node` is laid out. A dialog takes the focus itself
@@ -51,7 +60,7 @@ pub fn focused_once_laid_out(
 ) -> Div {
     once_laid_out(node, move |doc, id| {
         if let Some(target) = target(doc, id) {
-            doc.pending_focus = Some(Some(target));
+            focus(doc, target);
         }
     })
 }
@@ -70,6 +79,23 @@ fn once_laid_out(node: Div, f: impl Fn(&mut Document, NodeId) + 'static) -> Div 
     })
 }
 
+fn focus_input(doc: &mut Document, field: NodeId) {
+    let Some(input) = first_input(doc, field) else {
+        return;
+    };
+    if let Some(edit) = doc.get_mut(input).and_then(|node| node.edit_mut()) {
+        let end = edit.text.len();
+        edit.select_range(end, end);
+    }
+    focus(doc, input);
+}
+
+/// The focus moves as the window is next drawn, which this asks for.
+fn focus(doc: &mut Document, target: NodeId) {
+    doc.pending_focus = Some(Some(target));
+    doc.mark_paint();
+}
+
 /// The text field has no handle to the input it is made of, so it is found among its nodes.
 fn first_input(doc: &Document, id: NodeId) -> Option<NodeId> {
     let node = doc.get(id)?;
@@ -80,3 +106,6 @@ fn first_input(doc: &Document, id: NodeId) -> Option<NodeId> {
         .iter()
         .find_map(|child| first_input(doc, *child))
 }
+
+#[cfg(test)]
+mod tests;

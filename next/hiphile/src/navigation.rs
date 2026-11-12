@@ -6,6 +6,8 @@ use hiphile_core::navigation::{Destination, History, Location};
 pub(crate) struct Navigation {
     location: Signal<Location>,
     history: Signal<History<Location>>,
+    /// Where the window was last in each destination, in the rail's order.
+    last: Signal<Vec<Location>>,
 }
 
 impl Navigation {
@@ -13,6 +15,7 @@ impl Navigation {
         Self {
             location: signal(Location::Home),
             history: signal(History::new()),
+            last: signal(Destination::ALL.map(location_of).to_vec()),
         }
     }
 
@@ -25,7 +28,15 @@ impl Navigation {
         self.location.with(Location::destination)
     }
 
+    /// Goes to `to`, or, when `to` names only a destination, back to where the window was last
+    /// there.
     pub(crate) fn go(&self, to: Location) {
+        let to = if to == location_of(to.destination()) {
+            self.last
+                .with_untracked(|last| last[index_of(to.destination())].clone())
+        } else {
+            to
+        };
         let now = self.location.get_untracked();
         if now == to {
             return;
@@ -33,26 +44,34 @@ impl Navigation {
         if now.is_worth_returning_to_from(&to) {
             self.history.update(|history| history.visit(now));
         }
-        self.location.set(to);
+        self.set(to);
     }
 
     /// Goes to `to` without making where the window is somewhere to go back to.
     pub(crate) fn show_in_place(&self, to: Location) {
-        self.location.set_if_changed(to);
+        if self.location.with_untracked(|now| *now != to) {
+            self.set(to);
+        }
     }
 
     pub(crate) fn back(&self) {
         let now = self.location.get_untracked();
         if let Some(previous) = self.history.update(|history| history.back(now)) {
-            self.location.set(previous);
+            self.set(previous);
         }
     }
 
     pub(crate) fn forward(&self) {
         let now = self.location.get_untracked();
         if let Some(next) = self.history.update(|history| history.forward(now)) {
-            self.location.set(next);
+            self.set(next);
         }
+    }
+
+    fn set(&self, to: Location) {
+        let ix = index_of(to.destination());
+        self.last.update_untracked(|last| last[ix] = to.clone());
+        self.location.set(to);
     }
 
     pub(crate) fn can_go_back(&self) -> bool {
@@ -64,7 +83,7 @@ impl Navigation {
     }
 }
 
-/// Where the rail goes for `destination`: its list, with nothing chosen.
+/// What names `destination` alone: its list, with nothing chosen.
 pub(crate) fn location_of(destination: Destination) -> Location {
     match destination {
         Destination::Home => Location::Home,

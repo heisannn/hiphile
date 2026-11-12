@@ -16,6 +16,7 @@ use crate::app;
 
 fn at(destination: Destination) -> Shown {
     Shown {
+        attached: true,
         destination: Some(destination),
         ..Shown::default()
     }
@@ -63,7 +64,7 @@ fn every_command() -> Vec<Command> {
 }
 
 #[test]
-fn signed_out_nothing_can_be_chosen() {
+fn without_a_window_nothing_can_be_chosen() {
     for command in every_command() {
         assert_eq!(
             state_of(&Shown::default(), &command),
@@ -71,6 +72,27 @@ fn signed_out_nothing_can_be_chosen() {
             "{command:?}"
         );
     }
+}
+
+#[test]
+fn signed_out_only_the_settings_can_be_chosen() {
+    let signed_out = Shown {
+        attached: true,
+        ..Shown::default()
+    };
+    for command in every_command() {
+        assert_eq!(
+            state_of(&signed_out, &command).is_enabled(),
+            command == Command::OpenSettings,
+            "{command:?}"
+        );
+    }
+
+    let over_the_settings = Shown {
+        covered: true,
+        ..signed_out
+    };
+    assert!(!state_of(&over_the_settings, &Command::OpenSettings).is_enabled());
 }
 
 #[test]
@@ -243,7 +265,10 @@ fn the_controls_have_the_keys_of_the_player() {
             .unwrap_or_else(|| panic!("no {command:?}"))
             .1
     };
-    assert_eq!(key_of(Command::TogglePlayback), None);
+    assert_eq!(
+        key_of(Command::TogglePlayback),
+        Some(Shortcut::command('p').option())
+    );
     assert_eq!(key_of(Command::Next), Some(Shortcut::command(Key::Right)));
     assert_eq!(
         key_of(Command::Previous),
@@ -379,30 +404,46 @@ fn while_the_settings_are_open_the_menu_bar_goes_nowhere() {
 }
 
 #[test]
-fn signed_out_the_menu_bar_goes_nowhere() {
+fn signed_out_the_menu_bar_opens_only_the_settings() {
     let (_core, hiphile) = core("");
     let (mut ui, menu_bar) = start_with_menu_bar(hiphile);
+    assert!(
+        !menu_bar
+            .state_of(&Command::Show(Location::Songs))
+            .is_enabled()
+    );
+    assert!(menu_bar.state_of(&Command::OpenSettings).is_enabled());
 
     menu_bar.choose(Command::OpenSettings);
     ui.update();
+    assert!(find(Role::Heading, "Settings").is_some());
     assert!(!menu_bar.state_of(&Command::OpenSettings).is_enabled());
+
+    key(&mut ui, NamedKey::Escape);
+    frames(&mut ui, 600);
     assert!(nodes(Role::Dialog).is_empty());
+    assert!(menu_bar.state_of(&Command::OpenSettings).is_enabled());
 }
 
 #[test]
-fn once_signed_out_the_menu_bar_goes_nowhere_again() {
+fn once_signed_out_the_menu_bar_goes_nowhere_but_the_settings() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
     let (mut ui, menu_bar) = start_with_menu_bar(hiphile);
-    assert!(menu_bar.state_of(&Command::OpenSettings).is_enabled());
+    let songs = Command::Show(Location::Songs);
+    assert!(menu_bar.state_of(&songs).is_enabled());
 
     press(&mut ui, Role::Button, "Servers");
     press(&mut ui, Role::MenuItem, "Sign Out");
     wait_until(&mut ui, || find(Role::Navigation, "Destinations").is_none());
 
-    assert!(!menu_bar.state_of(&Command::OpenSettings).is_enabled());
+    assert!(!menu_bar.state_of(&songs).is_enabled());
+    menu_bar.choose(songs);
+    ui.update();
+    assert!(find(Role::Navigation, "Destinations").is_none());
+
     menu_bar.choose(Command::OpenSettings);
     ui.update();
-    assert!(nodes(Role::Dialog).is_empty());
+    assert!(find(Role::Heading, "Settings").is_some());
 }
 
 #[test]
@@ -423,6 +464,66 @@ fn while_the_search_is_open_the_menu_bar_goes_nowhere() {
     key(&mut ui, NamedKey::Escape);
     frames(&mut ui, 1000);
     assert!(menu_bar.state_of(&Command::OpenSearch).is_enabled());
+}
+
+/// Whether what the menu bar would do goes nowhere: the screen stays where it is when told to go.
+fn goes_nowhere(ui: &mut Ui, menu_bar: MenuBar, shown: &str) -> bool {
+    let elsewhere = if shown == "Albums" {
+        Location::Artists(None)
+    } else {
+        Location::Albums(None)
+    };
+    let elsewhere = Command::Show(elsewhere);
+    let disabled = [
+        elsewhere.clone(),
+        Command::OpenSettings,
+        Command::OpenSearch,
+    ]
+    .iter()
+    .all(|command| !menu_bar.state_of(command).is_enabled());
+    menu_bar.choose(elsewhere);
+    ui.update();
+    disabled && find(Role::Button, shown).unwrap().selected == Some(true)
+}
+
+fn a_sort_button() -> Option<String> {
+    nodes(Role::Button)
+        .into_iter()
+        .filter_map(|node| node.label)
+        .find(|label| label.starts_with("Sort by"))
+}
+
+#[test]
+fn while_a_menu_of_the_window_is_open_the_menu_bar_goes_nowhere() {
+    let song = |id: &str, title: &str| json!({ "id": id, "title": title, "duration": 100 });
+    let server = hiphile_core::test_support::SongsServer::new(vec![song("a", "Airegin")]);
+    let (_core, hiphile) = signed_in_core(server.url());
+    let (mut ui, menu_bar) = start_with_menu_bar(hiphile);
+    menu_bar.choose(Command::Show(Location::Songs));
+    wait_until(&mut ui, || {
+        a_sort_button().is_some() && find(Role::ListOption, "Airegin").is_some()
+    });
+    let close = |ui: &mut Ui| {
+        key(ui, NamedKey::Escape);
+        frames(ui, 400);
+        assert!(nodes(Role::MenuItem).is_empty());
+        assert!(menu_bar.state_of(&Command::OpenSettings).is_enabled());
+    };
+
+    press(&mut ui, Role::Button, "Servers");
+    assert!(goes_nowhere(&mut ui, menu_bar, "Songs"), "the servers");
+    assert!(find(Role::MenuItem, "Sign Out").is_some());
+    close(&mut ui);
+
+    press(&mut ui, Role::Button, &a_sort_button().unwrap());
+    assert!(goes_nowhere(&mut ui, menu_bar, "Songs"), "the order");
+    close(&mut ui);
+
+    let row = find(Role::ListOption, "Airegin").unwrap().bounds;
+    next_ui::testing::right_click(&mut ui, row.x + row.width / 2.0, row.y + row.height / 2.0);
+    assert!(!nodes(Role::MenuItem).is_empty());
+    assert!(goes_nowhere(&mut ui, menu_bar, "Songs"), "the row's");
+    close(&mut ui);
 }
 
 fn songs(ids: &[&str]) -> Vec<Song> {
@@ -648,6 +749,27 @@ fn stroke_of(shortcut: Shortcut) -> next_ui::keymap::Keystroke {
 /// The menu bar's keys come before the window's, so a key bound in both would never reach the
 /// window.
 #[test]
+fn every_screen_binds_its_keys_once() {
+    let (_core, mut ui, menu_bar, _player) = on_a_song();
+    let mut visit_all = || {
+        for destination in Destination::ALL {
+            menu_bar.choose(Command::Show(crate::navigation::location_of(destination)));
+            frames(&mut ui, 100);
+        }
+        for panel in [Command::ToggleQueue, Command::ToggleLyrics] {
+            menu_bar.choose(panel.clone());
+            frames(&mut ui, 100);
+            menu_bar.choose(panel);
+            frames(&mut ui, 100);
+        }
+        next_ui::keymap::bound_strokes().len()
+    };
+
+    let once = visit_all();
+    assert_eq!(visit_all(), once);
+}
+
+#[test]
 fn the_menu_bar_takes_no_key_the_window_binds() {
     let (_core, mut ui, menu_bar, _player) = on_a_song();
     for destination in Destination::ALL {
@@ -662,6 +784,10 @@ fn the_menu_bar_takes_no_key_the_window_binds() {
     let contexts: std::collections::HashSet<_> =
         bound.iter().map(|(_, context)| *context).collect();
     assert!(contexts.len() >= 7, "only {contexts:?} were bound");
+    assert!(
+        contexts.contains(next_home::HOME_CONTEXT),
+        "Home's keys were not bound"
+    );
 
     for (command, shortcut) in every_item() {
         let Some(shortcut) = shortcut else {

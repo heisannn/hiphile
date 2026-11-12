@@ -1,7 +1,5 @@
-use std::cell::Cell;
-
 use anti_webui::prelude::NamedKey;
-use next_ui::keymap::{KeyBinding, Keystroke, bind_keys};
+use next_ui::keymap::{KeyBinding, Keystroke, bind_keys, is_bound};
 
 /// Where the album list's keys work.
 pub(super) const ALBUMS: &str = "LibraryAlbums";
@@ -24,13 +22,9 @@ pub(super) enum AlbumsKey {
     Back,
 }
 
-thread_local! {
-    static BOUND: Cell<bool> = const { Cell::new(false) };
-}
-
 /// Binds the keys of Albums once on this thread, as the keymap is the thread's.
 pub(super) fn bind() {
-    if BOUND.with(|bound| bound.replace(true)) {
+    if is_bound::<AlbumsKey>() {
         return;
     }
     let enter = || Keystroke::named(NamedKey::Enter);

@@ -5,6 +5,7 @@ use std::sync::Arc;
 use anti_webui::core::Ui;
 use anti_webui::core::access::{AccessAction, AccessNode, Checked, perform, snapshot};
 use hiphile_core::Hiphile;
+use hiphile_core::alerts;
 use hiphile_core::test_support::{FavoritesServer, song_json};
 use next_ui::testing::{
     TestCore, click, double_click, find, focus, frames, has_text, key, key_with, middle_of, nodes,

@@ -8,10 +8,12 @@ use anti_webui_md3e::color_scheme;
 use anti_webui_md3e::components::{Ink, filled_card};
 use anti_webui_md3e::typography::TextStyle;
 
+use crate::cover::ROUND;
+use crate::focus_ring::inner_focus_ring;
 use crate::keymap::Keystroke;
 use crate::pane::INSET;
 use crate::row_text::faded_end;
-use crate::selection::selection_fill;
+use crate::selection::{CORNER, When, selection_fill, shows_keys_on};
 
 pub const CARD_MIN_WIDTH: f32 = 160.0;
 /// Between cards, across and down.
@@ -21,11 +23,7 @@ const CARD_PADDING: f32 = 12.0;
 /// Rows of songs and of cards differ too much in height for a page to be a number of them. This
 /// many stays in view.
 const PAGE_ROWS: usize = 4;
-/// More than half of any picture, which corners are cut down to: a circle.
-const ROUND: f32 = 10_000.0;
-/// A card's corners. A cover that fills the top of one is rounded as much: a picture cuts what is
-/// in it square, as if its card did not round it.
-const CORNER: f32 = 12.0;
+
 /// How many cards fit across a pane `width` wide.
 pub fn columns_for(width: f32) -> usize {
     let room = width - INSET * 2.0 + CARD_GAP;
@@ -45,26 +43,19 @@ pub enum GridMotion {
 }
 
 impl GridMotion {
-    /// What an arrow, Page Up, Page Down, Home or End without modifiers asks for.
-    pub fn of(stroke: &Keystroke) -> Option<Self> {
-        let m = stroke.modifiers();
-        if m.shift || m.ctrl || m.alt || m.logo {
-            return None;
-        }
-        let Key::Named(key) = stroke.key() else {
-            return None;
-        };
-        Some(match key {
-            NamedKey::ArrowUp => Self::Up,
-            NamedKey::ArrowDown => Self::Down,
-            NamedKey::ArrowLeft => Self::Left,
-            NamedKey::ArrowRight => Self::Right,
-            NamedKey::PageUp => Self::PageUp,
-            NamedKey::PageDown => Self::PageDown,
-            NamedKey::Home => Self::First,
-            NamedKey::End => Self::Last,
-            _ => return None,
-        })
+    /// What asks for each motion: an arrow, Page Up, Page Down, Home or End, without modifiers.
+    pub fn strokes() -> [(Keystroke, Self); 8] {
+        [
+            (NamedKey::ArrowUp, Self::Up),
+            (NamedKey::ArrowDown, Self::Down),
+            (NamedKey::ArrowLeft, Self::Left),
+            (NamedKey::ArrowRight, Self::Right),
+            (NamedKey::PageUp, Self::PageUp),
+            (NamedKey::PageDown, Self::PageDown),
+            (NamedKey::Home, Self::First),
+            (NamedKey::End, Self::Last),
+        ]
+        .map(|(key, motion)| (Keystroke::named(key), motion))
     }
 }
 
@@ -128,8 +119,6 @@ pub fn card_row(columns: usize, cards: Vec<Div>) -> Div {
         )
 }
 
-type When = Rc<dyn Fn() -> bool>;
-
 /// What [`card`] shows.
 pub struct Card {
     cover: Div,
@@ -139,6 +128,7 @@ pub struct Card {
     line: Option<Div>,
     selected: When,
     focused: When,
+    keyed: When,
 }
 
 impl Card {
@@ -152,6 +142,7 @@ impl Card {
             line: None,
             selected: Rc::new(|| false),
             focused: Rc::new(|| false),
+            keyed: Rc::new(|| false),
         }
     }
 
@@ -184,12 +175,19 @@ impl Card {
         self.focused = Rc::new(f);
         self
     }
+
+    /// Whether the keys are on the card while the focus shows, as a row list says of its rows: the
+    /// selected one, or where a step lands with none.
+    pub fn keyed_when(mut self, f: impl Fn() -> bool + 'static) -> Self {
+        self.keyed = Rc::new(f);
+        self
+    }
 }
 
 /// A filled card that reacts to the pointer as Material's do, but takes no focus of its own: what
 /// the cards are in has it and moves the selection with the keys, as a row list does. Selected, it
-/// is filled in the selection's color, less strongly without the focus. Its clicks are the
-/// caller's.
+/// is filled in the selection's color, less strongly without the focus, and the keys on it show
+/// as the focus. Its clicks are the caller's.
 pub fn card(card: Card) -> Div {
     let Card {
         cover,
@@ -199,9 +197,11 @@ pub fn card(card: Card) -> Div {
         line,
         selected,
         focused,
+        keyed,
     } = card;
     let selected = memo(move || selected());
     let focused = memo(move || focused());
+    let keyed = memo(move || keyed());
     let cover = if is_round {
         div()
             .flex()
@@ -209,6 +209,8 @@ pub fn card(card: Card) -> Div {
             .p(CARD_PADDING)
             .child(cover.w_full().aspect_ratio(1.0_f32).rounded(ROUND))
     } else {
+        // As round as md3e's card: a picture cuts what is in it square, as if the card did not
+        // round it
         cover
             .flex_none()
             .w_full()
@@ -237,7 +239,17 @@ pub fn card(card: Card) -> Div {
         }))
         .children(line);
     let ink = Ink::new(|c| c.on_surface, || false);
+    shows_keys_on(&ink, keyed);
+    // Over the card rather than on it: a picture is painted after what holds it, and would hide
+    // the ring where the cover meets the edge
+    let ring = div()
+        .absolute()
+        .inset(0)
+        .rounded(CORNER)
+        .pointer_events_none()
+        .dyn_style(move |s| inner_focus_ring(s, keyed.get(), &color_scheme()));
     let card = filled_card()
+        .relative()
         .min_w(0)
         .cursor(CursorIcon::Pointer)
         .select_none()
@@ -254,7 +266,8 @@ pub fn card(card: Card) -> Div {
             }
         })
         .child(cover)
-        .child(words);
+        .child(words)
+        .child(ring);
     ink.paint(ink.listen(card))
 }
 

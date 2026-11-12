@@ -11,24 +11,30 @@ use anti_webui_md3e::components::{
 };
 use anti_webui_md3e::icons;
 use hiphile_core::Shelf;
+use hiphile_core::favorites::Favorite;
 use hiphile_core::home::{AlbumShelf, HomeSection, Item, MAX_COLUMNS, ReloadFailed};
 use hiphile_core::navigation::Destination;
 use next_host::{follow, notices};
 use next_ui::card_grid::{Card, GridMotion, card, card_row, columns_for, step};
-use next_ui::context_menu::ContextMenu;
+use next_ui::context_menu::{ContextMenu, pressed_at};
 use next_ui::cover::{CoverKind, cover};
-use next_ui::keymap::{Keystroke, handles_keys};
-use next_ui::link::{album_artist_link, artist_line};
+use next_ui::keymap::{KeyBinding, KeyContext, bind_keys, is_bound, key_context};
+use next_ui::link::{album_artist_link, artist_line, song_line};
+use next_ui::load_state::{
+    HOME, MOST_PLAYED, NEW_ALBUMS, NONE_ON_SERVER, RECENTLY_PLAYED, RECOMMENDATIONS, load_failure,
+};
 use next_ui::menus::{album_menu, show_in_albums_item, song_menu};
-use next_ui::now_playing::{NowPlaying, follow_now_playing, skippable, song_row_label};
+use next_ui::now_playing::{NowPlaying, song_row_label};
 use next_ui::page_row::{PageRow, page_row};
 use next_ui::pane::pane;
+use next_ui::row_buttons::RowButtons;
 use next_ui::row_cover::row_cover;
 use next_ui::row_list::is_context_click;
 use next_ui::section::{
     section_failure, section_heading, section_heading_with, section_loading, section_note,
 };
-use next_ui::song_row::song_with_cover;
+use next_ui::selection::KeysShown;
+use next_ui::song_row::{SongRow, song_words};
 use next_ui::{Command, Screen, ScreenContext};
 use subsonic::{Album, Song};
 
@@ -41,10 +47,25 @@ const BOTTOM: f32 = 8.0;
 const RELOADING: f32 = 40.0;
 const RELOADING_INDICATOR: f32 = 20.0;
 
+/// Where Home's keys work.
+pub const HOME_CONTEXT: &str = "Home";
+
 /// Home, which takes the focus when it comes on show.
 pub fn home(cx: &ScreenContext) -> Screen {
+    bind();
     let node = node_ref();
     Screen::new(Destination::Home.label(), pane(page(cx, node))).home(node)
+}
+
+/// Binds Home's keys once on this thread, as the keymap is the thread's.
+fn bind() {
+    if is_bound::<Asked>() {
+        return;
+    }
+    let bindings = Asked::strokes()
+        .into_iter()
+        .map(|(stroke, asked)| KeyBinding::new(stroke, asked, HOME_CONTEXT));
+    bind_keys(bindings);
 }
 
 /// What a selection or a heading is scrolled to by.
@@ -93,6 +114,9 @@ struct Page {
     selection: Signal<Option<Item>>,
     /// Whether the page itself has the focus, rather than a button on it.
     focused: Signal<bool>,
+    /// The item the keys are on while the focus shows: the selected one, or the first with none.
+    keys_on: Memo<Option<Item>>,
+    keys: KeysShown,
     node: NodeRef,
     menu: ContextMenu,
     places: Places,
@@ -109,24 +133,37 @@ fn page(cx: &ScreenContext, node: NodeRef) -> Div {
         move |failed: ReloadFailed| snackbars.show(Snackbar::new(failed.message()).long()),
     );
     let width = signal(0.0f32);
+    let shelves = memo(move || {
+        recommended.with(|recommended| shelved.with(|shelved| Shelves::of(recommended, shelved)))
+    });
+    let columns = memo(move || columns_for(width.get()).min(MAX_COLUMNS));
+    let (selection, focused, keys) = (signal(None), signal(false), KeysShown::new());
+    let keys_on = memo(move || {
+        if !keys.get() || !focused.get() {
+            return None;
+        }
+        selection.get().or_else(|| {
+            let columns = columns.get();
+            shelves.with(|shelves| shelves.rows(columns).into_iter().flatten().next())
+        })
+    });
     let page = Page {
         cx: cx.clone(),
-        shelves: memo(move || {
-            recommended
-                .with(|recommended| shelved.with(|shelved| Shelves::of(recommended, shelved)))
-        }),
+        shelves,
         is_reloadable: memo(move || recommended.with(|status| status.is_reloadable())),
         is_recommending: memo(move || recommended.with(|status| status.is_recommending())),
-        columns: memo(move || columns_for(width.get()).min(MAX_COLUMNS)),
-        selection: signal(None),
-        focused: signal(false),
+        columns,
+        selection,
+        focused,
+        keys_on,
+        keys,
         node,
-        menu: ContextMenu::new(),
+        menu: ContextMenu::new(cx.overlays),
         places: Places::default(),
-        now_playing: follow_now_playing(workspace),
+        now_playing: cx.known.now_playing(),
     };
-    let shelves = page.shelves;
     let sections = memo(move || shelves.with(Shelves::sections));
+    let common_failure = memo(move || shelves.with(Shelves::common_failure));
     let (focused, node) = (page.focused, page.node);
     let shown = Cell::new(false);
     let view = div()
@@ -144,16 +181,34 @@ fn page(cx: &ScreenContext, node: NodeRef) -> Div {
                 node.focus();
             }
         })
-        .child(for_each(
-            move || sections.get(),
-            |section| *section as u8,
-            {
+        .child(dyn_view({
+            let page = page.clone();
+            move || {
                 let page = page.clone();
-                move |section| page.section(section)
-            },
-        ))
+                match common_failure.get() {
+                    Some(reason) => untrack(|| page.failed_page(&reason).into_view()),
+                    None => untrack(|| {
+                        for_each(
+                            move || sections.get(),
+                            |section| *section as u8,
+                            move |section| page.section(section),
+                        )
+                        .into_view()
+                    }),
+                }
+            }
+        }))
         .child(page.menu.view());
-    handles_keys(view, move |stroke| page.take(stroke))
+    let view = keys.follow(view);
+    let context = {
+        let (asked, taken) = (page.clone(), page);
+        KeyContext::new(
+            HOME_CONTEXT,
+            move |key| asked.is_enabled(*key),
+            move |key| taken.take(key),
+        )
+    };
+    key_context(view, &context)
 }
 
 impl Page {
@@ -268,7 +323,8 @@ impl Page {
         let look = Card::new(cover(url, CoverKind::Album), album.name())
             .line(line)
             .selected_when(self.is_selected(&item))
-            .focused_when(self.is_focused());
+            .focused_when(self.is_focused())
+            .keyed_when(self.is_keyed(&item));
         let open = {
             let (this, item) = (self.clone(), item.clone());
             move |e: &PointerEvent| {
@@ -286,10 +342,10 @@ impl Page {
     fn albums_status(&self, shelf: AlbumShelf, status: &Shelf<Album>) -> Div {
         match (shelf, status) {
             (_, Shelf::Failed(reason)) => self.failure(reason, section_with(shelf)),
-            (AlbumShelf::New, Shelf::Loaded(_)) => section_note("This server has no albums."),
-            (AlbumShelf::Recommended, _) => section_loading("Loading recommendations"),
-            (AlbumShelf::MostPlayed, _) => section_loading("Loading most played albums"),
-            (AlbumShelf::New, _) => section_loading("Loading new albums"),
+            (AlbumShelf::New, Shelf::Loaded(_)) => section_note(NONE_ON_SERVER),
+            (AlbumShelf::Recommended, _) => section_loading(RECOMMENDATIONS.loading()),
+            (AlbumShelf::MostPlayed, _) => section_loading(MOST_PLAYED.loading()),
+            (AlbumShelf::New, _) => section_loading(NEW_ALBUMS.loading()),
         }
     }
 
@@ -305,7 +361,7 @@ impl Page {
                 div().flex().flex_col().flex_none().children(rows)
             }),
             Shelf::Failed(reason) => untrack(|| this.failure(&reason, HomeSection::RecentlyPlayed)),
-            Shelf::Loading => untrack(|| section_loading("Loading recently played songs")),
+            Shelf::Loading => untrack(|| section_loading(RECENTLY_PLAYED.loading())),
         })
     }
 
@@ -326,15 +382,39 @@ impl Page {
             let (title, state, skipped) = (song.title().to_owned(), state.clone(), skipped.clone());
             move || song_row_label(&title, state(), skipped())
         };
-        let cover = row_cover(&self.cx.workspace, song.cover_art(), CoverKind::Album);
-        let content = skippable(
-            song_with_cover(song, cover, state, &self.cx.commands),
-            skipped,
+        let groups = {
+            let (this, item) = (self.clone(), item.clone());
+            move || {
+                this.target(&item)
+                    .map(|target| this.menu_of(&target))
+                    .unwrap_or_default()
+            }
+        };
+        let (commands, known) = (&self.cx.commands, self.cx.known);
+        let buttons = RowButtons::new(
+            Favorite::Song(song.clone()),
+            commands,
+            known,
+            self.menu,
+            groups,
+        )
+        .selected_when(self.is_selected(&item));
+        let words = song_words(song, Some(song_line(song, commands)));
+        let content = next_ui::song_row::song_row(
+            SongRow::new(song, words, state)
+                .cover(row_cover(
+                    &self.cx.workspace,
+                    song.cover_art(),
+                    CoverKind::Album,
+                ))
+                .skipped_when(skipped)
+                .buttons(buttons),
         );
         let row = PageRow::new(content)
             .label(label)
             .selected_when(self.is_selected(&item))
-            .focused_when(self.is_focused());
+            .focused_when(self.is_focused())
+            .keyed_when(self.is_keyed(&item));
         let click = {
             let (this, item, songs) = (self.clone(), item.clone(), songs.clone());
             move |e: &PointerEvent| {
@@ -357,6 +437,24 @@ impl Page {
             .on_pointer_down(self.menu_on_press(item))
     }
 
+    /// Every shelf that failed for `reason`, said once, with Retry, which tries each again and
+    /// leaves the focus on the page as it gives way to the wait.
+    fn failed_page(&self, reason: &str) -> Div {
+        let shelves = self.cx.workspace.shelves().clone();
+        let node = self.node;
+        load_failure(HOME.load_failed(), reason.to_owned(), move || {
+            for section in [
+                HomeSection::Recommended,
+                HomeSection::RecentlyPlayed,
+                HomeSection::MostPlayed,
+                HomeSection::NewAlbums,
+            ] {
+                shelves.retry(section);
+            }
+            node.focus();
+        })
+    }
+
     /// What a shelf that could not be had says, with Retry, which leaves the focus on the page as
     /// it gives way to the wait.
     fn failure(&self, reason: &str, section: HomeSection) -> Div {
@@ -371,6 +469,11 @@ impl Page {
     fn is_selected(&self, item: &Item) -> impl Fn() -> bool + 'static {
         let (selection, item) = (self.selection, item.clone());
         move || selection.with(|selected| selected.as_ref() == Some(&item))
+    }
+
+    fn is_keyed(&self, item: &Item) -> impl Fn() -> bool + 'static {
+        let (keys_on, item) = (self.keys_on, item.clone());
+        move || keys_on.with(|on| on.as_ref() == Some(&item))
     }
 
     fn is_focused(&self) -> impl Fn() -> bool + 'static {
@@ -391,12 +494,7 @@ impl Page {
             let Some(target) = this.target(&item) else {
                 return;
             };
-            let scale = window_scale();
-            let at = PointF::new(
-                scale.to_logical(e.position.x),
-                scale.to_logical(e.position.y),
-            );
-            this.menu.open_at(at, this.menu_of(&target));
+            this.menu.open_at(pressed_at(e), this.menu_of(&target));
         }
     }
 
@@ -414,18 +512,22 @@ impl Page {
         }
     }
 
-    fn take(&self, stroke: &Keystroke) -> bool {
-        let Some(asked) = Asked::by(stroke) else {
-            return false;
-        };
+    /// Whether `asked` does something now. While a button on the page has the focus, Enter and its
+    /// modified forms are the button's.
+    fn is_enabled(&self, asked: Asked) -> bool {
         if asked.is_for_buttons() && !self.focused.get_untracked() {
             return false;
         }
         match asked {
-            Asked::Move(motion) => {
-                self.move_selection(motion);
-                true
-            }
+            Asked::Move(_) => true,
+            Asked::Do(intent) => self.command(intent).is_some(),
+        }
+    }
+
+    fn take(&self, asked: Asked) {
+        self.keys.used_a_key();
+        match asked {
+            Asked::Move(motion) => self.move_selection(motion),
             Asked::Do(intent) => self.run(intent),
         }
     }
@@ -457,23 +559,24 @@ impl Page {
         self.selection.set(Some(to));
     }
 
-    /// Whether it did `intent` to the selection, which it does only while the selection shows.
-    fn run(&self, intent: Intent) -> bool {
-        let Some(target) = self
+    fn run(&self, intent: Intent) {
+        self.send(self.command(intent));
+    }
+
+    /// What doing `intent` to the selection sends, which it does only while the selection shows.
+    fn command(&self, intent: Intent) -> Option<Command> {
+        let target = self
             .selection
             .get_untracked()
-            .and_then(|item| self.target(&item))
-        else {
-            return false;
-        };
+            .and_then(|item| self.target(&item))?;
         let known = self.cx.known;
         // Which way it goes is not known yet
         if intent == Intent::ToggleFavorite
             && untrack(|| known.is_favorite(&target.favorite().target())).is_none()
         {
-            return false;
+            return None;
         }
-        self.send(target.command(intent))
+        target.command(intent)
     }
 
     fn target(&self, item: &Item) -> Option<Target> {
@@ -483,12 +586,10 @@ impl Page {
         })
     }
 
-    fn send(&self, command: Option<Command>) -> bool {
-        let Some(command) = command else {
-            return false;
-        };
-        self.cx.commands.send(command);
-        true
+    fn send(&self, command: Option<Command>) {
+        if let Some(command) = command {
+            self.cx.commands.send(command);
+        }
     }
 }
 

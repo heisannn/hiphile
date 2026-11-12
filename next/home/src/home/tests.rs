@@ -10,9 +10,11 @@ use hiphile_core::favorites::Favorite;
 use hiphile_core::navigation::Location;
 use hiphile_core::test_support::HomeServer;
 use next_ui::cover::install_covers;
+use next_ui::keymap::Keystroke;
 use next_ui::testing::{
     TestCore, click_text, double_click, find, focus, key, key_with, middle_of, nodes, press,
-    recording_commands, right_click, screen_context, signed_in_core, start_at, wait_until,
+    recording_commands, right_click, screen_context, shows_keys, signed_in_core, start_at,
+    wait_until,
 };
 use next_ui::{AlbumAction, Known};
 use playback::Placement;
@@ -220,7 +222,7 @@ fn a_server_with_no_albums_says_so() {
     let _shown = settled_home_on(server(&[], 0), SIX_ACROSS);
 
     assert_eq!(headings(), ["New albums"]);
-    assert!(shows_text_starting("This server has no albums."));
+    assert!(shows_text_starting("None on this server"));
 }
 
 #[test]
@@ -243,7 +245,7 @@ fn loading_and_failing_shelves_keep_their_place() {
             "New albums"
         ]
     );
-    assert!(find(Role::ProgressBar, "Loading recently played songs").is_some());
+    assert!(find(Role::ProgressBar, "Loading Recently Played Songs").is_some());
     let retries = nodes(Role::Button)
         .into_iter()
         .filter(|button| {
@@ -255,6 +257,41 @@ fn loading_and_failing_shelves_keep_their_place() {
         .count();
     assert_eq!(retries, 3);
     shown.server.release("recent");
+}
+
+fn retries() -> usize {
+    nodes(Role::Button)
+        .into_iter()
+        .filter(|button| {
+            button
+                .label
+                .as_deref()
+                .is_some_and(|l| l.ends_with("Retry"))
+        })
+        .count()
+}
+
+#[test]
+fn shelves_that_all_failed_alike_say_so_once_and_retry_together() {
+    let server = recommending(server(&["s1"], 1), 1);
+    let lists = ["newest", "recent", "frequent", "random"];
+    for list in lists {
+        server.refuse(list);
+    }
+    let mut shown = home_on(server, SIX_ACROSS);
+    wait_until(&mut shown.ui, || {
+        find(Role::Heading, "Couldn't load Home").is_some()
+    });
+
+    assert_eq!(headings(), ["Couldn't load Home"]);
+    assert_eq!(retries(), 1);
+
+    for list in lists {
+        shown.server.accept(list);
+    }
+    press(&mut shown.ui, Role::Button, "Retry");
+    wait_until(&mut shown.ui, || options() == ["r0", "s1", "a0"]);
+    assert_eq!(headings(), ["Recommended", "Recently played", "New albums"]);
 }
 
 #[test]
@@ -299,6 +336,24 @@ fn the_cards_across_follow_the_width_of_the_window() {
     // No more than the shelves have albums for
     shown.resize(300 * 16);
     assert_eq!(new_cards(), 2 * MAX_COLUMNS);
+}
+
+#[test]
+fn the_keys_show_where_they_are_until_the_pointer_presses() {
+    let mut shown = settled_home_on(server(&[], 2), SIX_ACROSS);
+    assert!(!shows_keys(Role::ListOption, "a0"));
+
+    shown.keys(&[NamedKey::ArrowDown]);
+    assert_eq!(selected_label().as_deref(), Some("a0"));
+    assert!(shows_keys(Role::ListOption, "a0"));
+    shown.keys(&[NamedKey::ArrowRight]);
+    assert!(shows_keys(Role::ListOption, "a1"));
+    assert!(!shows_keys(Role::ListOption, "a0"));
+
+    click_text(&mut shown.ui, "a0");
+    shown.lay_out();
+    assert_eq!(selected_label().as_deref(), Some("a0"));
+    assert!(!shows_keys(Role::ListOption, "a0"));
 }
 
 #[test]
@@ -495,10 +550,11 @@ fn key_reloads_the_recommendations(key: NamedKey) {
 
     let server = &shown.server;
     wait_until(&mut shown.ui, || {
-        server.asked("random") == 2 && find(Role::Button, "Reload Recommendations").is_some()
+        server.asked("random") == 2
+            && find(Role::Button, "Reload Recommendations").is_some()
+            && shows_text_starting("Couldn't get new recommendations.")
     });
     assert_eq!(options(), ["r0", "a0"]);
-    assert!(shows_text_starting("Couldn't get new recommendations."));
     assert!(shown.sent().is_empty());
     // The page has kept the focus while the button was away
     shown.keys(&[NamedKey::ArrowDown]);

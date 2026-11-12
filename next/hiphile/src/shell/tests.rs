@@ -1,9 +1,9 @@
-use anti_webui::core::event::NamedKey;
+use anti_webui::core::event::{Key, Modifiers, NamedKey};
 use anti_webui::prelude::Role;
 use next_player::testing::{CoverServer, png};
 use next_ui::testing::{
-    NOWHERE, SavedLibrary, core, find, frames, has_text, key, nodes, press, signed_in_core,
-    signed_in_core_with_library, start, typed, wait_until,
+    NOWHERE, SavedLibrary, core, find, focus, frames, has_text, key, key_with, nodes, press,
+    signed_in_core, signed_in_core_with_library, start, typed, wait_until,
 };
 use serde_json::json;
 
@@ -67,6 +67,21 @@ fn settings_open_over_the_window_and_escape_closes_them() {
     key(&mut ui, NamedKey::Escape);
     next_ui::testing::frames(&mut ui, 600);
     assert!(nodes(Role::Dialog).is_empty());
+}
+
+#[test]
+fn signed_out_the_settings_open_from_the_top_end() {
+    let (_core, hiphile) = core("");
+    let mut ui = start(move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window));
+    assert!(find(Role::Button, "Servers").is_none());
+
+    press(&mut ui, Role::Button, "Settings");
+    assert!(find(Role::Heading, "Settings").is_some());
+
+    key(&mut ui, NamedKey::Escape);
+    frames(&mut ui, 600);
+    assert!(find(Role::Heading, "Settings").is_none());
+    assert!(heading("Sign In"));
 }
 
 #[test]
@@ -135,6 +150,45 @@ fn in_the_smallest_window_the_rail_fits_and_the_screens_actions_keep_clear_of_th
     let servers = find(Role::Button, "Servers").expect("the servers");
     assert!(settings.bounds.right() <= servers.bounds.x);
     assert!(servers.bounds.right() <= width as f32);
+}
+
+fn focused() -> anti_webui::core::access::AccessNode {
+    let tree = anti_webui::core::access::snapshot();
+    tree.get(tree.focus.expect("something focused"))
+        .unwrap()
+        .clone()
+}
+
+fn tab(ui: &mut anti_webui::core::Ui, modifiers: Modifiers) {
+    key_with(ui, Key::Named(NamedKey::Tab), modifiers);
+}
+
+#[test]
+fn tab_reaches_the_settings_and_the_servers_after_the_screen_and_before_the_player() {
+    let (_core, hiphile) = signed_in_core(NOWHERE);
+    let mut ui = start(move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window));
+    press(&mut ui, Role::Button, "Songs");
+    wait_until(&mut ui, || {
+        nodes(Role::Button)
+            .iter()
+            .any(|node| node.label.as_deref().is_some_and(|l| l.starts_with("Sort")))
+    });
+    let player = find(Role::Toolbar, "Player").unwrap().bounds;
+    let rail = find(Role::Navigation, "Destinations").unwrap().bounds;
+
+    focus(&mut ui, Role::Button, "Settings");
+    tab(&mut ui, Modifiers::default().with_shift());
+    let before = focused();
+    assert!(before.bounds.bottom() <= player.y, "{before:?}");
+    assert!(before.bounds.x >= rail.right(), "{before:?}");
+
+    focus(&mut ui, Role::Button, "Settings");
+    tab(&mut ui, Modifiers::default());
+    assert_eq!(focused().label.as_deref(), Some("Servers"));
+
+    tab(&mut ui, Modifiers::default());
+    let after = focused();
+    assert!(after.bounds.y >= player.y, "{after:?}");
 }
 
 #[test]
@@ -310,4 +364,79 @@ fn once_a_rows_menu_has_closed_the_keys_go_to_the_list_again() {
 
     key(&mut ui, NamedKey::ArrowDown);
     wait_until(&mut ui, || selected_song().as_deref() == Some("Cherokee"));
+}
+
+fn two_albums() -> SavedLibrary {
+    SavedLibrary {
+        albums: serde_json::from_value(json!([
+            { "id": "a", "name": "Alpha", "artist": "Artist", "artistId": "ar" },
+            { "id": "b", "name": "Beta", "artist": "Artist", "artistId": "ar" },
+        ]))
+        .unwrap(),
+        ..SavedLibrary::default()
+    }
+}
+
+fn list_width() -> f64 {
+    let handle = find(Role::Separator, "List Width").expect("the handle");
+    handle.value.expect("a width").now
+}
+
+fn is_selected(album: &str) -> bool {
+    find(Role::ListOption, album).is_some_and(|row| row.selected == Some(true))
+}
+
+#[test]
+fn the_rail_comes_back_to_the_album_left() {
+    let (_core, hiphile, _catalog) = signed_in_core_with_library(NOWHERE, &two_albums());
+    let mut ui = start(move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window));
+    press(&mut ui, Role::Button, "Albums");
+    wait_until(&mut ui, || is_selected("Alpha"));
+    press(&mut ui, Role::ListOption, "Beta");
+    press(&mut ui, Role::Button, "Home");
+
+    press(&mut ui, Role::Button, "Albums");
+
+    wait_until(&mut ui, || find(Role::ListOption, "Beta").is_some());
+    assert!(is_selected("Beta"));
+    press(&mut ui, Role::Button, "Back");
+    assert_eq!(find(Role::Button, "Home").unwrap().selected, Some(true));
+}
+
+#[test]
+fn a_list_keeps_the_width_given_it_and_saves_it() {
+    let (_core, hiphile, _catalog) = signed_in_core_with_library(NOWHERE, &two_albums());
+    let widths = hiphile.settings().pane_widths().clone();
+    let mut ui = start(move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window));
+    press(&mut ui, Role::Button, "Albums");
+    wait_until(&mut ui, || find(Role::ListOption, "Alpha").is_some());
+    let first = list_width();
+    next_ui::testing::focus(&mut ui, Role::Separator, "List Width");
+
+    key(&mut ui, NamedKey::ArrowRight);
+    let widened = list_width();
+    press(&mut ui, Role::Button, "Artists");
+    let artists = list_width();
+    press(&mut ui, Role::Button, "Albums");
+
+    assert!(widened > first, "{widened} from {first}");
+    assert_eq!(list_width(), widened);
+    assert_eq!(artists, first);
+    let saved = widths.snapshot();
+    assert_eq!(saved.width(Pane::AlbumList), Some(widened as f32));
+    assert_eq!(saved.width(Pane::ArtistList), None);
+}
+
+#[test]
+fn a_list_starts_as_wide_as_it_was_left() {
+    let (_core, hiphile, _catalog) = signed_in_core_with_library(NOWHERE, &two_albums());
+    hiphile
+        .settings()
+        .pane_widths()
+        .set_width(Pane::AlbumList, 400.0);
+    let mut ui = start(move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window));
+
+    press(&mut ui, Role::Button, "Albums");
+
+    assert_eq!(list_width(), 400.0);
 }

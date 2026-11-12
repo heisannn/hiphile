@@ -13,7 +13,7 @@ use hiphile_core::playlists::PlaylistList;
 use next_ui::details::{format_duration, format_playlist_count, format_song_count, join_details};
 use next_ui::keymap::{KeyContext, key_context};
 use next_ui::list_pane::{ListHeader, list_filter, list_header, refresh_failure};
-use next_ui::load_state::{empty_state, load_failure, no_matches, pane_loading};
+use next_ui::load_state::{PLAYLISTS, empty_state, load_failure, no_matches, pane_loading};
 use next_ui::row_list::{ROW_PADDING, RowList, is_context_click, row_list};
 use next_ui::row_text::row_text;
 use next_ui::{AlbumAction, Command, Commands};
@@ -33,7 +33,7 @@ pub(super) fn pane(screen: &Playlists) -> Div {
     let new = styled_icon_button(icons::ADD, IconButtonStyle::standard())
         .access(|a| a.label("New Playlist…"))
         .on_click(move |_| commands.send(Command::NewPlaylist(Arc::from([]))));
-    let filter = screen.filter;
+    let (filter, list) = (screen.filter, screen.list_node);
     let state = screen.state.clone();
     div()
         .size_full()
@@ -41,7 +41,7 @@ pub(super) fn pane(screen: &Playlists) -> Div {
         .flex_col()
         .child(show(
             move || count.get().is_some_and(|count| count > 0),
-            move || list_filter(filter, "Filter Playlists"),
+            move || list_filter(filter, "Filter Playlists", list),
         ))
         .child(list_header(
             ListHeader::new(move || {
@@ -58,7 +58,7 @@ pub(super) fn pane(screen: &Playlists) -> Div {
             let state = state.clone();
             untrack(move || {
                 error.map(|error| {
-                    refresh_failure("Couldn't refresh playlists", error, move || {
+                    refresh_failure(PLAYLISTS.refresh_failed(), error, move || {
                         state.refresh();
                     })
                 })
@@ -101,18 +101,18 @@ fn content(screen: &Playlists) -> Div {
             let content = content.get();
             let screen = screen.clone();
             untrack(move || match content {
-                Content::Loading => pane_loading("Loading Playlists"),
+                Content::Loading => pane_loading(PLAYLISTS.loading()),
                 Content::Failed(error) => {
                     let state = screen.state.clone();
-                    load_failure("Couldn't load playlists", error, move || state.retry_list())
+                    load_failure(PLAYLISTS.load_failed(), error, move || state.retry_list())
                 }
                 Content::Empty => empty_state(
-                    "No playlists yet",
+                    &PLAYLISTS.none(),
                     None,
                     Some(new_playlist_button(&screen.cx.commands)),
                 ),
                 Content::NoMatches(query) => no_matches(
-                    &format!("No playlists match “{query}”"),
+                    move || query.clone(),
                     screen.cx.workspace.session().missing_readings_note(),
                 ),
                 Content::Rows => rows(&screen),

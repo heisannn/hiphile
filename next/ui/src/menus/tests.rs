@@ -9,12 +9,12 @@ use serde_json::json;
 use subsonic::PlaylistId;
 
 use super::*;
-use crate::ScreenContext;
 use crate::context_menu::ContextMenu;
 use crate::testing::{
     NOWHERE, TestCore, find, frames, nodes, press, recording_commands, screen_context,
     signed_in_core, start, wait_until,
 };
+use crate::{Overlays, ScreenContext};
 
 fn song(id: &str, title: &str) -> Song {
     serde_json::from_value(json!({
@@ -48,7 +48,7 @@ fn on(server: &str, hiphile_ready: impl FnOnce(&hiphile_core::Hiphile)) -> Shown
     let (core, hiphile) = signed_in_core(server);
     hiphile_ready(&hiphile);
     let (commands, sent) = recording_commands();
-    let menu = ContextMenu::new();
+    let menu = ContextMenu::new(Overlays::new());
     let made = Rc::new(RefCell::new(None));
     let ui = start({
         let made = made.clone();

@@ -3,4 +3,4 @@
 mod home;
 mod model;
 
-pub use home::home;
+pub use home::{HOME_CONTEXT, home};

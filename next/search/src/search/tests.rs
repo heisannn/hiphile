@@ -173,7 +173,7 @@ fn it_opens_empty_with_the_focus_and_finds_each_kind_as_typed() {
     assert_eq!(headings(), ["Songs"]);
 
     search.ask("nothing like it");
-    search.wait_until(|| has_text("Nothing matches."));
+    search.wait_until(|| has_text("No matches for “nothing like it”"));
     assert!(found().is_empty());
 }
 
@@ -342,12 +342,17 @@ fn the_first_reading_shows_and_a_change_during_it_is_read_too() {
 }
 
 #[test]
-fn without_a_saved_library_it_says_so() {
+fn without_a_saved_library_it_says_so_and_how_to_save_one() {
     let (core, hiphile) = signed_in_core(NOWHERE);
     let mut search = Searching::new(core, hiphile, None);
 
     search.open();
 
-    search.wait_until(|| has_text("There's no saved library to search."));
+    search.wait_until(|| find(Role::Heading, "Couldn't load the library").is_some());
+    assert!(has_text(
+        "There's no library saved on this computer to search. Check that the disk has free \
+         space, then sign out and sign in again."
+    ));
+    assert!(find(Role::Button, "Retry").is_some());
     assert!(!is_loading());
 }

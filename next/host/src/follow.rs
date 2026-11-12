@@ -17,6 +17,10 @@ pub fn follow<T: Clone + Send + Sync + 'static>(mut changes: watch::Receiver<T>)
     let to_ui = ui_channel({
         let told = told.clone();
         move |()| {
+            // What another channel was told first, in the same round, may have taken the owner away
+            if !value.is_alive() {
+                return;
+            }
             // Cleared before reading, so that a change after the read is told again
             told.store(false, Ordering::SeqCst);
             // A copy first: setting runs the view, which may call into the core, and the core

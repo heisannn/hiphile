@@ -7,6 +7,7 @@ use anti_webui_md3e::color_scheme;
 use anti_webui_md3e::components::{indeterminate_circular_progress, wavy_progress_eased};
 use anti_webui_md3e::typography::TextStyle;
 use hiphile_core::format::format_duration;
+use next_ui::focus_ring::focus_ring;
 use playback::PlayerSnapshot;
 
 use crate::reading::keep_reading;
@@ -267,13 +268,7 @@ pub(crate) fn handle(
                     let c = color_scheme();
                     let t = fraction();
                     let s = s.bg(c.primary).left(pct(t * 100.0)).ml(-HANDLE * t);
-                    if state.focus_visible() {
-                        s.outline(3.0_f32)
-                            .outline_offset(2.0_f32)
-                            .outline_color(c.secondary)
-                    } else {
-                        s
-                    }
+                    focus_ring(s, state.focus_visible(), &c)
                 })
         },
     )

@@ -257,7 +257,7 @@ fn a_failed_reading_says_why_and_retry_reads_again() {
     let mut shown = songs_on(&server);
 
     wait_until(&mut shown.ui, || {
-        find(Role::Heading, "Songs didn't load").is_some()
+        find(Role::Heading, "Couldn't load songs").is_some()
     });
     server.accept();
     press(&mut shown.ui, Role::Button, "Retry");
@@ -271,7 +271,7 @@ fn a_failed_refresh_keeps_the_songs_and_retry_reads_again() {
     server.refuse();
 
     shown.song_list().reload();
-    wait_until(&mut shown.ui, || has_text("Songs didn't update"));
+    wait_until(&mut shown.ui, || has_text("Couldn't refresh songs"));
     assert_eq!(rows(), ["Airegin", "Blues", "Cherokee"]);
     server.accept();
     server.set_songs([three(), vec![song_json("d", "Dolphin Dance", 400)]].concat());
@@ -281,7 +281,7 @@ fn a_failed_refresh_keeps_the_songs_and_retry_reads_again() {
         &mut shown,
         ["Airegin", "Blues", "Cherokee", "Dolphin Dance"],
     );
-    assert!(!has_text("Songs didn't update"));
+    assert!(!has_text("Couldn't refresh songs"));
 }
 
 #[test]
@@ -306,7 +306,7 @@ fn a_server_without_songs_says_so() {
     let server = SongsServer::new(Vec::new());
     let mut shown = songs_on(&server);
 
-    wait_until(&mut shown.ui, || has_text("This server has no songs"));
+    wait_until(&mut shown.ui, || has_text("No songs on this server"));
 }
 
 #[test]
@@ -404,12 +404,13 @@ fn a_heading_clicked_during_a_filter_holds_until_the_filter_is_emptied() {
     wait_for_rows(&mut shown, ["Cherokee", "Blues", "Airegin"]);
 
     // Typing on keeps to the heading
-    typed(&mut shown.ui, "e");
-    key(&mut shown.ui, NamedKey::Backspace);
-    let list = shown.song_list();
-    wait_until(&mut shown.ui, || list.status().query() == "e");
+    focus(&mut shown.ui, Role::TextInput, "Filter Songs");
+    typed(&mut shown.ui, "r");
+    wait_for_rows(&mut shown, ["Cherokee"]);
     assert!(find(Role::Button, "Time, Ascending").is_some());
+    key(&mut shown.ui, NamedKey::Backspace);
     wait_for_rows(&mut shown, ["Cherokee", "Blues", "Airegin"]);
+    assert!(find(Role::Button, "Time, Ascending").is_some());
 
     // A new filter ranks again, with the sort kept for when it is emptied
     filter_by(&mut shown, "");
@@ -417,7 +418,7 @@ fn a_heading_clicked_during_a_filter_holds_until_the_filter_is_emptied() {
     filter_by(&mut shown, "e");
     wait_until(&mut shown.ui, || find(Role::Button, "Time").is_some());
     filter_by(&mut shown, "nobody");
-    wait_until(&mut shown.ui, || has_text("No songs match “nobody”"));
+    wait_until(&mut shown.ui, || has_text("No matches for “nobody”"));
     assert!(rows().is_empty());
 }
 
@@ -455,7 +456,7 @@ fn the_first_song_stays_selected_until_one_is_chosen() {
 
     filter_by(&mut shown, "nothing matches this");
     wait_until(&mut shown.ui, || {
-        has_text("No songs match “nothing matches this”")
+        has_text("No matches for “nothing matches this”")
     });
     filter_by(&mut shown, "");
     wait_for_rows(&mut shown, ["Cherokee", "Blues", "Airegin"]);

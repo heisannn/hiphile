@@ -16,7 +16,7 @@ use anti_webui::prelude::{IntoView, Role, on_cleanup};
 use anti_webui_md3e::components::snackbars;
 use slotmap::KeyData;
 
-use crate::{Command, Commands, Covers, Known, ScreenContext};
+use crate::{Command, Commands, Known, Overlays, ScreenContext};
 
 mod library;
 
@@ -79,6 +79,25 @@ pub fn find(role: Role, label: &str) -> Option<AccessNode> {
 fn without_icons(label: &str) -> &str {
     let is_icon = |c: char| ('\u{e000}'..='\u{f8ff}').contains(&c);
     label.trim_start_matches(|c: char| is_icon(c) || c.is_whitespace())
+}
+
+/// Whether the node with `role` and `label` shows that the keys are on it, with the ring md3e's
+/// components show their focus with, on it or on what is in it.
+pub fn shows_keys(role: Role, label: &str) -> bool {
+    let node = find(role, label).unwrap_or_else(|| panic!("no {role:?} named {label:?}"));
+    with_doc(|d| {
+        let mut next = vec![KeyData::from_ffi(node.id).into()];
+        while let Some(id) = next.pop() {
+            let Some(node) = d.get(id) else {
+                continue;
+            };
+            if node.computed.outline_width > 0.0 {
+                return true;
+            }
+            next.extend(node.children.iter().copied());
+        }
+        false
+    })
 }
 
 pub fn nodes(role: Role) -> Vec<AccessNode> {
@@ -403,5 +422,5 @@ pub fn screen_context(hiphile: &hiphile_core::Hiphile, commands: Commands) -> Sc
     let known = Known::follow(hiphile, &workspace);
     let kept = hiphile.clone();
     on_cleanup(move || drop(kept));
-    ScreenContext::new(workspace, commands, known, snackbars(), Covers::new())
+    ScreenContext::new(workspace, commands, known, snackbars(), Overlays::new())
 }

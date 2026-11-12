@@ -3,10 +3,11 @@ use std::rc::Rc;
 use anti_webui::core::geometry::{PointF, RectF};
 use anti_webui::prelude::*;
 use anti_webui_md3e::components::{
-    IconButtonStyle, MenuItem, MenuStyle, styled_icon_button, styled_menu,
+    IconButtonStyle, MenuItem, MenuStyle, icon_toggle_button, styled_menu,
 };
 use anti_webui_md3e::icons;
 
+use crate::Overlays;
 use crate::row_list::{is_context_click, row_control};
 
 /// A menu of the items given as it opens: where the pointer was pressed, or hanging from a button.
@@ -29,16 +30,13 @@ pub struct ContextMenu {
     point: NodeRef,
 }
 
-impl Default for ContextMenu {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ContextMenu {
-    pub fn new() -> Self {
+    /// Counted in `overlays` while it is open, for as long as the current owner lives.
+    pub fn new(overlays: Overlays) -> Self {
+        let open = signal(false);
+        overlays.add(move || open.get());
         Self {
-            open: signal(false),
+            open,
             at: signal(RectF::new(0.0, 0.0, 0.0, 0.0)),
             placement: signal(Placement::BelowStart),
             from: signal(None),
@@ -124,13 +122,28 @@ impl ContextMenu {
     }
 }
 
+/// Where `e` was pressed, in logical pixels of the window, as a menu opens at.
+pub fn pressed_at(e: &PointerEvent) -> PointF {
+    let scale = window_scale();
+    PointF::new(
+        scale.to_logical(e.position.x),
+        scale.to_logical(e.position.y),
+    )
+}
+
 /// The button at the end of a row or a bar that opens `menu` with what `groups` makes then, below
-/// it. Pressing it does nothing to the row it is in.
+/// it. It looks pressed while that is open. Pressing it does nothing to the row it is in.
 pub fn more_button(menu: ContextMenu, groups: impl Fn() -> Vec<Vec<MenuItem>> + 'static) -> Div {
     let anchor = node_ref();
-    let button = styled_icon_button(icons::MORE_HORIZ, IconButtonStyle::standard())
+    // What a press opens is told below, which leaves a Control-click to the row's own menu
+    let open = Binding::new(move || menu.is_open_from(anchor), |_| {});
+    let button = icon_toggle_button(icons::MORE_HORIZ, open, IconButtonStyle::standard())
         .node_ref(anchor)
-        .access(move |a| a.label("More").expanded(menu.is_open_from(anchor)))
+        .access(move |a| {
+            a.role(Role::Button)
+                .label("More")
+                .expanded(menu.is_open_from(anchor))
+        })
         .on_click(move |e| {
             if !is_context_click(e) {
                 menu.open_from(anchor, Placement::BelowEnd, groups());

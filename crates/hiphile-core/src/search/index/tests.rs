@@ -176,6 +176,8 @@ fn without_a_saved_library_it_says_so() {
     assert!(matches!(status.library(), IndexState::Failed(_)));
     assert_eq!(
         status.failure(),
-        Some("There's no saved library to search.")
+        Some(
+            "There's no library saved on this computer to search. Check that the disk has free space, then sign out and sign in again."
+        )
     );
 }

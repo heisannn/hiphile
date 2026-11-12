@@ -1,8 +1,7 @@
 use anti_webui::prelude::*;
 use anti_webui_md3e::components::{ButtonStyle, dialog, styled_button, text_button};
-use anti_webui_md3e::typography::TextStyle;
 use hiphile_core::Hiphile;
-use next_ui::type_scale::styled_text;
+use next_ui::dialog_parts::dialog_content;
 
 use crate::form::{Fields, form};
 
@@ -59,16 +58,7 @@ pub fn sign_in_dialog(hiphile: Hiphile, request: Signal<Option<SignInRequest>>) 
                 div().flex_1(),
                 text_button("Cancel").on_click(move |_| request.set(None)),
             ];
-            div()
-                .flex()
-                .flex_col()
-                .gap(16.0_f32)
-                .p(24.0_f32)
-                .child(
-                    styled_text(TextStyle::HEADLINE_SMALL, title)
-                        .access(|a| a.role(Role::Heading).level(2)),
-                )
-                .child(form(hiphile, fields, actions))
+            dialog_content(title).child(form(hiphile, fields, actions))
         },
     )
 }

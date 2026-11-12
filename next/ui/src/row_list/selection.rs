@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::collections::HashSet;
 use std::hash::Hash;
 
@@ -37,7 +38,8 @@ pub(super) trait Order<K> {
 }
 
 /// The rows selected, by id, so that it stays with them however they move. The cursor is the row
-/// that keys move from, and the anchor where Shift selects from.
+/// that keys move from, and the anchor where Shift selects from. What is selected stays so while a
+/// filter hides it, so it is counted only among the rows on show.
 #[derive(Clone, Debug)]
 pub struct Selected<K> {
     ids: HashSet<K>,
@@ -64,15 +66,28 @@ impl<K: Clone + Eq + Hash> Selected<K> {
         self.cursor.as_ref()
     }
 
-    pub fn len(&self) -> usize {
-        self.ids.len()
+    /// How many of `shown`, the ids of the rows on show, are selected.
+    pub fn count_in(&self, shown: impl IntoIterator<Item = impl Borrow<K>>) -> usize {
+        shown
+            .into_iter()
+            .filter(|id| self.ids.contains(id.borrow()))
+            .count()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.ids.is_empty()
+    /// Whether `id` alone is selected, and the keys and Shift go from it.
+    pub(super) fn is_only(&self, id: &K) -> bool {
+        self.ids.len() == 1
+            && self.ids.contains(id)
+            && self.anchor.as_ref() == Some(id)
+            && self.cursor.as_ref() == Some(id)
     }
 
-    pub fn ids(&self) -> impl Iterator<Item = &K> {
+    pub(super) fn is_cleared(&self) -> bool {
+        self.ids.is_empty() && self.anchor.is_none() && self.cursor.is_none()
+    }
+
+    #[cfg(test)]
+    pub(super) fn ids(&self) -> impl Iterator<Item = &K> {
         self.ids.iter()
     }
 
@@ -121,16 +136,16 @@ impl<K: Clone + Eq + Hash> Selected<K> {
         }
     }
 
-    /// Moves the cursor and selects it, or, with `extend`, what is from the anchor to it. Where
-    /// the cursor went.
+    /// Moves the cursor from `current`, the position it is at, and selects it, or, with `extend`,
+    /// what is from the anchor to it. Where the cursor went.
     pub(super) fn move_by(
         &mut self,
         motion: Motion,
         extend: bool,
+        current: Option<usize>,
         order: &impl Order<K>,
         page: usize,
     ) -> Option<usize> {
-        let current = self.cursor.as_ref().and_then(|id| order.position_of(id));
         let to = motion.apply(current, order.len(), page)?;
         let id = order.id_at(to)?;
         if extend {

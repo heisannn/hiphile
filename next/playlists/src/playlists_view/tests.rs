@@ -13,7 +13,7 @@ use next_ui::testing::{
     TestCore, click_text, drag, find, focus, frames, has_text, key, key_with, middle_of, nodes,
     press, right_click, screen_context, signed_in_core, start, typed, wait_until,
 };
-use next_ui::{Commands, Covers};
+use next_ui::{Commands, Overlays};
 use playback::Placement;
 use serde_json::json;
 use subsonic::SongId;
@@ -26,14 +26,26 @@ struct Opened {
     ui: Ui,
     hiphile: Hiphile,
     location: Signal<Location>,
+    /// Whether the screen is there, as while the window shows Playlists.
+    here: Signal<bool>,
     /// What going back would show, the last first.
     left: Rc<RefCell<Vec<Location>>>,
     sent: Rc<RefCell<Vec<Command>>>,
-    covers: Covers,
+    overlays: Overlays,
     _core: TestCore,
 }
 
 impl Opened {
+    /// Leaves the screen and comes back to it at `to`, as the shell makes it again.
+    fn visit(&mut self, to: Location) {
+        self.location.set(Location::Home);
+        self.here.set(false);
+        self.ui.update();
+        self.location.set(to);
+        self.here.set(true);
+        self.ui.update();
+    }
+
     fn playlists(&self) -> PlaylistsState {
         self.workspace().playlists().clone()
     }
@@ -58,12 +70,13 @@ impl Opened {
 fn open_at(server: &PlaylistsServer, at: Location) -> Opened {
     let (core, hiphile) = signed_in_core(server.url());
     let location = Rc::new(Cell::new(None));
-    let covers = Rc::new(Cell::new(None));
+    let here = signal(true);
+    let overlays = Rc::new(Cell::new(None));
     let sent = Rc::new(RefCell::new(Vec::new()));
     let left = Rc::new(RefCell::new(Vec::new()));
     let ui = start({
         let (hiphile, made, sent) = (hiphile.clone(), location.clone(), sent.clone());
-        let (covers, left) = (covers.clone(), left.clone());
+        let (overlays, left) = (overlays.clone(), left.clone());
         move || {
             install_covers(hiphile.clone());
             let location = signal(at);
@@ -83,23 +96,37 @@ fn open_at(server: &PlaylistsServer, at: Location) -> Opened {
                 sent.borrow_mut().push(command);
             });
             let cx = screen_context(&hiphile, commands);
-            covers.set(Some(cx.covers));
-            let screen = playlists(location, &cx);
+            overlays.set(Some(cx.overlays));
+            let snackbars = cx.snackbars;
+            // Kept between visits, as the shell keeps it
+            let split = Split::new();
+            let screen = show(
+                move || here.get(),
+                move || {
+                    let screen = playlists(location, split, &cx);
+                    div()
+                        .size_full()
+                        .flex()
+                        .flex_col()
+                        .child(screen.body.flex_1().min_h(0))
+                },
+            );
             div()
                 .size_full()
                 .flex()
                 .flex_col()
-                .child(screen.body.flex_1().min_h(0))
-                .child(cx.snackbars.view())
+                .child(div().flex_1().min_h(0).flex().flex_col().child(screen))
+                .child(snackbars.view())
         }
     });
     Opened {
         ui,
         hiphile,
         location: location.get().expect("made"),
+        here,
         left,
         sent,
-        covers: covers.get().expect("made"),
+        overlays: overlays.get().expect("made"),
         _core: core,
     }
 }
@@ -151,6 +178,11 @@ fn labels_in(list: &str) -> Vec<String> {
         .into_iter()
         .filter_map(|option| option.label)
         .collect()
+}
+
+fn list_width() -> f64 {
+    let handle = find(Role::Separator, "List Width").expect("the handle");
+    handle.value.expect("a width").now
 }
 
 fn songs() -> Vec<String> {
@@ -290,8 +322,15 @@ fn the_favorite_key_follows_the_song_selected() {
     let server = two_playlists();
     server.serve_favorites(&[]);
     let mut opened = loaded(&server);
-    let favorites = opened.workspace().favorites().clone();
-    wait_until(&mut opened.ui, || favorites.snapshot().known().is_some());
+    // Each song's button waits for whether it is a favorite, as the key does
+    wait_until(&mut opened.ui, || {
+        let favorites = snapshot()
+            .nodes
+            .into_iter()
+            .filter(|node| node.label.as_deref() == Some("Favorite"))
+            .collect::<Vec<_>>();
+        favorites.len() == 3 && favorites.iter().all(|favorite| !favorite.disabled)
+    });
     select_song(&mut opened.ui, "Song 2");
 
     primary_key(&mut opened.ui, Key::Character("d".into()));
@@ -327,10 +366,13 @@ fn a_song_at_the_top_stays_there_when_moved_up() {
     select_song(&mut opened.ui, "Song 1");
 
     alt_key(&mut opened.ui, NamedKey::ArrowUp);
-    frames(&mut opened.ui, 50);
+    // The songs are saved one change after another, so this one lands after any the first made
+    alt_key(&mut opened.ui, NamedKey::ArrowDown);
 
-    assert_eq!(songs(), ["Song 1", "Song 2", "Song 3"]);
+    wait_until(&mut opened.ui, || songs() == ["Song 2", "Song 1", "Song 3"]);
     assert_eq!(selected_in("Songs").as_deref(), Some("Song 1"));
+    wait_until(&mut opened.ui, || server.songs("a") == ["2", "1", "3"]);
+    assert_eq!(server.requests("createPlaylist").len(), 1);
 }
 
 #[test]
@@ -377,9 +419,12 @@ fn an_older_removal_cant_be_undone() {
 
     // Only the first shows, and the second waits behind it
     click_text(&mut opened.ui, "Undo");
-    frames(&mut opened.ui, 50);
+    // Had the click put a song back, taking out the one selected would leave a song
+    select_song(&mut opened.ui, "Song 3");
+    key(&mut opened.ui, NamedKey::Backspace);
 
-    assert_eq!(songs(), ["Song 3"]);
+    wait_until(&mut opened.ui, || has_text("No songs"));
+    wait_until(&mut opened.ui, || server.songs("a").is_empty());
 }
 
 #[test]
@@ -556,11 +601,20 @@ fn the_songs_of_a_readonly_playlist_cant_be_dragged_moved_or_removed() {
     select_song(&mut opened.ui, "Song 1");
     alt_key(&mut opened.ui, NamedKey::ArrowDown);
     key(&mut opened.ui, NamedKey::Backspace);
-    frames(&mut opened.ui, 50);
+    // The playlists are saved one change after another, so Beta's lands after any of alpha's
+    opened.location.set(chosen("b"));
+    wait_until(&mut opened.ui, || songs() == ["Song 4"]);
+    select_song(&mut opened.ui, "Song 4");
+    key(&mut opened.ui, NamedKey::Backspace);
+    wait_until(&mut opened.ui, || server.songs("b").is_empty());
 
-    assert_eq!(songs(), ["Song 1", "Song 2", "Song 3"]);
-    assert!(has_text("3 songs · Readonly"));
-    assert!(server.requests("createPlaylist").is_empty());
+    let written: Vec<_> = ["createPlaylist", "updatePlaylist"]
+        .into_iter()
+        .flat_map(|method| server.requests(method))
+        .map(|request| request.values("playlistId").join(","))
+        .collect();
+    assert_eq!(written, ["b"]);
+    assert_eq!(server.songs("a"), ["1", "2", "3"]);
 }
 
 #[test]
@@ -589,11 +643,18 @@ fn the_songs_of_a_playlist_that_diverged_cant_be_dragged_or_moved() {
         middle_of("Song 2"),
         (x, y + ROW_HEIGHT / 4.0),
     );
-    frames(&mut opened.ui, 50);
-
-    assert_eq!(songs(), ["Song 2", "Song 1", "Song 3"]);
-    assert_eq!(server.requests("createPlaylist").len(), writes);
+    // The songs are saved one change after another, so a move once the server's songs are back
+    // lands after any of these
+    server.accept("createPlaylist");
     server.release("getPlaylist");
+    wait_until(&mut opened.ui, || {
+        songs() == ["Song 1", "Song 2", "Song 3"] && !playlists.snapshot().is_diverged()
+    });
+    select_song(&mut opened.ui, "Song 1");
+    alt_key(&mut opened.ui, NamedKey::ArrowDown);
+
+    wait_until(&mut opened.ui, || server.songs("a") == ["2", "1", "3"]);
+    assert_eq!(server.requests("createPlaylist").len(), writes + 1);
 }
 
 #[test]
@@ -639,6 +700,51 @@ fn choosing_a_playlist_the_filter_hides_empties_the_filter() {
 }
 
 #[test]
+fn the_filter_stays_for_the_screen_to_come_again() {
+    let server = two_playlists();
+    let mut opened = loaded(&server);
+    focus(&mut opened.ui, Role::TextInput, "Filter Playlists");
+    typed(&mut opened.ui, "bet");
+    wait_until(&mut opened.ui, || labels_in("Playlists") == ["Beta"]);
+
+    opened.visit(chosen("a"));
+
+    wait_until(&mut opened.ui, || songs() == ["Song 1", "Song 2", "Song 3"]);
+    let filter = find(Role::TextInput, "Filter Playlists").expect("the filter");
+    assert_eq!(filter.value_text.as_deref(), Some("bet"));
+    assert_eq!(labels_in("Playlists"), ["Beta"]);
+}
+
+#[test]
+fn enter_in_the_filter_goes_on_to_the_playlists() {
+    let server = two_playlists();
+    let mut opened = loaded(&server);
+    focus(&mut opened.ui, Role::TextInput, "Filter Playlists");
+    typed(&mut opened.ui, "bet");
+    wait_until(&mut opened.ui, || labels_in("Playlists") == ["Beta"]);
+
+    key(&mut opened.ui, NamedKey::Enter);
+
+    assert!(is_focused("Playlists"));
+}
+
+#[test]
+fn the_list_comes_back_as_wide_as_it_was_left() {
+    let server = two_playlists();
+    let mut opened = loaded(&server);
+    let first = list_width();
+    focus(&mut opened.ui, Role::Separator, "List Width");
+    key(&mut opened.ui, NamedKey::ArrowRight);
+    let widened = list_width();
+    assert!(widened > first, "{widened} from {first}");
+
+    opened.visit(chosen("a"));
+
+    wait_until(&mut opened.ui, || !songs().is_empty());
+    assert_eq!(list_width(), widened);
+}
+
+#[test]
 fn a_playlist_that_has_gone_leaves_the_one_open() {
     let server = two_playlists();
     let mut opened = open_at(&server, chosen("b"));
@@ -664,7 +770,7 @@ fn typing_in_the_filter_keeps_the_playlist_chosen() {
     assert_eq!(opened.chosen(), chosen("a"));
     primary_key(&mut opened.ui, Key::Character("a".into()));
     typed(&mut opened.ui, "zzzz");
-    wait_until(&mut opened.ui, || has_text("No playlists match “zzzz”"));
+    wait_until(&mut opened.ui, || has_text("No matches for “zzzz”"));
     assert_eq!(opened.chosen(), chosen("a"));
 }
 
@@ -797,15 +903,15 @@ fn the_screens_dialogs_cover_the_screens_while_they_are_open() {
     let server = two_playlists();
     let mut opened = loaded(&server);
     wait_until(&mut opened.ui, || is_focused("Playlists"));
-    assert!(!opened.covers.any());
+    assert!(!opened.overlays.any());
 
     key(&mut opened.ui, NamedKey::F(2));
     assert!(has_dialog("Rename Playlist"));
-    assert!(opened.covers.any());
+    assert!(opened.overlays.any());
 
     key(&mut opened.ui, NamedKey::Escape);
     frames(&mut opened.ui, 500);
-    assert!(!opened.covers.any());
+    assert!(!opened.overlays.any());
 }
 
 #[test]
@@ -960,7 +1066,7 @@ fn the_list_failing_to_load_offers_to_try_again() {
 fn new_playlist_asks_the_shell() {
     let server = PlaylistsServer::new(&[]);
     let mut opened = open_at(&server, Location::Playlists(None));
-    wait_until(&mut opened.ui, || has_text("No playlists yet"));
+    wait_until(&mut opened.ui, || has_text("No playlists"));
     assert!(!has_text("0 playlists"));
 
     press(&mut opened.ui, Role::Button, "New Playlist…");

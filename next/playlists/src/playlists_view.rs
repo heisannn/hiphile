@@ -14,7 +14,7 @@ use hiphile_core::selection::after_removal;
 use next_host::{Pending, Scope, follow};
 use next_ui::context_menu::ContextMenu;
 use next_ui::list_detail::{Split, list_detail};
-use next_ui::now_playing::{NowPlaying, follow_now_playing};
+use next_ui::now_playing::NowPlaying;
 use next_ui::row_list::{ROW_HEIGHT, Selection, reveal};
 use next_ui::{AlbumAction, Command, Screen, ScreenContext};
 use subsonic::{Playlist, PlaylistId, Song};
@@ -35,13 +35,14 @@ thread_local! {
 
 /// The playlists beside the songs of the one `location` names. While it names none, or one that
 /// has gone, it is the one open before or else the first listed. Choosing another with the pointer
-/// sends [`Command::Show`], and moving to it with the keys [`Command::ShowInPlace`].
-pub fn playlists(location: Signal<Location>, cx: &ScreenContext) -> Screen {
+/// sends [`Command::Show`], and moving to it with the keys [`Command::ShowInPlace`]. The list is as
+/// wide as `split` says.
+pub fn playlists(location: Signal<Location>, split: Split, cx: &ScreenContext) -> Screen {
     keys::bind();
     let screen = Playlists::new(location, cx);
     screen.follow_location();
     screen.follow_songs();
-    let body = list_detail(Split::new(), list::pane(&screen), detail::pane(&screen))
+    let body = list_detail(split, list::pane(&screen), detail::pane(&screen))
         .child(screen.menu.view())
         .child(dialogs::rename_dialog(&screen))
         .child(dialogs::delete_dialog(&screen));
@@ -94,8 +95,8 @@ impl Playlists {
                 _ => None,
             })
         });
-        let now_playing = follow_now_playing(&cx.workspace);
-        let filter = signal(String::new());
+        let now_playing = cx.known.now_playing();
+        let filter = signal(state.query());
         {
             let state = state.clone();
             effect(move || {
@@ -116,8 +117,8 @@ impl Playlists {
             songs_node: node_ref(),
             songs_focused: signal(false),
             list_focused: Rc::default(),
-            menu: ContextMenu::new(),
-            dialogs: Dialogs::new(cx.covers),
+            menu: ContextMenu::new(cx.overlays),
+            dialogs: Dialogs::new(cx.overlays),
             now_playing,
             scope: Scope::here(),
             opened: Rc::default(),
@@ -182,11 +183,11 @@ impl Playlists {
         // One playlist is chosen at a time, so the rows a selection could take in besides go
         let this = self.clone();
         effect(move || {
-            let only = this.list_selection.with(|selected| {
-                (selected.len() == 1)
-                    .then(|| selected.ids().next().cloned())
-                    .flatten()
-            });
+            let listed = untrack(|| this.listed_ids());
+            let only = match this.list_selection.in_order(listed).as_slice() {
+                [only] => Some(only.clone()),
+                _ => None,
+            };
             untrack(|| {
                 let Some(wanted) = this.wanted.get() else {
                     return;
@@ -249,21 +250,23 @@ impl Playlists {
     }
 
     fn select_in_list(&self, wanted: Option<PlaylistId>) {
-        let selection = self.list_selection;
         match wanted {
-            Some(playlist) => {
-                let is_only =
-                    selection.with(|selected| selected.len() == 1 && selected.contains(&playlist));
-                if !is_only {
-                    selection.select(playlist);
-                }
-            }
-            None => {
-                if !selection.with(|selected| selected.is_empty()) {
-                    selection.clear();
-                }
-            }
+            Some(playlist) => self.list_selection.select(playlist),
+            None => self.list_selection.clear(),
         }
+    }
+
+    /// The playlists the list shows, in its order.
+    fn listed_ids(&self) -> Vec<PlaylistId> {
+        self.shown.with(|shown| {
+            (0..shown.visible().len())
+                .filter_map(|at| {
+                    shown
+                        .visible_playlist(at)
+                        .map(|playlist| playlist.id().clone())
+                })
+                .collect()
+        })
     }
 
     /// Opening a playlist reads its songs again, so the one open stays as it is.
@@ -531,9 +534,15 @@ impl Playlists {
         let narrowed = signal(None::<EntryId>);
         effect(move || {
             let several = selection.with(|selected| {
-                (selected.len() > 1)
-                    .then(|| selected.cursor().copied())
-                    .flatten()
+                let listed = shown.with_untracked(|shown| {
+                    shown.open_playlist().map_or(0, |open| {
+                        let entries = open.entries();
+                        selected.count_in(
+                            (0..entries.len()).filter_map(|ix| Some(entries.get(ix)?.id())),
+                        )
+                    })
+                });
+                (listed > 1).then(|| selected.cursor().copied()).flatten()
             });
             if several.is_some() {
                 untrack(|| narrowed.set(several));

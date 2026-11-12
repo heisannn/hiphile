@@ -7,12 +7,12 @@ type IsOpen = Rc<dyn Fn() -> bool>;
 /// What a screen opens over the screens, such as its own dialogs, which the menu bar's commands
 /// wait for as they do for the shell's. Cheap to copy.
 #[derive(Clone, Copy)]
-pub struct Covers {
+pub struct Overlays {
     open: Signal<Vec<(usize, IsOpen)>>,
     added: Signal<usize>,
 }
 
-impl Covers {
+impl Overlays {
     pub fn new() -> Self {
         Self {
             open: signal(Vec::new()),
@@ -40,7 +40,7 @@ impl Covers {
     }
 }
 
-impl Default for Covers {
+impl Default for Overlays {
     fn default() -> Self {
         Self::new()
     }

@@ -17,8 +17,9 @@ pub(crate) fn reduces_motion() -> Option<Signal<bool>> {
     };
     // The workspace posts this to a center of its own, not to the default one
     let center = workspace.notificationCenter();
-    // SAFETY: an `Observer` answers `changed:` with the notification, and it is removed at the
-    // cleanup below, before it can go; the name is a constant of AppKit, there since macOS 10.10
+    // SAFETY: an `Observer` answers `changed:` with the notification. It is removed at the cleanup
+    // below, and should that never run, the center stops posting to it once it goes, as it does
+    // since macOS 10.11. The name is a constant of AppKit, there since macOS 10.10
     unsafe {
         center.addObserver_selector_name_object(
             &observer,

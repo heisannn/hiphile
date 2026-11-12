@@ -14,7 +14,7 @@ use next_ui::cover::{CoverKind, cover};
 use next_ui::detail_header::{DetailHeader, detail_header, play_and_shuffle};
 use next_ui::details::{format_duration, format_song_count, join_details};
 use next_ui::keymap::{KeyContext, key_context};
-use next_ui::load_state::{empty_state, load_failure, pane_loading};
+use next_ui::load_state::{PLAYLIST, SONGS, empty_state, load_failure, pane_loading};
 use next_ui::now_playing::song_row_label;
 use next_ui::row_list::{RowList, RowSource, row_list};
 use playback::Placement;
@@ -53,11 +53,9 @@ pub(super) fn pane(screen: &Playlists) -> Div {
         let screen = screen.clone();
         untrack(move || match content {
             Content::None => div(),
-            Content::Loading => pane_loading("Loading Playlist"),
+            Content::Loading => pane_loading(PLAYLIST.loading()),
             Content::Failed(error) => {
-                load_failure("Couldn't load this playlist", error, move || {
-                    screen.reopen()
-                })
+                load_failure(PLAYLIST.load_failed(), error, move || screen.reopen())
             }
             Content::Loaded(_) => div()
                 .flex_1()
@@ -195,7 +193,7 @@ fn songs(screen: &Playlists) -> Div {
             untrack(move || {
                 songs.map(|songs| match songs {
                     Songs::None { is_editable } => empty_state(
-                        "No songs yet",
+                        &SONGS.none(),
                         is_editable.then_some("Choose Add to Playlist on any song or album."),
                         None,
                     ),
@@ -243,7 +241,7 @@ fn song_list(screen: &Playlists, are_editable: bool) -> Div {
         "Songs",
         move || entries.get(),
         |entry: &Entry| entry.id(),
-        move |entry, row| song_row(&row_of, entry, row.position()),
+        move |entry, row| song_row(&row_of, entry, row),
     )
     .row_label(move |entry| {
         let song = entry.song();

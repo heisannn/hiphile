@@ -1,7 +1,6 @@
 //! The queue beside the screens: what plays after what, which the user plays from, reorders and
 //! takes from.
 
-use std::cell::Cell;
 use std::sync::Arc;
 
 use anti_webui::prelude::*;
@@ -15,22 +14,24 @@ use hiphile_core::favorites::Favorite;
 use hiphile_core::navigation::Location;
 use next_host::follow;
 use next_ui::context_menu::ContextMenu;
-use next_ui::details::{format_duration, format_song_count};
-use next_ui::keymap::{KeyBinding, KeyContext, Keystroke, bind_keys, key_context, keystroke_for};
+use next_ui::details::format_song_count;
+use next_ui::keymap::{
+    KeyBinding, KeyContext, Keystroke, bind_keys, is_bound, key_context, keystroke_for,
+};
 use next_ui::link::{artist_line, song_artist_link};
 use next_ui::list_pane::{ListHeader, list_header};
 use next_ui::load_state::empty_state;
 use next_ui::menus::{
     Songs, add_to_playlist_item, favorite_item, go_to_album_item, go_to_artist_item,
 };
-use next_ui::now_playing::{PlayState, play_state_icon, song_row_label};
+use next_ui::now_playing::{PlayState, song_row_label};
 use next_ui::pane::{GAP, INSET, RADIUS};
 use next_ui::pane_handle::{Resizes, pane_handle};
 use next_ui::row_list::{
-    ROW_HEIGHT, ROW_PADDING, RowList, RowSource, RowState, Selection, row_list, scroll_to_row,
+    ROW_HEIGHT, RowList, RowSource, RowState, Selection, row_list, scroll_to_row,
 };
-use next_ui::row_text::faded_end;
-use next_ui::type_scale::{muted_text, styled_text};
+use next_ui::song_row::{SongRow, song_row, song_words};
+use next_ui::type_scale::styled_text;
 use next_ui::window::moves_window;
 use next_ui::{APP_BAR_HEIGHT, Command, Commands, Known, ScreenContext};
 use playback::{Entry, EntryId, EntryState, PlayerSnapshot};
@@ -53,13 +54,9 @@ enum QueueKey {
     TogglePlayback,
 }
 
-thread_local! {
-    static BOUND: Cell<bool> = const { Cell::new(false) };
-}
-
 /// Once for each thread, as its keymap is.
 fn bind_queue_keys() {
-    if BOUND.replace(true) {
+    if is_bound::<QueueKey>() {
         return;
     }
     let named = Keystroke::named;
@@ -457,7 +454,7 @@ fn entries_view(
     )
     .mt(8);
 
-    let menu = ContextMenu::new();
+    let menu = ContextMenu::new(cx.overlays);
     let rows = {
         let commands = cx.commands.clone();
         RowList::new(
@@ -541,8 +538,9 @@ fn entries_view(
     )
 }
 
-/// The entry's title and artist, how long it is, and whether it plays, in a row of the queue. The
-/// ones played are quieter.
+/// The entry's title and artist, whether it plays, and how long it is, in a row of the queue. The
+/// ones played are quieter. It has no buttons: the queue is narrow, and its keys and its menu do
+/// what they would.
 fn entry_row(
     entry: &Entry<Song>,
     row: RowState<EntryId>,
@@ -555,36 +553,15 @@ fn entry_row(
     let is_playing = memo(move || shown.with(PlayerSnapshot::is_playing));
     let play_state =
         move || (state.get() == EntryState::Current).then(|| PlayState::new(is_playing.get()));
-    let title = faded_end(
-        TextStyle::TITLE_SMALL
-            .apply(div())
-            .dyn_style(move |s| {
-                if state.get() == EntryState::Played {
-                    s.text_color(color_scheme().on_surface_variant)
-                } else {
-                    s
-                }
-            })
-            .child(text(song.title().to_owned())),
-    );
-    let words = div()
-        .flex()
-        .flex_col()
-        .justify_center()
-        .flex_1()
-        .min_w(0)
-        .child(title)
-        .child(artist_line(song_artist_link(song, commands), None));
-    let duration = song.duration().map(format_duration).unwrap_or_default();
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(12.0_f32)
-        .px(ROW_PADDING)
-        .child(play_state_icon(play_state))
-        .child(words)
-        .child(muted_text(TextStyle::BODY_SMALL, duration).flex_none())
+    let line = artist_line(song_artist_link(song, commands), None);
+    let words = song_words(song, Some(line)).dyn_style(move |s| {
+        if state.get() == EntryState::Played {
+            s.text_color(color_scheme().on_surface_variant)
+        } else {
+            s
+        }
+    });
+    song_row(SongRow::new(song, words, play_state))
 }
 
 #[cfg(test)]

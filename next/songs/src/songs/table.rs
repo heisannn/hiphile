@@ -5,7 +5,7 @@ use next_host::follow;
 use next_ui::ScreenContext;
 use next_ui::context_menu::ContextMenu;
 use next_ui::keymap::key_context;
-use next_ui::now_playing::{NowPlaying, PlayState, follow_now_playing, song_row_label};
+use next_ui::now_playing::{NowPlaying, PlayState, song_row_label};
 use next_ui::row_list::{RowList, RowSource, Selection, row_list};
 use subsonic::{Song, SongId};
 
@@ -44,8 +44,8 @@ impl Table {
             sort: memo(move || status.with(|status| (!status.is_ranked()).then(|| status.sort()))),
             selection: Selection::new(),
             chose: signal(false),
-            now_playing: follow_now_playing(&cx.workspace),
-            menu: ContextMenu::new(),
+            now_playing: cx.known.now_playing(),
+            menu: ContextMenu::new(cx.overlays),
             list: node_ref(),
         }
     }

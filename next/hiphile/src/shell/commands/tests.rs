@@ -9,7 +9,7 @@ use hiphile_core::test_support::{FavoritesServer, PlaylistsServer};
 use next_ui::testing::{TestCore, find, frames, nodes, signed_in_core, start, wait_until};
 use playback::RepeatMode;
 use serde_json::json;
-use subsonic::{PlaylistId, StarTarget};
+use subsonic::{ArtistId, PlaylistId, StarTarget};
 
 use super::*;
 use crate::navigation::location_of;
@@ -116,6 +116,29 @@ fn showing_in_place_leaves_nowhere_to_go_back_to() {
         Location::Home,
         "back past the album shown in place"
     );
+}
+
+#[test]
+fn a_destination_named_alone_is_where_it_was_left() {
+    let mut shown = on(next_ui::testing::NOWHERE);
+    let navigation = shown.shell.navigation;
+    let at = move || untrack(|| navigation.location().get());
+    let album = |id| Location::Albums(Some(AlbumId::new(id)));
+    let artist = Location::Artists(Some(ArtistId::new("m")));
+    shown.run(Command::Show(album("a")));
+    shown.run(Command::ShowInPlace(album("b")));
+    shown.run(Command::Show(artist.clone()));
+    shown.run(Command::GoBack);
+    shown.run(Command::Show(Location::Home));
+
+    shown.run(Command::Show(location_of(Destination::Artists)));
+    assert_eq!(at(), artist);
+    shown.run(Command::Show(location_of(Destination::Albums)));
+    assert_eq!(at(), album("b"));
+    shown.run(Command::Show(location_of(Destination::Playlists)));
+    assert_eq!(at(), Location::Playlists(None));
+    shown.run(Command::GoBack);
+    assert_eq!(at(), album("b"));
 }
 
 #[test]

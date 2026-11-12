@@ -14,21 +14,24 @@ use hiphile_core::artists::{ArtistPage, ArtistSection, album_count_to_show};
 use hiphile_core::favorites::Favorite;
 use hiphile_core::navigation::Location;
 use next_ui::card_grid::{CARD_GAP, Card, card, card_row};
-use next_ui::context_menu::more_button;
+use next_ui::context_menu::{more_button, pressed_at};
 use next_ui::cover::{CoverKind, cover};
 use next_ui::detail_header::{DetailHeader, detail_header, play_and_shuffle};
 use next_ui::details::{format_album_count, format_song_count, join_details};
 use next_ui::favorite_button::favorite_button;
 use next_ui::keymap::{KeyContext, key_context};
 use next_ui::link::{album_link, artist_line, song_artist_link};
-use next_ui::load_state::{load_failure, pane_loading};
-use next_ui::now_playing::{skippable, song_row_label};
+use next_ui::load_state::{
+    ALBUMS, ARTIST, NONE_ON_SERVER, SIMILAR_ARTISTS, SONGS, TOP_SONGS, load_failure, pane_loading,
+};
+use next_ui::now_playing::song_row_label;
 use next_ui::page_row::{PageRow, page_row};
 use next_ui::pane::INSET;
+use next_ui::row_buttons::RowButtons;
 use next_ui::row_cover::row_cover;
 use next_ui::row_list::is_context_click;
 use next_ui::section::{section_failure, section_heading, section_loading, section_note};
-use next_ui::song_row::song_with_line;
+use next_ui::song_row::{SongRow, song_words};
 use next_ui::{AlbumAction, Command};
 use subsonic::{Album, Artist, ArtistId, CoverArtId, Song};
 
@@ -73,7 +76,7 @@ pub(super) fn page_pane(view: &Rc<View>) -> Div {
             height.set_if_changed(h);
         })
         .child(content(view.clone()));
-    key_context(page, &context)
+    key_context(view.page_keys.follow(page), &context)
 }
 
 /// What the page shows of the artist.
@@ -104,10 +107,10 @@ fn content(view: Rc<View>) -> impl IntoView {
         untrack(move || {
             match shape {
                 Shape::Nothing => div(),
-                Shape::Waiting => pane_loading("Loading the artist"),
+                Shape::Waiting => pane_loading(ARTIST.loading()),
                 Shape::Failed(reason) => {
                     let retrying = view.clone();
-                    load_failure("Couldn't load this artist", reason, move || {
+                    load_failure(ARTIST.load_failed(), reason, move || {
                         retrying.page_node.focus();
                         retrying.detail.reload();
                     })
@@ -229,7 +232,7 @@ fn header_of(view: &Rc<View>, head: Head) -> Div {
     let waiting = show(is_fetching, || {
         indeterminate_circular_progress()
             .size(PROGRESS)
-            .access(|a| a.role(Role::ProgressBar).label("Loading the songs"))
+            .access(|a| a.role(Role::ProgressBar).label(SONGS.loading()))
     });
     detail_header(
         header
@@ -307,7 +310,7 @@ fn songs_part(view: &Rc<View>, section: Memo<Option<ArtistSection>>) -> Div {
         .child(dyn_view(move || {
             let (view, detail) = (view.clone(), detail.clone());
             match load.get() {
-                Load::Loading => untrack(|| section_loading("Loading top songs").into_view()),
+                Load::Loading => untrack(|| section_loading(TOP_SONGS.loading()).into_view()),
                 Load::Failed(reason) => untrack(|| {
                     section_failure(reason, move || detail.reload_top_songs()).into_view()
                 }),
@@ -347,13 +350,32 @@ fn song_row(view: &Rc<View>, position: usize, song: Song) -> Div {
         let id = song.id().clone();
         move || now_playing.with(|now| now.as_ref()?.state_of(&id))
     };
-    let cover = row_cover(&view.cx.workspace, song.cover_art(), CoverKind::Album);
-    let content = skippable(
-        song_with_line(&song, cover, artist_line(artist, album), state),
-        {
-            let song = song.clone();
-            move || known.is_skipped(&song)
-        },
+    let groups = {
+        let (view, song) = (view.clone(), song.clone());
+        move || view.song_menu(&song)
+    };
+    let buttons = RowButtons::new(
+        Favorite::Song(song.clone()),
+        commands,
+        known,
+        view.menu,
+        groups,
+    )
+    .selected_when(is_selected(view, &item));
+    let skipped = song.clone();
+    let content = next_ui::song_row::song_row(
+        SongRow::new(
+            &song,
+            song_words(&song, Some(artist_line(artist, album))),
+            state,
+        )
+        .cover(row_cover(
+            &view.cx.workspace,
+            song.cover_art(),
+            CoverKind::Album,
+        ))
+        .skipped_when(move || known.is_skipped(&skipped))
+        .buttons(buttons),
     );
     let label = {
         let song = song.clone();
@@ -369,7 +391,8 @@ fn song_row(view: &Rc<View>, position: usize, song: Song) -> Div {
         PageRow::new(content)
             .label(label)
             .selected_when(selected)
-            .focused_when(move || focused.get()),
+            .focused_when(move || focused.get())
+            .keyed_when(keyed_on(view, &item)),
     )
     .node_ref(node)
     .on_click(move |e| {
@@ -460,11 +483,11 @@ fn albums_heading(view: &Rc<View>, albums: Memo<Albums>) -> Div {
                 return div().into_view();
             };
             let status = match load {
-                Load::Loading => section_loading("Loading albums"),
+                Load::Loading => section_loading(ALBUMS.loading()),
                 Load::Failed(reason) => section_failure(reason, move || detail.reload_albums()),
                 Load::Loaded => div().flex().flex_col().child(show(
                     move || is_empty.get(),
-                    || section_note("This artist has no albums."),
+                    || section_note(NONE_ON_SERVER),
                 )),
             };
             div()
@@ -617,7 +640,7 @@ fn similar(view: &Rc<View>) -> Div {
                 Err(Load::Failed(reason)) => {
                     section_failure(reason, move || detail.reload_similar())
                 }
-                Err(Load::Loading | Load::Loaded) => section_loading("Loading similar artists"),
+                Err(Load::Loading | Load::Loaded) => section_loading(SIMILAR_ARTISTS.loading()),
             };
             div()
                 .flex()
@@ -687,7 +710,8 @@ fn on_card(
     let focused = view.page_focused;
     let shown = shown
         .selected_when(is_selected(view, &item))
-        .focused_when(move || focused.get());
+        .focused_when(move || focused.get())
+        .keyed_when(keyed_on(view, &item));
     let (clicked, pressed) = (view.clone(), view.clone());
     let clicked_item = item.clone();
     card(shown)
@@ -705,16 +729,12 @@ fn on_card(
         })
 }
 
+fn keyed_on(view: &Rc<View>, item: &Item) -> impl Fn() -> bool + 'static {
+    let (view, item) = (view.clone(), item.clone());
+    move || view.has_keys_on(&item)
+}
+
 fn is_selected(view: &Rc<View>, item: &Item) -> impl Fn() -> bool + 'static {
     let (selected, item) = (view.item, item.clone());
     move || selected.with(|selected| selected.as_ref() == Some(&item))
-}
-
-/// Where `e` was pressed, in logical pixels of the window, as a menu opens at.
-fn pressed_at(e: &PointerEvent) -> PointF {
-    let scale = window_scale();
-    PointF::new(
-        scale.to_logical(e.position.x),
-        scale.to_logical(e.position.y),
-    )
 }

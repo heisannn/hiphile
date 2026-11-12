@@ -7,6 +7,7 @@ use anti_webui_md3e::components::{
 use anti_webui_md3e::icons::{self, Symbol};
 use anti_webui_md3e::typography::TextStyle;
 use next_host::follow;
+use next_ui::focus_ring::focus_ring;
 use next_ui::row_text::faded_end;
 use next_ui::type_scale::{error_text, muted_text, styled_text};
 use playback::{PlayerSnapshot, RepeatMode};
@@ -166,16 +167,7 @@ pub(crate) fn cover_toggle(
             };
             a.role(Role::Button).label(name)
         })
-        .dyn_style(move |s| {
-            let s = s.rounded(corner());
-            if focused.get() {
-                s.outline(3.0_f32)
-                    .outline_offset(2.0_f32)
-                    .outline_color(color_scheme().secondary)
-            } else {
-                s
-            }
-        })
+        .dyn_style(move |s| focus_ring(s.rounded(corner()), focused.get(), &color_scheme()))
         .on_click(move |_| lyrics.set(!lyrics.get_untracked()))
         .child(picture)
         .child(layer);

@@ -297,7 +297,9 @@ fn main() {
         click(ui, rows_y(i % 12), none.with_shift(), at())
     });
     report("shift-click a range", &shift_clicks);
-    assert!(selection.with(|s| s.len()) > 1);
+    let selected =
+        || selection.with(|s| s.count_in(rows.get_untracked().iter().map(|song| song.id)));
+    assert!(selected() > 1);
     let down = frames.after_each(240, |ui, _| named(ui, NamedKey::ArrowDown, none));
     report("down", &down);
     assert_eq!(selection.cursor(), Some(5 + 240));
@@ -341,7 +343,7 @@ fn main() {
         }
     });
     report("select all, click", &all_selected);
-    assert_eq!(selection.with(|s| s.len()), 1);
+    assert_eq!(selected(), 1);
     let reversed: Rc<[Song]> = all.iter().rev().cloned().collect();
     let sorts = frames.after_each(20, |_, i| {
         rows.set(if i % 2 == 0 {

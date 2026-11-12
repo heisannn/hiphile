@@ -39,6 +39,22 @@ impl Shelves {
         sections(&self.recommended, &self.recent, &self.most_played)
     }
 
+    /// Why every shelf failed, when they all failed for the same reason, which Home then says
+    /// once.
+    pub(crate) fn common_failure(&self) -> Option<String> {
+        let reasons = [
+            failure_of(&self.recommended),
+            failure_of(&self.recent),
+            failure_of(&self.most_played),
+            failure_of(&self.new_albums),
+        ];
+        let first = reasons[0]?;
+        reasons
+            .iter()
+            .all(|reason| *reason == Some(first))
+            .then(|| first.to_owned())
+    }
+
     pub(crate) fn albums(&self, shelf: AlbumShelf) -> &Shelf<Album> {
         match shelf {
             AlbumShelf::Recommended => &self.recommended,
@@ -94,6 +110,13 @@ impl Shelves {
                 .cloned()
                 .map(Target::Album),
         }
+    }
+}
+
+fn failure_of<T>(shelf: &Shelf<T>) -> Option<&str> {
+    match shelf {
+        Shelf::Failed(reason) => Some(reason),
+        Shelf::Loading | Shelf::Loaded(_) => None,
     }
 }
 
@@ -220,12 +243,10 @@ pub(crate) enum Asked {
 }
 
 impl Asked {
-    pub(crate) fn by(stroke: &Keystroke) -> Option<Self> {
-        if let Some(motion) = GridMotion::of(stroke) {
-            return Some(Self::Move(motion));
-        }
+    /// The keys, and what each asks for.
+    pub(crate) fn strokes() -> Vec<(Keystroke, Self)> {
         let enter = || Keystroke::named(anti_webui::prelude::NamedKey::Enter);
-        let bindings = [
+        let intents = [
             (enter(), Intent::Open),
             (enter().with_primary(), Intent::Play),
             (enter().with_alt(), Intent::Enqueue(Placement::Next)),
@@ -235,10 +256,11 @@ impl Asked {
             (Keystroke::primary('d'), Intent::ToggleFavorite),
             (Keystroke::primary('p'), Intent::ChoosePlaylist),
         ];
-        bindings
+        let moves = GridMotion::strokes().map(|(stroke, motion)| (stroke, Self::Move(motion)));
+        moves
             .into_iter()
-            .find(|(bound, _)| bound == stroke)
-            .map(|(_, intent)| Self::Do(intent))
+            .chain(intents.map(|(stroke, intent)| (stroke, Self::Do(intent))))
+            .collect()
     }
 
     /// Whether a button in the page that has the focus is pressed by the key instead, as Enter
