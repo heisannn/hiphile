@@ -5,22 +5,27 @@ crates=(
   subsonic net client audio playback presence catalog config fuzzy lyrics media-controls dsd dsp r8brain
   soxr executor updater session hiphile-core hiphile-cli
 )
-# The app on AntiWebUI, which shares the core with the GPUI app but not GPUI
-next_crates=(next-host next-ui next-platform next-account next-artists next-favorites next-home next-library next-player next-playlists next-search next-settings next-songs next-hiphile)
 root="$(cd "$(dirname "$0")/.." && pwd)"
+# A path spec, since crates.io also has packages named like ours (`config`)
+specs=()
+for crate in "${crates[@]}"; do
+  specs+=("path+file://$root/crates/$crate")
+done
+# The app on AntiWebUI, which shares the core with the GPUI app but not GPUI. Every crate under
+# `next/` is checked, named apart from its folder
+for manifest in "$root"/next/*/Cargo.toml; do
+  name="$(sed -n 's/^name = "\(.*\)"$/\1/p' "$manifest" | head -n 1)"
+  specs+=("path+file://$(dirname "$manifest")#$name")
+done
 status=0
-for crate in "${crates[@]}" "${next_crates[@]}"; do
-  # A path spec, since crates.io also has packages named like ours (`config`)
-  spec="path+file://$root/crates/$crate"
-  # Named apart from their folders
-  [[ $crate == next-* ]] && spec="path+file://$root/next/${crate#next-}#$crate"
+for spec in "${specs[@]}"; do
   if ! tree="$(cargo tree --locked -p "$spec" -e normal,dev --prefix none)"; then
-    echo "error: could not list what $crate depends on" >&2
+    echo "error: could not list what $spec depends on" >&2
     status=1
     continue
   fi
   if grep -qi '^gpui' <<<"$tree"; then
-    echo "error: $crate depends on GPUI" >&2
+    echo "error: $spec depends on GPUI" >&2
     cargo tree --locked -p "$spec" -e normal,dev -i gpui-pre 2>/dev/null | head -20 >&2 || true
     status=1
   fi

@@ -29,3 +29,4 @@ jobs:
       # Device tests are ignored by default, so a runner without audio output can run the rest
       - run: cargo test --locked --workspace
       - run: script/check-gpui-free
+      - run: script/check-release-plz
