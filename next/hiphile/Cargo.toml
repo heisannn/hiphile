@@ -25,6 +25,7 @@ next-player.workspace = true
 next-settings.workspace = true
 next-ui.workspace = true
 presence.workspace = true
+subsonic.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 
 [dev-dependencies]
@@ -33,7 +34,6 @@ next-player = { workspace = true, features = ["test-support"] }
 next-ui = { workspace = true, features = ["test-support"] }
 playback = { workspace = true, features = ["test-support"] }
 serde_json.workspace = true
-subsonic.workspace = true
 tempfile.workspace = true
 
 [lints]

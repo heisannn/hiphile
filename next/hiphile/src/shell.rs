@@ -1,6 +1,6 @@
 use anti_webui::prelude::*;
 use anti_webui_md3e::color_scheme;
-use anti_webui_md3e::components::{IconButtonStyle, snackbars, styled_icon_button};
+use anti_webui_md3e::components::{IconButtonStyle, Snackbars, snackbars, styled_icon_button};
 use anti_webui_md3e::icons;
 use hiphile_core::navigation::Destination;
 use hiphile_core::settings::AppearanceSnapshot;
@@ -14,13 +14,17 @@ use next_ui::pane::{GAP, pane};
 use next_ui::theme::{follow_theme, is_dark};
 use next_ui::type_scale::body;
 use next_ui::window::moves_window;
-use next_ui::{Command, Commands, Screen, app_bar};
+use next_ui::{Screen, ScreenContext, app_bar};
 
 use crate::MenuBar;
 use crate::menu_bar::Shown;
 use crate::navigation::{Navigation, index_of};
 use crate::rail::rail;
 use crate::reach::{Reach, show_outside};
+
+mod commands;
+
+use commands::Shell;
 
 /// Narrower than this, the rail closes over its labels.
 const WIDE: f32 = 1000.0;
@@ -55,9 +59,9 @@ pub fn app(hiphile: Hiphile, system_is_dark: Signal<bool>, menu_bar: MenuBar, re
             let hiphile = hiphile.clone();
             match workspace.get() {
                 None => untrack(|| signed_out(hiphile)),
-                Some(workspace) => {
-                    untrack(|| signed_in(hiphile, workspace, shown, menu_bar, seed, reach))
-                }
+                Some(workspace) => untrack(|| {
+                    signed_in(hiphile, workspace, shown, snackbars, menu_bar, seed, reach)
+                }),
             }
         }))
         .child(snackbars.view())
@@ -75,6 +79,7 @@ fn signed_in(
     hiphile: Hiphile,
     workspace: Workspace,
     shown: Signal<HiphileSnapshot>,
+    snackbars: Snackbars,
     menu_bar: MenuBar,
     seed: Signal<Option<Color>>,
     reach: Reach,
@@ -91,21 +96,19 @@ fn signed_in(
     let player = workspace.player().clone();
     let panels = Panels::new();
     let navigation = Navigation::new();
-    effect(move || workspace.showing(navigation.destination()));
+    effect({
+        let workspace = workspace.clone();
+        move || workspace.showing(navigation.destination())
+    });
     let width = signal(crate::WINDOW.0 as f32);
     let wide = memo(move || width.get() >= WIDE);
     let expanded = signal(true);
     effect(move || expanded.set(wide.get()));
     let settings_open = signal(false);
     let sign_in_request = signal(None);
-    let commands = Commands::new(move |command| match command {
-        Command::Show(location) => navigation.go(location),
-        Command::GoBack => navigation.back(),
-        Command::GoForward => navigation.forward(),
-        Command::OpenSettings => settings_open.set(true),
-        Command::OpenSearch => {}
-    });
-    menu_bar.attach(commands.clone(), move || Shown {
+    let shell = Shell::new(&hiphile, workspace, navigation, settings_open, snackbars);
+    let cx = shell.context();
+    menu_bar.attach(cx.commands.clone(), move || Shown {
         destination: Some(navigation.destination()),
         can_go_back: navigation.can_go_back(),
         can_go_forward: navigation.can_go_forward(),
@@ -121,7 +124,7 @@ fn signed_in(
             expanded,
             hiphile.clone(),
             shown,
-            commands.clone(),
+            cx.commands.clone(),
             sign_in_request,
         ))
         .child(
@@ -134,28 +137,32 @@ fn signed_in(
                 .child(div().flex_1().min_h(0).flex().flex_col().child(for_each(
                     move || vec![navigation.destination()],
                     |destination| index_of(*destination),
-                    move |destination| {
-                        let Screen {
-                            title,
-                            actions,
-                            body,
-                        } = screen(destination);
-                        div()
-                            .size_full()
-                            .flex()
-                            .flex_col()
-                            .child(app_bar(going(navigation), title, actions))
-                            .child(room_for(body))
+                    {
+                        let cx = cx.clone();
+                        move |destination| {
+                            let Screen {
+                                title,
+                                actions,
+                                body,
+                            } = screen(destination, &cx);
+                            div()
+                                .size_full()
+                                .flex()
+                                .flex_col()
+                                .child(app_bar(going(navigation), title, actions))
+                                .child(room_for(body))
+                        }
                     },
                 )))
                 .child(player_bar(player, cover, panels).mr(16)),
         )
+        .child(shell.dialogs.view(&cx))
         .child(settings_popup(hiphile.clone(), settings_open))
         .child(sign_in_dialog(hiphile, sign_in_request))
 }
 
 /// What `destination` shows.
-fn screen(destination: Destination) -> Screen {
+fn screen(destination: Destination, _cx: &ScreenContext) -> Screen {
     Screen::new(destination.label(), pane(div()))
 }
 

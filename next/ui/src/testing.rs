@@ -1,7 +1,8 @@
 //! Driving views without a window: synthetic input, frames, and finding what is shown by role and
 //! name or by text. Nothing here needs a GPU.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use anti_webui::core::Ui;
@@ -11,7 +12,10 @@ use anti_webui::core::event::{
 };
 use anti_webui::core::geometry::{PointF, Scale, SizeI};
 use anti_webui::core::tree::{NodeKind, with_doc};
-use anti_webui::prelude::{IntoView, Role};
+use anti_webui::prelude::{IntoView, Role, on_cleanup};
+use anti_webui_md3e::components::snackbars;
+
+use crate::{Command, Commands, Known, ScreenContext};
 
 /// The size the main window opens at.
 pub const WINDOW: (i32, i32) = (1200, 760);
@@ -321,4 +325,28 @@ pub fn signed_in_core(server: &str) -> (TestCore, hiphile_core::Hiphile) {
     core.nets.push(session.client().net().clone());
     hiphile.open_workspace(session, config::Profile::new(server, "alice"));
     (core, hiphile)
+}
+
+/// Commands that are kept in the order they are sent, for the test to read.
+pub fn recording_commands() -> (Commands, Rc<RefCell<Vec<Command>>>) {
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    let commands = Commands::new({
+        let sent = sent.clone();
+        move |command| sent.borrow_mut().push(command)
+    });
+    (commands, sent)
+}
+
+/// What a screen is made with on the workspace of `hiphile`, which is signed in, sending to
+/// `commands`. Made in a view, as it follows the workspace for as long as the view lives; what it
+/// tells shows where the view puts `snackbars.view()`.
+///
+/// It keeps `hiphile` until then, as the app does: the workspace goes with the last of it, and
+/// what the view keeps of the context may not be the workspace.
+pub fn screen_context(hiphile: &hiphile_core::Hiphile, commands: Commands) -> ScreenContext {
+    let workspace = hiphile.workspace().expect("signed in");
+    let known = Known::follow(hiphile, &workspace);
+    let kept = hiphile.clone();
+    on_cleanup(move || drop(kept));
+    ScreenContext::new(workspace, commands, known, snackbars())
 }

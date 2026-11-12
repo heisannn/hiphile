@@ -711,8 +711,24 @@ fn selected_in_order<S: RowSource, K: Clone + Eq + Hash + 'static>(
     })
 }
 
+/// Makes `control` in a row do only what it does itself: pressing it does not select, open or
+/// ripple the row. Opening the row's menu with the secondary button still reaches the row.
+pub fn row_control(control: Div) -> Div {
+    control
+        .on_pointer_down(|e| {
+            if !is_context_click(e) {
+                e.stop_propagation();
+            }
+        })
+        .on_click(|e| {
+            if !is_context_click(e) {
+                e.stop_propagation();
+            }
+        })
+}
+
 /// The secondary button, or Control and the primary one on macOS.
-fn is_context_click(e: &PointerEvent) -> bool {
+pub(crate) fn is_context_click(e: &PointerEvent) -> bool {
     match e.button {
         Some(PointerButton::Secondary) => true,
         Some(PointerButton::Primary) => cfg!(target_os = "macos") && e.modifiers.ctrl,

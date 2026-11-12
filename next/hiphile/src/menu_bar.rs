@@ -125,7 +125,7 @@ fn state_of(shown: &Shown, command: &Command) -> ItemState {
         }
         Command::GoBack => ItemState::enabled(free && shown.can_go_back),
         Command::GoForward => ItemState::enabled(free && shown.can_go_forward),
-        Command::OpenSearch | Command::OpenSettings => ItemState::enabled(free),
+        _ => ItemState::enabled(free),
     }
 }
 

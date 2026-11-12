@@ -1,0 +1,138 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use anti_webui::prelude::*;
+use anti_webui_md3e::components::{Snackbar, Snackbars};
+use hiphile_core::favorites::FavoritesNotice;
+use hiphile_core::playlists::PlaylistsNotice;
+use hiphile_core::{Hiphile, Workspace};
+use next_host::{Pending, Scope, notices};
+use next_ui::playlist_dialogs::{PlaylistDialog, PlaylistDialogs};
+use next_ui::{AlbumAction, Command, Commands, Known, ScreenContext};
+use subsonic::{AlbumId, Song};
+
+use crate::navigation::Navigation;
+
+/// What the commands of the screens act on in the workspace's window.
+#[derive(Clone)]
+pub(super) struct Shell {
+    navigation: Navigation,
+    workspace: Workspace,
+    settings_open: Signal<bool>,
+    pub(super) dialogs: PlaylistDialogs,
+    known: Known,
+    snackbars: Snackbars,
+    scope: Scope,
+    /// The songs of an album being had for an action, which the next action on an album calls
+    /// off.
+    album: Rc<RefCell<Option<Pending>>>,
+}
+
+impl Shell {
+    /// Follows what the commands go by, and tells in `snackbars` what the workspace could not do,
+    /// for as long as the current owner lives.
+    pub(super) fn new(
+        hiphile: &Hiphile,
+        workspace: Workspace,
+        navigation: Navigation,
+        settings_open: Signal<bool>,
+        snackbars: Snackbars,
+    ) -> Self {
+        tell_notices(&workspace, snackbars);
+        Self {
+            navigation,
+            known: Known::follow(hiphile, &workspace),
+            workspace,
+            settings_open,
+            dialogs: PlaylistDialogs::new(),
+            snackbars,
+            scope: Scope::here(),
+            album: Rc::default(),
+        }
+    }
+
+    /// What the screens are made with, which sends their commands here.
+    pub(super) fn context(&self) -> ScreenContext {
+        let this = self.clone();
+        let commands = Commands::new(move |command| this.run(command));
+        ScreenContext::new(self.workspace.clone(), commands, self.known, self.snackbars)
+    }
+
+    pub(super) fn run(&self, command: Command) {
+        let workspace = &self.workspace;
+        match command {
+            Command::Show(location) => self.navigation.go(location),
+            Command::GoBack => self.navigation.back(),
+            Command::GoForward => self.navigation.forward(),
+            Command::OpenSettings => self.settings_open.set(true),
+            Command::OpenSearch => {}
+            // What could not play is told by the player's alerts
+            Command::Play { songs, start } => {
+                let _ = match start {
+                    Some(start) => workspace.player().play(&songs, start),
+                    None => workspace.player().play_whole(&songs),
+                };
+            }
+            Command::Enqueue { songs, placement } => {
+                workspace.player().enqueue(&songs, placement);
+            }
+            Command::AddToPlaylist { playlist, songs } => {
+                workspace.playlists().add_songs(&playlist, &songs);
+            }
+            Command::NewPlaylist(songs) => self.dialogs.open(PlaylistDialog::New(songs)),
+            Command::ChoosePlaylist(songs) => self.choose_playlist(songs),
+            Command::ActOnAlbum { album, action } => self.act_on_album(album, action),
+            Command::ToggleFavorite(favorite) => workspace.favorites().toggle(favorite),
+            Command::Refresh => workspace.refresh(untrack(|| self.navigation.destination())),
+        }
+    }
+
+    /// With no playlist to choose, it is the name of a new one that is asked for.
+    fn choose_playlist(&self, songs: Arc<[Song]>) {
+        if songs.is_empty() {
+            return;
+        }
+        let dialog = if untrack(|| self.known.playlist_choices()).is_empty() {
+            PlaylistDialog::New(songs)
+        } else {
+            PlaylistDialog::Choose(songs)
+        };
+        self.dialogs.open(dialog);
+    }
+
+    fn act_on_album(&self, album: AlbumId, action: AlbumAction) {
+        if let Some(before) = self.album.borrow_mut().take() {
+            before.cancel();
+        }
+        let this = self.clone();
+        let pending = action.start(
+            album,
+            &self.workspace,
+            self.scope,
+            self.snackbars,
+            move |command| this.run(command),
+        );
+        *self.album.borrow_mut() = Some(pending);
+    }
+}
+
+/// Tells in `snackbars` what the playlists and the favorites could not do, and what they did
+/// that no screen shows. The screens leave these to the shell, as the one on show may not be the
+/// one that asked.
+fn tell_notices(workspace: &Workspace, snackbars: Snackbars) {
+    notices(workspace.playlists().notices(), move |notice| {
+        snackbars.show(match notice {
+            PlaylistsNotice::WriteFailed(message) => Snackbar::new(message).long(),
+            PlaylistsNotice::SongsAdded(message) => Snackbar::new(message),
+        });
+    });
+    notices(workspace.favorites().notices(), move |notice| {
+        if let FavoritesNotice::WriteFailed(message) = notice {
+            snackbars.show(Snackbar::new(message).long());
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests;
