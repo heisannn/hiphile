@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# The app on AntiWebUI is not released, so release-plz leaves out every crate under `next/`
+root="$(cd "$(dirname "$0")/.." && pwd)"
+held="$(awk '
+  /^\[/ { name = "" }
+  /^name = / { gsub(/"/, "", $3); name = $3 }
+  /^release = false$/ && name != "" { print name }
+' "$root/release-plz.toml")"
+status=0
+for manifest in "$root"/next/*/Cargo.toml; do
+  name="$(sed -n 's/^name = "\(.*\)"$/\1/p' "$manifest" | head -n 1)"
+  if ! grep -qx "$name" <<<"$held"; then
+    echo "error: release-plz.toml does not hold $name back; give it an entry with release = false" >&2
+    status=1
+  fi
+done
+exit "$status"

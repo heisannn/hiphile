@@ -58,6 +58,7 @@ Run what CI runs (`.github/workflows/ci.yml`):
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`
 - `cargo test --workspace --locked`
 - `script/check-gpui-free`
+- `script/check-release-plz`
 
 After a change to `hiphile-core` or a crate under it, also run `script/check-mobile`.
 
