@@ -43,6 +43,8 @@ pub(crate) struct FetchedCovers(Mutex<HashMap<Arc<str>, Weak<[u8]>>>);
 impl FetchedCovers {
     fn share(&self, url: Arc<str>, image: Arc<[u8]>) -> Arc<[u8]> {
         let mut held = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        // Its `Weak` keeps the bytes of an image no one holds any more
+        held.retain(|_, image| image.strong_count() > 0);
         if let Some(same) = held
             .get(&url)
             .and_then(Weak::upgrade)
@@ -50,8 +52,10 @@ impl FetchedCovers {
         {
             return same;
         }
-        held.retain(|_, image| image.strong_count() > 0);
         held.insert(url, Arc::downgrade(&image));
         image
     }
 }
+
+#[cfg(test)]
+mod tests;
