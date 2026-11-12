@@ -448,7 +448,8 @@ Material 3 Expressive にデザインし直す Hiphile を、詰まったデス�
 - タイトル：決定か状況（`Delete “Roadmap”?`）
 - 本文：新しい範囲、結果、戻り方だけ
 - 操作：`Cancel` と結果（`Delete`）
-- 取り返しのつかない見た目は結果の操作に付け、正確な言葉の代わりにしない
+- 取り返しのつかない見た目は結果の操作に付け、正確な言葉の代わりにしない。見た目は error 色の文字ボタン
+  （`next_ui::dialog_parts::irreversible_button`）で、`Cancel` はふつうの文字ボタンのままにする
 
 `Notice`、`Warning`、`Error`、`Confirmation` のような一般のタイトルを避け、状況を名乗る。「Are you sure you
 want to…」「Please note that…」「successfully」のような決まり文句を避ける。

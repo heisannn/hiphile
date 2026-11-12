@@ -6,7 +6,7 @@ use anti_webui_md3e::components::{
     styled_button,
 };
 use next_ui::Covers;
-use next_ui::dialog_parts::{dialog_actions, dialog_content, focused_field};
+use next_ui::dialog_parts::{dialog_actions, dialog_content, focused_field, irreversible_button};
 use subsonic::PlaylistId;
 
 use super::Playlists;
@@ -140,7 +140,7 @@ pub(super) fn delete_dialog(screen: &Playlists) -> View {
                 })
                 .confirm(move || {
                     let (screen, playlist) = (screen.clone(), playlist.clone());
-                    styled_button("Delete", ButtonStyle::text()).on_click(move |_| {
+                    irreversible_button("Delete").on_click(move |_| {
                         dialogs.close();
                         screen.delete(playlist.clone());
                     })

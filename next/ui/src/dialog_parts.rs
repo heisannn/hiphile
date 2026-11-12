@@ -5,6 +5,8 @@ use std::cell::Cell;
 
 use anti_webui::core::tree::{Document, NodeId, with_doc};
 use anti_webui::prelude::*;
+use anti_webui_md3e::color_scheme;
+use anti_webui_md3e::components::{ButtonStyle, styled_button};
 use anti_webui_md3e::typography::TextStyle;
 
 use crate::type_scale::styled_text;
@@ -26,6 +28,14 @@ pub fn dialog_actions() -> Div {
         .justify_end()
         .gap(8.0_f32)
         .pt(8.0_f32)
+}
+
+/// The text button for what a dialog can't undo, in the color for errors.
+///
+/// md3e's buttons take no colors of their own, so this lays the label's over a text button's; the
+/// state layer under the pointer keeps the text button's color.
+pub fn irreversible_button(label: impl IntoTextSource) -> Div {
+    styled_button(label, ButtonStyle::text()).dyn_style(|s| s.text_color(color_scheme().error))
 }
 
 /// `field`, an `outlined_text_field`, whose input takes the focus as the dialog opens, with the
@@ -96,3 +106,6 @@ fn first_input(doc: &Document, id: NodeId) -> Option<NodeId> {
         .iter()
         .find_map(|child| first_input(doc, *child))
 }
+
+#[cfg(test)]
+mod tests;
