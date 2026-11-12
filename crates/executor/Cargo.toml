@@ -10,6 +10,9 @@ license.workspace = true
 futures.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
 
+[features]
+test-support = []
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["sync", "time", "test-util"] }
 
