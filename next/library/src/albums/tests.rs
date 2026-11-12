@@ -6,15 +6,16 @@ use anti_webui::core::access::snapshot;
 use anti_webui::core::event::WindowEvent;
 use anti_webui::core::geometry::{Scale, SizeI};
 use anti_webui::prelude::*;
-use hiphile_core::Workspace;
 use hiphile_core::favorites::Favorite;
 use hiphile_core::navigation::{Destination, Location};
 use hiphile_core::test_support::LibraryServer;
+use hiphile_core::{Hiphile, Workspace};
 use next_ui::keymap::Keystroke;
 use next_ui::list_detail::Split;
 use next_ui::testing::{
-    TestCore, click_text, find, focus, frames, has_text, key, key_with, middle_of, nodes, press,
-    right_click, screen_context, signed_in_core, start, typed, wait_until,
+    SavedLibrary, TestCore, click_text, find, focus, frames, has_text, key, key_with, middle_of,
+    nodes, press, right_click, screen_context, signed_in_core, signed_in_core_with_library, start,
+    typed, wait_until,
 };
 use next_ui::{AlbumAction, Command, Commands};
 use playback::Placement;
@@ -77,6 +78,11 @@ struct Albums {
 /// Albums on `server` at `at`.
 fn on(server: LibraryServer, at: Location) -> Albums {
     let (core, hiphile) = signed_in_core(server.url());
+    on_core(server, core, hiphile, at)
+}
+
+/// Albums on `server` at `at`, signed in to it through `hiphile`.
+fn on_core(server: LibraryServer, core: TestCore, hiphile: Hiphile, at: Location) -> Albums {
     let workspace = hiphile.workspace().expect("signed in");
     let location = signal(at);
     let here = signal(true);
@@ -285,6 +291,24 @@ fn rows_of(list: &str) -> Vec<String> {
     tree.nodes
         .iter()
         .filter(|node| node.role == Role::ListOption && children.contains(&node.id))
+        .filter_map(|node| node.label.clone())
+        .collect()
+}
+
+/// The names of the selected rows of `list`.
+fn selected_of(list: &str) -> Vec<String> {
+    let tree = snapshot();
+    let Some(list) = tree
+        .nodes
+        .iter()
+        .find(|node| node.role == Role::ListBox && node.label.as_deref() == Some(list))
+    else {
+        return Vec::new();
+    };
+    let children = list.children.clone();
+    tree.nodes
+        .iter()
+        .filter(|node| children.contains(&node.id) && node.selected == Some(true))
         .filter_map(|node| node.label.clone())
         .collect()
 }
@@ -685,6 +709,46 @@ fn a_failed_album_loads_again_on_retry() {
     albums.wait_for_songs("Alpha");
 
     assert_eq!(rows_of("Songs"), ["One", "Two"]);
+}
+
+/// Alpha of the year `year`, played last at `played`.
+fn alpha_of(year: u32, played: &str) -> Value {
+    let mut alpha = album("a", "Alpha", &["One", "Two", "Three"]);
+    alpha["year"] = json!(year);
+    alpha["played"] = json!(played);
+    alpha
+}
+
+#[test]
+fn the_servers_version_of_a_saved_album_changes_it_in_place() {
+    let saved = alpha_of(2020, "2026-11-01T20:00:00Z");
+    let server = LibraryServer::new(vec![alpha_of(2021, "2026-11-12T20:00:00Z")]);
+    server.hold("getAlbum");
+    let library = SavedLibrary {
+        albums: vec![serde_json::from_value(saved.clone()).unwrap()],
+        ..SavedLibrary::default()
+    };
+    let (core, hiphile, catalog) = signed_in_core_with_library(server.url(), &library);
+    catalog
+        .put_album(&serde_json::from_value(saved).unwrap())
+        .unwrap();
+    let mut albums = on_core(server, core, hiphile, at("a"));
+    albums.wait_for(|| has_text("2020 · 3 songs · 9:00"));
+    focus(&mut albums.ui, Role::ListBox, "Songs");
+    albums.key(NamedKey::ArrowDown);
+    albums.key(NamedKey::ArrowDown);
+    assert_eq!(selected_of("Songs"), ["Two"]);
+    let list = find(Role::ListBox, "Songs").expect("the songs").id;
+
+    albums.server.release("getAlbum");
+    albums.wait_for(|| has_text("2021 · 3 songs · 9:00"));
+
+    assert_eq!(
+        find(Role::ListBox, "Songs").map(|songs| songs.id),
+        Some(list)
+    );
+    assert!(has_focus(Role::ListBox, "Songs"));
+    assert_eq!(selected_of("Songs"), ["Two"]);
 }
 
 #[test]
