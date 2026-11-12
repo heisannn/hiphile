@@ -3,6 +3,7 @@
 mod artists_server;
 mod favorites_server;
 mod home_server;
+mod http;
 mod library_server;
 mod playlists_server;
 mod songs_server;
@@ -10,8 +11,9 @@ mod songs_server;
 pub use artists_server::ArtistsServer;
 pub use favorites_server::{FavoritesServer, song_json};
 pub use home_server::HomeServer;
+pub use http::Request;
 pub use library_server::LibraryServer;
-pub use playlists_server::{PlaylistsServer, Request};
+pub use playlists_server::PlaylistsServer;
 pub use songs_server::SongsServer;
 
 use std::sync::Arc;

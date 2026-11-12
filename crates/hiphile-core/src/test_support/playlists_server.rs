@@ -2,36 +2,14 @@
 //! tests of the core and of the views.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{Read as _, Write as _};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::sync::{Arc, Condvar, Mutex};
-use std::thread;
 
 use serde_json::{Value, json};
 
+use super::http::{self, Request};
+
 const WRITES: [&str; 3] = ["createPlaylist", "updatePlaylist", "deletePlaylist"];
-
-#[derive(Clone, Debug)]
-#[non_exhaustive]
-pub struct Request {
-    pub verb: String,
-    pub method: String,
-    params: Vec<(String, String)>,
-}
-
-impl Request {
-    pub fn values(&self, name: &str) -> Vec<&str> {
-        self.params
-            .iter()
-            .filter(|(param, _)| param == name)
-            .map(|(_, value)| value.as_str())
-            .collect()
-    }
-
-    fn value(&self, name: &str) -> Option<&str> {
-        self.values(name).first().copied()
-    }
-}
 
 struct FakePlaylist {
     id: String,
@@ -66,8 +44,6 @@ pub struct PlaylistsServer {
 impl PlaylistsServer {
     /// Serves `playlists`, given as id, name and song ids.
     pub fn new(playlists: &[(&str, &str, &[&str])]) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
         let state = Shared::default();
         state.0.lock().unwrap().playlists = playlists
             .iter()
@@ -78,13 +54,7 @@ impl PlaylistsServer {
                 details: json!({}),
             })
             .collect();
-        let shared = state.clone();
-        thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
-                let state = shared.clone();
-                thread::spawn(move || serve(stream, &state));
-            }
-        });
+        let url = http::listen(state.clone(), serve);
         Self { url, state }
     }
 
@@ -179,7 +149,7 @@ impl PlaylistsServer {
 }
 
 fn serve(mut stream: TcpStream, shared: &Shared) {
-    let Some(request) = read_request(&mut stream) else {
+    let Some(request) = http::read_request(&mut stream) else {
         return;
     };
     let is_write = WRITES.contains(&request.method.as_str());
@@ -191,7 +161,7 @@ fn serve(mut stream: TcpStream, shared: &Shared) {
             .value("id")
             .and_then(|id| state.covers.get(id).cloned());
         drop(state);
-        write_cover(stream, cover.as_deref());
+        http::write_image(&mut stream, cover.as_deref());
         return;
     }
     let method = request.method.clone();
@@ -210,41 +180,7 @@ fn serve(mut stream: TcpStream, shared: &Shared) {
         drop(wait(state));
         answer
     };
-    let mut body = json!({ "status": "ok", "version": "1.16.1" });
-    match answer {
-        Ok(payload) => {
-            if let (Some(body), Value::Object(payload)) = (body.as_object_mut(), payload) {
-                body.extend(payload);
-            }
-        }
-        Err(message) => {
-            body["status"] = json!("failed");
-            body["error"] = json!({ "code": 0, "message": message });
-        }
-    }
-    let body = json!({ "subsonic-response": body }).to_string();
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    // A request given up on has nobody to answer
-    stream.write_all(response.as_bytes()).ok();
-}
-
-fn write_cover(mut stream: TcpStream, png: Option<&[u8]>) {
-    let Some(png) = png else {
-        stream
-            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-            .ok();
-        return;
-    };
-    let head = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        png.len()
-    );
-    // A request given up on has nobody to answer
-    stream.write_all(head.as_bytes()).ok();
-    stream.write_all(png).ok();
+    http::write_json(&mut stream, http::answered(answer));
 }
 
 fn answer(request: &Request, state: &mut State) -> Result<Value, &'static str> {
@@ -362,47 +298,4 @@ fn with_details(mut json: Value, details: &Value) -> Value {
         json.extend(details.clone());
     }
     json
-}
-
-fn read_request(stream: &mut TcpStream) -> Option<Request> {
-    let mut bytes = Vec::new();
-    let mut chunk = [0; 4096];
-    let body_start = loop {
-        if let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
-            let end = end + 4;
-            let headers = String::from_utf8_lossy(&bytes[..end]).to_ascii_lowercase();
-            let length: usize = headers
-                .lines()
-                .find_map(|line| line.strip_prefix("content-length: "))
-                .map_or(0, |length| length.trim().parse().unwrap());
-            if bytes.len() >= end + length {
-                break end;
-            }
-        }
-        let read = stream.read(&mut chunk).ok()?;
-        if read == 0 {
-            return None;
-        }
-        bytes.extend_from_slice(&chunk[..read]);
-    };
-    let head = String::from_utf8_lossy(&bytes[..body_start]);
-    let mut request_line = head.lines().next()?.split(' ');
-    let verb = request_line.next()?.to_owned();
-    let (path, query) = {
-        let target = request_line.next()?;
-        target.split_once('?').unwrap_or((target, ""))
-    };
-    let method = path.rsplit('/').next()?.to_owned();
-    let form = String::from_utf8_lossy(&bytes[body_start..]);
-    let params = query
-        .split('&')
-        .chain(form.split('&'))
-        .filter_map(|param| param.split_once('='))
-        .map(|(name, value)| (name.to_owned(), value.to_owned()))
-        .collect();
-    Some(Request {
-        verb,
-        method,
-        params,
-    })
 }

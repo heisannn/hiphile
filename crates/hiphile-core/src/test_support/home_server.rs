@@ -2,11 +2,12 @@
 //! of the views: albums, the lists the server keeps of them, their songs and their covers.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{Read as _, Write as _};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::sync::{Arc, Condvar, Mutex};
 
 use serde_json::{Value, json};
+
+use super::http;
 
 /// The lists of `getAlbumList2` it keeps.
 const LISTS: [&str; 4] = ["newest", "recent", "frequent", "random"];
@@ -42,16 +43,8 @@ pub struct HomeServer {
 impl HomeServer {
     /// Serves no albums, no favorites and no playlists.
     pub fn new() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
         let state = Shared::default();
-        let shared = state.clone();
-        std::thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
-                let state = shared.clone();
-                std::thread::spawn(move || serve(stream, &state));
-            }
-        });
+        let url = http::listen(state.clone(), serve);
         Self { url, state }
     }
 
@@ -161,20 +154,11 @@ fn album_json(album: &FakeAlbum) -> Value {
 }
 
 fn serve(mut stream: TcpStream, shared: &Shared) {
-    let mut bytes = [0; 4096];
-    let Ok(read) = stream.read(&mut bytes) else {
+    let Some(request) = http::read_request(&mut stream) else {
         return;
     };
-    let head = String::from_utf8_lossy(&bytes[..read]).into_owned();
-    let target = head.split(' ').nth(1).unwrap_or_default();
-    let (path, query) = target.split_once('?').unwrap_or((target, ""));
-    let method = path.rsplit('/').next().unwrap_or_default().to_owned();
-    let param = |name: &str| {
-        query.split('&').find_map(|pair| {
-            let (key, value) = pair.split_once('=')?;
-            (key == name).then(|| value.to_owned())
-        })
-    };
+    let method = &request.method;
+    let param = |name: &str| request.value(name).map(str::to_owned);
     let what = match method.as_str() {
         "getAlbumList2" => param("type").unwrap_or_default(),
         _ => method.clone(),
@@ -190,34 +174,16 @@ fn serve(mut stream: TcpStream, shared: &Shared) {
         let id = param("id").unwrap_or_default();
         let image = state.covers.get(&id).or(state.cover.as_ref()).cloned();
         drop(state);
-        write_cover(&mut stream, image.as_deref());
+        http::write_image(&mut stream, image.as_deref());
         return;
     }
     let answer = if state.refused.contains(&what) {
         Err("Refused")
     } else {
-        answer(&state, &method, &what, &param).unwrap_or(Err("Not implemented"))
+        answer(&state, method, &what, &param).unwrap_or(Err("Not implemented"))
     };
     drop(state);
-    let mut body = json!({ "status": "ok", "version": "1.16.1" });
-    match answer {
-        Ok(payload) => {
-            if let (Some(body), Value::Object(payload)) = (body.as_object_mut(), payload) {
-                body.extend(payload);
-            }
-        }
-        Err(message) => {
-            body["status"] = json!("failed");
-            body["error"] = json!({ "code": 0, "message": message });
-        }
-    }
-    let body = json!({ "subsonic-response": body }).to_string();
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    // A request given up on has nobody to answer
-    stream.write_all(response.as_bytes()).ok();
+    http::write_json(&mut stream, http::answered(answer));
 }
 
 fn answer(
@@ -254,25 +220,4 @@ fn answer(
         "getPlaylists" => Ok(json!({ "playlists": {} })),
         _ => return None,
     })
-}
-
-/// The image, or Not Found without one.
-fn write_cover(stream: &mut TcpStream, image: Option<&[u8]>) {
-    match image {
-        Some(image) => {
-            let head = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                image.len()
-            );
-            stream.write_all(head.as_bytes()).ok();
-            stream.write_all(image).ok();
-        }
-        None => {
-            stream
-                .write_all(
-                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                )
-                .ok();
-        }
-    }
 }
