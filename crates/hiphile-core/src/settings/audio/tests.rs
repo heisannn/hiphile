@@ -1,4 +1,4 @@
-use gpui_kit::TestAppContext;
+use executor::testing::TestExecutor;
 
 use super::*;
 
@@ -31,14 +31,13 @@ pub(in crate::settings) fn dac() -> OutputDevice {
     )
 }
 
-/// On GPUI's executor, which the test's `run_until_parked` drives.
 pub(in crate::settings) fn settings_saving_to(
     store: &config::Store,
-    cx: &mut TestAppContext,
+    cx: &TestExecutor,
 ) -> AudioSettings {
     let quality = ResamplingQuality::default();
     let dsd = DsdOutput::default();
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+    let executor = cx.executor();
     AudioSettings::with(
         executor,
         Some(store.clone()),
@@ -49,8 +48,9 @@ pub(in crate::settings) fn settings_saving_to(
     )
 }
 
-#[gpui_kit::test]
-fn a_preset_is_told_saved_and_reaches_the_output(cx: &mut TestAppContext) {
+#[test]
+fn a_preset_is_told_saved_and_reaches_the_output() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -68,8 +68,9 @@ fn a_preset_is_told_saved_and_reaches_the_output(cx: &mut TestAppContext) {
     );
 }
 
-#[gpui_kit::test]
-fn r8brain_is_told_saved_and_reaches_the_output(cx: &mut TestAppContext) {
+#[test]
+fn r8brain_is_told_saved_and_reaches_the_output() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -91,8 +92,9 @@ fn r8brain_is_told_saved_and_reaches_the_output(cx: &mut TestAppContext) {
     );
 }
 
-#[gpui_kit::test]
-fn r8brain_values_from_elsewhere_stay_out_of_the_file(cx: &mut TestAppContext) {
+#[test]
+fn r8brain_values_from_elsewhere_stay_out_of_the_file() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let mut filter = config::R8brainQuality::High.filter();
@@ -102,7 +104,7 @@ fn r8brain_values_from_elsewhere_stay_out_of_the_file(cx: &mut TestAppContext) {
     let quality = ResamplingQuality::R8brain(from_environment);
     let dsd = DsdOutput::default();
     let output = OutputSettings::from_config(None, SampleRate::MatchSong, quality, &dsd);
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+    let executor = cx.executor();
     let settings = AudioSettings::with(executor, Some(store.clone()), output, quality, dsd, None);
 
     settings.type_r8brain(R8brainNumber::MaxInputFrames, "4096");
@@ -114,8 +116,9 @@ fn r8brain_values_from_elsewhere_stay_out_of_the_file(cx: &mut TestAppContext) {
     assert!(!text.contains("r8brain_attenuation"), "{text}");
 }
 
-#[gpui_kit::test]
-fn each_resampler_comes_back_at_the_quality_it_had(cx: &mut TestAppContext) {
+#[test]
+fn each_resampler_comes_back_at_the_quality_it_had() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -133,8 +136,9 @@ fn each_resampler_comes_back_at_the_quality_it_had(cx: &mut TestAppContext) {
     assert_eq!(settings.snapshot().r8brain_quality_ix(), 0);
 }
 
-#[gpui_kit::test]
-fn custom_after_r8brain_starts_from_the_medium_values(cx: &mut TestAppContext) {
+#[test]
+fn custom_after_r8brain_starts_from_the_medium_values() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -158,8 +162,9 @@ fn custom_after_r8brain_starts_from_the_medium_values(cx: &mut TestAppContext) {
     );
 }
 
-#[gpui_kit::test]
-fn choosing_custom_is_saved_but_keeps_the_sound(cx: &mut TestAppContext) {
+#[test]
+fn choosing_custom_is_saved_but_keeps_the_sound() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -179,8 +184,9 @@ fn choosing_custom_is_saved_but_keeps_the_sound(cx: &mut TestAppContext) {
     assert_eq!(settings.snapshot().rubato_quality_ix(), 3);
 }
 
-#[gpui_kit::test]
-fn another_value_turns_a_preset_custom_and_the_same_one_does_not(cx: &mut TestAppContext) {
+#[test]
+fn another_value_turns_a_preset_custom_and_the_same_one_does_not() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -215,8 +221,9 @@ fn another_value_turns_a_preset_custom_and_the_same_one_does_not(cx: &mut TestAp
     assert_eq!(snapshot.window_value(), "Blackman-Harris²");
 }
 
-#[gpui_kit::test]
-fn custom_values_are_told_saved_and_reach_the_output(cx: &mut TestAppContext) {
+#[test]
+fn custom_values_are_told_saved_and_reach_the_output() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -243,8 +250,9 @@ fn custom_values_are_told_saved_and_reach_the_output(cx: &mut TestAppContext) {
     assert_eq!(settings.window_value(), "Hann²");
 }
 
-#[gpui_kit::test]
-fn another_device_or_rate_keeps_the_resampling(cx: &mut TestAppContext) {
+#[test]
+fn another_device_or_rate_keeps_the_resampling() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -260,8 +268,9 @@ fn another_device_or_rate_keeps_the_resampling(cx: &mut TestAppContext) {
     );
 }
 
-#[gpui_kit::test]
-fn transitions_are_told_saved_and_leave_the_output_alone(cx: &mut TestAppContext) {
+#[test]
+fn transitions_are_told_saved_and_leave_the_output_alone() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -313,8 +322,9 @@ fn saved_transitions_come_back_and_bad_ones_are_told() {
     assert!(error.is_some());
 }
 
-#[gpui_kit::test]
-fn the_crossfade_note_says_when_the_device_may_have_to_switch(cx: &mut TestAppContext) {
+#[test]
+fn the_crossfade_note_says_when_the_device_may_have_to_switch() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -325,8 +335,9 @@ fn the_crossfade_note_says_when_the_device_may_have_to_switch(cx: &mut TestAppCo
     assert!(settings.snapshot().crossfade_note().is_none());
 }
 
-#[gpui_kit::test]
-fn exclusive_mode_is_told_saved_and_survives_other_changes(cx: &mut TestAppContext) {
+#[test]
+fn exclusive_mode_is_told_saved_and_survives_other_changes() {
+    let cx = &TestExecutor::new();
     if !audio::CAN_PLAY_EXCLUSIVE {
         return;
     }
@@ -358,8 +369,9 @@ fn exclusive_mode_is_told_saved_and_survives_other_changes(cx: &mut TestAppConte
     assert!(!settings.snapshot().is_exclusive_on());
 }
 
-#[gpui_kit::test]
-fn each_change_is_published_at_once(cx: &mut TestAppContext) {
+#[test]
+fn each_change_is_published_at_once() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -373,8 +385,9 @@ fn each_change_is_published_at_once(cx: &mut TestAppContext) {
     );
 }
 
-#[gpui_kit::test]
-fn changes_waiting_for_a_write_are_written_together(cx: &mut TestAppContext) {
+#[test]
+fn changes_waiting_for_a_write_are_written_together() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -497,8 +510,9 @@ fn a_multiple_is_not_offered_where_it_cannot_reach_the_device() {
     );
 }
 
-#[gpui_kit::test]
-fn a_multiple_is_told_saved_and_reaches_the_output(cx: &mut TestAppContext) {
+#[test]
+fn a_multiple_is_told_saved_and_reaches_the_output() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -517,8 +531,9 @@ fn a_multiple_is_told_saved_and_reaches_the_output(cx: &mut TestAppContext) {
     assert_eq!(store.sample_rate().unwrap(), SampleRate::MatchSong);
 }
 
-#[gpui_kit::test]
-fn what_waits_and_what_is_typed_are_written_before_quitting(cx: &mut TestAppContext) {
+#[test]
+fn what_waits_and_what_is_typed_are_written_before_quitting() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -541,8 +556,9 @@ fn what_waits_and_what_is_typed_are_written_before_quitting(cx: &mut TestAppCont
     cx.run_until_parked();
 }
 
-#[gpui_kit::test]
-fn a_number_beyond_its_range_is_written_held_to_it_before_quitting(cx: &mut TestAppContext) {
+#[test]
+fn a_number_beyond_its_range_is_written_held_to_it_before_quitting() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -554,8 +570,9 @@ fn a_number_beyond_its_range_is_written_held_to_it_before_quitting(cx: &mut Test
     assert_eq!(filter.attenuation, 49.0);
 }
 
-#[gpui_kit::test]
-fn with_dsd_on_the_crossfade_note_says_dsd_plays_songs_whole(cx: &mut TestAppContext) {
+#[test]
+fn with_dsd_on_the_crossfade_note_says_dsd_plays_songs_whole() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);

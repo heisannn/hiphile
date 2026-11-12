@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use gpui_kit::TestAppContext;
+use executor::testing::TestExecutor;
 use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 
 use super::*;
@@ -15,8 +15,8 @@ impl HasWindowHandle for NoWindow {
     }
 }
 
-fn controls(cx: &mut TestAppContext) -> (SystemMediaControls, playback::Player) {
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+fn controls(cx: &TestExecutor) -> (SystemMediaControls, playback::Player) {
+    let executor = cx.executor();
     let player = playback::Player::new(
         executor.clone(),
         crate::test_support::session(NOWHERE),
@@ -45,10 +45,11 @@ fn current_title(player: &playback::Player) -> Option<String> {
         .map(|song| song.title().to_owned())
 }
 
-#[gpui_kit::test]
-fn play_and_pause_from_the_system_only_change_what_they_name(cx: &mut TestAppContext) {
+#[test]
+fn play_and_pause_from_the_system_only_change_what_they_name() {
+    let cx = &TestExecutor::new();
     // Playing again tells the server, whose answer comes from the network's thread
-    cx.executor().allow_parking();
+    cx.allow_parking();
     let (controls, player) = controls(cx);
     player.fill_queue(&[named_song("a")], 0);
     player.pretend_playing(true);
@@ -66,8 +67,9 @@ fn play_and_pause_from_the_system_only_change_what_they_name(cx: &mut TestAppCon
     assert!(!is_playing());
 }
 
-#[gpui_kit::test]
-fn next_and_previous_from_the_system_move_in_the_queue(cx: &mut TestAppContext) {
+#[test]
+fn next_and_previous_from_the_system_move_in_the_queue() {
+    let cx = &TestExecutor::new();
     let (controls, player) = controls(cx);
     player.fill_queue(&[named_song("a"), named_song("b")], 0);
     controls.on_command(MediaCommand::Next);
@@ -76,8 +78,9 @@ fn next_and_previous_from_the_system_move_in_the_queue(cx: &mut TestAppContext) 
     assert_eq!(current_title(&player).as_deref(), Some("a"));
 }
 
-#[gpui_kit::test]
-fn stop_from_the_system_keeps_the_song_for_what_is_added_next(cx: &mut TestAppContext) {
+#[test]
+fn stop_from_the_system_keeps_the_song_for_what_is_added_next() {
+    let cx = &TestExecutor::new();
     let (controls, player) = controls(cx);
     player.fill_queue(&[named_song("a"), named_song("b")], 0);
     player.pretend_playing(true);
@@ -89,8 +92,9 @@ fn stop_from_the_system_keeps_the_song_for_what_is_added_next(cx: &mut TestAppCo
     assert!(!player.snapshot().is_playing());
 }
 
-#[gpui_kit::test]
-fn seeks_from_the_system_stay_in_the_song_until_its_end(cx: &mut TestAppContext) {
+#[test]
+fn seeks_from_the_system_stay_in_the_song_until_its_end() {
+    let cx = &TestExecutor::new();
     let (controls, player) = controls(cx);
     player.fill_queue(&[named_song("a"), named_song("b")], 0);
     player.pretend_playing(true);
@@ -106,16 +110,18 @@ fn seeks_from_the_system_stay_in_the_song_until_its_end(cx: &mut TestAppContext)
     assert_eq!(current_title(&player).as_deref(), Some("b"));
 }
 
-#[gpui_kit::test]
-fn raising_the_window_is_left_to_the_app(cx: &mut TestAppContext) {
+#[test]
+fn raising_the_window_is_left_to_the_app() {
+    let cx = &TestExecutor::new();
     let (controls, _player) = controls(cx);
     let mut notices = controls.notices();
     controls.on_command(MediaCommand::Raise);
     assert_eq!(notices.try_recv(), Ok(MediaNotice::Raise));
 }
 
-#[gpui_kit::test]
-fn the_system_hears_how_the_song_stands(cx: &mut TestAppContext) {
+#[test]
+fn the_system_hears_how_the_song_stands() {
+    let cx = &TestExecutor::new();
     let (_controls, player) = controls(cx);
     player.fill_queue(&[named_song("a")], 0);
     assert_eq!(media_status(&player.snapshot()), MediaStatus::Stopped);
@@ -126,8 +132,9 @@ fn the_system_hears_how_the_song_stands(cx: &mut TestAppContext) {
     assert_eq!(media_status(&player.snapshot()), MediaStatus::Paused);
 }
 
-#[gpui_kit::test]
-fn a_cover_not_found_is_looked_for_again_with_the_next_song(cx: &mut TestAppContext) {
+#[test]
+fn a_cover_not_found_is_looked_for_again_with_the_next_song() {
+    let cx = &TestExecutor::new();
     let (controls, player) = controls(cx);
     player.fill_queue(&[named_song("a"), named_song("b")], 0);
     cx.run_until_parked();
@@ -137,8 +144,9 @@ fn a_cover_not_found_is_looked_for_again_with_the_next_song(cx: &mut TestAppCont
     assert_eq!(controls.lock().sought_cover, None);
 }
 
-#[gpui_kit::test]
-fn letting_go_of_them_lets_go_of_nothing_else(cx: &mut TestAppContext) {
+#[test]
+fn letting_go_of_them_lets_go_of_nothing_else() {
+    let cx = &TestExecutor::new();
     let (controls, player) = controls(cx);
     let weak = controls.downgrade();
     drop(controls);
@@ -147,11 +155,12 @@ fn letting_go_of_them_lets_go_of_nothing_else(cx: &mut TestAppContext) {
     drop(player);
 }
 
-#[gpui_kit::test]
-fn shutting_the_core_down_clears_what_the_system_shows(cx: &mut TestAppContext) {
-    cx.executor().allow_parking();
+#[test]
+fn shutting_the_core_down_clears_what_the_system_shows() {
+    let cx = &TestExecutor::new();
+    cx.allow_parking();
     let net = net::Client::new("hiphile-test").unwrap();
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+    let executor = cx.executor();
     let hiphile = crate::Hiphile::new(
         executor,
         net,

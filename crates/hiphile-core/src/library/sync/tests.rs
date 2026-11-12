@@ -1,20 +1,15 @@
-use gpui_kit::TestAppContext;
+use executor::testing::TestExecutor;
 use serde_json::json;
 
 use super::*;
 use crate::test_support::session_saving_into;
 use crate::testing::{NOWHERE, server_answering, wait_for};
 
-/// A library on GPUI's executor that saves into `catalog`, whose server is at `url`. Its first
-/// sync starts at once.
-fn library_sync(
-    catalog: Option<catalog::Catalog>,
-    url: &str,
-    cx: &mut TestAppContext,
-) -> LibrarySync {
+/// A library that saves into `catalog`, whose server is at `url`. Its first sync starts at once.
+fn library_sync(catalog: Option<catalog::Catalog>, url: &str, cx: &TestExecutor) -> LibrarySync {
     // The requests wake the test from the network's own thread
-    cx.executor().allow_parking();
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+    cx.allow_parking();
+    let executor = cx.executor();
     LibrarySync::new(executor, session_saving_into(catalog, url))
 }
 
@@ -34,8 +29,9 @@ fn count(notices: &mut broadcast::Receiver<LibraryNotice>, counts: &mut [usize; 
     }
 }
 
-#[gpui_kit::test]
-fn a_sync_saves_the_artists_and_says_so(cx: &mut TestAppContext) {
+#[test]
+fn a_sync_saves_the_artists_and_says_so() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let catalog = catalog::Catalog::open(dir.path()).unwrap();
     let url = server_answering(json!({
@@ -61,8 +57,9 @@ fn a_sync_saves_the_artists_and_says_so(cx: &mut TestAppContext) {
     assert_eq!(saved[0].name(), "Miles Davis");
 }
 
-#[gpui_kit::test]
-fn artists_that_fail_to_sync_do_not_stop_the_songs(cx: &mut TestAppContext) {
+#[test]
+fn artists_that_fail_to_sync_do_not_stop_the_songs() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let catalog = catalog::Catalog::open(dir.path()).unwrap();
     let url = server_answering(json!({
@@ -84,8 +81,9 @@ fn artists_that_fail_to_sync_do_not_stop_the_songs(cx: &mut TestAppContext) {
     assert_eq!(catalog.songs().unwrap().len(), 1);
 }
 
-#[gpui_kit::test]
-fn a_sync_without_a_saved_copy_says_the_songs_may_have_changed(cx: &mut TestAppContext) {
+#[test]
+fn a_sync_without_a_saved_copy_says_the_songs_may_have_changed() {
+    let cx = &TestExecutor::new();
     let url = server_answering(json!({ "albumList2": { "album": [] } }));
     let sync = library_sync(None, &url, cx);
     let mut notices = sync.notices();
@@ -99,8 +97,9 @@ fn a_sync_without_a_saved_copy_says_the_songs_may_have_changed(cx: &mut TestAppC
     assert_eq!(counts[1], counts[0]);
 }
 
-#[gpui_kit::test]
-fn the_first_sync_and_each_refresh_say_when_they_fail(cx: &mut TestAppContext) {
+#[test]
+fn the_first_sync_and_each_refresh_say_when_they_fail() {
+    let cx = &TestExecutor::new();
     let sync = library_sync(None, NOWHERE, cx);
     let mut notices = sync.notices();
     let mut counts = [0; 3];
@@ -119,8 +118,9 @@ fn the_first_sync_and_each_refresh_say_when_they_fail(cx: &mut TestAppContext) {
     assert_eq!(counts[2], 2);
 }
 
-#[gpui_kit::test]
-fn albums_that_never_showed_fail_as_albums(cx: &mut TestAppContext) {
+#[test]
+fn albums_that_never_showed_fail_as_albums() {
+    let cx = &TestExecutor::new();
     let sync = library_sync(None, NOWHERE, cx);
     assert!(sync.status().is_running());
     assert_eq!(*sync.status().albums(), Shelf::Loading);
@@ -132,8 +132,9 @@ fn albums_that_never_showed_fail_as_albums(cx: &mut TestAppContext) {
     assert_eq!(status.failure(), None);
 }
 
-#[gpui_kit::test]
-fn albums_on_show_stay_when_a_refresh_fails(cx: &mut TestAppContext) {
+#[test]
+fn albums_on_show_stay_when_a_refresh_fails() {
+    let cx = &TestExecutor::new();
     let sync = library_sync(None, NOWHERE, cx);
     wait_for(cx, || !sync.status().is_running());
     let albums: Arc<[Album]> =
@@ -155,8 +156,9 @@ fn albums_on_show_stay_when_a_refresh_fails(cx: &mut TestAppContext) {
     );
 }
 
-#[gpui_kit::test]
-fn a_refreshing_sync_says_how_each_stage_ended(cx: &mut TestAppContext) {
+#[test]
+fn a_refreshing_sync_says_how_each_stage_ended() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let catalog = catalog::Catalog::open(dir.path()).unwrap();
     let url = server_answering(json!({
@@ -165,8 +167,8 @@ fn a_refreshing_sync_says_how_each_stage_ended(cx: &mut TestAppContext) {
         "searchResult3": { "song": [] },
         "scanStatus": { "scanning": false },
     }));
-    cx.executor().allow_parking();
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+    cx.allow_parking();
+    let executor = cx.executor();
     let sync = LibrarySync::refreshing(executor, session_saving_into(Some(catalog), &url));
     let mut notices = sync.notices();
     let mut stages = Vec::new();
@@ -192,8 +194,9 @@ fn a_refreshing_sync_says_how_each_stage_ended(cx: &mut TestAppContext) {
     assert_eq!(*sync.status().albums(), Shelf::Loaded(Arc::from([])));
 }
 
-#[gpui_kit::test]
-fn a_refresh_asked_for_during_a_sync_runs_once_it_ends(cx: &mut TestAppContext) {
+#[test]
+fn a_refresh_asked_for_during_a_sync_runs_once_it_ends() {
+    let cx = &TestExecutor::new();
     let sync = library_sync(None, NOWHERE, cx);
     let mut notices = sync.notices();
     let mut counts = [0; 3];

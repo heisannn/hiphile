@@ -1,22 +1,21 @@
 use std::time::{Duration, Instant};
 
-use gpui_kit::TestAppContext;
+use executor::testing::TestExecutor;
 use serde_json::json;
 use subsonic::{AlbumId, ArtistId, SongId};
 
 use super::*;
 use crate::test_support::{self, FavoritesServer, song_json};
 
-/// On GPUI's executor, which the test's `run_until_parked` drives.
-fn favorites_on(server: &FavoritesServer, cx: &mut TestAppContext) -> FavoritesState {
+fn favorites_on(server: &FavoritesServer, cx: &TestExecutor) -> FavoritesState {
     // The requests wake the test from the network's own thread
-    cx.executor().allow_parking();
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+    cx.allow_parking();
+    let executor = cx.executor();
     let session = test_support::session(server.url());
     FavoritesState::new(executor, session.client().clone())
 }
 
-fn wait_until(cx: &mut TestAppContext, done: impl Fn() -> bool) {
+fn wait_until(cx: &TestExecutor, done: impl Fn() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         cx.run_until_parked();
@@ -37,7 +36,7 @@ fn is_settled(favorites: &FavoritesState) -> bool {
     })
 }
 
-fn settle(favorites: &FavoritesState, cx: &mut TestAppContext) {
+fn settle(favorites: &FavoritesState, cx: &TestExecutor) {
     wait_until(cx, || is_settled(favorites));
 }
 
@@ -66,8 +65,9 @@ fn notices(notices: &mut broadcast::Receiver<FavoritesNotice>) -> Vec<FavoritesN
     std::iter::from_fn(|| notices.try_recv().ok()).collect()
 }
 
-#[gpui_kit::test]
-fn the_favorites_are_known_once_they_load(cx: &mut TestAppContext) {
+#[test]
+fn the_favorites_are_known_once_they_load() {
+    let cx = &TestExecutor::new();
     let server = FavoritesServer::new(&["a", "b"]);
     let favorites = favorites_on(&server, cx);
     assert_eq!(favorites.snapshot().is_favorite(&target("a")), None);
@@ -83,8 +83,9 @@ fn the_favorites_are_known_once_they_load(cx: &mut TestAppContext) {
     assert_eq!(snapshot.is_favorite(&artist), Some(true));
 }
 
-#[gpui_kit::test]
-fn a_new_favorite_shows_at_once_and_reaches_the_server(cx: &mut TestAppContext) {
+#[test]
+fn a_new_favorite_shows_at_once_and_reaches_the_server() {
+    let cx = &TestExecutor::new();
     let server = FavoritesServer::new(&["a"]);
     let favorites = favorites_on(&server, cx);
     settle(&favorites, cx);
@@ -100,8 +101,9 @@ fn a_new_favorite_shows_at_once_and_reaches_the_server(cx: &mut TestAppContext) 
     assert_eq!(server.writes(), ["star id=n"]);
 }
 
-#[gpui_kit::test]
-fn each_kind_of_favorite_is_sent_by_its_own_parameter(cx: &mut TestAppContext) {
+#[test]
+fn each_kind_of_favorite_is_sent_by_its_own_parameter() {
+    let cx = &TestExecutor::new();
     let server = FavoritesServer::new(&[]);
     let favorites = favorites_on(&server, cx);
     settle(&favorites, cx);
@@ -114,8 +116,9 @@ fn each_kind_of_favorite_is_sent_by_its_own_parameter(cx: &mut TestAppContext) {
     assert_eq!(server.writes(), ["unstar albumId=al", "unstar artistId=ar"]);
 }
 
-#[gpui_kit::test]
-fn asking_for_what_already_is_sends_nothing(cx: &mut TestAppContext) {
+#[test]
+fn asking_for_what_already_is_sends_nothing() {
+    let cx = &TestExecutor::new();
     let server = FavoritesServer::new(&["a"]);
     let favorites = favorites_on(&server, cx);
     settle(&favorites, cx);
@@ -127,8 +130,9 @@ fn asking_for_what_already_is_sends_nothing(cx: &mut TestAppContext) {
     assert!(server.writes().is_empty());
 }
 
-#[gpui_kit::test]
-fn toggling_adds_what_is_no_favorite_and_takes_out_what_is(cx: &mut TestAppContext) {
+#[test]
+fn toggling_adds_what_is_no_favorite_and_takes_out_what_is() {
+    let cx = &TestExecutor::new();
     let server = FavoritesServer::new(&["a"]);
     let favorites = favorites_on(&server, cx);
     settle(&favorites, cx);
@@ -141,8 +145,9 @@ fn toggling_adds_what_is_no_favorite_and_takes_out_what_is(cx: &mut TestAppConte
     assert_eq!(server.writes(), ["star id=n", "unstar id=a"]);
 }
 
-#[gpui_kit::test]
-fn toggling_goes_by_the_changes_still_on_their_way(cx: &mut TestAppContext) {
+#[test]
+fn toggling_goes_by_the_changes_still_on_their_way() {
+    let cx = &TestExecutor::new();
     let server = FavoritesServer::new(&["a"]);
     let favorites = favorites_on(&server, cx);
     settle(&favorites, cx);
@@ -157,8 +162,9 @@ fn toggling_goes_by_the_changes_still_on_their_way(cx: &mut TestAppContext) {
     assert_eq!(favorites.snapshot().is_favorite(&target("n")), Some(false));
 }
 
-#[gpui_kit::test]
-fn toggling_does_nothing_until_the_favorites_load(cx: &mut TestAppContext) {
+#[test]
+fn toggling_does_nothing_until_the_favorites_load() {
+    let cx = &TestExecutor::new();
     let server = FavoritesServer::new(&["a"]);
     server.hold("getStarred2");
     let favorites = favorites_on(&server, cx);
@@ -172,8 +178,9 @@ fn toggling_does_nothing_until_the_favorites_load(cx: &mut TestAppContext) {
     assert_eq!(song_ids(&favorites), ["a"]);
 }
 
-#[gpui_kit::test]
-fn a_removal_the_server_refuses_goes_back_where_it_was(cx: &mut TestAppContext) {
+#[test]
+fn a_removal_the_server_refuses_goes_back_where_it_was() {
+    let cx = &TestExecutor::new();
     let server = FavoritesServer::new(&["a", "b", "c"]);
     let favorites = favorites_on(&server, cx);
     settle(&favorites, cx);
@@ -194,8 +201,9 @@ fn a_removal_the_server_refuses_goes_back_where_it_was(cx: &mut TestAppContext) 
     );
 }
 
-#[gpui_kit::test]
-fn an_addition_the_server_refuses_goes_away(cx: &mut TestAppContext) {
+#[test]
+fn an_addition_the_server_refuses_goes_away() {
+    let cx = &TestExecutor::new();
     let server = FavoritesServer::new(&["a"]);
     let favorites = favorites_on(&server, cx);
     settle(&favorites, cx);
@@ -208,8 +216,9 @@ fn an_addition_the_server_refuses_goes_away(cx: &mut TestAppContext) {
     assert_eq!(favorites.snapshot().is_favorite(&target("n")), Some(false));
 }
 
-#[gpui_kit::test]
-fn writes_go_one_at_a_time_in_the_order_they_were_made(cx: &mut TestAppContext) {
+#[test]
+fn writes_go_one_at_a_time_in_the_order_they_were_made() {
+    let cx = &TestExecutor::new();
     let server = FavoritesServer::new(&["a"]);
     let favorites = favorites_on(&server, cx);
     settle(&favorites, cx);
@@ -228,8 +237,9 @@ fn writes_go_one_at_a_time_in_the_order_they_were_made(cx: &mut TestAppContext) 
     assert_eq!(song_ids(&favorites), ["n", "a"]);
 }
 
-#[gpui_kit::test]
-fn a_refused_change_leaves_a_later_one_to_decide(cx: &mut TestAppContext) {
+#[test]
+fn a_refused_change_leaves_a_later_one_to_decide() {
+    let cx = &TestExecutor::new();
     let server = FavoritesServer::new(&["a"]);
     let favorites = favorites_on(&server, cx);
     settle(&favorites, cx);
@@ -249,8 +259,9 @@ fn a_refused_change_leaves_a_later_one_to_decide(cx: &mut TestAppContext) {
 }
 
 // These read nothing back after the writes, to leave the undoing on its own
-#[gpui_kit::test]
-fn an_addition_then_a_removal_both_refused_leave_it_out(cx: &mut TestAppContext) {
+#[test]
+fn an_addition_then_a_removal_both_refused_leave_it_out() {
+    let cx = &TestExecutor::new();
     let server = FavoritesServer::new(&["a"]);
     let favorites = favorites_on(&server, cx);
     settle(&favorites, cx);
@@ -269,8 +280,9 @@ fn an_addition_then_a_removal_both_refused_leave_it_out(cx: &mut TestAppContext)
     assert_eq!(favorites.snapshot().is_favorite(&target("n")), Some(false));
 }
 
-#[gpui_kit::test]
-fn a_removal_then_an_addition_both_refused_leave_it_where_it_was(cx: &mut TestAppContext) {
+#[test]
+fn a_removal_then_an_addition_both_refused_leave_it_where_it_was() {
+    let cx = &TestExecutor::new();
     let server = FavoritesServer::new(&["a", "b", "c"]);
     let favorites = favorites_on(&server, cx);
     settle(&favorites, cx);
@@ -289,10 +301,9 @@ fn a_removal_then_an_addition_both_refused_leave_it_where_it_was(cx: &mut TestAp
     assert_eq!(favorites.snapshot().is_favorite(&target("b")), Some(true));
 }
 
-#[gpui_kit::test]
-fn a_refused_removal_brings_back_the_favorite_listed_not_the_one_asked_about(
-    cx: &mut TestAppContext,
-) {
+#[test]
+fn a_refused_removal_brings_back_the_favorite_listed_not_the_one_asked_about() {
+    let cx = &TestExecutor::new();
     let server = FavoritesServer::new(&["a"]);
     let favorites = favorites_on(&server, cx);
     settle(&favorites, cx);
@@ -306,8 +317,9 @@ fn a_refused_removal_brings_back_the_favorite_listed_not_the_one_asked_about(
     assert_eq!(favorites.snapshot().lists.songs[0].title(), "a");
 }
 
-#[gpui_kit::test]
-fn a_refused_change_is_followed_by_a_read(cx: &mut TestAppContext) {
+#[test]
+fn a_refused_change_is_followed_by_a_read() {
+    let cx = &TestExecutor::new();
     let server = FavoritesServer::new(&["a"]);
     let favorites = favorites_on(&server, cx);
     settle(&favorites, cx);
@@ -319,8 +331,9 @@ fn a_refused_change_is_followed_by_a_read(cx: &mut TestAppContext) {
     assert_eq!(server.reads(), 2);
 }
 
-#[gpui_kit::test]
-fn a_read_from_before_a_change_does_not_undo_it(cx: &mut TestAppContext) {
+#[test]
+fn a_read_from_before_a_change_does_not_undo_it() {
+    let cx = &TestExecutor::new();
     let server = FavoritesServer::new(&["a"]);
     let favorites = favorites_on(&server, cx);
     settle(&favorites, cx);
@@ -337,8 +350,9 @@ fn a_read_from_before_a_change_does_not_undo_it(cx: &mut TestAppContext) {
     assert_eq!(server.reads(), 3);
 }
 
-#[gpui_kit::test]
-fn a_refresh_during_a_write_waits_for_it(cx: &mut TestAppContext) {
+#[test]
+fn a_refresh_during_a_write_waits_for_it() {
+    let cx = &TestExecutor::new();
     let server = FavoritesServer::new(&["a"]);
     let favorites = favorites_on(&server, cx);
     settle(&favorites, cx);
@@ -356,8 +370,9 @@ fn a_refresh_during_a_write_waits_for_it(cx: &mut TestAppContext) {
     assert_eq!(song_ids(&favorites), ["n", "a"]);
 }
 
-#[gpui_kit::test]
-fn a_failed_first_load_says_so_and_leaves_the_favorites_unknown(cx: &mut TestAppContext) {
+#[test]
+fn a_failed_first_load_says_so_and_leaves_the_favorites_unknown() {
+    let cx = &TestExecutor::new();
     let server = FavoritesServer::new(&["a"]);
     server.refuse("getStarred2");
     let favorites = favorites_on(&server, cx);
@@ -372,8 +387,9 @@ fn a_failed_first_load_says_so_and_leaves_the_favorites_unknown(cx: &mut TestApp
     assert!(server.writes().is_empty());
 }
 
-#[gpui_kit::test]
-fn only_loads_that_leave_no_favorites_are_told_as_failures(cx: &mut TestAppContext) {
+#[test]
+fn only_loads_that_leave_no_favorites_are_told_as_failures() {
+    let cx = &TestExecutor::new();
     let server = FavoritesServer::new(&["a"]);
     server.refuse("getStarred2");
     let favorites = favorites_on(&server, cx);
@@ -405,8 +421,9 @@ fn only_loads_that_leave_no_favorites_are_told_as_failures(cx: &mut TestAppConte
     assert_eq!(failures(&mut told), 0);
 }
 
-#[gpui_kit::test]
-fn favorites_that_loaded_are_not_read_again_for_having_failed(cx: &mut TestAppContext) {
+#[test]
+fn favorites_that_loaded_are_not_read_again_for_having_failed() {
+    let cx = &TestExecutor::new();
     let server = FavoritesServer::new(&["a"]);
     let favorites = favorites_on(&server, cx);
     settle(&favorites, cx);
@@ -417,8 +434,9 @@ fn favorites_that_loaded_are_not_read_again_for_having_failed(cx: &mut TestAppCo
     assert_eq!(server.reads(), 1);
 }
 
-#[gpui_kit::test]
-fn a_failed_refresh_keeps_the_favorites_on_show(cx: &mut TestAppContext) {
+#[test]
+fn a_failed_refresh_keeps_the_favorites_on_show() {
+    let cx = &TestExecutor::new();
     let server = FavoritesServer::new(&["a"]);
     let favorites = favorites_on(&server, cx);
     settle(&favorites, cx);

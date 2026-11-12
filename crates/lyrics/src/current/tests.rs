@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use gpui_kit::TestAppContext;
+use executor::testing::TestExecutor;
 use serde_json::json;
 
 use super::*;
@@ -64,9 +64,9 @@ impl Finds {
     }
 }
 
-fn current(cx: &mut TestAppContext) -> (CurrentLyrics, Finds) {
+fn current(cx: &TestExecutor) -> (CurrentLyrics, Finds) {
     let finds = Finds::default();
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+    let executor = cx.executor();
     (
         CurrentLyrics::with_find_lyrics(executor, finds.source()),
         finds,
@@ -77,8 +77,9 @@ fn lookup(current: &CurrentLyrics) -> Lookup {
     current.snapshot().lookup().clone()
 }
 
-#[gpui_kit::test]
-fn a_new_song_starts_over_and_found_lyrics_are_kept(cx: &mut TestAppContext) {
+#[test]
+fn a_new_song_starts_over_and_found_lyrics_are_kept() {
+    let cx = &TestExecutor::new();
     let (current, finds) = current(cx);
     let _wanted = current.want();
     finds.answer_with(Ok(lyrics(3)));
@@ -101,8 +102,9 @@ fn a_new_song_starts_over_and_found_lyrics_are_kept(cx: &mut TestAppContext) {
     assert_eq!(finds.asked().len(), 2);
 }
 
-#[gpui_kit::test]
-fn an_answer_after_the_song_changed_is_kept_for_going_back(cx: &mut TestAppContext) {
+#[test]
+fn an_answer_after_the_song_changed_is_kept_for_going_back() {
+    let cx = &TestExecutor::new();
     let (current, finds) = current(cx);
     let _wanted = current.want();
     current.set_song(Some(&song("a")));
@@ -116,8 +118,9 @@ fn an_answer_after_the_song_changed_is_kept_for_going_back(cx: &mut TestAppConte
     assert_eq!(finds.asked().len(), 2);
 }
 
-#[gpui_kit::test]
-fn wanting_looks_for_the_current_song_once(cx: &mut TestAppContext) {
+#[test]
+fn wanting_looks_for_the_current_song_once() {
+    let cx = &TestExecutor::new();
     let (current, finds) = current(cx);
     current.set_song(Some(&song("a")));
     assert!(finds.asked().is_empty(), "unwanted, nothing is looked for");
@@ -129,8 +132,9 @@ fn wanting_looks_for_the_current_song_once(cx: &mut TestAppContext) {
     assert!(finds.asked()[0].contains("Title of a"));
 }
 
-#[gpui_kit::test]
-fn all_that_want_the_lyrics_share_one_lookup(cx: &mut TestAppContext) {
+#[test]
+fn all_that_want_the_lyrics_share_one_lookup() {
+    let cx = &TestExecutor::new();
     let (current, finds) = current(cx);
     current.set_song(Some(&song("a")));
     let first = current.want();
@@ -142,10 +146,9 @@ fn all_that_want_the_lyrics_share_one_lookup(cx: &mut TestAppContext) {
     assert_eq!(finds.asked().len(), 2);
 }
 
-#[gpui_kit::test]
-fn a_song_that_comes_while_no_one_wants_the_lyrics_waits_until_someone_does(
-    cx: &mut TestAppContext,
-) {
+#[test]
+fn a_song_that_comes_while_no_one_wants_the_lyrics_waits_until_someone_does() {
+    let cx = &TestExecutor::new();
     let (current, finds) = current(cx);
     current.set_song(Some(&song("a")));
     drop(current.want());
@@ -160,8 +163,9 @@ fn a_song_that_comes_while_no_one_wants_the_lyrics_waits_until_someone_does(
     assert_eq!(lookup(&current), Lookup::Nothing);
 }
 
-#[gpui_kit::test]
-fn a_failed_lookup_is_tried_again_only_when_asked(cx: &mut TestAppContext) {
+#[test]
+fn a_failed_lookup_is_tried_again_only_when_asked() {
+    let cx = &TestExecutor::new();
     let (current, finds) = current(cx);
     finds.answer_with(Err(Error::InvalidResponse));
     current.set_song(Some(&song("a")));

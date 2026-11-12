@@ -1,4 +1,4 @@
-use gpui_kit::TestAppContext;
+use executor::testing::TestExecutor;
 use serde_json::{Value, json};
 
 use super::*;
@@ -21,11 +21,11 @@ fn albums_json() -> Value {
 fn album_list(
     catalog: Option<catalog::Catalog>,
     url: &str,
-    cx: &mut TestAppContext,
+    cx: &TestExecutor,
 ) -> (AlbumList, LibrarySync) {
     // The requests wake the test from the network's own thread
-    cx.executor().allow_parking();
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+    cx.allow_parking();
+    let executor = cx.executor();
     let session = session_saving_into(catalog, url);
     let sync = LibrarySync::new(executor.clone(), session.clone());
     let list = AlbumList::new(executor, session, &sync);
@@ -33,14 +33,14 @@ fn album_list(
 }
 
 /// The albums of [`albums_json`] on show, once the first sync is over.
-fn shown_list(cx: &mut TestAppContext) -> (AlbumList, LibrarySync) {
+fn shown_list(cx: &TestExecutor) -> (AlbumList, LibrarySync) {
     let url = server_answering(json!({ "albumList2": { "album": albums_json() } }));
     let (list, sync) = album_list(None, &url, cx);
     wait_until_shown(&list, cx);
     (list, sync)
 }
 
-fn wait_until_shown(list: &AlbumList, cx: &mut TestAppContext) {
+fn wait_until_shown(list: &AlbumList, cx: &TestExecutor) {
     wait_for(cx, || {
         let status = list.status();
         !status.is_updating() && status.shown().is_some()
@@ -56,8 +56,9 @@ fn shown(list: &AlbumList) -> Vec<String> {
     ids.map(ToString::to_string).collect()
 }
 
-#[gpui_kit::test]
-fn the_albums_a_sync_brings_show_in_the_servers_order(cx: &mut TestAppContext) {
+#[test]
+fn the_albums_a_sync_brings_show_in_the_servers_order() {
+    let cx = &TestExecutor::new();
     let url = server_answering(json!({ "albumList2": { "album": albums_json() } }));
     let (list, _sync) = album_list(None, &url, cx);
     assert!(list.status().is_updating());
@@ -68,8 +69,9 @@ fn the_albums_a_sync_brings_show_in_the_servers_order(cx: &mut TestAppContext) {
     assert_eq!(list.status().failure(), None);
 }
 
-#[gpui_kit::test]
-fn a_query_finds_albums_by_name_or_artist_the_best_first(cx: &mut TestAppContext) {
+#[test]
+fn a_query_finds_albums_by_name_or_artist_the_best_first() {
+    let cx = &TestExecutor::new();
     let (list, _sync) = shown_list(cx);
 
     list.set_query("blue");
@@ -81,8 +83,9 @@ fn a_query_finds_albums_by_name_or_artist_the_best_first(cx: &mut TestAppContext
     assert_eq!(shown(&list), ["k"]);
 }
 
-#[gpui_kit::test]
-fn the_order_chosen_arranges_what_the_query_finds(cx: &mut TestAppContext) {
+#[test]
+fn the_order_chosen_arranges_what_the_query_finds() {
+    let cx = &TestExecutor::new();
     let (list, _sync) = shown_list(cx);
 
     list.choose_order(AlbumOrder::Added);
@@ -95,8 +98,9 @@ fn the_order_chosen_arranges_what_the_query_finds(cx: &mut TestAppContext) {
     assert_eq!(shown(&list), ["b", "g"]);
 }
 
-#[gpui_kit::test]
-fn choosing_the_order_already_chosen_keeps_its_direction(cx: &mut TestAppContext) {
+#[test]
+fn choosing_the_order_already_chosen_keeps_its_direction() {
+    let cx = &TestExecutor::new();
     let (list, _sync) = shown_list(cx);
 
     list.choose_order(AlbumOrder::Added);
@@ -112,8 +116,9 @@ fn choosing_the_order_already_chosen_keeps_its_direction(cx: &mut TestAppContext
     );
 }
 
-#[gpui_kit::test]
-fn the_same_albums_synced_again_keep_their_arc(cx: &mut TestAppContext) {
+#[test]
+fn the_same_albums_synced_again_keep_their_arc() {
+    let cx = &TestExecutor::new();
     let (list, sync) = shown_list(cx);
     let before = list.status().shown().unwrap().items().clone();
 
@@ -126,8 +131,9 @@ fn the_same_albums_synced_again_keep_their_arc(cx: &mut TestAppContext) {
     assert!(!status.is_updating());
 }
 
-#[gpui_kit::test]
-fn the_saved_albums_stay_with_word_of_a_failed_sync(cx: &mut TestAppContext) {
+#[test]
+fn the_saved_albums_stay_with_word_of_a_failed_sync() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let catalog = catalog::Catalog::open(dir.path()).unwrap();
     let saved = Saved {
@@ -145,8 +151,9 @@ fn the_saved_albums_stay_with_word_of_a_failed_sync(cx: &mut TestAppContext) {
     assert!(list.status().failure().is_some());
 }
 
-#[gpui_kit::test]
-fn albums_that_never_came_fail_as_the_sync_did(cx: &mut TestAppContext) {
+#[test]
+fn albums_that_never_came_fail_as_the_sync_did() {
+    let cx = &TestExecutor::new();
     let (list, sync) = album_list(None, NOWHERE, cx);
 
     wait_for(cx, || !sync.status().is_running());

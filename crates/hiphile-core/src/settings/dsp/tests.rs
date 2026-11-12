@@ -1,10 +1,9 @@
-use gpui_kit::TestAppContext;
+use executor::testing::TestExecutor;
 
 use super::*;
 
-/// On GPUI's executor, which the test's `run_until_parked` drives.
-fn settings_saving_to(store: &config::Store, cx: &mut TestAppContext) -> DspSettings {
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+fn settings_saving_to(store: &config::Store, cx: &TestExecutor) -> DspSettings {
+    let executor = cx.executor();
     DspSettings::with(
         executor,
         Some(store.clone()),
@@ -25,8 +24,9 @@ fn written(store: &config::Store) -> String {
     std::fs::read_to_string(store.config_path()).unwrap_or_default()
 }
 
-#[gpui_kit::test]
-fn turning_crossfeed_on_is_told_saved_and_plays_bs2b(cx: &mut TestAppContext) {
+#[test]
+fn turning_crossfeed_on_is_told_saved_and_plays_bs2b() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -50,8 +50,9 @@ fn turning_crossfeed_on_is_told_saved_and_plays_bs2b(cx: &mut TestAppContext) {
     );
 }
 
-#[gpui_kit::test]
-fn changing_a_value_makes_the_preset_custom_with_the_values_in_use(cx: &mut TestAppContext) {
+#[test]
+fn changing_a_value_makes_the_preset_custom_with_the_values_in_use() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -71,8 +72,9 @@ fn changing_a_value_makes_the_preset_custom_with_the_values_in_use(cx: &mut Test
     assert_eq!((filter.cutoff_hz, filter.separation_db), (700, 9.5));
 }
 
-#[gpui_kit::test]
-fn choosing_custom_changes_nothing_that_plays(cx: &mut TestAppContext) {
+#[test]
+fn choosing_custom_changes_nothing_that_plays() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -86,8 +88,9 @@ fn choosing_custom_changes_nothing_that_plays(cx: &mut TestAppContext) {
     cx.run_until_parked();
 }
 
-#[gpui_kit::test]
-fn the_preset_stays_while_crossfeed_is_off(cx: &mut TestAppContext) {
+#[test]
+fn the_preset_stays_while_crossfeed_is_off() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -108,8 +111,9 @@ fn the_preset_stays_while_crossfeed_is_off(cx: &mut TestAppContext) {
     assert_eq!(store.crossfeed().unwrap().preset, CrossfeedPreset::JanMeier);
 }
 
-#[gpui_kit::test]
-fn a_balance_goes_by_half_a_db_up_to_12_and_names_the_lowered_side(cx: &mut TestAppContext) {
+#[test]
+fn a_balance_goes_by_half_a_db_up_to_12_and_names_the_lowered_side() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -133,11 +137,12 @@ fn a_balance_goes_by_half_a_db_up_to_12_and_names_the_lowered_side(cx: &mut Test
     assert!(!written(&store).contains("balance_db"));
 }
 
-#[gpui_kit::test]
-fn only_what_changed_is_written(cx: &mut TestAppContext) {
+#[test]
+fn only_what_changed_is_written() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+    let executor = cx.executor();
     let from_environment = crossfeed(true, CrossfeedPreset::JanMeier);
     let settings = DspSettings::with(
         executor,
@@ -160,8 +165,9 @@ fn only_what_changed_is_written(cx: &mut TestAppContext) {
     assert!(!text.contains("crossfeed = true"), "{text}");
 }
 
-#[gpui_kit::test]
-fn what_waits_is_written_before_quitting(cx: &mut TestAppContext) {
+#[test]
+fn what_waits_is_written_before_quitting() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);

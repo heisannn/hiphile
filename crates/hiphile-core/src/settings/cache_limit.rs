@@ -302,6 +302,8 @@ fn read_saved_limit(kind: CacheKind, store: Result<config::Store, config::Error>
 
 #[cfg(test)]
 mod tests {
+    use executor::testing::TestExecutor;
+
     use super::*;
 
     #[test]
@@ -328,11 +330,12 @@ mod tests {
         assert_eq!(CacheKind::Songs.read(&store).unwrap(), Some(3.0));
     }
 
-    #[gpui_kit::test]
-    fn a_limit_takes_effect_and_is_saved_once_it_settles(cx: &mut gpui_kit::TestAppContext) {
+    #[test]
+    fn a_limit_takes_effect_and_is_saved_once_it_settles() {
+        let cx = &TestExecutor::new();
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
-        let executor = cx.update(|cx| gpui_host::executor(cx));
+        let executor = cx.executor();
         let limit = CacheLimit::new(CacheKind::Songs, executor, Ok(store.clone()));
 
         limit.set_gib(1.0);
@@ -341,23 +344,24 @@ mod tests {
         assert_eq!(limit.snapshot().gib(), 16.0);
         assert_eq!(limit.snapshot().capacity(), None);
 
-        cx.executor().advance_clock(SETTLE);
+        cx.advance_clock(SETTLE);
         cx.run_until_parked();
         assert_eq!(limit.snapshot().capacity(), Some(16 << 30));
         assert_eq!(store.song_cache_gib().unwrap(), Some(16.0));
     }
 
-    #[gpui_kit::test]
-    fn a_limit_is_held_to_what_the_next_start_can_read(cx: &mut gpui_kit::TestAppContext) {
+    #[test]
+    fn a_limit_is_held_to_what_the_next_start_can_read() {
+        let cx = &TestExecutor::new();
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
-        let executor = cx.update(|cx| gpui_host::executor(cx));
+        let executor = cx.executor();
         let limit = CacheLimit::new(CacheKind::Songs, executor, Ok(store.clone()));
 
         limit.set_gib(-1.0);
         limit.set_gib(f64::NAN);
         assert_eq!(limit.snapshot().gib_text(), "0");
-        cx.executor().advance_clock(SETTLE);
+        cx.advance_clock(SETTLE);
         cx.run_until_parked();
         assert_eq!(store.song_cache_gib().unwrap(), Some(0.0));
 
@@ -365,47 +369,50 @@ mod tests {
         assert_eq!(limit.snapshot().gib(), CacheLimit::range().max());
     }
 
-    #[gpui_kit::test]
-    fn text_that_is_no_number_goes_back_to_the_limit_in_effect(cx: &mut gpui_kit::TestAppContext) {
-        let executor = cx.update(|cx| gpui_host::executor(cx));
+    #[test]
+    fn text_that_is_no_number_goes_back_to_the_limit_in_effect() {
+        let cx = &TestExecutor::new();
+        let executor = cx.executor();
         let limit = CacheLimit::new(CacheKind::Covers, executor, Err(config::Error::NoHomeDir));
 
         limit.set_typed("3");
         assert_eq!(limit.snapshot().gib(), 3.0);
         limit.set_typed("");
-        cx.executor().advance_clock(SETTLE);
+        cx.advance_clock(SETTLE);
         cx.run_until_parked();
 
         assert!(limit.snapshot().is_default());
         assert_eq!(limit.snapshot().capacity(), None);
     }
 
-    #[gpui_kit::test]
-    fn reset_goes_back_to_the_default_once_it_settles(cx: &mut gpui_kit::TestAppContext) {
+    #[test]
+    fn reset_goes_back_to_the_default_once_it_settles() {
+        let cx = &TestExecutor::new();
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
-        let executor = cx.update(|cx| gpui_host::executor(cx));
+        let executor = cx.executor();
         let limit = CacheLimit::new(CacheKind::Songs, executor, Ok(store.clone()));
         limit.set_typed("3");
-        cx.executor().advance_clock(SETTLE);
+        cx.advance_clock(SETTLE);
         cx.run_until_parked();
         assert!(!limit.snapshot().is_default());
 
         limit.reset();
         assert!(limit.snapshot().is_default());
         assert_eq!(limit.snapshot().capacity(), Some(3 << 30));
-        cx.executor().advance_clock(SETTLE);
+        cx.advance_clock(SETTLE);
         cx.run_until_parked();
 
         assert_eq!(limit.snapshot().capacity(), None);
         assert_eq!(store.song_cache_gib().unwrap(), None);
     }
 
-    #[gpui_kit::test]
-    fn a_limit_still_settling_is_written_before_quitting(cx: &mut gpui_kit::TestAppContext) {
+    #[test]
+    fn a_limit_still_settling_is_written_before_quitting() {
+        let cx = &TestExecutor::new();
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
-        let executor = cx.update(|cx| gpui_host::executor(cx));
+        let executor = cx.executor();
         let limit = CacheLimit::new(CacheKind::Covers, executor, Ok(store.clone()));
 
         limit.set_gib(2.0);

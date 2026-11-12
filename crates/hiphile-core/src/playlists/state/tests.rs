@@ -1,7 +1,7 @@
 use std::time::Duration;
 
+use executor::testing::TestExecutor;
 use futures::FutureExt as _;
-use gpui_kit::TestAppContext;
 use serde_json::json;
 
 use super::*;
@@ -11,16 +11,15 @@ fn song(id: &str) -> Song {
     serde_json::from_value(json!({ "id": id, "title": id })).unwrap()
 }
 
-/// On GPUI's executor, which the test's `run_until_parked` drives.
-fn playlists_on(server: &PlaylistsServer, cx: &mut TestAppContext) -> PlaylistsState {
+fn playlists_on(server: &PlaylistsServer, cx: &TestExecutor) -> PlaylistsState {
     // The requests wake the test from the network's own thread
-    cx.executor().allow_parking();
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+    cx.allow_parking();
+    let executor = cx.executor();
     PlaylistsState::new(executor, test_support::session(server.url()))
 }
 
 /// `server`'s playlist `a` open, with nothing waiting.
-fn loaded_from(server: &PlaylistsServer, cx: &mut TestAppContext) -> PlaylistsState {
+fn loaded_from(server: &PlaylistsServer, cx: &TestExecutor) -> PlaylistsState {
     let playlists = playlists_on(server, cx);
     wait_until(cx, || playlists.snapshot().loaded_list().is_some());
     playlists.open(PlaylistId::new("a"));
@@ -33,7 +32,7 @@ fn two_playlists() -> PlaylistsServer {
     PlaylistsServer::new(&[("a", "alpha", &["1", "2", "3"]), ("b", "Beta", &["4"])])
 }
 
-fn wait_until(cx: &mut TestAppContext, mut done: impl FnMut() -> bool) {
+fn wait_until(cx: &TestExecutor, mut done: impl FnMut() -> bool) {
     for _ in 0..500 {
         cx.run_until_parked();
         if done() {
@@ -45,18 +44,18 @@ fn wait_until(cx: &mut TestAppContext, mut done: impl FnMut() -> bool) {
 }
 
 /// Gives what is under way the time to arrive, for what must not happen.
-fn pause(cx: &mut TestAppContext) {
+fn pause(cx: &TestExecutor) {
     for _ in 0..10 {
         cx.run_until_parked();
         std::thread::sleep(Duration::from_millis(10));
     }
 }
 
-fn wait_for_request(server: &PlaylistsServer, method: &str, count: usize, cx: &mut TestAppContext) {
+fn wait_for_request(server: &PlaylistsServer, method: &str, count: usize, cx: &TestExecutor) {
     wait_until(cx, || server.requests(method).len() >= count);
 }
 
-fn finished<R>(mut task: Task<R>, cx: &mut TestAppContext) -> R {
+fn finished<R>(mut task: Task<R>, cx: &TestExecutor) -> R {
     let mut output = None;
     wait_until(cx, || {
         output = (&mut task).now_or_never();
@@ -70,7 +69,7 @@ fn is_sending(playlists: &PlaylistsState) -> bool {
 }
 
 /// Waits for what was saved to be read back.
-fn wait_for_saving(playlists: &PlaylistsState, cx: &mut TestAppContext) {
+fn wait_for_saving(playlists: &PlaylistsState, cx: &TestExecutor) {
     wait_until(cx, || {
         let snapshot = playlists.snapshot();
         !is_sending(playlists) && !snapshot.is_diverged() && snapshot.open_playlist().is_some()
@@ -116,8 +115,9 @@ fn remove_entry_at(playlists: &PlaylistsState, ix: usize) -> Option<Removal> {
     playlists.remove_entry(entry_at(playlists, ix))
 }
 
-#[gpui_kit::test]
-fn the_list_is_sorted_by_name_ignoring_case(cx: &mut TestAppContext) {
+#[test]
+fn the_list_is_sorted_by_name_ignoring_case() {
+    let cx = &TestExecutor::new();
     let server = PlaylistsServer::new(&[("b", "Beta", &[]), ("a", "alpha", &[])]);
     let playlists = playlists_on(&server, cx);
 
@@ -126,8 +126,9 @@ fn the_list_is_sorted_by_name_ignoring_case(cx: &mut TestAppContext) {
     assert_eq!(listed_names(&playlists), ["alpha", "Beta"]);
 }
 
-#[gpui_kit::test]
-fn the_choices_are_the_playlists_the_user_may_edit(cx: &mut TestAppContext) {
+#[test]
+fn the_choices_are_the_playlists_the_user_may_edit() {
+    let cx = &TestExecutor::new();
     let server = PlaylistsServer::new(&[("b", "Beta", &[]), ("a", "alpha", &[]), ("c", "C", &[])]);
     server.make_readonly("c");
     let playlists = playlists_on(&server, cx);
@@ -143,8 +144,9 @@ fn the_choices_are_the_playlists_the_user_may_edit(cx: &mut TestAppContext) {
     assert_eq!(choices, [("a", "alpha"), ("b", "Beta")]);
 }
 
-#[gpui_kit::test]
-fn songs_added_to_the_playlist_on_show_appear_at_the_end(cx: &mut TestAppContext) {
+#[test]
+fn songs_added_to_the_playlist_on_show_appear_at_the_end() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
 
@@ -155,8 +157,9 @@ fn songs_added_to_the_playlist_on_show_appear_at_the_end(cx: &mut TestAppContext
     assert_eq!(server.songs("a"), ["1", "2", "3", "9"]);
 }
 
-#[gpui_kit::test]
-fn songs_added_to_another_playlist_leave_the_one_on_show(cx: &mut TestAppContext) {
+#[test]
+fn songs_added_to_another_playlist_leave_the_one_on_show() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
 
@@ -165,8 +168,9 @@ fn songs_added_to_another_playlist_leave_the_one_on_show(cx: &mut TestAppContext
     assert_eq!(song_ids(&playlists), ["1", "2", "3"]);
 }
 
-#[gpui_kit::test]
-fn adding_songs_says_to_which_playlist(cx: &mut TestAppContext) {
+#[test]
+fn adding_songs_says_to_which_playlist() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
     let mut notices = playlists.notices();
@@ -182,8 +186,9 @@ fn adding_songs_says_to_which_playlist(cx: &mut TestAppContext) {
     wait_for_saving(&playlists, cx);
 }
 
-#[gpui_kit::test]
-fn renaming_shows_at_once_in_the_list_and_the_detail(cx: &mut TestAppContext) {
+#[test]
+fn renaming_shows_at_once_in_the_list_and_the_detail() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
 
@@ -195,8 +200,9 @@ fn renaming_shows_at_once_in_the_list_and_the_detail(cx: &mut TestAppContext) {
     assert_eq!(&**snapshot.choices()[1].name(), "Zeta");
 }
 
-#[gpui_kit::test]
-fn a_deleted_playlist_leaves_the_list_and_closes(cx: &mut TestAppContext) {
+#[test]
+fn a_deleted_playlist_leaves_the_list_and_closes() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
 
@@ -207,8 +213,9 @@ fn a_deleted_playlist_leaves_the_list_and_closes(cx: &mut TestAppContext) {
     wait_for_request(&server, "deletePlaylist", 1, cx);
 }
 
-#[gpui_kit::test]
-fn a_readonly_playlist_takes_no_edits(cx: &mut TestAppContext) {
+#[test]
+fn a_readonly_playlist_takes_no_edits() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     server.make_readonly("a");
     let playlists = loaded_from(&server, cx);
@@ -219,8 +226,9 @@ fn a_readonly_playlist_takes_no_edits(cx: &mut TestAppContext) {
     assert_eq!(song_ids(&playlists), ["1", "2", "3"]);
 }
 
-#[gpui_kit::test]
-fn a_failed_save_stops_what_was_waiting_on_it(cx: &mut TestAppContext) {
+#[test]
+fn a_failed_save_stops_what_was_waiting_on_it() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
     server.refuse("createPlaylist");
@@ -238,8 +246,9 @@ fn a_failed_save_stops_what_was_waiting_on_it(cx: &mut TestAppContext) {
     assert_eq!(server.requests("createPlaylist").len(), 1);
 }
 
-#[gpui_kit::test]
-fn a_failed_save_says_what_failed_and_why(cx: &mut TestAppContext) {
+#[test]
+fn a_failed_save_says_what_failed_and_why() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
     server.refuse("createPlaylist");
@@ -257,8 +266,9 @@ fn a_failed_save_says_what_failed_and_why(cx: &mut TestAppContext) {
     );
 }
 
-#[gpui_kit::test]
-fn edits_go_on_being_saved_after_a_failure(cx: &mut TestAppContext) {
+#[test]
+fn edits_go_on_being_saved_after_a_failure() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
     server.refuse("createPlaylist");
@@ -273,8 +283,9 @@ fn edits_go_on_being_saved_after_a_failure(cx: &mut TestAppContext) {
     assert_eq!(server.songs("a"), ["2", "1", "3"]);
 }
 
-#[gpui_kit::test]
-fn after_a_failed_save_songs_wait_to_be_read_again_before_more_edits(cx: &mut TestAppContext) {
+#[test]
+fn after_a_failed_save_songs_wait_to_be_read_again_before_more_edits() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
     server.refuse("createPlaylist");
@@ -293,8 +304,9 @@ fn after_a_failed_save_songs_wait_to_be_read_again_before_more_edits(cx: &mut Te
     assert_eq!(song_ids(&playlists), ["1", "2", "3"]);
 }
 
-#[gpui_kit::test]
-fn when_a_failed_save_cant_be_read_back_the_songs_leave_the_screen(cx: &mut TestAppContext) {
+#[test]
+fn when_a_failed_save_cant_be_read_back_the_songs_leave_the_screen() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
     server.refuse("createPlaylist");
@@ -307,8 +319,9 @@ fn when_a_failed_save_cant_be_read_back_the_songs_leave_the_screen(cx: &mut Test
     });
 }
 
-#[gpui_kit::test]
-fn a_reload_that_fails_leaves_songs_the_server_has_on_show(cx: &mut TestAppContext) {
+#[test]
+fn a_reload_that_fails_leaves_songs_the_server_has_on_show() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
     server.refuse("getPlaylist");
@@ -320,8 +333,9 @@ fn a_reload_that_fails_leaves_songs_the_server_has_on_show(cx: &mut TestAppConte
     assert_eq!(song_ids(&playlists), ["1", "2", "3"]);
 }
 
-#[gpui_kit::test]
-fn undo_goes_away_when_the_removal_fails(cx: &mut TestAppContext) {
+#[test]
+fn undo_goes_away_when_the_removal_fails() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
     server.refuse("createPlaylist");
@@ -340,8 +354,9 @@ fn undo_goes_away_when_the_removal_fails(cx: &mut TestAppContext) {
     assert_eq!(server.requests("createPlaylist").len(), attempts);
 }
 
-#[gpui_kit::test]
-fn undo_reaches_a_playlist_no_longer_on_show(cx: &mut TestAppContext) {
+#[test]
+fn undo_reaches_a_playlist_no_longer_on_show() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
     remove_entry_at(&playlists, 1);
@@ -356,8 +371,9 @@ fn undo_reaches_a_playlist_no_longer_on_show(cx: &mut TestAppContext) {
     assert_eq!(server.songs("a"), ["1", "2", "3"]);
 }
 
-#[gpui_kit::test]
-fn a_playlist_being_saved_waits_for_the_save_when_opened_again(cx: &mut TestAppContext) {
+#[test]
+fn a_playlist_being_saved_waits_for_the_save_when_opened_again() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
     server.hold("createPlaylist");
@@ -378,8 +394,9 @@ fn a_playlist_being_saved_waits_for_the_save_when_opened_again(cx: &mut TestAppC
     assert_eq!(server.songs("a"), ["1", "3"]);
 }
 
-#[gpui_kit::test]
-fn songs_added_from_elsewhere_are_waited_for_when_opening_their_playlist(cx: &mut TestAppContext) {
+#[test]
+fn songs_added_from_elsewhere_are_waited_for_when_opening_their_playlist() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
     server.hold("updatePlaylist");
@@ -397,8 +414,9 @@ fn songs_added_from_elsewhere_are_waited_for_when_opening_their_playlist(cx: &mu
     assert_eq!(song_ids(&playlists), ["4", "9"]);
 }
 
-#[gpui_kit::test]
-fn another_playlist_shows_while_one_is_being_saved(cx: &mut TestAppContext) {
+#[test]
+fn another_playlist_shows_while_one_is_being_saved() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
     server.hold("createPlaylist");
@@ -412,8 +430,9 @@ fn another_playlist_shows_while_one_is_being_saved(cx: &mut TestAppContext) {
     server.release("createPlaylist");
 }
 
-#[gpui_kit::test]
-fn removing_the_only_song_takes_it_out_by_position(cx: &mut TestAppContext) {
+#[test]
+fn removing_the_only_song_takes_it_out_by_position() {
+    let cx = &TestExecutor::new();
     let server = PlaylistsServer::new(&[("a", "alpha", &["1"])]);
     let playlists = loaded_from(&server, cx);
 
@@ -427,8 +446,9 @@ fn removing_the_only_song_takes_it_out_by_position(cx: &mut TestAppContext) {
     assert!(song_ids(&playlists).is_empty());
 }
 
-#[gpui_kit::test]
-fn a_song_list_too_long_for_a_url_is_saved_by_post(cx: &mut TestAppContext) {
+#[test]
+fn a_song_list_too_long_for_a_url_is_saved_by_post() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
     let many: Vec<Song> = (0..500)
@@ -444,8 +464,9 @@ fn a_song_list_too_long_for_a_url_is_saved_by_post(cx: &mut TestAppContext) {
     assert_eq!(server.songs("a").len(), 503);
 }
 
-#[gpui_kit::test]
-fn a_new_playlist_outlives_a_list_fetched_before_it(cx: &mut TestAppContext) {
+#[test]
+fn a_new_playlist_outlives_a_list_fetched_before_it() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
     server.hold("getPlaylists");
@@ -465,8 +486,9 @@ fn a_new_playlist_outlives_a_list_fetched_before_it(cx: &mut TestAppContext) {
     assert_eq!(listed_names(&playlists), ["alpha", "Beta", "Road"]);
 }
 
-#[gpui_kit::test]
-fn a_new_playlist_doesnt_stand_in_for_a_list_that_failed(cx: &mut TestAppContext) {
+#[test]
+fn a_new_playlist_doesnt_stand_in_for_a_list_that_failed() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     server.refuse("getPlaylists");
     let playlists = playlists_on(&server, cx);
@@ -485,8 +507,9 @@ fn a_new_playlist_doesnt_stand_in_for_a_list_that_failed(cx: &mut TestAppContext
     assert_eq!(listed_names(&playlists), ["alpha", "Beta", "Road"]);
 }
 
-#[gpui_kit::test]
-fn a_playlist_the_server_wont_create_says_why(cx: &mut TestAppContext) {
+#[test]
+fn a_playlist_the_server_wont_create_says_why() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
     server.refuse("createPlaylist");
@@ -502,8 +525,9 @@ fn a_playlist_the_server_wont_create_says_why(cx: &mut TestAppContext) {
     assert_eq!(listed_names(&playlists), ["alpha", "Beta"]);
 }
 
-#[gpui_kit::test]
-fn songs_the_server_changed_are_new_entries(cx: &mut TestAppContext) {
+#[test]
+fn songs_the_server_changed_are_new_entries() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
     let first = entry_at(&playlists, 0);
@@ -519,8 +543,9 @@ fn songs_the_server_changed_are_new_entries(cx: &mut TestAppContext) {
     );
 }
 
-#[gpui_kit::test]
-fn a_new_playlist_says_what_it_starts_with(cx: &mut TestAppContext) {
+#[test]
+fn a_new_playlist_says_what_it_starts_with() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
 
@@ -548,8 +573,9 @@ fn the_new_playlist_dialog_says_what_it_starts_with() {
     );
 }
 
-#[gpui_kit::test]
-fn a_blank_name_is_refused(cx: &mut TestAppContext) {
+#[test]
+fn a_blank_name_is_refused() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
 
@@ -569,8 +595,9 @@ fn a_blank_name_is_refused(cx: &mut TestAppContext) {
     assert_eq!(listed_names(&playlists), ["alpha", "Beta"]);
 }
 
-#[gpui_kit::test]
-fn a_new_name_is_saved_trimmed(cx: &mut TestAppContext) {
+#[test]
+fn a_new_name_is_saved_trimmed() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
 
@@ -590,8 +617,9 @@ fn a_new_name_is_saved_trimmed(cx: &mut TestAppContext) {
     wait_for_saving(&playlists, cx);
 }
 
-#[gpui_kit::test]
-fn another_users_playlist_cant_be_renamed_or_deleted(cx: &mut TestAppContext) {
+#[test]
+fn another_users_playlist_cant_be_renamed_or_deleted() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     server.make_readonly("a");
     let playlists = loaded_from(&server, cx);
@@ -610,8 +638,9 @@ fn another_users_playlist_cant_be_renamed_or_deleted(cx: &mut TestAppContext) {
     assert!(server.requests("deletePlaylist").is_empty());
 }
 
-#[gpui_kit::test]
-fn deleting_asks_with_the_playlists_name(cx: &mut TestAppContext) {
+#[test]
+fn deleting_asks_with_the_playlists_name() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
 
@@ -627,8 +656,9 @@ fn deleting_asks_with_the_playlists_name(cx: &mut TestAppContext) {
     );
 }
 
-#[gpui_kit::test]
-fn the_songs_of_a_playlist_that_diverged_cant_be_edited(cx: &mut TestAppContext) {
+#[test]
+fn the_songs_of_a_playlist_that_diverged_cant_be_edited() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
     assert!(playlists.snapshot().are_songs_editable());
@@ -646,8 +676,9 @@ fn the_songs_of_a_playlist_that_diverged_cant_be_edited(cx: &mut TestAppContext)
     assert!(playlists.snapshot().are_songs_editable());
 }
 
-#[gpui_kit::test]
-fn removing_a_song_says_which(cx: &mut TestAppContext) {
+#[test]
+fn removing_a_song_says_which() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
 
@@ -659,8 +690,9 @@ fn removing_a_song_says_which(cx: &mut TestAppContext) {
     wait_for_saving(&playlists, cx);
 }
 
-#[gpui_kit::test]
-fn the_query_shows_the_playlists_it_matches(cx: &mut TestAppContext) {
+#[test]
+fn the_query_shows_the_playlists_it_matches() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
     assert_eq!(**playlists.snapshot().visible(), [0, 1]);
@@ -672,8 +704,9 @@ fn the_query_shows_the_playlists_it_matches(cx: &mut TestAppContext) {
     assert_eq!(snapshot.visible_playlist(0).unwrap().name(), "Beta");
 }
 
-#[gpui_kit::test]
-fn the_query_applies_to_a_list_read_again(cx: &mut TestAppContext) {
+#[test]
+fn the_query_applies_to_a_list_read_again() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
     playlists.set_query("alp");
@@ -688,10 +721,9 @@ fn the_query_applies_to_a_list_read_again(cx: &mut TestAppContext) {
     assert_eq!(shown, ["alpha", "Alpine"]);
 }
 
-#[gpui_kit::test]
-fn the_selection_stays_on_a_playlist_still_listed_or_goes_to_the_first_shown(
-    cx: &mut TestAppContext,
-) {
+#[test]
+fn the_selection_stays_on_a_playlist_still_listed_or_goes_to_the_first_shown() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
     let (a, b) = (PlaylistId::new("a"), PlaylistId::new("b"));
@@ -706,8 +738,9 @@ fn the_selection_stays_on_a_playlist_still_listed_or_goes_to_the_first_shown(
     assert_eq!(snapshot.kept_selection(None), Some(&b));
 }
 
-#[gpui_kit::test]
-fn the_songs_of_the_open_playlist_are_those_on_show(cx: &mut TestAppContext) {
+#[test]
+fn the_songs_of_the_open_playlist_are_those_on_show() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
     move_entry_at(&playlists, 0, 2);
@@ -722,8 +755,9 @@ fn the_songs_of_the_open_playlist_are_those_on_show(cx: &mut TestAppContext) {
     wait_for_saving(&playlists, cx);
 }
 
-#[gpui_kit::test]
-fn the_songs_of_another_playlist_come_from_the_server(cx: &mut TestAppContext) {
+#[test]
+fn the_songs_of_another_playlist_come_from_the_server() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
 
@@ -733,8 +767,9 @@ fn the_songs_of_another_playlist_come_from_the_server(cx: &mut TestAppContext) {
     assert_eq!(ids, ["4"]);
 }
 
-#[gpui_kit::test]
-fn the_songs_of_a_playlist_that_wont_load_say_why(cx: &mut TestAppContext) {
+#[test]
+fn the_songs_of_a_playlist_that_wont_load_say_why() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
     server.refuse("getPlaylist");
@@ -747,8 +782,9 @@ fn the_songs_of_a_playlist_that_wont_load_say_why(cx: &mut TestAppContext) {
     );
 }
 
-#[gpui_kit::test]
-fn a_new_playlist_already_in_a_list_read_since_shows_once(cx: &mut TestAppContext) {
+#[test]
+fn a_new_playlist_already_in_a_list_read_since_shows_once() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
     let listed = playlists.snapshot().loaded_list().unwrap()[1].clone();
@@ -761,8 +797,9 @@ fn a_new_playlist_already_in_a_list_read_since_shows_once(cx: &mut TestAppContex
     assert_eq!(listed_names(&playlists), ["alpha", "Beta"]);
 }
 
-#[gpui_kit::test]
-fn a_rename_waiting_behind_a_failed_save_of_songs_still_goes(cx: &mut TestAppContext) {
+#[test]
+fn a_rename_waiting_behind_a_failed_save_of_songs_still_goes() {
+    let cx = &TestExecutor::new();
     let server = two_playlists();
     let playlists = loaded_from(&server, cx);
     server.refuse("createPlaylist");

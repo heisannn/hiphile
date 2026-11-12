@@ -1,4 +1,4 @@
-use gpui_kit::TestAppContext;
+use executor::testing::TestExecutor;
 use serde_json::{Value, json};
 use subsonic::{Album, ScanStatus, Song};
 
@@ -70,9 +70,8 @@ fn resync(catalog: &catalog::Catalog, title: &str) {
     );
 }
 
-/// On GPUI's executor, which the test's `run_until_parked` drives.
-fn index(catalog: Option<catalog::Catalog>, cx: &mut TestAppContext) -> SearchIndex {
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+fn index(catalog: Option<catalog::Catalog>, cx: &TestExecutor) -> SearchIndex {
+    let executor = cx.executor();
     SearchIndex::new(executor, session_saving_into(catalog, NOWHERE))
 }
 
@@ -90,8 +89,9 @@ fn found_songs(index: &SearchIndex) -> Vec<String> {
         .collect()
 }
 
-#[gpui_kit::test]
-fn a_library_that_changed_shows_in_the_search_without_asking_again(cx: &mut TestAppContext) {
+#[test]
+fn a_library_that_changed_shows_in_the_search_without_asking_again() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let catalog = saved_library(&dir);
     let index = index(Some(catalog.clone()), cx);
@@ -108,8 +108,9 @@ fn a_library_that_changed_shows_in_the_search_without_asking_again(cx: &mut Test
     assert_eq!(found_songs(&index), ["A Love Supreme"]);
 }
 
-#[gpui_kit::test]
-fn a_search_before_the_first_reading_is_done_finds_once_it_is(cx: &mut TestAppContext) {
+#[test]
+fn a_search_before_the_first_reading_is_done_finds_once_it_is() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let index = index(Some(saved_library(&dir)), cx);
 
@@ -122,8 +123,9 @@ fn a_search_before_the_first_reading_is_done_finds_once_it_is(cx: &mut TestAppCo
     assert_eq!(found_songs(&index), ["Naima"]);
 }
 
-#[gpui_kit::test]
-fn the_last_search_is_the_one_that_shows(cx: &mut TestAppContext) {
+#[test]
+fn the_last_search_is_the_one_that_shows() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let index = index(Some(saved_library(&dir)), cx);
     index.open();
@@ -136,8 +138,9 @@ fn the_last_search_is_the_one_that_shows(cx: &mut TestAppContext) {
     assert_eq!(found_songs(&index), ["Naima"]);
 }
 
-#[gpui_kit::test]
-fn an_empty_search_finds_nothing_at_once(cx: &mut TestAppContext) {
+#[test]
+fn an_empty_search_finds_nothing_at_once() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let index = index(Some(saved_library(&dir)), cx);
     index.open();
@@ -149,8 +152,9 @@ fn an_empty_search_finds_nothing_at_once(cx: &mut TestAppContext) {
     assert!(index.status().results().sections.is_empty());
 }
 
-#[gpui_kit::test]
-fn a_library_that_changed_while_never_opened_waits_to_be(cx: &mut TestAppContext) {
+#[test]
+fn a_library_that_changed_while_never_opened_waits_to_be() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let index = index(Some(saved_library(&dir)), cx);
 
@@ -161,8 +165,9 @@ fn a_library_that_changed_while_never_opened_waits_to_be(cx: &mut TestAppContext
     assert_eq!(*status.library(), IndexState::Unread);
 }
 
-#[gpui_kit::test]
-fn without_a_saved_library_it_says_so(cx: &mut TestAppContext) {
+#[test]
+fn without_a_saved_library_it_says_so() {
+    let cx = &TestExecutor::new();
     let index = index(None, cx);
 
     index.open();

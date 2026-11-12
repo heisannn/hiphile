@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use gpui_kit::TestAppContext;
+use executor::testing::TestExecutor;
 
 use super::*;
 
@@ -36,9 +36,8 @@ fn scripted(
     })
 }
 
-/// On GPUI's executor, which the test's `run_until_parked` and clock drive.
-fn updater(releases: &Arc<Scripted>, is_automatic: bool, cx: &mut TestAppContext) -> Updater {
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+fn updater(releases: &Arc<Scripted>, is_automatic: bool, cx: &TestExecutor) -> Updater {
+    let executor = cx.executor();
     Updater::with(executor, releases.clone(), None, is_automatic, None)
 }
 
@@ -66,8 +65,9 @@ fn available_nine() -> UpdateState {
     UpdateState::Available("9.0.0".to_owned())
 }
 
-#[gpui_kit::test]
-fn automatic_installs_what_it_finds_and_then_looks_no_more(cx: &mut TestAppContext) {
+#[test]
+fn automatic_installs_what_it_finds_and_then_looks_no_more() {
+    let cx = &TestExecutor::new();
     let releases = scripted(vec![nine()], vec![installed_nine()]);
     let updater = updater(&releases, true, cx);
     cx.run_until_parked();
@@ -78,10 +78,9 @@ fn automatic_installs_what_it_finds_and_then_looks_no_more(cx: &mut TestAppConte
     assert_eq!(looks(&releases), 1);
 }
 
-#[gpui_kit::test]
-fn when_not_automatic_it_looks_only_when_asked_and_installs_only_when_asked(
-    cx: &mut TestAppContext,
-) {
+#[test]
+fn when_not_automatic_it_looks_only_when_asked_and_installs_only_when_asked() {
+    let cx = &TestExecutor::new();
     let releases = scripted(vec![nine()], vec![installed_nine()]);
     let updater = updater(&releases, false, cx);
     cx.run_until_parked();
@@ -97,8 +96,9 @@ fn when_not_automatic_it_looks_only_when_asked_and_installs_only_when_asked(
     assert_eq!(*updater.status().state(), ready_nine());
 }
 
-#[gpui_kit::test]
-fn turning_it_off_while_looking_keeps_what_is_found_from_installing(cx: &mut TestAppContext) {
+#[test]
+fn turning_it_off_while_looking_keeps_what_is_found_from_installing() {
+    let cx = &TestExecutor::new();
     let releases = scripted(vec![nine()], vec![]);
     let updater = updater(&releases, true, cx);
 
@@ -110,8 +110,9 @@ fn turning_it_off_while_looking_keeps_what_is_found_from_installing(cx: &mut Tes
     assert_eq!(installs(&releases), 0);
 }
 
-#[gpui_kit::test]
-fn turning_it_on_installs_what_was_already_found(cx: &mut TestAppContext) {
+#[test]
+fn turning_it_on_installs_what_was_already_found() {
+    let cx = &TestExecutor::new();
     let releases = scripted(vec![nine()], vec![installed_nine()]);
     let updater = updater(&releases, false, cx);
     updater.check();
@@ -124,8 +125,9 @@ fn turning_it_on_installs_what_was_already_found(cx: &mut TestAppContext) {
     assert_eq!(installs(&releases), 1);
 }
 
-#[gpui_kit::test]
-fn a_failure_shows_until_the_next_look_succeeds(cx: &mut TestAppContext) {
+#[test]
+fn a_failure_shows_until_the_next_look_succeeds() {
+    let cx = &TestExecutor::new();
     let releases = scripted(vec![Err("offline".to_owned()), Ok(None)], vec![]);
     let updater = updater(&releases, true, cx);
     cx.run_until_parked();
@@ -136,8 +138,9 @@ fn a_failure_shows_until_the_next_look_succeeds(cx: &mut TestAppContext) {
     assert_eq!(updater.status().errors().count(), 0);
 }
 
-#[gpui_kit::test]
-fn a_failed_install_can_be_looked_for_again(cx: &mut TestAppContext) {
+#[test]
+fn a_failed_install_can_be_looked_for_again() {
+    let cx = &TestExecutor::new();
     let releases = scripted(vec![nine(), nine()], vec![Err("damaged".to_owned())]);
     let updater = updater(&releases, true, cx);
     cx.run_until_parked();
@@ -152,24 +155,26 @@ fn a_failed_install_can_be_looked_for_again(cx: &mut TestAppContext) {
     assert_eq!(*updater.status().state(), available_nine());
 }
 
-#[gpui_kit::test]
-fn it_looks_again_after_the_interval_while_automatic(cx: &mut TestAppContext) {
+#[test]
+fn it_looks_again_after_the_interval_while_automatic() {
+    let cx = &TestExecutor::new();
     let releases = scripted(vec![Ok(None), Ok(None)], vec![]);
     let _updater = updater(&releases, true, cx);
     cx.run_until_parked();
     assert_eq!(looks(&releases), 1);
 
-    cx.executor().advance_clock(CHECK_INTERVAL);
+    cx.advance_clock(CHECK_INTERVAL);
     cx.run_until_parked();
     assert_eq!(looks(&releases), 2);
 }
 
-#[gpui_kit::test]
-fn the_choice_is_saved(cx: &mut TestAppContext) {
+#[test]
+fn the_choice_is_saved() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let releases = scripted(vec![Ok(None)], vec![]);
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+    let executor = cx.executor();
     let updater = Updater::with(executor, releases.clone(), Some(store.clone()), false, None);
 
     updater.set_automatic(true);
@@ -183,8 +188,9 @@ fn the_choice_is_saved(cx: &mut TestAppContext) {
     assert!(!store.auto_update().unwrap());
 }
 
-#[gpui_kit::test]
-fn each_change_is_published(cx: &mut TestAppContext) {
+#[test]
+fn each_change_is_published() {
+    let cx = &TestExecutor::new();
     let releases = scripted(vec![nine()], vec![]);
     let updater = updater(&releases, false, cx);
     let mut changes = updater.subscribe();

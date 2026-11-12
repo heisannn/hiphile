@@ -1,19 +1,19 @@
-use gpui_kit::TestAppContext;
+use executor::testing::TestExecutor;
 use tempfile::TempDir;
 
 use super::*;
 use crate::testing::{NOWHERE, server_never_answering, wait_for};
 
-fn hiphile(store: Result<config::Store, config::Error>, cx: &mut TestAppContext) -> Hiphile {
+fn hiphile(store: Result<config::Store, config::Error>, cx: &TestExecutor) -> Hiphile {
     hiphile_keeping(store, Caches::None, cx)
 }
 
 fn hiphile_keeping(
     store: Result<config::Store, config::Error>,
     caches: Caches,
-    cx: &mut TestAppContext,
+    cx: &TestExecutor,
 ) -> Hiphile {
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+    let executor = cx.executor();
     let net = net::Client::new("hiphile-test").unwrap();
     Hiphile::new(executor, net, store, None, caches)
 }
@@ -25,8 +25,9 @@ fn store_with(config: &str) -> (TempDir, config::Store) {
     (dir, store)
 }
 
-#[gpui_kit::test]
-fn every_setting_reads_the_one_store(cx: &mut TestAppContext) {
+#[test]
+fn every_setting_reads_the_one_store() {
+    let cx = &TestExecutor::new();
     let (_dir, store) = store_with(
         "skip_instrumentals = true\nlyrics_highlight = \"line\"\nromaji_search = false\n",
     );
@@ -43,8 +44,9 @@ fn every_setting_reads_the_one_store(cx: &mut TestAppContext) {
     cx.run_until_parked();
 }
 
-#[gpui_kit::test]
-fn without_a_store_each_setting_says_why_it_will_not_be_saved(cx: &mut TestAppContext) {
+#[test]
+fn without_a_store_each_setting_says_why_it_will_not_be_saved() {
+    let cx = &TestExecutor::new();
     let hiphile = hiphile(Err(config::Error::NoHomeDir), cx);
 
     let settings = hiphile.settings();
@@ -62,8 +64,9 @@ fn without_a_store_each_setting_says_why_it_will_not_be_saved(cx: &mut TestAppCo
     cx.run_until_parked();
 }
 
-#[gpui_kit::test]
-fn with_nowhere_to_keep_them_there_are_no_covers_or_dictionaries(cx: &mut TestAppContext) {
+#[test]
+fn with_nowhere_to_keep_them_there_are_no_covers_or_dictionaries() {
+    let cx = &TestExecutor::new();
     let (_dir, store) = store_with("");
 
     let hiphile = hiphile(Ok(store), cx);
@@ -76,8 +79,9 @@ fn with_nowhere_to_keep_them_there_are_no_covers_or_dictionaries(cx: &mut TestAp
     ));
 }
 
-#[gpui_kit::test]
-fn a_folder_the_host_gives_keeps_the_covers_and_the_dictionaries(cx: &mut TestAppContext) {
+#[test]
+fn a_folder_the_host_gives_keeps_the_covers_and_the_dictionaries() {
+    let cx = &TestExecutor::new();
     let (_dir, store) = store_with("romaji_search = false\n");
     let cache = tempfile::tempdir().unwrap();
     let dictionaries = cache.path().join("readings");
@@ -95,8 +99,9 @@ fn a_folder_the_host_gives_keeps_the_covers_and_the_dictionaries(cx: &mut TestAp
     assert!(!dictionaries.exists());
 }
 
-#[gpui_kit::test]
-fn a_host_has_a_kept_cover_from_the_folder_it_gave(cx: &mut TestAppContext) {
+#[test]
+fn a_host_has_a_kept_cover_from_the_folder_it_gave() {
+    let cx = &TestExecutor::new();
     let (_dir, store) = store_with("romaji_search = false\n");
     let cache = tempfile::tempdir().unwrap();
     let hiphile = hiphile_keeping(Ok(store), Caches::At(cache.path().to_owned()), cx);
@@ -111,10 +116,11 @@ fn a_host_has_a_kept_cover_from_the_folder_it_gave(cx: &mut TestAppContext) {
     assert_eq!(image.as_deref(), Some(&b"image"[..]));
 }
 
-#[gpui_kit::test]
-fn a_cover_neither_kept_nor_on_the_server_is_none(cx: &mut TestAppContext) {
+#[test]
+fn a_cover_neither_kept_nor_on_the_server_is_none() {
+    let cx = &TestExecutor::new();
     // The server's answer comes from the network's own thread
-    cx.executor().allow_parking();
+    cx.allow_parking();
     let (_dir, store) = store_with("romaji_search = false\n");
     let hiphile = hiphile(Ok(store), cx);
 
@@ -124,9 +130,10 @@ fn a_cover_neither_kept_nor_on_the_server_is_none(cx: &mut TestAppContext) {
     assert_eq!(futures::FutureExt::now_or_never(&mut image), Some(None));
 }
 
-#[gpui_kit::test]
-fn the_dictionaries_are_left_as_they_are_until_the_readings_are_needed(cx: &mut TestAppContext) {
-    cx.executor().allow_parking();
+#[test]
+fn the_dictionaries_are_left_as_they_are_until_the_readings_are_needed() {
+    let cx = &TestExecutor::new();
+    cx.allow_parking();
     let (_dir, store) = store_with("romaji_search = false\n");
     let cache = tempfile::tempdir().unwrap();
     let dictionaries = cache.path().join("readings");
@@ -149,8 +156,9 @@ fn the_dictionaries_are_left_as_they_are_until_the_readings_are_needed(cx: &mut 
     workspace.shutdown();
 }
 
-#[gpui_kit::test]
-fn the_songs_kept_in_the_folder_given_are_counted_and_cleared(cx: &mut TestAppContext) {
+#[test]
+fn the_songs_kept_in_the_folder_given_are_counted_and_cleared() {
+    let cx = &TestExecutor::new();
     let (_dir, store) = store_with("romaji_search = false\n");
     let cache = tempfile::tempdir().unwrap();
     let hiphile = hiphile_keeping(Ok(store), Caches::At(cache.path().to_owned()), cx);
@@ -168,8 +176,9 @@ fn the_songs_kept_in_the_folder_given_are_counted_and_cleared(cx: &mut TestAppCo
     assert_eq!(usage.snapshot().kept(), Some(0));
 }
 
-#[gpui_kit::test]
-fn with_nowhere_to_keep_them_no_songs_are_counted(cx: &mut TestAppContext) {
+#[test]
+fn with_nowhere_to_keep_them_no_songs_are_counted() {
+    let cx = &TestExecutor::new();
     let (_dir, store) = store_with("romaji_search = false\n");
     let hiphile = hiphile(Ok(store), cx);
 
@@ -179,8 +188,9 @@ fn with_nowhere_to_keep_them_no_songs_are_counted(cx: &mut TestAppContext) {
     assert_eq!(usage.snapshot().kept(), None);
 }
 
-#[gpui_kit::test]
-fn songs_are_kept_once_a_limit_replaces_one_that_could_not_be_read(cx: &mut TestAppContext) {
+#[test]
+fn songs_are_kept_once_a_limit_replaces_one_that_could_not_be_read() {
+    let cx = &TestExecutor::new();
     let (_dir, store) = store_with("song_cache_gib = -1\nromaji_search = false\n");
     let cache = tempfile::tempdir().unwrap();
     let hiphile = hiphile_keeping(Ok(store), Caches::At(cache.path().to_owned()), cx);
@@ -188,16 +198,16 @@ fn songs_are_kept_once_a_limit_replaces_one_that_could_not_be_read(cx: &mut Test
     assert!(!is_keeping());
 
     hiphile.settings().song_cache().set_gib(1.0);
-    cx.executor()
-        .advance_clock(std::time::Duration::from_secs(1));
+    cx.advance_clock(std::time::Duration::from_secs(1));
     cx.run_until_parked();
 
     assert!(is_keeping());
 }
 
-#[gpui_kit::test]
-fn a_player_without_a_workspace_plays_at_the_saved_volume(cx: &mut TestAppContext) {
-    cx.executor().allow_parking();
+#[test]
+fn a_player_without_a_workspace_plays_at_the_saved_volume() {
+    let cx = &TestExecutor::new();
+    cx.allow_parking();
     let (_dir, store) = store_with("volume = 0.5\nromaji_search = false\n");
     let hiphile = hiphile(Ok(store), cx);
 
@@ -208,9 +218,10 @@ fn a_player_without_a_workspace_plays_at_the_saved_volume(cx: &mut TestAppContex
     cx.run_until_parked();
 }
 
-#[gpui_kit::test]
-fn a_player_without_a_workspace_plays_with_the_saved_dsp(cx: &mut TestAppContext) {
-    cx.executor().allow_parking();
+#[test]
+fn a_player_without_a_workspace_plays_with_the_saved_dsp() {
+    let cx = &TestExecutor::new();
+    cx.allow_parking();
     let (_dir, store) = store_with("crossfeed = true\nbalance_db = -2.0\nromaji_search = false\n");
     let hiphile = hiphile(Ok(store), cx);
 
@@ -222,9 +233,10 @@ fn a_player_without_a_workspace_plays_with_the_saved_dsp(cx: &mut TestAppContext
     cx.run_until_parked();
 }
 
-#[gpui_kit::test]
-fn signing_out_closes_the_workspace(cx: &mut TestAppContext) {
-    cx.executor().allow_parking();
+#[test]
+fn signing_out_closes_the_workspace() {
+    let cx = &TestExecutor::new();
+    cx.allow_parking();
     let hiphile = hiphile(Err(config::Error::NoHomeDir), cx);
     let changes = hiphile.subscribe();
     let profile = config::Profile::new(crate::testing::NOWHERE, "alice");
@@ -243,8 +255,9 @@ fn signing_out_closes_the_workspace(cx: &mut TestAppContext) {
     cx.run_until_parked();
 }
 
-#[gpui_kit::test]
-fn what_was_typed_is_checked_before_signing_in(cx: &mut TestAppContext) {
+#[test]
+fn what_was_typed_is_checked_before_signing_in() {
+    let cx = &TestExecutor::new();
     let hiphile = hiphile(Err(config::Error::NoHomeDir), cx);
 
     let Err(SignInRefused::Invalid(invalid)) = hiphile.sign_in("", "alice", "secret") else {
@@ -257,10 +270,11 @@ fn what_was_typed_is_checked_before_signing_in(cx: &mut TestAppContext) {
     cx.run_until_parked();
 }
 
-#[gpui_kit::test]
-fn another_attempt_waits_for_the_one_under_way(cx: &mut TestAppContext) {
+#[test]
+fn another_attempt_waits_for_the_one_under_way() {
+    let cx = &TestExecutor::new();
     // The server's answer comes from the network's own thread
-    cx.executor().allow_parking();
+    cx.allow_parking();
     let hiphile = hiphile(Err(config::Error::NoHomeDir), cx);
 
     let mut first = hiphile.sign_in(NOWHERE, "alice", "secret").unwrap();
@@ -280,8 +294,9 @@ fn another_attempt_waits_for_the_one_under_way(cx: &mut TestAppContext) {
     assert!(!hiphile.snapshot().is_signing_in());
 }
 
-#[gpui_kit::test]
-fn an_attempt_dropped_unfinished_ends(cx: &mut TestAppContext) {
+#[test]
+fn an_attempt_dropped_unfinished_ends() {
+    let cx = &TestExecutor::new();
     let hiphile = hiphile(Err(config::Error::NoHomeDir), cx);
     let attempt = hiphile.sign_in(NOWHERE, "alice", "secret").unwrap();
 
@@ -298,10 +313,11 @@ fn store_with_alice() -> (TempDir, config::Store) {
     ))
 }
 
-#[gpui_kit::test]
-fn whoever_signed_in_last_is_signed_in_again_only_once(cx: &mut TestAppContext) {
+#[test]
+fn whoever_signed_in_last_is_signed_in_again_only_once() {
+    let cx = &TestExecutor::new();
     // The server's answer comes from the network's own thread
-    cx.executor().allow_parking();
+    cx.allow_parking();
     let (_dir, store) = store_with_alice();
     let hiphile = hiphile(Ok(store), cx);
 
@@ -319,8 +335,9 @@ fn whoever_signed_in_last_is_signed_in_again_only_once(cx: &mut TestAppContext) 
     assert!(!hiphile.snapshot().is_signing_in());
 }
 
-#[gpui_kit::test]
-fn nothing_is_resumed_after_signing_out(cx: &mut TestAppContext) {
+#[test]
+fn nothing_is_resumed_after_signing_out() {
+    let cx = &TestExecutor::new();
     let (_dir, store) = store_with_alice();
     let hiphile = hiphile(Ok(store), cx);
 
@@ -330,18 +347,18 @@ fn nothing_is_resumed_after_signing_out(cx: &mut TestAppContext) {
     cx.run_until_parked();
 }
 
-#[gpui_kit::test]
-fn nothing_is_resumed_for_someone_new(cx: &mut TestAppContext) {
+#[test]
+fn nothing_is_resumed_for_someone_new() {
+    let cx = &TestExecutor::new();
     let (_dir, store) = store_with("romaji_search = false\n");
     let hiphile = hiphile(Ok(store), cx);
 
     assert!(hiphile.resume().is_none());
 }
 
-#[gpui_kit::test]
-fn dictionaries_that_could_not_be_had_are_told_to_a_host_that_follows_later(
-    cx: &mut TestAppContext,
-) {
+#[test]
+fn dictionaries_that_could_not_be_had_are_told_to_a_host_that_follows_later() {
+    let cx = &TestExecutor::new();
     let (_dir, store) = store_with("");
     let hiphile = hiphile(Ok(store), cx);
     assert!(hiphile.alerts().earlier.is_empty());
@@ -375,9 +392,9 @@ fn store_with_alice_and_bob() -> (TempDir, config::Store) {
 fn hiphile_with_keychain(
     store: config::Store,
     keychain: &config::Keychain,
-    cx: &mut TestAppContext,
+    cx: &TestExecutor,
 ) -> Hiphile {
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+    let executor = cx.executor();
     let net = net::Client::new("hiphile-test").unwrap();
     Hiphile::new(
         executor,
@@ -388,7 +405,7 @@ fn hiphile_with_keychain(
     )
 }
 
-fn ended<T>(task: &mut Task<T>, cx: &mut TestAppContext) -> T {
+fn ended<T>(task: &mut Task<T>, cx: &TestExecutor) -> T {
     let mut result = None;
     wait_for(cx, || {
         result = futures::FutureExt::now_or_never(&mut *task);
@@ -397,8 +414,9 @@ fn ended<T>(task: &mut Task<T>, cx: &mut TestAppContext) -> T {
     result.unwrap()
 }
 
-#[gpui_kit::test]
-fn the_profiles_signed_in_with_before_are_there_from_the_start(cx: &mut TestAppContext) {
+#[test]
+fn the_profiles_signed_in_with_before_are_there_from_the_start() {
+    let cx = &TestExecutor::new();
     let (_dir, store) = store_with_alice_and_bob();
 
     let hiphile = hiphile(Ok(store), cx);
@@ -406,8 +424,9 @@ fn the_profiles_signed_in_with_before_are_there_from_the_start(cx: &mut TestAppC
     assert_eq!(hiphile.snapshot().profiles(), [bob(), alice()]);
 }
 
-#[gpui_kit::test]
-fn switching_to_whoever_is_signed_in_leaves_their_workspace(cx: &mut TestAppContext) {
+#[test]
+fn switching_to_whoever_is_signed_in_leaves_their_workspace() {
+    let cx = &TestExecutor::new();
     let (_dir, store) = store_with_alice_and_bob();
     let hiphile = hiphile(Ok(store), cx);
     hiphile.open_workspace(crate::test_support::session(NOWHERE), alice());
@@ -424,10 +443,11 @@ fn switching_to_whoever_is_signed_in_leaves_their_workspace(cx: &mut TestAppCont
     workspace.unwrap().shutdown();
 }
 
-#[gpui_kit::test]
-fn switching_to_someone_without_a_saved_password_asks_for_one(cx: &mut TestAppContext) {
+#[test]
+fn switching_to_someone_without_a_saved_password_asks_for_one() {
+    let cx = &TestExecutor::new();
     // The workspace's requests answer from the network's own thread
-    cx.executor().allow_parking();
+    cx.allow_parking();
     let (_dir, store) = store_with_alice_and_bob();
     let hiphile = hiphile_with_keychain(store, &config::Keychain::in_memory(), cx);
     hiphile.open_workspace(crate::test_support::session(NOWHERE), alice());
@@ -439,10 +459,11 @@ fn switching_to_someone_without_a_saved_password_asks_for_one(cx: &mut TestAppCo
     hiphile.workspace().unwrap().shutdown();
 }
 
-#[gpui_kit::test]
-fn switching_signs_in_with_the_saved_password_while_the_workspace_stays(cx: &mut TestAppContext) {
+#[test]
+fn switching_signs_in_with_the_saved_password_while_the_workspace_stays() {
+    let cx = &TestExecutor::new();
     // The server's answer comes from the network's own thread
-    cx.executor().allow_parking();
+    cx.allow_parking();
     let (_dir, store) = store_with_alice_and_bob();
     let keychain = config::Keychain::in_memory();
     keychain.set_password(&bob(), "secret").unwrap();
@@ -461,9 +482,10 @@ fn switching_signs_in_with_the_saved_password_while_the_workspace_stays(cx: &mut
     hiphile.workspace().unwrap().shutdown();
 }
 
-#[gpui_kit::test]
-fn signing_out_takes_the_profile_off_the_others(cx: &mut TestAppContext) {
-    cx.executor().allow_parking();
+#[test]
+fn signing_out_takes_the_profile_off_the_others() {
+    let cx = &TestExecutor::new();
+    cx.allow_parking();
     let (_dir, store) = store_with_alice_and_bob();
     let hiphile = hiphile(Ok(store.clone()), cx);
     hiphile.open_workspace(crate::test_support::session(NOWHERE), alice());
@@ -475,9 +497,10 @@ fn signing_out_takes_the_profile_off_the_others(cx: &mut TestAppContext) {
     assert_eq!(store.profiles().unwrap(), [bob()]);
 }
 
-#[gpui_kit::test]
-fn signing_out_calls_off_a_switch_under_way(cx: &mut TestAppContext) {
-    cx.executor().allow_parking();
+#[test]
+fn signing_out_calls_off_a_switch_under_way() {
+    let cx = &TestExecutor::new();
+    cx.allow_parking();
     let (_dir, store) = store_with_alice_and_bob();
     let carol = config::Profile::new(server_never_answering(), "carol");
     let keychain = config::Keychain::in_memory();
@@ -495,35 +518,37 @@ fn signing_out_calls_off_a_switch_under_way(cx: &mut TestAppContext) {
     assert_eq!(hiphile.snapshot().profiles(), [bob()]);
 }
 
-// Each run finds the two passwords in another order
-#[gpui_kit::test(iterations = 30)]
-fn a_switch_asked_for_while_resuming_finds_its_password_takes_its_place(cx: &mut TestAppContext) {
-    cx.executor().allow_parking();
-    let (_dir, store) = store_with("romaji_search = false\n");
-    let carol = config::Profile::new(server_never_answering(), "carol");
-    store.save_profile(&bob()).unwrap();
-    store.save_profile(&carol).unwrap();
-    let keychain = config::Keychain::in_memory();
-    keychain.set_password(&carol, "secret").unwrap();
-    keychain.set_password(&bob(), "secret").unwrap();
-    let hiphile = hiphile_with_keychain(store, &keychain, cx);
+// Each seed finds the two passwords in another order
+#[test]
+fn a_switch_asked_for_while_resuming_finds_its_password_takes_its_place() {
+    for seed in 0..30 {
+        let cx = &TestExecutor::with_seed(seed);
+        cx.allow_parking();
+        let (_dir, store) = store_with("romaji_search = false\n");
+        let carol = config::Profile::new(server_never_answering(), "carol");
+        store.save_profile(&bob()).unwrap();
+        store.save_profile(&carol).unwrap();
+        let keychain = config::Keychain::in_memory();
+        keychain.set_password(&carol, "secret").unwrap();
+        keychain.set_password(&bob(), "secret").unwrap();
+        let hiphile = hiphile_with_keychain(store, &keychain, cx);
 
-    let mut resuming = hiphile.resume().unwrap();
-    let mut switching = hiphile.switch_to(bob());
+        let mut resuming = hiphile.resume().unwrap();
+        let mut switching = hiphile.switch_to(bob());
 
-    assert_eq!(ended(&mut resuming, cx), Ok(()));
-    // Tried with bob's password, as nothing answers there
-    let Err(SwitchFailed::SignIn(error)) = ended(&mut switching, cx) else {
-        panic!("signing in as bob was not tried");
-    };
-    assert!(error.starts_with("Couldn't reach"), "{error}");
+        assert_eq!(ended(&mut resuming, cx), Ok(()));
+        // Tried with bob's password, as nothing answers there
+        let Err(SwitchFailed::SignIn(error)) = ended(&mut switching, cx) else {
+            panic!("signing in as bob was not tried");
+        };
+        assert!(error.starts_with("Couldn't reach"), "{error}");
+    }
 }
 
-#[gpui_kit::test]
-fn a_profile_forgotten_is_off_the_others_with_its_password_unless_signed_in(
-    cx: &mut TestAppContext,
-) {
-    cx.executor().allow_parking();
+#[test]
+fn a_profile_forgotten_is_off_the_others_with_its_password_unless_signed_in() {
+    let cx = &TestExecutor::new();
+    cx.allow_parking();
     let (_dir, store) = store_with_alice_and_bob();
     let keychain = config::Keychain::in_memory();
     keychain.set_password(&bob(), "secret").unwrap();
