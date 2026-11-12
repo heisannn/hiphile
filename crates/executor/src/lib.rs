@@ -1,11 +1,14 @@
 //! The core runs on threads and a clock that its host lends it through an [`Executor`], and
 //! starts no runtime of its own. A GPUI app lends GPUI's background executor (`gpui_host::executor`),
 //! so that GPUI's tests drive the core with `run_until_parked` and `advance_clock`. A host on
-//! tokio, such as the CLI or a test, lends a runtime with [`Executor::tokio`].
+//! tokio, such as the CLI or a test, lends a runtime with [`Executor::tokio`]. The core's own tests
+//! lend `testing::TestExecutor` (`test-support`), which they drive the same way.
 
 mod on_tokio;
 mod published;
 mod saver;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 
 use std::pin::Pin;
 use std::sync::Arc;
