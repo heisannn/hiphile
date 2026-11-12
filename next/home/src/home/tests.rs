@@ -496,10 +496,11 @@ fn key_reloads_the_recommendations(key: NamedKey) {
 
     let server = &shown.server;
     wait_until(&mut shown.ui, || {
-        server.asked("random") == 2 && find(Role::Button, "Reload Recommendations").is_some()
+        server.asked("random") == 2
+            && find(Role::Button, "Reload Recommendations").is_some()
+            && shows_text_starting("Couldn't get new recommendations.")
     });
     assert_eq!(options(), ["r0", "a0"]);
-    assert!(shows_text_starting("Couldn't get new recommendations."));
     assert!(shown.sent().is_empty());
     // The page has kept the focus while the button was away
     shown.keys(&[NamedKey::ArrowDown]);
