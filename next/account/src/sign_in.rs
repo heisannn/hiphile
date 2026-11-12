@@ -47,7 +47,7 @@ pub fn sign_in(hiphile: Hiphile) -> Div {
                         .flex_col()
                         .gap(8.0_f32)
                         .child(
-                            styled_text(TextStyle::HEADLINE_SMALL, "Sign in")
+                            styled_text(TextStyle::HEADLINE_SMALL, "Sign In")
                                 .access(|a| a.role(Role::Heading).level(1)),
                         )
                         .child(muted_text(

@@ -141,7 +141,7 @@ pub(crate) fn form(hiphile: Hiphile, fields: Fields, actions: Vec<Div>) -> Div {
         .children(actions)
         .child(show(signing_in, || indeterminate_circular_progress().ml(8)))
         .child(
-            styled_button("Sign in", ButtonStyle::filled().disabled_when(signing_in))
+            styled_button("Sign In", ButtonStyle::filled().disabled_when(signing_in))
                 .ml(8)
                 .on_click(move |_| submit()),
         );

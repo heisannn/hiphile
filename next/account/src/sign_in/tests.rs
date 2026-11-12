@@ -13,7 +13,7 @@ fn an_empty_field_says_what_it_needs() {
         move || sign_in(hiphile)
     });
 
-    press(&mut ui, Role::Button, "Sign in");
+    press(&mut ui, Role::Button, "Sign In");
 
     assert!(has_text("Enter the server address."));
     assert!(!hiphile.snapshot().is_signing_in());
@@ -35,12 +35,12 @@ fn a_server_that_cannot_be_reached_is_said_so_and_the_form_comes_back() {
         typed(&mut ui, value);
     }
 
-    press(&mut ui, Role::Button, "Sign in");
+    press(&mut ui, Role::Button, "Sign In");
     assert!(hiphile.snapshot().is_signing_in());
     wait_until(&mut ui, || has_text(UNREACHABLE));
 
     assert!(!hiphile.snapshot().is_signing_in());
-    assert!(!find(Role::Button, "Sign in").unwrap().disabled);
+    assert!(!find(Role::Button, "Sign In").unwrap().disabled);
 }
 
 #[test]

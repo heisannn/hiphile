@@ -15,7 +15,7 @@ fn signed_out_it_asks_to_sign_in_without_the_rail() {
     let (_core, hiphile) = core("");
     let _ui = start(move || app(hiphile, signal(false)));
 
-    assert!(heading("Sign in"));
+    assert!(heading("Sign In"));
     assert!(find(Role::Navigation, "Destinations").is_none());
 }
 
@@ -76,7 +76,7 @@ fn signing_out_from_the_servers_goes_back_to_signing_in() {
 
     press(&mut ui, Role::Button, "Servers");
     press(&mut ui, Role::MenuItem, "Sign Out");
-    wait_until(&mut ui, || heading("Sign in"));
+    wait_until(&mut ui, || heading("Sign In"));
 
     assert!(hiphile.snapshot().workspace().is_none());
     assert!(find(Role::Navigation, "Destinations").is_none());
