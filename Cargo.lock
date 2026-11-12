@@ -5598,6 +5598,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "next-artists"
+version = "0.5.0"
+dependencies = [
+ "anti-webui",
+ "anti-webui-md3e",
+ "hiphile-core",
+ "next-host",
+ "next-ui",
+ "playback",
+ "serde_json",
+ "subsonic",
+]
+
+[[package]]
 name = "next-favorites"
 version = "0.5.0"
 dependencies = [
@@ -5623,6 +5637,7 @@ dependencies = [
  "media-controls",
  "net",
  "next-account",
+ "next-artists",
  "next-favorites",
  "next-home",
  "next-host",

@@ -26,6 +26,17 @@ pub fn song_with_cover(
     state: impl Fn() -> Option<PlayState> + 'static,
     commands: &Commands,
 ) -> Div {
+    song_with_line(song, cover, song_line(song, commands), state)
+}
+
+/// As [`song_with_cover`], with `line` under the title in place of who the song is by and where
+/// it is from.
+pub fn song_with_line(
+    song: &Song,
+    cover: Div,
+    line: Div,
+    state: impl Fn() -> Option<PlayState> + 'static,
+) -> Div {
     let words = div()
         .flex()
         .flex_col()
@@ -37,7 +48,7 @@ pub fn song_with_cover(
                 .apply(div())
                 .child(text(song.title().to_owned())),
         ))
-        .child(song_line(song, commands));
+        .child(line);
     let duration = song.duration().map(format_duration).unwrap_or_default();
     div()
         .flex()

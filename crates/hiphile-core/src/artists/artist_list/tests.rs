@@ -203,6 +203,7 @@ fn a_query_finds_artists_by_name() {
     cx.run_until_parked();
 
     assert_eq!(shown(&list), ["b"]);
+    assert_eq!(list.status().query(), "EVANS");
 }
 
 #[test]

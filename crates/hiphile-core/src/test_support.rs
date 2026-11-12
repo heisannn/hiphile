@@ -1,11 +1,13 @@
 //! Fake servers and a session on them, for the tests of the core and of the views that follow it.
 
+mod artists_server;
 mod favorites_server;
 mod home_server;
 mod library_server;
 mod playlists_server;
 mod songs_server;
 
+pub use artists_server::ArtistsServer;
 pub use favorites_server::{FavoritesServer, song_json};
 pub use home_server::HomeServer;
 pub use library_server::LibraryServer;

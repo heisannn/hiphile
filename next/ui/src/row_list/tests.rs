@@ -34,6 +34,7 @@ struct List {
     reorders: Signal<Vec<(Vec<u32>, usize)>>,
     /// How many rows were made.
     made: Rc<Cell<usize>>,
+    is_single: bool,
 }
 
 impl List {
@@ -46,6 +47,14 @@ impl List {
             menus: signal(Vec::new()),
             reorders: signal(Vec::new()),
             made: Rc::default(),
+            is_single: false,
+        }
+    }
+
+    fn single(count: u32) -> Self {
+        Self {
+            is_single: true,
+            ..Self::of(count)
         }
     }
 
@@ -66,6 +75,11 @@ impl List {
         .on_open(move |id| opened.update(|opened| opened.push(id)))
         .on_context_menu(move |id, at| menus.update(|menus| menus.push((id, at))))
         .on_reorder(move |ids, to| reorders.update(|reorders| reorders.push((ids, to))));
+        let list = if self.is_single {
+            list.single_selection()
+        } else {
+            list
+        };
         div().size_full().flex().flex_col().child(row_list(list))
     }
 
@@ -199,6 +213,23 @@ fn primary_a_selects_every_row() {
     key_with(&mut ui, Key::Character("a".into()), Modifiers::PRIMARY);
 
     assert_eq!(list.selected(), ids(0..30));
+}
+
+#[test]
+fn a_single_selection_takes_one_row_whatever_the_modifiers() {
+    let list = List::single(10);
+    let mut ui = list.start();
+    click_song(&mut ui, 2);
+
+    click_song_with(&mut ui, 5, shift());
+    assert_eq!(list.selected(), ids([5]));
+    click_song_with(&mut ui, 7, Modifiers::PRIMARY);
+    assert_eq!(list.selected(), ids([7]));
+    key_shifted(&mut ui, NamedKey::ArrowDown);
+    assert_eq!(list.selected(), ids([8]));
+    key_with(&mut ui, Key::Character("a".into()), Modifiers::PRIMARY);
+    assert_eq!(list.selected(), ids([8]));
+    assert!(!nodes(Role::ListBox)[0].multiselectable);
 }
 
 #[test]

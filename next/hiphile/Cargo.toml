@@ -19,6 +19,7 @@ hiphile-core = { workspace = true, features = ["desktop"] }
 media-controls.workspace = true
 net.workspace = true
 next-account.workspace = true
+next-artists.workspace = true
 next-favorites.workspace = true
 next-home.workspace = true
 next-host.workspace = true

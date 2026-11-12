@@ -164,6 +164,7 @@ pub struct RowList<S: RowSource, K: 'static> {
     row: Look<S, K>,
     row_label: Option<LabelOf<S>>,
     selection: Option<Selection<K>>,
+    is_single: bool,
     row_height: f32,
     node: Option<NodeRef>,
     on_open: Option<Rc<dyn Fn(K)>>,
@@ -189,6 +190,7 @@ impl<S: RowSource, K: Clone + Eq + Hash + 'static> RowList<S, K> {
             row: Rc::new(row),
             row_label: None,
             selection: None,
+            is_single: false,
             row_height: ROW_HEIGHT,
             node: None,
             on_open: None,
@@ -201,6 +203,12 @@ impl<S: RowSource, K: Clone + Eq + Hash + 'static> RowList<S, K> {
     /// The selection, for the owner to read and change. The list has one of its own otherwise.
     pub fn selection(mut self, selection: Selection<K>) -> Self {
         self.selection = Some(selection);
+        self
+    }
+
+    /// Only one row is selected at a time: Shift, ⌘ and ⌘A add none to it.
+    pub fn single_selection(mut self) -> Self {
+        self.is_single = true;
         self
     }
 
@@ -308,6 +316,7 @@ pub fn row_list<S: RowSource, K: Clone + Eq + Hash + 'static>(list: RowList<S, K
         row,
         row_label,
         selection,
+        is_single,
         row_height,
         node,
         on_open,
@@ -336,6 +345,7 @@ pub fn row_list<S: RowSource, K: Clone + Eq + Hash + 'static>(list: RowList<S, K
     let place = Place {
         shared: shared.clone(),
         selection,
+        is_single,
         focused,
         node,
         row,
@@ -357,17 +367,23 @@ pub fn row_list<S: RowSource, K: Clone + Eq + Hash + 'static>(list: RowList<S, K
     .node_ref(node)
     .focusable()
     .select_none()
-    .access(move |a| a.role(Role::ListBox).label(label.clone()).multiselectable())
+    .access(move |a| {
+        let a = a.role(Role::ListBox).label(label.clone());
+        if is_single { a } else { a.multiselectable() }
+    })
     .on_focus_change(move |on| focused.set(on));
     handles_keys(list, move |stroke| {
         take_key(
             stroke,
             &shared,
             selection,
+            is_single,
             node,
             row_height,
-            on_open.as_deref(),
-            keys_start.as_deref(),
+            KeyHooks {
+                on_open: on_open.as_deref(),
+                start: keys_start.as_deref(),
+            },
         )
     })
 }
@@ -417,12 +433,14 @@ fn device_row_height(row_height: f32) -> f32 {
 }
 
 /// Scrolls the list `node` refers to just far enough to show the row at `position`, as a selection
-/// made other than by the keys needs. A list not laid out yet, as large as nothing, is left as it
-/// is: [`has_room_for_rows`] says when it can.
-pub fn scroll_to_row(node: NodeRef, position: usize, row_height: f32) {
-    if has_room_for_rows(node, row_height) {
-        reveal(node, position, row_height);
+/// made other than by the keys needs. Whether it could: a list not laid out yet, as large as
+/// nothing, is left as it is, and [`has_room_for_rows`] says when it can.
+pub fn scroll_to_row(node: NodeRef, position: usize, row_height: f32) -> bool {
+    if !has_room_for_rows(node, row_height) {
+        return false;
     }
+    reveal(node, position, row_height);
+    true
 }
 
 /// Whether the list `node` refers to is laid out, with room for a row.
@@ -458,17 +476,27 @@ fn rows_in_view(node: NodeRef, row_height: f32) -> usize {
         .max(1)
 }
 
+/// What the list's owner gave for the keys to call.
+struct KeyHooks<'a, K> {
+    on_open: Option<&'a dyn Fn(K)>,
+    start: Option<&'a dyn Fn() -> Option<K>>,
+}
+
 fn take_key<S: RowSource, K: Clone + Eq + Hash + 'static>(
     stroke: &Keystroke,
     shared: &Shared<S, K>,
     selection: Selection<K>,
+    is_single: bool,
     node: NodeRef,
     row_height: f32,
-    on_open: Option<&dyn Fn(K)>,
-    keys_start: Option<&dyn Fn() -> Option<K>>,
+    hooks: KeyHooks<'_, K>,
 ) -> bool {
+    let KeyHooks {
+        on_open,
+        start: keys_start,
+    } = hooks;
     let m = stroke.modifiers();
-    if m.primary() && !m.shift && !m.alt && stroke.key().is_char('a') {
+    if !is_single && m.primary() && !m.shift && !m.alt && stroke.key().is_char('a') {
         selection.0.update(|selected| selected.select_all(shared));
         return true;
     }
@@ -513,7 +541,7 @@ fn take_key<S: RowSource, K: Clone + Eq + Hash + 'static>(
             let page = rows_in_view(node, row_height);
             selection
                 .0
-                .update(|selected| selected.move_by(motion, m.shift, shared, page))
+                .update(|selected| selected.move_by(motion, m.shift && !is_single, shared, page))
         }
     };
     if let Some(to) = to {
@@ -533,6 +561,7 @@ struct Reorder<K: 'static> {
 struct Place<S: RowSource, K: 'static> {
     shared: Rc<Shared<S, K>>,
     selection: Selection<K>,
+    is_single: bool,
     focused: Signal<bool>,
     node: NodeRef,
     row: Look<S, K>,
@@ -629,14 +658,15 @@ impl<S: RowSource, K: Clone + Eq + Hash + 'static> Place<S, K> {
     fn click(&self, id: K) -> impl Fn(&PointerEvent) + 'static {
         let (shared, selection, on_open) =
             (self.shared.clone(), self.selection, self.on_open.clone());
+        let is_single = self.is_single;
         move |e| {
             let m = e.modifiers;
             if is_context_click(e) {
                 return;
             }
-            if m.primary() {
+            if m.primary() && !is_single {
                 selection.0.update(|selected| selected.toggle(id.clone()));
-            } else if m.shift {
+            } else if m.shift && !is_single {
                 selection
                     .0
                     .update(|selected| selected.extend_to(id.clone(), &*shared));

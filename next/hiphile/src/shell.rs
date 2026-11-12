@@ -214,7 +214,7 @@ fn signed_in(
 fn screen(destination: Destination, location: Signal<Location>, cx: &ScreenContext) -> Screen {
     match destination {
         Destination::Home => next_home::home(cx),
-        Destination::Artists => empty(destination),
+        Destination::Artists => next_artists::artists(location, cx),
         Destination::Albums => next_library::albums(location, cx),
         Destination::Songs => next_songs::songs(cx),
         Destination::Playlists => empty(destination),
