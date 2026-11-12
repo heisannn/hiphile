@@ -12,6 +12,7 @@ use anti_webui_md3e::color_scheme;
 use anti_webui_md3e::components::Ink;
 use hiphile_core::Shown;
 
+use crate::context_menu::pressed_at;
 use crate::focus_ring::inner_focus_ring;
 use crate::keymap::{Keystroke, handles_keys};
 use crate::selection::{CORNER, selection_fill, shows_keys_on};
@@ -758,14 +759,7 @@ impl<S: RowSource, K: Clone + Eq + Hash + 'static> Place<S, K> {
                 selection.select(id.clone());
             }
             node.focus();
-            let scale = window_scale();
-            open(
-                id.clone(),
-                PointF::new(
-                    scale.to_logical(e.position.x),
-                    scale.to_logical(e.position.y),
-                ),
-            );
+            open(id.clone(), pressed_at(e));
         }
     }
 
