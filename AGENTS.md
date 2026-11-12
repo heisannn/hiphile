@@ -1,11 +1,21 @@
 # AGENTS.md
 
-## Read the gpui-kit guides first
+## Read the guides first
 
-Before writing or reviewing code in `hiphile`, read both guides and follow them:
+Before writing or reviewing code in `hiphile`, read both guides for the app you work on and follow
+them.
+
+The GPUI app in `crates/` follows the gpui-kit guides:
 
 - Coding: `.agents/skills/gpui-kit/references/coding-guides.md`
 - UI/UX: `.agents/skills/gpui-kit-design-guides/references/design-guides.md`
+
+The AntiWebUI app in `next/` follows the guides of the move, which are written in Japanese:
+
+- Coding: `docs/antiwebui/coding-guide.md`
+- UI/UX: `docs/antiwebui/design-guide.md`
+
+The sections below apply to both.
 
 ## No self-evident text
 
@@ -36,7 +46,8 @@ Leave tooling directives and machine-read comments as they are.
 
 ## Keep views small
 
-- When a second view needs the same piece of UI, move it to `crates/ui` rather than copy it.
+- When a second view needs the same piece of UI, move it to `crates/ui` (`next/ui` in `next/`)
+  rather than copy it.
 - Put a view's tests in `<view>/tests.rs`.
 
 ## Before committing
