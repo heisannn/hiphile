@@ -5,6 +5,7 @@ use anti_webui_md3e::icons;
 use anti_webui_md3e::motion::fast_effects;
 use anti_webui_md3e::typography::TextStyle;
 use hiphile_core::Hiphile;
+use next_ui::theme::Schemes;
 use next_ui::type_scale::styled_text;
 
 use crate::audio_page::audio_page;
@@ -18,8 +19,9 @@ use crate::storage_page::storage_page;
 const LIST_WIDTH: i32 = 240;
 
 /// The settings over the window and as large as it allows, with the list of pages beside the page
-/// chosen. Escape and the scrim close it, and the page chosen stays chosen for the next time.
-pub fn settings_popup(hiphile: Hiphile, open: Signal<bool>) -> Show {
+/// chosen. Escape and the scrim close it, and the page chosen stays chosen for the next time. The
+/// colors that can be chosen show in `schemes`.
+pub fn settings_popup(hiphile: Hiphile, open: Signal<bool>, schemes: Schemes) -> Show {
     let chosen = signal(Page::Audio);
     modal_with(
         move || open.get(),
@@ -83,7 +85,7 @@ pub fn settings_popup(hiphile: Hiphile, open: Signal<bool>) -> Show {
                                 &readings,
                             ),
                             Page::Discord => discord_page(settings.discord()),
-                            Page::Appearance => appearance_page(settings.appearance()),
+                            Page::Appearance => appearance_page(settings.appearance(), schemes),
                         };
                         div()
                             .flex()

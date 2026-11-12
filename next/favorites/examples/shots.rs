@@ -18,7 +18,7 @@ use next_favorites::favorites;
 use next_ui::cover::install_covers;
 use next_ui::pane::GAP;
 use next_ui::testing::{frames, press, recording_commands, screen_context, signed_in_core};
-use next_ui::theme::{DEFAULT_SEED, scheme};
+use next_ui::theme::{DEFAULT_SEED, cover_scheme};
 use next_ui::type_scale::body;
 use next_ui::{Screen, app_bar};
 use serde_json::{Value, json};
@@ -69,7 +69,7 @@ fn shot(path: &Path, (width, height): (u32, u32), dark: bool, server: &Server, t
         h,
         SCALE,
         move || {
-            set_color_scheme(scheme(DEFAULT_SEED, dark));
+            set_color_scheme(cover_scheme(DEFAULT_SEED, dark));
             let (commands, _) = recording_commands();
             let cx = screen_context(&hiphile, commands);
             let Screen {

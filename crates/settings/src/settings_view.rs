@@ -176,7 +176,7 @@ impl SettingsView {
         });
 
         let mut group = SettingGroup::new().item(SettingItem::new("Theme", theme));
-        if let Some(error) = error_text(self.appearance.snapshot().error()) {
+        if let Some(error) = error_text(self.appearance.snapshot().errors().next()) {
             group =
                 group.footer(move |_, cx| div().text_color(cx.theme().danger).child(error.clone()));
         }

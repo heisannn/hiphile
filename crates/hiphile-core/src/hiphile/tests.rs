@@ -53,7 +53,12 @@ fn without_a_store_each_setting_says_why_it_will_not_be_saved() {
     let errors = [
         settings.queue().snapshot().error().map(str::to_owned),
         settings.lyrics().snapshot().error().map(str::to_owned),
-        settings.appearance().snapshot().error().map(str::to_owned),
+        settings
+            .appearance()
+            .snapshot()
+            .errors()
+            .next()
+            .map(str::to_owned),
         settings.song_cache().snapshot().error().map(str::to_owned),
     ];
     for error in errors {

@@ -19,7 +19,7 @@ use next_ui::cover::install_covers;
 use next_ui::keymap::keeps_focus;
 use next_ui::list_detail::{DETAIL_MIN_WIDTH, LIST_MIN_WIDTH, Split};
 use next_ui::pane::GAP;
-use next_ui::theme::{follow_theme, is_dark};
+use next_ui::theme::{Schemes, follow_theme, is_dark};
 use next_ui::type_scale::body;
 use next_ui::window::moves_window;
 use next_ui::{Command, Commands, Screen, ScreenContext, app_bar};
@@ -61,19 +61,23 @@ impl System {
 
 /// What fills the window: signing in, or the workspace of whoever is signed in, and the settings
 /// over either. Its colors follow the appearance chosen, the system's when that follows it, and
-/// the cover of what plays. The window takes what is chosen in `menu_bar`, and shows there where
-/// it is.
+/// the color chosen, which is the cover of what plays unless one is picked. The window takes what
+/// is chosen in `menu_bar`, and shows there where it is.
 pub fn app(hiphile: Hiphile, system: System, menu_bar: MenuBar, reach: Reach) -> Div {
     let appearance = follow(hiphile.settings().appearance().subscribe());
     let seed = signal(None::<Color>);
-    follow_theme(
+    let schemes = Schemes::new(
         move || {
             is_dark(
                 appearance.with(AppearanceSnapshot::appearance),
                 system.is_dark.get(),
             )
         },
-        move || seed.get(),
+        seed,
+    );
+    let color = memo(move || appearance.with(AppearanceSnapshot::theme_color));
+    follow_theme(
+        move || schemes.of(color.get()),
         move || system.reduces_motion.get(),
     );
     install_covers(hiphile.clone());
@@ -81,7 +85,7 @@ pub fn app(hiphile: Hiphile, system: System, menu_bar: MenuBar, reach: Reach) ->
     let workspace = memo(move || shown.with(|shown| shown.workspace().cloned()));
     let snackbars = snackbars();
     let settings_open = signal(false);
-    let settings = settings_popup(hiphile.clone(), settings_open);
+    let settings = settings_popup(hiphile.clone(), settings_open, schemes);
     body(div())
         .size_full()
         .relative()

@@ -20,7 +20,7 @@ use anti_webui_md3e::color_scheme;
 use anti_webui_md3e::typography::TextStyle;
 use next_ui::row_list::{ROW_HEIGHT, RowList, Selection, row_list};
 use next_ui::row_text::row_text;
-use next_ui::theme::{DEFAULT_SEED, scheme};
+use next_ui::theme::{DEFAULT_SEED, cover_scheme};
 
 const SONGS: u32 = 20_000;
 /// The main window on a Retina display.
@@ -203,7 +203,7 @@ fn report(name: &str, frames: &[Frame]) {
 
 fn window(rows: Signal<Rc<[Song]>>, selection: Selection<u32>, list: NodeRef) -> Ui {
     Ui::new(move || {
-        anti_webui_md3e::set_color_scheme(scheme(DEFAULT_SEED, false));
+        anti_webui_md3e::set_color_scheme(cover_scheme(DEFAULT_SEED, false));
         let list = RowList::new(
             "Songs",
             move || rows.get(),

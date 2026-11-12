@@ -16,11 +16,11 @@ use hiphile_core::test_support::{LibraryServer, PlaylistsServer};
 use next_hiphile::{MenuBar, Reach, SMALLEST_WINDOW, System, WINDOW, app};
 use next_player::testing::{CoverServer, png};
 use next_ui::testing::{
-    NOWHERE, SavedLibrary, click, click_with, core, find, frames, has_text, key, key_with, press,
-    scroll, signed_in_core, signed_in_core_with_library, signed_in_core_with_lyrics, typed,
+    NOWHERE, SavedLibrary, click, click_with, core, find, focus, frames, has_text, key, key_with,
+    press, scroll, signed_in_core, signed_in_core_with_library, signed_in_core_with_lyrics, typed,
     wait_until,
 };
-use next_ui::theme::{DEFAULT_SEED, scheme};
+use next_ui::theme::{DEFAULT_SEED, cover_scheme};
 use serde_json::{Value, json};
 use subsonic::Song;
 
@@ -86,6 +86,7 @@ fn main() {
                 |ui| settings(ui, page),
             );
         }
+        appearance_shots(&folder, theme, dark);
         for resampler in ["r8brain", "soxr"] {
             shot(
                 &folder.join(format!("settings-{resampler}-{theme}.png")),
@@ -166,6 +167,39 @@ fn main() {
         queue_shots(&folder, dark, theme, &covers);
         lyrics_shots(&folder, dark, theme, &covers);
     }
+}
+
+/// The colors that can be picked in Appearance: one of the swatches, then a custom one.
+fn appearance_shots(folder: &Path, theme: &str, dark: bool) {
+    shot(
+        &folder.join(format!("settings-appearance-picked-{theme}.png")),
+        dark,
+        true,
+        |ui| {
+            settings(ui, "Appearance");
+            focus(ui, Role::RadioGroup, "Color");
+            // Past the custom color, once the window has it
+            key(ui, NamedKey::ArrowLeft);
+            frames(ui, 100);
+            key(ui, NamedKey::ArrowLeft);
+            frames(ui, 1000);
+        },
+    );
+    shot(
+        &folder.join(format!("settings-appearance-custom-{theme}.png")),
+        dark,
+        true,
+        |ui| {
+            settings(ui, "Appearance");
+            press(ui, Role::Radio, "Custom");
+            frames(ui, 100);
+            focus(ui, Role::Slider, "Hue");
+            for _ in 0..3 {
+                key(ui, NamedKey::ArrowRight);
+            }
+            frames(ui, 1000);
+        },
+    );
 }
 
 /// The lyrics in windows of a few sizes, lit word by word partway into a line, and what stands in
@@ -302,7 +336,7 @@ fn lyrics_playing(
 }
 
 fn wait_for_cover_colors(ui: &mut Ui, dark: bool) {
-    let default = scheme(DEFAULT_SEED, dark).primary;
+    let default = cover_scheme(DEFAULT_SEED, dark).primary;
     for _ in 0..500 {
         if color_scheme().primary != default {
             break;
@@ -568,7 +602,7 @@ fn playing_shot_at(
     let player = hiphile.workspace().expect("signed in").player().clone();
     player.fill_queue(queue, 3.min(queue.len() - 1));
     setup(&player);
-    let default = scheme(DEFAULT_SEED, dark).primary;
+    let default = cover_scheme(DEFAULT_SEED, dark).primary;
     render(path, dark, hiphile, size, move |ui| {
         // The scheme cross-fades, which takes frames
         for _ in 0..500 {

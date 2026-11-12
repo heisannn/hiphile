@@ -1,6 +1,6 @@
 use std::sync::{Arc, Weak};
 
-use config::Appearance;
+use config::{Appearance, ThemeColor};
 use executor::{Executor, Saver};
 use tokio::sync::watch;
 
@@ -13,10 +13,27 @@ pub const APPEARANCES: [(Option<Appearance>, &str); 3] = [
     (Some(Appearance::Dark), "Dark"),
 ];
 
+pub const THEME_COLORS: [(ThemeColor, &str); 9] = [
+    (ThemeColor::Cover, "From the cover"),
+    (ThemeColor::Red, "Red"),
+    (ThemeColor::Orange, "Orange"),
+    (ThemeColor::Yellow, "Yellow"),
+    (ThemeColor::Green, "Green"),
+    (ThemeColor::Teal, "Teal"),
+    (ThemeColor::Blue, "Blue"),
+    (ThemeColor::Purple, "Purple"),
+    (ThemeColor::Pink, "Pink"),
+];
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppearanceSnapshot {
     appearance: Option<Appearance>,
-    error: Option<String>,
+    theme_color: ThemeColor,
+    /// What [`ThemeColor::Custom`] was given last, while it is chosen or since it was here.
+    custom_color: Option<u32>,
+    /// Why the appearance could not be read or saved, or why nothing here will be saved.
+    appearance_error: Option<String>,
+    color_error: Option<String>,
 }
 
 impl AppearanceSnapshot {
@@ -25,8 +42,21 @@ impl AppearanceSnapshot {
         self.appearance
     }
 
-    pub fn error(&self) -> Option<&str> {
-        self.error.as_deref()
+    pub fn theme_color(&self) -> ThemeColor {
+        self.theme_color
+    }
+
+    /// The color of [`ThemeColor::Custom`] chosen last, as `0xRRGGBB`, which stays when another
+    /// is chosen. `None` until one is.
+    pub fn custom_color(&self) -> Option<u32> {
+        self.custom_color
+    }
+
+    pub fn errors(&self) -> impl Iterator<Item = &str> {
+        self.appearance_error
+            .iter()
+            .chain(&self.color_error)
+            .map(String::as_str)
     }
 }
 
@@ -38,34 +68,56 @@ impl Publish for AppearanceSnapshot {
     }
 }
 
-/// The chosen appearance. Applying it to the UI is the host's.
+/// The chosen appearance and theme color. Applying them to the UI is the host's.
 #[derive(Clone)]
 pub struct AppearanceSettings(Arc<Inner>);
 
 struct Inner {
-    /// `None` without a home directory: the choice then lasts until quitting.
-    saver: Option<Saver<Option<Appearance>>>,
+    /// `None` without a home directory: the choices then last until quitting.
+    appearance_saver: Option<Saver<Option<Appearance>>>,
+    color_saver: Option<Saver<ThemeColor>>,
     state: Published<AppearanceSnapshot>,
 }
 
 impl AppearanceSettings {
     pub fn new(executor: Executor, store: Result<config::Store, config::Error>) -> Self {
-        let (store, appearance, error) = read_saved_appearance(store);
+        let (store, snapshot) = read_saved(store);
+        Self::with(executor, store, snapshot)
+    }
+
+    fn with(
+        executor: Executor,
+        store: Option<config::Store>,
+        snapshot: AppearanceSnapshot,
+    ) -> Self {
         Self(Arc::new_cyclic(|this: &Weak<Inner>| Inner {
-            saver: store.map(|store| {
+            appearance_saver: store.clone().map(|store| {
                 let this = this.clone();
-                Saver::new(executor, move |appearance| {
+                Saver::new(executor.clone(), move |appearance| {
                     let saved = store.save_appearance(appearance);
                     if let Some(this) = this.upgrade() {
                         this.state.update(|state| {
-                            state.error = saved
+                            state.appearance_error = saved
                                 .err()
                                 .map(|error| format!("Couldn't save the appearance: {error}."));
                         });
                     }
                 })
             }),
-            state: Published::new(AppearanceSnapshot { appearance, error }),
+            color_saver: store.map(|store| {
+                let this = this.clone();
+                Saver::new(executor, move |color| {
+                    let saved = store.save_theme_color(color);
+                    if let Some(this) = this.upgrade() {
+                        this.state.update(|state| {
+                            state.color_error = saved
+                                .err()
+                                .map(|error| format!("Couldn't save the color: {error}."));
+                        });
+                    }
+                })
+            }),
+            state: Published::new(snapshot),
         }))
     }
 
@@ -87,29 +139,64 @@ impl AppearanceSettings {
             }
             state.appearance = appearance;
             // Under the lock, so that the choices reach the saver in the order they were made
-            if let Some(saver) = &self.0.saver {
+            if let Some(saver) = &self.0.appearance_saver {
                 saver.save(appearance);
+            }
+        });
+    }
+
+    pub fn set_theme_color(&self, color: ThemeColor) {
+        self.0.state.update(|state| {
+            if state.theme_color == color {
+                return;
+            }
+            state.theme_color = color;
+            if let ThemeColor::Custom(rgb) = color {
+                state.custom_color = Some(rgb);
+            }
+            // Under the lock, so that the choices reach the saver in the order they were made
+            if let Some(saver) = &self.0.color_saver {
+                saver.save(color);
             }
         });
     }
 }
 
-/// The saved appearance, and why it could not be read or will not be saved.
-fn read_saved_appearance(
+/// The saved choices, and why they could not be read or will not be saved.
+fn read_saved(
     store: Result<config::Store, config::Error>,
-) -> (Option<config::Store>, Option<Appearance>, Option<String>) {
+) -> (Option<config::Store>, AppearanceSnapshot) {
+    let mut snapshot = AppearanceSnapshot {
+        appearance: None,
+        theme_color: ThemeColor::default(),
+        custom_color: None,
+        appearance_error: None,
+        color_error: None,
+    };
     let store = match store {
         Ok(store) => store,
         Err(error) => {
-            let error = format!("The appearance won't be saved: {error}.");
-            return (None, None, Some(error));
+            snapshot.appearance_error = Some(format!("The appearance won't be saved: {error}."));
+            return (None, snapshot);
         }
     };
     match store.appearance() {
-        Ok(appearance) => (Some(store), appearance, None),
+        Ok(appearance) => snapshot.appearance = appearance,
         Err(error) => {
-            let error = format!("Couldn't read the appearance: {error}.");
-            (Some(store), None, Some(error))
+            snapshot.appearance_error = Some(format!("Couldn't read the appearance: {error}."));
         }
     }
+    match store.theme_color() {
+        Ok(color) => {
+            snapshot.theme_color = color;
+            if let ThemeColor::Custom(rgb) = color {
+                snapshot.custom_color = Some(rgb);
+            }
+        }
+        Err(error) => snapshot.color_error = Some(format!("Couldn't read the color: {error}.")),
+    }
+    (Some(store), snapshot)
 }
+
+#[cfg(test)]
+mod tests;

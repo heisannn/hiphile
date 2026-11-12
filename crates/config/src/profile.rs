@@ -47,6 +47,67 @@ pub enum Appearance {
     Dark,
 }
 
+/// Where the colors of the UI come from: the cover of what plays, a color picked from a few, or
+/// any color.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ThemeColor {
+    #[default]
+    Cover,
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Teal,
+    Blue,
+    Purple,
+    Pink,
+    /// `0xRRGGBB`
+    Custom(u32),
+}
+
+impl ThemeColor {
+    const NAMED: [Self; 9] = [
+        Self::Cover,
+        Self::Red,
+        Self::Orange,
+        Self::Yellow,
+        Self::Green,
+        Self::Teal,
+        Self::Blue,
+        Self::Purple,
+        Self::Pink,
+    ];
+
+    fn in_file(self) -> String {
+        let name = match self {
+            Self::Cover => "cover",
+            Self::Red => "red",
+            Self::Orange => "orange",
+            Self::Yellow => "yellow",
+            Self::Green => "green",
+            Self::Teal => "teal",
+            Self::Blue => "blue",
+            Self::Purple => "purple",
+            Self::Pink => "pink",
+            Self::Custom(rgb) => return format!("#{:06x}", rgb & 0x00ff_ffff),
+        };
+        name.to_owned()
+    }
+
+    fn from_file(value: &str) -> Option<Self> {
+        if let Some(hex) = value.strip_prefix('#') {
+            let is_rgb = hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit());
+            return u32::from_str_radix(hex, 16)
+                .ok()
+                .filter(|_| is_rgb)
+                .map(Self::Custom);
+        }
+        Self::NAMED
+            .into_iter()
+            .find(|color| color.in_file() == value)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LyricsHighlight {
     #[default]
@@ -717,6 +778,7 @@ struct Settings {
     dsd_input_level_db: Typed<f64>,
     dsd_limiter_ceiling_db: Option<String>,
     appearance: Option<String>,
+    theme_color: Option<String>,
     lyrics_highlight: Option<String>,
     romaji_search: Typed<bool>,
     discord_presence: Typed<bool>,
@@ -1252,6 +1314,7 @@ fn soxr_items(parameters: SoxrParameters) -> [(&'static str, Option<toml_edit::I
 /// dsd_input_level_db = 0.0
 /// dsd_limiter_ceiling_db = 1.0
 /// appearance = "dark"
+/// theme_color = "teal" # Or "#4f5bd5"; the cover of what plays unless one is chosen
 /// lyrics_highlight = "line"
 /// discord_presence = false
 /// auto_update = false
@@ -1558,6 +1621,12 @@ impl Store {
         self.parse_appearance(settings.appearance.as_deref())
     }
 
+    /// The cover of what plays unless the file says otherwise.
+    pub fn theme_color(&self) -> Result<ThemeColor, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        self.parse_theme_color(settings.theme_color.as_deref())
+    }
+
     /// By word unless the file says otherwise.
     pub fn lyrics_highlight(&self) -> Result<LyricsHighlight, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
@@ -1625,6 +1694,17 @@ impl Store {
                 expected: "\"system\", \"light\" or \"dark\"",
             }),
         }
+    }
+
+    fn parse_theme_color(&self, value: Option<&str>) -> Result<ThemeColor, Error> {
+        let Some(value) = value else {
+            return Ok(ThemeColor::default());
+        };
+        ThemeColor::from_file(value).ok_or_else(|| Error::InvalidSetting {
+            path: self.config_path(),
+            key: "theme_color",
+            expected: "\"cover\", \"red\", \"orange\", \"yellow\", \"green\", \"teal\", \"blue\", \"purple\", \"pink\" or a color as \"#rrggbb\"",
+        })
     }
 
     fn parse_resampling_quality(&self, settings: &Settings) -> Result<ResamplingQuality, Error> {
@@ -2338,6 +2418,16 @@ impl Store {
             None => {
                 document.remove("appearance");
             }
+        })
+    }
+
+    /// The cover removes the key.
+    pub fn save_theme_color(&self, color: ThemeColor) -> Result<(), Error> {
+        self.edit(|document| match color {
+            ThemeColor::Cover => {
+                document.remove("theme_color");
+            }
+            color => document["theme_color"] = toml_edit::value(color.in_file()),
         })
     }
 
@@ -4260,6 +4350,61 @@ mod tests {
         store.save_auto_update(false).unwrap();
         assert!(!is_on(&[]));
         assert!(is_on(&[("HIPHILE_AUTO_UPDATE", "true")]));
+    }
+
+    #[test]
+    fn theme_color_round_trips_and_is_the_cover_unless_told_otherwise() {
+        let store = temporary_store("theme-color");
+        store.save_volume(0.5).unwrap();
+        let color = |env: &[(&str, &str)]| {
+            store
+                .parse_theme_color(read(&store, env).theme_color.as_deref())
+                .unwrap()
+        };
+        assert_eq!(color(&[]), ThemeColor::Cover);
+
+        for chosen in ThemeColor::NAMED
+            .into_iter()
+            .chain([ThemeColor::Custom(0x4f5bd5), ThemeColor::Custom(0x00000a)])
+        {
+            store.save_theme_color(chosen).unwrap();
+            assert_eq!(color(&[]), chosen);
+        }
+        assert_eq!(
+            color(&[("HIPHILE_THEME_COLOR", "#ABCDEF")]),
+            ThemeColor::Custom(0xabcdef)
+        );
+        assert_eq!(color(&[("HIPHILE_THEME_COLOR", "teal")]), ThemeColor::Teal);
+
+        store.save_theme_color(ThemeColor::Cover).unwrap();
+        assert!(
+            !std::fs::read_to_string(store.config_path())
+                .unwrap()
+                .contains("theme_color")
+        );
+        assert_eq!(read(&store, &[]).volume, Some(0.5));
+    }
+
+    #[test]
+    fn an_unknown_theme_color_is_an_error_that_leaves_other_settings_readable() {
+        let store = temporary_store("theme-color-unknown");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        std::fs::write(
+            store.config_path(),
+            "theme_color = \"mauve\"\nvolume = 0.5\n",
+        )
+        .unwrap();
+        let settings = read(&store, &[]);
+        assert_eq!(settings.volume, Some(0.5));
+        for value in ["mauve", "#12345", "#12345g", "#1234567"] {
+            assert!(matches!(
+                store.parse_theme_color(Some(value)),
+                Err(Error::InvalidSetting {
+                    key: "theme_color",
+                    ..
+                })
+            ));
+        }
     }
 
     #[test]

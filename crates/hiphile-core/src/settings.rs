@@ -15,7 +15,7 @@ mod pane_widths;
 mod queue;
 mod song_cache_usage;
 
-pub use appearance::{APPEARANCES, AppearanceSettings, AppearanceSnapshot};
+pub use appearance::{APPEARANCES, AppearanceSettings, AppearanceSnapshot, THEME_COLORS};
 pub use audio::{
     AudioSettings, AudioSnapshot, DsdWarning, MATCH_SONG, PcmSetting, R8BRAIN_PHASES,
     R8BRAIN_QUALITIES, R8brainNumber, R8brainSetting, RESAMPLERS, RUBATO_QUALITIES,
