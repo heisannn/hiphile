@@ -18,7 +18,7 @@ use next_host::{follow, notices};
 use next_ui::card_grid::{Card, GridMotion, card, card_row, columns_for, step};
 use next_ui::context_menu::{ContextMenu, pressed_at};
 use next_ui::cover::{CoverKind, cover};
-use next_ui::keymap::{KeyBinding, KeyContext, bind_keys, key_context};
+use next_ui::keymap::{KeyBinding, KeyContext, bind_keys, is_bound, key_context};
 use next_ui::link::{album_artist_link, artist_line, song_line};
 use next_ui::load_state::{
     HOME, MOST_PLAYED, NEW_ALBUMS, NONE_ON_SERVER, RECENTLY_PLAYED, RECOMMENDATIONS, load_failure,
@@ -49,10 +49,6 @@ const RELOADING_INDICATOR: f32 = 20.0;
 /// Where Home's keys work.
 pub const HOME_CONTEXT: &str = "Home";
 
-thread_local! {
-    static BOUND: Cell<bool> = const { Cell::new(false) };
-}
-
 /// Home, which takes the focus when it comes on show.
 pub fn home(cx: &ScreenContext) -> Screen {
     bind();
@@ -62,7 +58,7 @@ pub fn home(cx: &ScreenContext) -> Screen {
 
 /// Binds Home's keys once on this thread, as the keymap is the thread's.
 fn bind() {
-    if BOUND.with(|bound| bound.replace(true)) {
+    if is_bound::<Asked>() {
         return;
     }
     let bindings = Asked::strokes()

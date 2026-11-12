@@ -12,7 +12,7 @@ use hiphile_core::navigation::Location;
 use next_host::follow;
 use next_ui::context_menu::ContextMenu;
 use next_ui::details::{format_album_count, format_artist_count, format_song_count};
-use next_ui::keymap::{KeyBinding, KeyContext, Keystroke, bind_keys, key_context};
+use next_ui::keymap::{KeyBinding, KeyContext, Keystroke, bind_keys, is_bound, key_context};
 use next_ui::list_pane::{ListHeader, list_header, refresh_failure};
 use next_ui::load_state::{
     FAVORITE_ALBUMS, FAVORITE_ARTISTS, FAVORITE_SONGS, FAVORITES, empty_state, load_failure,
@@ -49,13 +49,9 @@ pub enum FavoritesCommand {
     NextSection,
 }
 
-thread_local! {
-    static BOUND: Cell<bool> = const { Cell::new(false) };
-}
-
 /// Adds the keys of the screen to this thread's keymap, once.
 fn bind_favorites_keys() {
-    if BOUND.with(|bound| bound.replace(true)) {
+    if is_bound::<FavoritesCommand>() {
         return;
     }
     use FavoritesCommand::*;

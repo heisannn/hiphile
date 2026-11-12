@@ -12,7 +12,9 @@ use hiphile_core::favorites::Favorite;
 use next_host::follow;
 use next_ui::cover::{cover_over, picture_at_once};
 use next_ui::favorite_button::favorite_button;
-use next_ui::keymap::{FocusBefore, KeyBinding, KeyContext, Keystroke, bind_keys, key_context};
+use next_ui::keymap::{
+    FocusBefore, KeyBinding, KeyContext, Keystroke, bind_keys, is_bound, key_context,
+};
 use next_ui::window::moves_window;
 use next_ui::{Command, ScreenContext};
 use playback::PlayerSnapshot;
@@ -66,13 +68,9 @@ enum LyricsKey {
     TogglePlayback,
 }
 
-thread_local! {
-    static BOUND: Cell<bool> = const { Cell::new(false) };
-}
-
 /// Once for each thread, as its keymap is.
 fn bind_lyrics_keys() {
-    if BOUND.replace(true) {
+    if is_bound::<LyricsKey>() {
         return;
     }
     bind_keys([

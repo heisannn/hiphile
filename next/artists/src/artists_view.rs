@@ -14,7 +14,7 @@ use hiphile_core::navigation::Location;
 use next_host::{Pending, Scope, follow};
 use next_ui::card_grid::{GridMotion, columns_for, step};
 use next_ui::context_menu::ContextMenu;
-use next_ui::keymap::{KeyBinding, Keystroke, bind_keys};
+use next_ui::keymap::{KeyBinding, Keystroke, bind_keys, is_bound};
 use next_ui::list_detail::{Split, list_detail};
 use next_ui::now_playing::{NowPlaying, follow_now_playing};
 use next_ui::row_list::{ROW_HEIGHT, Selection, scroll_to_row};
@@ -52,13 +52,9 @@ pub enum ArtistsCommand {
     Move(GridMotion),
 }
 
-thread_local! {
-    static BOUND: Cell<bool> = const { Cell::new(false) };
-}
-
 /// Adds the keys of the screen to this thread's keymap, once.
 fn bind_artists_keys() {
-    if BOUND.with(|bound| bound.replace(true)) {
+    if is_bound::<ArtistsCommand>() {
         return;
     }
     use ArtistsCommand::*;

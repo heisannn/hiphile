@@ -749,6 +749,27 @@ fn stroke_of(shortcut: Shortcut) -> next_ui::keymap::Keystroke {
 /// The menu bar's keys come before the window's, so a key bound in both would never reach the
 /// window.
 #[test]
+fn every_screen_binds_its_keys_once() {
+    let (_core, mut ui, menu_bar, _player) = on_a_song();
+    let mut visit_all = || {
+        for destination in Destination::ALL {
+            menu_bar.choose(Command::Show(crate::navigation::location_of(destination)));
+            frames(&mut ui, 100);
+        }
+        for panel in [Command::ToggleQueue, Command::ToggleLyrics] {
+            menu_bar.choose(panel.clone());
+            frames(&mut ui, 100);
+            menu_bar.choose(panel);
+            frames(&mut ui, 100);
+        }
+        next_ui::keymap::bound_strokes().len()
+    };
+
+    let once = visit_all();
+    assert_eq!(visit_all(), once);
+}
+
+#[test]
 fn the_menu_bar_takes_no_key_the_window_binds() {
     let (_core, mut ui, menu_bar, _player) = on_a_song();
     for destination in Destination::ALL {

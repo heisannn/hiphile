@@ -79,6 +79,12 @@ pub fn bind_keys<C: 'static>(bindings: impl IntoIterator<Item = KeyBinding<C>>) 
     keymap::<C>().borrow_mut().extend(bindings);
 }
 
+/// Whether this thread's keymap binds `C` yet, for a screen that binds its keys as it is first made
+/// on a thread.
+pub fn is_bound<C: 'static>() -> bool {
+    !keymap::<C>().borrow().is_empty()
+}
+
 /// Every stroke bound on this thread, whatever its command, with its context.
 pub fn bound_strokes() -> Vec<(Keystroke, &'static str)> {
     STROKES.with(|strokes| strokes.borrow().clone())

@@ -1,7 +1,6 @@
 //! The queue beside the screens: what plays after what, which the user plays from, reorders and
 //! takes from.
 
-use std::cell::Cell;
 use std::sync::Arc;
 
 use anti_webui::prelude::*;
@@ -16,7 +15,9 @@ use hiphile_core::navigation::Location;
 use next_host::follow;
 use next_ui::context_menu::ContextMenu;
 use next_ui::details::format_song_count;
-use next_ui::keymap::{KeyBinding, KeyContext, Keystroke, bind_keys, key_context, keystroke_for};
+use next_ui::keymap::{
+    KeyBinding, KeyContext, Keystroke, bind_keys, is_bound, key_context, keystroke_for,
+};
 use next_ui::link::{artist_line, song_artist_link};
 use next_ui::list_pane::{ListHeader, list_header};
 use next_ui::load_state::empty_state;
@@ -53,13 +54,9 @@ enum QueueKey {
     TogglePlayback,
 }
 
-thread_local! {
-    static BOUND: Cell<bool> = const { Cell::new(false) };
-}
-
 /// Once for each thread, as its keymap is.
 fn bind_queue_keys() {
-    if BOUND.replace(true) {
+    if is_bound::<QueueKey>() {
         return;
     }
     let named = Keystroke::named;

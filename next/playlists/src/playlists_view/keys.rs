@@ -1,10 +1,8 @@
 //! The screen's keys, besides those of its lists: the list's go to the playlist chosen, the songs'
 //! to the song selected.
 
-use std::cell::Cell;
-
 use anti_webui::prelude::NamedKey;
-use next_ui::keymap::{KeyBinding, Keystroke, bind_keys};
+use next_ui::keymap::{KeyBinding, Keystroke, bind_keys, is_bound};
 
 pub(super) const LIST: &str = "Playlists";
 pub(super) const SONGS: &str = "PlaylistSongs";
@@ -29,13 +27,9 @@ pub(super) enum KeyCommand {
     AddToPlaylist,
 }
 
-thread_local! {
-    static BOUND: Cell<bool> = const { Cell::new(false) };
-}
-
 /// Binds the keys, once for the thread, whose keymap it is.
 pub(super) fn bind() {
-    if BOUND.with(|bound| bound.replace(true)) {
+    if is_bound::<KeyCommand>() {
         return;
     }
     let named = Keystroke::named;
