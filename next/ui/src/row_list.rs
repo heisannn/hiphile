@@ -24,6 +24,8 @@ use selection::Order;
 pub const ROW_HEIGHT: f32 = 48.0;
 /// From the edge of the list to the rows, whose corners are rounded.
 const INSET: f32 = 8.0;
+/// From a row's edge to what it shows, which puts that on the line of the rest of a pane.
+pub const ROW_PADDING: f32 = crate::pane::INSET - INSET;
 
 /// What a row list shows: items in the order they show.
 pub trait RowSource: 'static {
@@ -199,7 +201,8 @@ impl<S: RowSource, K: Clone + Eq + Hash + 'static> RowList<S, K> {
         self
     }
 
-    /// What a row is called, for assistive technology. It is what the row shows otherwise.
+    /// What a row is called, for assistive technology. It is what the row shows otherwise. It may
+    /// read signals, such as whether the row's song plays, and follows them.
     pub fn row_label(mut self, label: impl Fn(&S::Item) -> String + 'static) -> Self {
         self.row_label = Some(Rc::new(label));
         self
@@ -521,7 +524,10 @@ impl<S: RowSource, K: Clone + Eq + Hash + 'static> Place<S, K> {
             let id = id.clone();
             memo(move || selection.contains(&id))
         };
-        let label = self.row_label.as_ref().map(|label| label(item));
+        let label = self.row_label.clone().map(|label| {
+            let rows = self.shared.rows;
+            move || rows.with(|rows| rows.get(position).map(|item| label(item)))
+        });
         let look = (self.row)(
             item,
             RowState {
@@ -552,8 +558,8 @@ impl<S: RowSource, K: Clone + Eq + Hash + 'static> Place<S, K> {
             .rounded(12.0_f32)
             .access(move |a| {
                 let a = a.role(Role::ListOption).selected(selected.get());
-                match &label {
-                    Some(label) => a.label(label.clone()),
+                match label.as_ref().and_then(|label| label()) {
+                    Some(label) => a.label(label),
                     None => a,
                 }
             })

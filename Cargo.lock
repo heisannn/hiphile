@@ -5685,6 +5685,9 @@ dependencies = [
  "net",
  "next-host",
  "next-ui",
+ "playback",
+ "serde_json",
+ "subsonic",
  "tempfile",
  "tokio",
 ]

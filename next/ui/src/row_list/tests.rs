@@ -416,3 +416,33 @@ fn a_row_can_be_called_other_than_what_it_shows() {
         .collect();
     assert_eq!(labels, ["Song 0, by Nobody", "Song 1, by Nobody"]);
 }
+
+#[test]
+fn a_rows_name_follows_what_it_reads() {
+    let rows = songs(0..2);
+    let playing = signal(None::<u32>);
+    let mut ui = start(move || {
+        let list = RowList::new(
+            "Songs",
+            move || rows.clone(),
+            |song: &Song| song.id,
+            |song, _| row_text(song.title.clone(), None),
+        )
+        .row_label(move |song| match playing.get() {
+            Some(id) if id == song.id => format!("{}, playing", song.title),
+            _ => song.title.clone(),
+        });
+        div().size_full().flex().flex_col().child(row_list(list))
+    });
+    let labels = || -> Vec<String> {
+        nodes(Role::ListOption)
+            .into_iter()
+            .filter_map(|row| row.label)
+            .collect()
+    };
+
+    assert_eq!(labels(), ["Song 0", "Song 1"]);
+    playing.set(Some(1));
+    ui.update();
+    assert_eq!(labels(), ["Song 0", "Song 1, playing"]);
+}

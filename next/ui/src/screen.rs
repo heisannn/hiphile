@@ -9,6 +9,8 @@ pub struct Screen {
     pub title: String,
     /// Icon buttons and menus at the end of the bar, such as sorting.
     pub actions: Vec<Div>,
+    /// Made of panes, such as [`crate::pane::pane`] or [`crate::list_detail::list_detail`]: the
+    /// shell gives it only its margins.
     pub body: Div,
 }
 

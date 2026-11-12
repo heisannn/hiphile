@@ -10,6 +10,7 @@ use next_host::follow;
 use next_player::{Panels, cover_seed, now_playing_cover, player_bar};
 use next_settings::settings_popup;
 use next_ui::cover::install_covers;
+use next_ui::pane::{GAP, pane};
 use next_ui::theme::{follow_theme, is_dark};
 use next_ui::type_scale::body;
 use next_ui::window::moves_window;
@@ -144,7 +145,7 @@ fn signed_in(
                             .flex()
                             .flex_col()
                             .child(app_bar(going(navigation), title, actions))
-                            .child(pane(body))
+                            .child(room_for(body))
                     },
                 )))
                 .child(player_bar(player, cover, panels).mr(16)),
@@ -155,19 +156,18 @@ fn signed_in(
 
 /// What `destination` shows.
 fn screen(destination: Destination) -> Screen {
-    Screen::new(destination.label(), div())
+    Screen::new(destination.label(), pane(div()))
 }
 
-/// The screen goes in a pane of its own, apart from the rail and the bar.
-fn pane(body: Div) -> Div {
+/// Where a screen's panes go, apart from the rail and the bar.
+fn room_for(body: Div) -> Div {
     div()
         .flex_1()
         .min_h(0)
-        .mr(16)
-        .rounded(28.0_f32)
-        .overflow_hidden()
-        .dyn_style(|s| s.bg(color_scheme().surface_container))
-        .child(body.size_full())
+        .flex()
+        .flex_col()
+        .mr(GAP)
+        .child(body.flex_1().min_h(0))
 }
 
 /// Back and forward, at the start of the bar.

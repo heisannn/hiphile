@@ -15,6 +15,21 @@ struct FadeEnd {
 
 static FADE_END: Shader<FadeEnd> = Shader::new("fade_end", include_str!("row_text/fade_end.wgsl"));
 
+/// The end of a cut paragraph fades over more than a line's: its last line ends where a word
+/// does, short of the edge.
+const LAST_LINE_FADE: f32 = 64.0;
+
+#[derive(ShaderParams, Clone, Copy)]
+struct FadeLastLine {
+    width: f32,
+    line: f32,
+}
+
+static FADE_LAST_LINE: Shader<FadeLastLine> = Shader::new(
+    "fade_last_line",
+    include_str!("row_text/fade_last_line.wgsl"),
+);
+
 /// The title in the color of the row, and the details below in the color for what matters less.
 pub fn row_text(title: impl IntoTextSource, details: Option<String>) -> Div {
     div()
@@ -53,6 +68,35 @@ pub fn faded_end(line: Div) -> Div {
             line.flex_none()
                 .whitespace_nowrap()
                 .on_resized(move |width, _| needed.set_if_changed(width)),
+        )
+}
+
+/// `paragraph` cut after `lines` lines `line_height` high, with the end of the last fading when
+/// there is more.
+pub fn faded_after(paragraph: Div, lines: usize, line_height: f32) -> Div {
+    let room = lines as f32 * line_height;
+    let needed = signal(0.0f32);
+    div()
+        .flex()
+        .flex_col()
+        .min_w(0)
+        .max_h(room)
+        .overflow_hidden()
+        .filter(move || {
+            (needed.get() > room + 0.5).then(|| {
+                Image::content().through(
+                    &FADE_LAST_LINE,
+                    FadeLastLine {
+                        width: LAST_LINE_FADE,
+                        line: line_height,
+                    },
+                )
+            })
+        })
+        .child(
+            paragraph
+                .flex_none()
+                .on_resized(move |_, height| needed.set_if_changed(height)),
         )
 }
 
