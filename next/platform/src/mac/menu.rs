@@ -5,7 +5,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSControlStateValueOff, NSControlStateValueOn, NSEventModifierFlags,
+    NSApplication, NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSEventModifierFlags,
     NSEventType, NSMenu, NSMenuItem,
 };
 use objc2_foundation::NSString;
@@ -28,7 +28,7 @@ define_class!(
             let Ok(tag) = usize::try_from(item.tag()) else {
                 return;
             };
-            if !self.gives_back(tag) {
+            if !self.gives_back(item, tag) {
                 self.ivars().chosen.send(tag);
             }
         }
@@ -57,19 +57,20 @@ impl Target {
         unsafe { msg_send![super(this), init] }
     }
 
-    /// Hands the key that chose the item at `tag` to the window instead, when it is one that the
+    /// Hands the key that chose `item`, at `tag`, to the window instead, when it is one that the
     /// text field with the focus uses. Whether it did.
-    fn gives_back(&self, tag: usize) -> bool {
+    fn gives_back(&self, item: &NSMenuItem, tag: usize) -> bool {
         let chooser = self.ivars();
         let is_for_text_fields = chooser.for_text_fields.borrow().get(tag).copied();
         if is_for_text_fields != Some(true) {
             return false;
         }
         let mtm = self.mtm();
-        // Chosen with the pointer, the current event is not a key's
+        // Chosen with the pointer, or with Return in the open menu, the current event is not the
+        // item's key
         let Some(event) = NSApplication::sharedApplication(mtm)
             .currentEvent()
-            .filter(|event| event.r#type() == NSEventType::KeyDown)
+            .filter(|event| event.r#type() == NSEventType::KeyDown && is_key_of(event, item))
         else {
             return false;
         };
@@ -82,6 +83,20 @@ impl Target {
         responder.keyDown(&event);
         true
     }
+}
+
+/// Whether `event`, a key's, is the key equivalent of `item` with its modifiers.
+fn is_key_of(event: &NSEvent, item: &NSMenuItem) -> bool {
+    let modifiers = NSEventModifierFlags::Command
+        | NSEventModifierFlags::Shift
+        | NSEventModifierFlags::Option
+        | NSEventModifierFlags::Control;
+    // Arrow keys also come with the flags of the function keys and of the keypad
+    let pressed = event.modifierFlags() & modifiers;
+    pressed == item.keyEquivalentModifierMask() & modifiers
+        && event
+            .charactersIgnoringModifiers()
+            .is_some_and(|typed| typed.to_string() == item.keyEquivalent().to_string())
 }
 
 /// The items of the commands in the menu bar, at their tags.

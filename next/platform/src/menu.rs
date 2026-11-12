@@ -212,8 +212,9 @@ impl<C: Clone + 'static> MainMenu<C> {
     /// While `is_typing` says a text field has the focus, the shortcuts it uses go to the window
     /// in place of the items they are of. It is asked inside AppKit's callback.
     ///
-    /// Call inside `App::run`, in an owner: before AntiWebUI starts, its own menu would replace
-    /// these, and without an owner what is chosen goes nowhere. Off the main thread nothing changes.
+    /// Call inside `App::run`: before AntiWebUI starts, its own menu would replace these. What is
+    /// chosen comes until the owner this is called in goes, or for as long as the app runs without
+    /// one. Off the main thread nothing changes.
     pub fn install(
         menus: &[Menu<C>],
         on_command: impl Fn(C) + 'static,

@@ -1,7 +1,9 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::atomic::AtomicUsize;
 
-use anti_webui::prelude::{create_root, effect};
+use anti_webui::core::channel::{pump, set_thread_waker};
+use anti_webui::prelude::{Owner, create_root, effect};
 
 use super::*;
 use crate::testing::{executor, wait_until};
@@ -48,5 +50,44 @@ fn it_stops_with_its_owner() {
 
     owner.dispose();
     wait_until(|| sender.receiver_count() == 0);
+    assert!(!value.is_alive());
+}
+
+#[test]
+fn a_change_told_in_the_round_that_takes_its_owner_away_is_left() {
+    let (_runtime, executor) = executor();
+    crate::install(executor.clone());
+    let woken = Arc::new(AtomicUsize::new(0));
+    set_thread_waker({
+        let woken = woken.clone();
+        Arc::new(move || {
+            woken.fetch_add(1, Ordering::SeqCst);
+        })
+    });
+    let following = Rc::new(Cell::new(None::<Owner>));
+    // Made first, so that its message comes first in a round
+    let (take_away, _root) = create_root(|| {
+        let following = following.clone();
+        ui_channel(move |()| {
+            if let Some(owner) = following.take() {
+                owner.dispose();
+            }
+        })
+    });
+    let (sender, changes) = watch::channel(1);
+    let (value, owner) = create_root(|| follow(changes));
+    following.set(Some(owner));
+
+    take_away.send(());
+    sender.send(2).unwrap();
+    for _ in 0..2000 {
+        if woken.load(Ordering::SeqCst) == 2 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert_eq!(woken.load(Ordering::SeqCst), 2);
+
+    pump();
     assert!(!value.is_alive());
 }
