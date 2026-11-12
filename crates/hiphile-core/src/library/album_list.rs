@@ -18,6 +18,7 @@ pub struct AlbumListStatus {
     /// indexed and in order.
     albums: Shelf<Album>,
     shown: Option<Shown<Album>>,
+    query: String,
     sort: AlbumSort,
     is_syncing: bool,
     /// Updating albums already on show failed, for this reason. Albums that never showed fail as
@@ -34,6 +35,11 @@ impl AlbumListStatus {
     /// until the first albums have both.
     pub fn shown(&self) -> Option<&Shown<Album>> {
         self.shown.as_ref()
+    }
+
+    /// What the albums are searched for, as last set.
+    pub fn query(&self) -> &str {
+        &self.query
     }
 
     pub fn sort(&self) -> AlbumSort {
@@ -70,7 +76,6 @@ struct State {
     /// The sync's albums as it gave them last, by which another `Arc` of the same albums is told
     /// apart from other albums without comparing them each time the sync says how far it got.
     synced: Shelf<Album>,
-    query: String,
     arranging: Arranging<Album>,
     _follows: Vec<Task<()>>,
 }
@@ -85,12 +90,12 @@ impl AlbumList {
                 status: AlbumListStatus {
                     albums: Shelf::Loading,
                     shown: None,
+                    query: String::new(),
                     sort: AlbumSort::default(),
                     is_syncing: false,
                     failure: None,
                 },
                 synced: Shelf::Loading,
-                query: String::new(),
                 arranging: Arranging::default(),
                 _follows: Vec::new(),
             }),
@@ -128,15 +133,10 @@ impl AlbumList {
         self.0.state.subscribe()
     }
 
-    /// What the albums are searched for, as last set.
-    pub fn query(&self) -> String {
-        self.0.state.read(|state| state.query.clone())
-    }
-
     pub fn set_query(&self, query: &str) {
         self.0.state.update(|state| {
-            if state.query != query {
-                state.query = query.to_owned();
+            if state.status.query != query {
+                state.status.query = query.to_owned();
                 self.arranger().arrange(state);
             }
         });
@@ -216,7 +216,7 @@ impl Arranged for State {
     }
 
     fn order(&self) -> Self::Order {
-        (self.query.clone(), self.status.sort)
+        (self.status.query.clone(), self.status.sort)
     }
 
     fn index(albums: &[Album], speller: Option<&dyn Speller>) -> Index {
