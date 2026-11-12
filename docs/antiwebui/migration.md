@@ -25,7 +25,8 @@ Expressive にデザインし直してみる。どんな感じになるかを見
 ## 調べた時点の AntiWebUI
 
 `25e82a1`（2026-11-11）を読んだ。この節のパスは AntiWebUI のリポジトリからの相対パスで、`dNN` は
-その `docs/design/NN-*.md` を指す。
+その `docs/design/NN-*.md` を指す。移行の間に見つけた不具合と足りないところ、Hiphile の側の暫定の手は
+[AntiWebUI の不具合と足りないところ](upstream-gaps.md)にまとめる。
 
 ### 合うところ
 
