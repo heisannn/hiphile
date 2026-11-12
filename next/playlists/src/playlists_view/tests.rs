@@ -13,7 +13,7 @@ use next_ui::testing::{
     TestCore, click_text, drag, find, focus, frames, has_text, key, key_with, middle_of, nodes,
     press, right_click, screen_context, signed_in_core, start, typed, wait_until,
 };
-use next_ui::{Commands, Covers};
+use next_ui::{Commands, Overlays};
 use playback::Placement;
 use serde_json::json;
 use subsonic::SongId;
@@ -31,7 +31,7 @@ struct Opened {
     /// What going back would show, the last first.
     left: Rc<RefCell<Vec<Location>>>,
     sent: Rc<RefCell<Vec<Command>>>,
-    covers: Covers,
+    overlays: Overlays,
     _core: TestCore,
 }
 
@@ -71,12 +71,12 @@ fn open_at(server: &PlaylistsServer, at: Location) -> Opened {
     let (core, hiphile) = signed_in_core(server.url());
     let location = Rc::new(Cell::new(None));
     let here = signal(true);
-    let covers = Rc::new(Cell::new(None));
+    let overlays = Rc::new(Cell::new(None));
     let sent = Rc::new(RefCell::new(Vec::new()));
     let left = Rc::new(RefCell::new(Vec::new()));
     let ui = start({
         let (hiphile, made, sent) = (hiphile.clone(), location.clone(), sent.clone());
-        let (covers, left) = (covers.clone(), left.clone());
+        let (overlays, left) = (overlays.clone(), left.clone());
         move || {
             install_covers(hiphile.clone());
             let location = signal(at);
@@ -96,7 +96,7 @@ fn open_at(server: &PlaylistsServer, at: Location) -> Opened {
                 sent.borrow_mut().push(command);
             });
             let cx = screen_context(&hiphile, commands);
-            covers.set(Some(cx.covers));
+            overlays.set(Some(cx.overlays));
             let snackbars = cx.snackbars;
             // Kept between visits, as the shell keeps it
             let split = Split::new();
@@ -126,7 +126,7 @@ fn open_at(server: &PlaylistsServer, at: Location) -> Opened {
         here,
         left,
         sent,
-        covers: covers.get().expect("made"),
+        overlays: overlays.get().expect("made"),
         _core: core,
     }
 }
@@ -903,15 +903,15 @@ fn the_screens_dialogs_cover_the_screens_while_they_are_open() {
     let server = two_playlists();
     let mut opened = loaded(&server);
     wait_until(&mut opened.ui, || is_focused("Playlists"));
-    assert!(!opened.covers.any());
+    assert!(!opened.overlays.any());
 
     key(&mut opened.ui, NamedKey::F(2));
     assert!(has_dialog("Rename Playlist"));
-    assert!(opened.covers.any());
+    assert!(opened.overlays.any());
 
     key(&mut opened.ui, NamedKey::Escape);
     frames(&mut opened.ui, 500);
-    assert!(!opened.covers.any());
+    assert!(!opened.overlays.any());
 }
 
 #[test]

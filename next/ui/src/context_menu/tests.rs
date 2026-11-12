@@ -39,7 +39,7 @@ fn items(id: &str, chosen: &Rc<RefCell<Vec<String>>>) -> Vec<Vec<MenuItem>> {
 struct Shown {
     ui: Ui,
     menu: ContextMenu,
-    covers: Covers,
+    overlays: Overlays,
     selection: Selection<String>,
     chosen: Rc<RefCell<Vec<String>>>,
     sent: Rc<RefCell<Vec<Command>>>,
@@ -49,8 +49,8 @@ struct Shown {
 /// More button.
 fn a_row() -> Shown {
     let (commands, sent) = recording_commands();
-    let covers = Covers::new();
-    let menu = ContextMenu::new(covers);
+    let overlays = Overlays::new();
+    let menu = ContextMenu::new(overlays);
     let selection = Selection::new();
     let chosen = Rc::new(RefCell::new(Vec::new()));
     let ui = start({
@@ -97,7 +97,7 @@ fn a_row() -> Shown {
     Shown {
         ui,
         menu,
-        covers,
+        overlays,
         selection,
         chosen,
         sent,
@@ -184,15 +184,15 @@ fn more_looks_pressed_while_the_menu_it_opened_is_open() {
 #[test]
 fn the_screens_are_covered_while_it_is_open() {
     let mut shown = a_row();
-    assert!(!shown.covers.any());
+    assert!(!shown.overlays.any());
 
     let (x, y) = middle_of("Blue in Green");
     right_click(&mut shown.ui, x, y);
-    assert!(shown.covers.any());
+    assert!(shown.overlays.any());
 
     key(&mut shown.ui, NamedKey::Escape);
     frames(&mut shown.ui, 400);
-    assert!(!shown.covers.any());
+    assert!(!shown.overlays.any());
 }
 
 #[test]
@@ -211,7 +211,7 @@ fn escape_closes_it() {
 #[test]
 fn it_closes_when_what_it_was_opened_from_has_gone() {
     let mut ui = start(|| {
-        let menu = ContextMenu::new(Covers::new());
+        let menu = ContextMenu::new(Overlays::new());
         let shown = signal(true);
         let remove = move || vec![vec![menu_item("Remove").on_click(move || shown.set(false))]];
         div()

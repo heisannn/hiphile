@@ -13,7 +13,7 @@ use crate::row_text::row_text;
 use crate::testing::{
     TestCore, click, find, recording_commands, screen_context, signed_in_core, start, wait_until,
 };
-use crate::{Command, Covers};
+use crate::{Command, Overlays};
 
 fn song() -> Song {
     serde_json::from_value(json!({ "id": "s1", "title": "Song" })).unwrap()
@@ -31,7 +31,7 @@ struct Shown {
 fn a_row(server: &FavoritesServer) -> Shown {
     let (core, hiphile) = signed_in_core(server.url());
     let (commands, sent) = recording_commands();
-    let (selection, menu) = (Selection::new(), ContextMenu::new(Covers::new()));
+    let (selection, menu) = (Selection::new(), ContextMenu::new(Overlays::new()));
     let ui = start(move || {
         let cx = screen_context(&hiphile, commands);
         let songs: Arc<[Song]> = Arc::from([song()]);

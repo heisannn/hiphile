@@ -11,7 +11,7 @@ use crate::row_list::{RowList, row_list};
 use crate::testing::{
     NOWHERE, click_text, has_text, recording_commands, screen_context, signed_in_core, start,
 };
-use crate::{Command, Covers};
+use crate::{Command, Overlays};
 use hiphile_core::favorites::Favorite;
 use hiphile_core::navigation::Location;
 
@@ -112,7 +112,7 @@ fn the_lanes_of_every_row_and_of_the_headings_line_up() {
     let (commands, _) = recording_commands();
     let _ui = start(move || {
         let cx = screen_context(&hiphile, commands);
-        let menu = ContextMenu::new(Covers::new());
+        let menu = ContextMenu::new(Overlays::new());
         let songs: Arc<[Song]> = Arc::from([
             song("s1", "Short", 59),
             song("s2", "Long", 3_723),

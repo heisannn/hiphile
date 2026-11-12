@@ -108,7 +108,7 @@ pub fn favorites(cx: &ScreenContext) -> Screen {
         shown,
         section: signal(Section::Songs),
         selections: [Selection::new(), Selection::new(), Selection::new()],
-        menu: ContextMenu::new(cx.covers),
+        menu: ContextMenu::new(cx.overlays),
         now_playing: follow_now_playing(&cx.workspace),
         list: node_ref(),
         tabs: node_ref(),

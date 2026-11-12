@@ -457,7 +457,7 @@ fn entries_view(
     )
     .mt(8);
 
-    let menu = ContextMenu::new(cx.covers);
+    let menu = ContextMenu::new(cx.overlays);
     let rows = {
         let commands = cx.commands.clone();
         RowList::new(

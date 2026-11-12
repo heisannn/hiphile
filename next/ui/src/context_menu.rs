@@ -7,7 +7,7 @@ use anti_webui_md3e::components::{
 };
 use anti_webui_md3e::icons;
 
-use crate::Covers;
+use crate::Overlays;
 use crate::row_list::{is_context_click, row_control};
 
 /// A menu of the items given as it opens: where the pointer was pressed, or hanging from a button.
@@ -31,10 +31,10 @@ pub struct ContextMenu {
 }
 
 impl ContextMenu {
-    /// Counted in `covers` while it is open, for as long as the current owner lives.
-    pub fn new(covers: Covers) -> Self {
+    /// Counted in `overlays` while it is open, for as long as the current owner lives.
+    pub fn new(overlays: Overlays) -> Self {
         let open = signal(false);
-        covers.add(move || open.get());
+        overlays.add(move || open.get());
         Self {
             open,
             at: signal(RectF::new(0.0, 0.0, 0.0, 0.0)),

@@ -45,7 +45,7 @@ impl Table {
             selection: Selection::new(),
             chose: signal(false),
             now_playing: follow_now_playing(&cx.workspace),
-            menu: ContextMenu::new(cx.covers),
+            menu: ContextMenu::new(cx.overlays),
             list: node_ref(),
         }
     }

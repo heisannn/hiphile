@@ -7,7 +7,7 @@ use hiphile_core::format::format_profile;
 use hiphile_core::{Hiphile, HiphileSnapshot, SwitchFailed};
 use next_account::SignInRequest;
 use next_host::{Pending, Scope};
-use next_ui::Covers;
+use next_ui::Overlays;
 use next_ui::focus_ring::focus_ring;
 use next_ui::window::kept_still;
 
@@ -18,15 +18,15 @@ const PRESSED: f32 = 0.10;
 
 /// Who is signed in, which opens the servers to switch to, adding one and signing out. Adding
 /// one, or a password that has to be typed, puts a request in `sign_in`. The menu is counted in
-/// `covers` while it is open.
+/// `overlays` while it is open.
 pub(crate) fn server_menu(
     hiphile: Hiphile,
     shown: Signal<HiphileSnapshot>,
     sign_in: Signal<Option<SignInRequest>>,
-    covers: Covers,
+    overlays: Overlays,
 ) -> Div {
     let open = signal(false);
-    covers.add(move || open.get());
+    overlays.add(move || open.get());
     let signed_in = memo(move || shown.with(|shown| shown.profile().cloned()));
     let profiles = memo(move || shown.with(|shown| shown.profiles().to_vec()));
     let anchor = node_ref();

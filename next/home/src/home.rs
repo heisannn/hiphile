@@ -145,7 +145,7 @@ fn page(cx: &ScreenContext, node: NodeRef) -> Div {
         selection: signal(None),
         focused: signal(false),
         node,
-        menu: ContextMenu::new(cx.covers),
+        menu: ContextMenu::new(cx.overlays),
         places: Places::default(),
         now_playing: follow_now_playing(workspace),
     };

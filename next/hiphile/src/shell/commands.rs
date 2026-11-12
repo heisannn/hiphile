@@ -10,7 +10,7 @@ use hiphile_core::{Hiphile, Workspace};
 use next_host::{Pending, Scope, notices};
 use next_player::Panels;
 use next_ui::playlist_dialogs::{PlaylistDialog, PlaylistDialogs};
-use next_ui::{AlbumAction, Command, Commands, Covers, Known, ScreenContext};
+use next_ui::{AlbumAction, Command, Commands, Known, Overlays, ScreenContext};
 use subsonic::{AlbumId, Song};
 
 use crate::navigation::Navigation;
@@ -26,7 +26,7 @@ pub(super) struct Shell {
     pub(super) panels: Panels,
     known: Known,
     snackbars: Snackbars,
-    covers: Covers,
+    overlays: Overlays,
     scope: Scope,
     /// The songs of an album being had for an action, which the next action on an album calls
     /// off.
@@ -54,7 +54,7 @@ impl Shell {
             dialogs: PlaylistDialogs::new(),
             panels: Panels::new(),
             snackbars,
-            covers: Covers::new(),
+            overlays: Overlays::new(),
             scope: Scope::here(),
             album: Rc::default(),
         }
@@ -69,7 +69,7 @@ impl Shell {
             commands,
             self.known,
             self.snackbars,
-            self.covers,
+            self.overlays,
         )
     }
 

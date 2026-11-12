@@ -188,7 +188,7 @@ fn signed_in(
         snackbars,
     );
     let cx = shell.context();
-    let (panels, dialogs, covers) = (shell.panels, shell.dialogs, cx.covers);
+    let (panels, dialogs, overlays) = (shell.panels, shell.dialogs, cx.overlays);
     // The lyrics are of the song playing
     let has_song = memo(move || playing.with(|playing| playing.has_song()));
     effect(move || {
@@ -214,7 +214,7 @@ fn signed_in(
                 || search_open.get()
                 || sign_in_request.with(Option::is_some)
                 || dialogs.is_open()
-                || covers.any(),
+                || overlays.any(),
             has_song,
             has_queue,
             shuffled,
@@ -227,7 +227,7 @@ fn signed_in(
     // What the lyrics cover takes no keys and no Tab
     let covered = move || panels.is_covered();
     let screen_home = Rc::new(Cell::new(None::<NodeRef>));
-    let servers = server_menu(hiphile.clone(), shown, sign_in_request, covers);
+    let servers = server_menu(hiphile.clone(), shown, sign_in_request, overlays);
     // Its place among the children is its place for Tab, after the screen it is over
     let top_end = top_end(cx.commands.clone(), Some(servers))
         .on_resized(move |w, _| top_end_width.set_if_changed(w));

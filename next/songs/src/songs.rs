@@ -167,7 +167,7 @@ fn sort(table: &Table) -> Div {
         )
     };
     sort_menu(
-        table.cx.covers,
+        table.cx.overlays,
         move || sort.get().is_some_and(|sort| sort.is_descending),
         vec![
             vec![

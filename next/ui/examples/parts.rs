@@ -35,7 +35,7 @@ use next_ui::sort_menu::{SortOption, sort_menu};
 use next_ui::testing::{frames, key, key_with, scroll};
 use next_ui::theme::{DEFAULT_SEED, scheme};
 use next_ui::type_scale::{body, muted_text};
-use next_ui::{Covers, app_bar};
+use next_ui::{Overlays, app_bar};
 
 const SCALE: f64 = 2.0;
 const HEIGHT: u32 = 760;
@@ -285,7 +285,7 @@ fn sort() -> Div {
         )
     };
     sort_menu(
-        Covers::new(),
+        Overlays::new(),
         move || descending.get(),
         vec![
             vec![by("Title", 0), by("Artist", 1), by("Year", 2)],

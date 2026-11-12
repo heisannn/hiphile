@@ -9,7 +9,7 @@ use anti_webui_md3e::components::{
 };
 use anti_webui_md3e::icons;
 
-use crate::Covers;
+use crate::Overlays;
 
 /// One way a list can be ordered, or run.
 #[derive(Clone)]
@@ -36,14 +36,14 @@ impl SortOption {
 
 /// A button that names the checked option of the first of `groups`, with an arrow for which way
 /// the list runs, and opens a menu of the groups. It looks pressed while that is open, which
-/// `covers` counts for as long as the current owner lives. `is_descending` may read signals.
+/// `overlays` counts for as long as the current owner lives. `is_descending` may read signals.
 pub fn sort_menu(
-    covers: Covers,
+    overlays: Overlays,
     is_descending: impl Fn() -> bool + 'static,
     groups: Vec<Vec<SortOption>>,
 ) -> Div {
     let open = signal(false);
-    covers.add(move || open.get());
+    overlays.add(move || open.get());
     let anchor = node_ref();
     let orders = groups.first().cloned().unwrap_or_default();
     let order = Rc::new(move || {

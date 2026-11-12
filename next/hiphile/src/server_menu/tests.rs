@@ -11,25 +11,25 @@ use super::*;
 #[test]
 fn the_avatar_opens_the_menu_which_covers_the_screens_until_it_closes() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
-    let covers = Covers::new();
+    let overlays = Overlays::new();
     let mut ui = start(move || {
         let shown = next_host::follow(hiphile.subscribe());
         div()
             .size_full()
-            .child(server_menu(hiphile, shown, signal(None), covers))
+            .child(server_menu(hiphile, shown, signal(None), overlays))
     });
     assert_eq!(find(Role::Button, "Servers").unwrap().expanded, Some(false));
-    assert!(!covers.any());
+    assert!(!overlays.any());
 
     press(&mut ui, Role::Button, "Servers");
     assert_eq!(find(Role::Button, "Servers").unwrap().expanded, Some(true));
     assert!(find(Role::MenuItem, "Sign Out").is_some());
-    assert!(covers.any());
+    assert!(overlays.any());
 
     key(&mut ui, NamedKey::Escape);
     frames(&mut ui, 400);
     assert_eq!(find(Role::Button, "Servers").unwrap().expanded, Some(false));
-    assert!(!covers.any());
+    assert!(!overlays.any());
 }
 
 /// Who has no password saved, so that switching to them asks for one.
