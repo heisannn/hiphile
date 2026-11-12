@@ -1,6 +1,6 @@
 use anti_webui::prelude::Role;
 use hiphile_core::settings::R8brainSetting;
-use next_ui::testing::{core, find, has_text, press, start, wait_until};
+use next_ui::testing::{core, find, frames, has_text, is_modal_open, press, start, wait_until};
 
 use super::*;
 
@@ -126,6 +126,8 @@ fn the_base_rate_asks_before_it_changes() {
     assert!(has_text("Match each song's base rate?"));
     press(&mut ui, Role::Button, "Cancel");
     assert!(!audio.snapshot().matches_song_family());
+    frames(&mut ui, 1000);
+    assert!(!is_modal_open());
 
     press(&mut ui, Role::Radio, "Match each song");
     press(&mut ui, Role::Button, "Match");
