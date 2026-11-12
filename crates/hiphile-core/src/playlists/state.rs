@@ -522,6 +522,11 @@ impl PlaylistsState {
         self.0.notices.subscribe()
     }
 
+    /// What the playlists are searched for, as last set.
+    pub fn query(&self) -> String {
+        self.0.state.read(|state| state.query.clone())
+    }
+
     /// Shows the playlists whose name or owner matches `query`, the best first.
     pub fn set_query(&self, query: &str) {
         self.0.state.update(|state| {

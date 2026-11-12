@@ -702,6 +702,7 @@ fn the_query_shows_the_playlists_it_matches() {
     let snapshot = playlists.snapshot();
     assert_eq!(**snapshot.visible(), [1]);
     assert_eq!(snapshot.visible_playlist(0).unwrap().name(), "Beta");
+    assert_eq!(playlists.query(), "bet");
 }
 
 #[test]
