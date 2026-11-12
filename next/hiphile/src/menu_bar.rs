@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anti_webui::prelude::*;
 use hiphile_core::navigation::Destination;
 use next_platform::menu::{Item, ItemState, Key, Menu, Shortcut, Standard};
@@ -108,11 +110,16 @@ pub fn menus() -> Vec<Menu<Command>> {
         ),
         Menu::new(
             "Library",
-            vec![Item::command(
-                "Save Queue as Playlist…",
-                Command::SaveQueue,
-                None,
-            )],
+            vec![
+                Item::command("Refresh Library", Command::Refresh, Shortcut::command('r')),
+                Item::Separator,
+                Item::command(
+                    "New Playlist…",
+                    Command::NewPlaylist(Arc::from([])),
+                    Shortcut::command('n'),
+                ),
+                Item::command("Save Queue as Playlist…", Command::SaveQueue, None),
+            ],
         ),
         Menu::new(
             "View",

@@ -451,7 +451,7 @@ pub fn has_room_for_rows(node: NodeRef, row_height: f32) -> bool {
 
 /// Scrolls the list just far enough to show the row at `position`, once it is laid out, which it
 /// may not be yet for rows that just came.
-fn reveal(node: NodeRef, position: usize, row_height: f32) {
+pub fn reveal(node: NodeRef, position: usize, row_height: f32) {
     let Some(rect) = node.logical_rect() else {
         return;
     };

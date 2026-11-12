@@ -12,7 +12,7 @@ use next_search::search;
 use next_settings::settings_popup;
 use next_ui::cover::install_covers;
 use next_ui::list_detail::{DETAIL_MIN_WIDTH, LIST_MIN_WIDTH};
-use next_ui::pane::{GAP, pane};
+use next_ui::pane::GAP;
 use next_ui::theme::{follow_theme, is_dark};
 use next_ui::type_scale::body;
 use next_ui::window::moves_window;
@@ -217,13 +217,9 @@ fn screen(destination: Destination, location: Signal<Location>, cx: &ScreenConte
         Destination::Artists => next_artists::artists(location, cx),
         Destination::Albums => next_library::albums(location, cx),
         Destination::Songs => next_songs::songs(cx),
-        Destination::Playlists => empty(destination),
+        Destination::Playlists => next_playlists::playlists(location, cx),
         Destination::Favorites => next_favorites::favorites(cx),
     }
-}
-
-fn empty(destination: Destination) -> Screen {
-    Screen::new(destination.label(), pane(div()))
 }
 
 /// Where a screen's panes go, apart from the rail, the bar and the queue.

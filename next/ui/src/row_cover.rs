@@ -19,8 +19,11 @@ const ROUND: f32 = 10_000.0;
 pub fn row_cover(workspace: &Workspace, cover_art: Option<&CoverArtId>, kind: CoverKind) -> Div {
     let url = cover_art.map(|cover_art| workspace.session().cover_art_url(cover_art, PIXELS));
     let corner = match kind {
-        CoverKind::Album => CORNER,
+        CoverKind::Album | CoverKind::Playlist => CORNER,
         CoverKind::Artist => ROUND,
     };
     cover(url, kind).size(ROW_COVER).rounded(corner)
 }
+
+#[cfg(test)]
+mod tests;

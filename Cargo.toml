@@ -52,6 +52,7 @@ next-library = { path = "next/library" }
 next-platform = { path = "next/platform" }
 next-player = { path = "next/player" }
 next-search = { path = "next/search" }
+next-playlists = { path = "next/playlists" }
 next-settings = { path = "next/settings" }
 next-songs = { path = "next/songs" }
 next-ui = { path = "next/ui" }

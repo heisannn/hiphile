@@ -4,7 +4,7 @@ use std::rc::Rc;
 use anti_webui::core::Ui;
 use anti_webui::core::access::snapshot;
 use anti_webui::core::event::NamedKey;
-use anti_webui::core::tree::NodeKind;
+use anti_webui::core::tree::{NodeKind, with_doc};
 use hiphile_core::test_support::PlaylistsServer;
 use serde_json::json;
 

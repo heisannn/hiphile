@@ -7,16 +7,16 @@ use std::path::{Path, PathBuf};
 use anti_webui::app::headless;
 use anti_webui::core::Ui;
 use anti_webui::core::access::{AccessAction, perform};
-use anti_webui::core::event::{Modifiers, NamedKey, WindowEvent};
+use anti_webui::core::event::{Key, Modifiers, NamedKey, WindowEvent};
 use anti_webui::core::geometry::PointF;
 use anti_webui::prelude::{Role, signal};
 use anti_webui_md3e::color_scheme;
 use hiphile_core::Hiphile;
-use hiphile_core::test_support::LibraryServer;
+use hiphile_core::test_support::{LibraryServer, PlaylistsServer};
 use next_hiphile::{MenuBar, Reach, SMALLEST_WINDOW, WINDOW, app};
 use next_player::testing::{CoverServer, png};
 use next_ui::testing::{
-    NOWHERE, SavedLibrary, click, click_with, core, find, frames, has_text, key, press,
+    NOWHERE, SavedLibrary, click, click_with, core, find, frames, has_text, key, key_with, press,
     signed_in_core, signed_in_core_with_library, typed, wait_until,
 };
 use next_ui::theme::{DEFAULT_SEED, scheme};
@@ -129,6 +129,7 @@ fn main() {
             |ui| settings(ui, "Audio"),
         );
         search_shots(&folder, theme, dark, &covers);
+        playlists_shots(&folder, dark, theme);
         playing_shot(
             &folder.join(format!("player-playing-{theme}.png")),
             dark,
@@ -370,6 +371,180 @@ fn playing_shot_at(
         frames(ui, 900);
         drive(ui);
     });
+}
+
+/// The playlists, the narrowest window's, another user's, renaming, deleting and none.
+fn playlists_shots(folder: &Path, dark: bool, theme: &str) {
+    playlists_shot(
+        &folder.join(format!("playlists-{theme}.png")),
+        dark,
+        &playlists_server(),
+        WINDOW,
+        |ui| show_playlists(ui, "Glass Harbor"),
+    );
+    playlists_shot(
+        &folder.join(format!("playlists-narrow-{theme}.png")),
+        dark,
+        &playlists_server(),
+        SMALLEST_WINDOW,
+        |ui| show_playlists(ui, "Glass Harbor"),
+    );
+    playlists_shot(
+        &folder.join(format!("playlists-shared-{theme}.png")),
+        dark,
+        &playlists_server(),
+        WINDOW,
+        |ui| {
+            show_playlists(ui, "Glass Harbor");
+            press(ui, Role::ListOption, "Late Night Sessions");
+            wait_until(ui, || find(Role::ListOption, "Smoke Rings").is_some());
+        },
+    );
+    playlists_shot(
+        &folder.join(format!("playlists-rename-{theme}.png")),
+        dark,
+        &playlists_server(),
+        WINDOW,
+        |ui| {
+            show_playlists(ui, "Glass Harbor");
+            key(ui, NamedKey::F(2));
+        },
+    );
+    playlists_shot(
+        &folder.join(format!("playlists-delete-{theme}.png")),
+        dark,
+        &playlists_server(),
+        WINDOW,
+        |ui| {
+            show_playlists(ui, "Glass Harbor");
+            key_with(ui, Key::Named(NamedKey::Backspace), Modifiers::PRIMARY);
+        },
+    );
+    playlists_shot(
+        &folder.join(format!("playlists-empty-{theme}.png")),
+        dark,
+        &PlaylistsServer::new(&[]),
+        WINDOW,
+        |ui| {
+            press(ui, Role::Button, "Playlists");
+            frames(ui, 400);
+        },
+    );
+}
+
+/// The window signed in to `server`, once `drive` has shown what the shot is of and the covers
+/// have come.
+fn playlists_shot(
+    path: &Path,
+    dark: bool,
+    server: &PlaylistsServer,
+    size: (i32, i32),
+    drive: impl FnOnce(&mut Ui),
+) {
+    let (_core, hiphile) = signed_in_core(server.url());
+    render(path, dark, hiphile, size, move |ui| {
+        drive(ui);
+        for _ in 0..200 {
+            ui.poll_images();
+            frames(ui, 8);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    });
+}
+
+/// Goes to the playlists and waits for the first one's songs, of which `song` is one.
+fn show_playlists(ui: &mut Ui, song: &str) {
+    press(ui, Role::Button, "Playlists");
+    wait_until(ui, || find(Role::ListOption, song).is_some());
+    frames(ui, 400);
+}
+
+/// Playlists of alice's and one of bob's, of songs on four albums.
+fn playlists_server() -> PlaylistsServer {
+    let server = PlaylistsServer::new(&[
+        (
+            "p1",
+            "Coastal Drive",
+            &["1", "2", "3", "4", "5", "6", "7", "8", "9"],
+        ),
+        ("p2", "Late Night Sessions", &["10", "11", "12"]),
+        ("p3", "Focus", &["13", "14", "2", "6"]),
+        ("p4", "Rainy Sunday", &["15", "16"]),
+        ("p5", "Workout", &[]),
+    ]);
+    server.make_readonly("p2");
+    server.describe_playlist(
+        "p1",
+        json!({ "comment": "Long roads after sunset", "coverArt": "pl-1" }),
+    );
+    server.describe_playlist("p2", json!({ "coverArt": "pl-2" }));
+    for (id, title, artist, album, duration) in PLAYLIST_SONGS {
+        let cover = format!("al-{}", album.0);
+        server.describe_song(
+            id,
+            json!({
+                "title": title,
+                "artist": artist,
+                "artistId": format!("ar-{artist}"),
+                "album": album.1,
+                "albumId": format!("al-{}", album.0),
+                "coverArt": cover,
+                "duration": duration,
+            }),
+        );
+    }
+    for (id, top, bottom) in [
+        ("al-1", [28, 36, 92], [236, 120, 84]),
+        ("al-2", [18, 74, 70], [190, 222, 160]),
+        ("al-3", [64, 30, 82], [214, 140, 196]),
+        ("al-4", [90, 70, 40], [240, 206, 120]),
+        ("pl-1", [30, 40, 70], [250, 160, 90]),
+        ("pl-2", [20, 30, 60], [110, 150, 220]),
+    ] {
+        server.serve_cover(id, png(256, move |_, y| gradient(top, bottom, y)));
+    }
+    server.serve_favorites(&["3", "11"]);
+    server
+}
+
+/// Album id and title.
+type Album = (u8, &'static str);
+
+const LOW_TIDE: Album = (1, "Low Tide Lights");
+const GREEN_ROOM: Album = (2, "The Green Room");
+const VELVET: Album = (3, "Velvet Static");
+const AMBER: Album = (4, "Amber Hours");
+
+/// Id, title, artist, album and seconds.
+const PLAYLIST_SONGS: [(&str, &str, &str, Album, u32); 16] = [
+    ("1", "Glass Harbor", "Mira Okada", LOW_TIDE, 245),
+    ("2", "Paper Lanterns", "Mira Okada", LOW_TIDE, 212),
+    ("3", "Northbound", "The Quiet Fields", GREEN_ROOM, 198),
+    ("4", "Signal Fires", "The Quiet Fields", GREEN_ROOM, 263),
+    ("5", "Chrome Rain", "Velvet Static", VELVET, 187),
+    ("6", "Afterglow Avenue", "Velvet Static", VELVET, 301),
+    ("7", "Salt and Cedar", "Mira Okada", LOW_TIDE, 229),
+    ("8", "Long Exposure", "Juno Avery", AMBER, 276),
+    ("9", "Last Ferry Home", "Juno Avery", AMBER, 334),
+    ("10", "Smoke Rings", "Theo Marsh Trio", AMBER, 402),
+    ("11", "Quarter to Two", "Theo Marsh Trio", AMBER, 357),
+    ("12", "Slow Burn Waltz", "Theo Marsh Trio", AMBER, 389),
+    ("13", "Still Water", "The Quiet Fields", GREEN_ROOM, 241),
+    ("14", "Grid Lines", "Velvet Static", VELVET, 205),
+    ("15", "Window Seat", "Juno Avery", AMBER, 218),
+    ("16", "Puddles", "Mira Okada", LOW_TIDE, 176),
+];
+
+/// From `top` at the top of a cover to `bottom` at its bottom.
+fn gradient(top: [u8; 3], bottom: [u8; 3], y: u32) -> [u8; 4] {
+    let t = y as f32 / 255.0;
+    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t) as u8;
+    [
+        mix(top[0], bottom[0]),
+        mix(top[1], bottom[1]),
+        mix(top[2], bottom[2]),
+        255,
+    ]
 }
 
 fn render(

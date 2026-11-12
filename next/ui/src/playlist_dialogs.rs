@@ -1,9 +1,7 @@
 //! The dialogs that file songs in playlists: naming a new one, and choosing one from the keyboard.
 
-use std::cell::Cell;
 use std::sync::Arc;
 
-use anti_webui::core::tree::{Document, NodeId, with_doc};
 use anti_webui::prelude::*;
 use anti_webui_md3e::components::{
     ButtonStyle, Snackbar, TextFieldStyle, dialog, indeterminate_circular_progress,
@@ -15,9 +13,10 @@ use hiphile_core::playlists::{PlaylistChoice, new_playlist_scope};
 use next_host::Scope;
 use subsonic::{PlaylistId, Song};
 
+use crate::dialog_parts::{dialog_actions, dialog_content, focused_field, focused_once_laid_out};
 use crate::row_list::{RowList, Selection, row_list};
 use crate::row_text::row_text;
-use crate::type_scale::{muted_text, styled_text};
+use crate::type_scale::muted_text;
 use crate::{Command, ScreenContext};
 
 const WIDTH: i32 = 400;
@@ -113,29 +112,6 @@ impl PlaylistDialogs {
     }
 }
 
-fn heading(title: &'static str) -> Div {
-    styled_text(TextStyle::HEADLINE_SMALL, title).access(|a| a.role(Role::Heading).level(2))
-}
-
-fn content(title: &'static str) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap(16.0_f32)
-        .p(24.0_f32)
-        .child(heading(title))
-}
-
-fn actions() -> Div {
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .justify_end()
-        .gap(8.0_f32)
-        .pt(8.0_f32)
-}
-
 /// Asks for the name, and makes the playlist while it waits: unlike other changes to the
 /// playlists, it has nothing to show until the server gives it an id. One with songs is told of
 /// once made, and an empty one is shown.
@@ -192,7 +168,7 @@ fn new_playlist(dialogs: PlaylistDialogs, cx: &ScreenContext, songs: Arc<[Song]>
         )
         .w(WIDTH)
     };
-    let row = actions()
+    let row = dialog_actions()
         .child(show(
             move || busy.get(),
             || indeterminate_circular_progress().mr(8),
@@ -211,9 +187,9 @@ fn new_playlist(dialogs: PlaylistDialogs, cx: &ScreenContext, songs: Arc<[Song]>
             )
             .on_click(move |_| submit()),
         );
-    content("New Playlist")
+    dialog_content("New Playlist")
         .children(new_playlist_scope(&songs).map(|scope| muted_text(TextStyle::BODY_MEDIUM, scope)))
-        .child(focused_once_laid_out(field, first_input))
+        .child(focused_field(field))
         .child(row)
 }
 
@@ -259,7 +235,7 @@ fn choose_playlist(dialogs: PlaylistDialogs, cx: &ScreenContext, songs: Arc<[Son
         rows as f32 * ROW_HEIGHT + 16.0
     };
     let rows = div().w(WIDTH).dyn_style(move |s| s.h(height())).child(rows);
-    let row = actions()
+    let row = dialog_actions()
         .child(
             styled_button("New Playlist…", ButtonStyle::text())
                 .on_click(move |_| dialogs.show(PlaylistDialog::New(songs.clone()))),
@@ -277,43 +253,9 @@ fn choose_playlist(dialogs: PlaylistDialogs, cx: &ScreenContext, songs: Arc<[Son
                 }
             }),
         );
-    content("Add to Playlist")
+    dialog_content("Add to Playlist")
         .child(focused_once_laid_out(rows, move |_, _| list.get()))
         .child(row)
-}
-
-/// Focuses what `target` finds in `node` once `node` is laid out. The dialog takes the focus
-/// itself when it is built, after its content, so its content can't take it any sooner.
-fn focused_once_laid_out(
-    node: Div,
-    target: impl Fn(&Document, NodeId) -> Option<NodeId> + 'static,
-) -> Div {
-    let at = node_ref();
-    let done = Cell::new(false);
-    node.node_ref(at).on_resized(move |_, _| {
-        if done.replace(true) {
-            return;
-        }
-        let Some(id) = at.get() else {
-            return;
-        };
-        with_doc(|doc| {
-            if let Some(target) = target(doc, id) {
-                doc.pending_focus = Some(Some(target));
-            }
-        });
-    })
-}
-
-/// The text field has no handle to the input it is made of, so it is found among its nodes.
-fn first_input(doc: &Document, id: NodeId) -> Option<NodeId> {
-    let node = doc.get(id)?;
-    if node.is_edit() {
-        return Some(id);
-    }
-    node.children
-        .iter()
-        .find_map(|child| first_input(doc, *child))
 }
 
 #[cfg(test)]

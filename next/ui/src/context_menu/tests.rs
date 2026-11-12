@@ -102,11 +102,7 @@ fn a_row() -> Shown {
 
 /// Where the menu hangs from, in the window.
 fn hung_from(menu: ContextMenu) -> (i32, i32) {
-    let anchor = menu
-        .from
-        .get_untracked()
-        .map_or(menu.point, |(anchor, _)| anchor);
-    let rect = with_doc(|doc| doc.window_rect(anchor.get().unwrap())).unwrap();
+    let rect = with_doc(|doc| doc.window_rect(menu.point.get().unwrap())).unwrap();
     (rect.x, rect.y)
 }
 
@@ -170,6 +166,27 @@ fn escape_closes_it() {
     assert!(!shown.menu.is_open());
     assert!(nodes(Role::MenuItem).is_empty());
     assert_eq!(find(Role::Button, "More").unwrap().expanded, Some(false));
+}
+
+#[test]
+fn it_closes_when_what_it_was_opened_from_has_gone() {
+    let mut ui = start(|| {
+        let menu = ContextMenu::new();
+        let shown = signal(true);
+        let remove = move || vec![vec![menu_item("Remove").on_click(move || shown.set(false))]];
+        div()
+            .w(400)
+            .h(300)
+            .child(show(move || shown.get(), move || more_button(menu, remove)))
+            .child(menu.view())
+    });
+    press(&mut ui, Role::Button, "More");
+
+    press(&mut ui, Role::MenuItem, "Remove");
+    frames(&mut ui, 400);
+
+    assert!(find(Role::Button, "More").is_none());
+    assert!(nodes(Role::MenuItem).is_empty());
 }
 
 #[test]

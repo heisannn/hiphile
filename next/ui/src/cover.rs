@@ -19,6 +19,7 @@ const KEPT: usize = 512;
 pub enum CoverKind {
     Album,
     Artist,
+    Playlist,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -97,6 +98,7 @@ fn placeholder(kind: CoverKind) -> Div {
     let symbol: &'static Symbol = match kind {
         CoverKind::Album => icons::ALBUM,
         CoverKind::Artist => icons::ARTIST,
+        CoverKind::Playlist => icons::QUEUE_MUSIC,
     };
     div()
         .absolute()

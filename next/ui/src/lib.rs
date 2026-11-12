@@ -7,6 +7,7 @@ pub mod context_menu;
 pub mod cover;
 pub mod detail_header;
 pub mod details;
+pub mod dialog_parts;
 pub mod favorite_button;
 pub mod favorite_songs;
 pub mod keymap;

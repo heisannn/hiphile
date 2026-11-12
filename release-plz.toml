@@ -99,6 +99,10 @@ name = "next-player"
 release = false
 
 [[package]]
+name = "next-playlists"
+release = false
+
+[[package]]
 name = "next-search"
 release = false
 

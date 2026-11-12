@@ -255,6 +255,23 @@ fn the_menus_are_hiphile_library_view_and_controls() {
 }
 
 #[test]
+fn library_refreshes_and_makes_a_playlist() {
+    let library = menus().remove(1);
+    assert_eq!(
+        library.items[..3],
+        [
+            Item::command("Refresh Library", Command::Refresh, Shortcut::command('r')),
+            Item::Separator,
+            Item::command(
+                "New Playlist…",
+                Command::NewPlaylist(Arc::from([])),
+                Shortcut::command('n'),
+            ),
+        ]
+    );
+}
+
+#[test]
 fn view_goes_to_each_destination_by_its_number() {
     let view = menus().remove(2);
     let destinations: Vec<_> = view
