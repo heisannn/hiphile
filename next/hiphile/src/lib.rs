@@ -6,6 +6,7 @@ mod rail;
 mod reach;
 mod server_menu;
 mod shell;
+mod top_end;
 
 pub use menu_bar::MenuBar;
 pub use reach::Reach;

@@ -23,6 +23,7 @@ use crate::menu_bar::Shown;
 use crate::navigation::{Navigation, index_of};
 use crate::rail::rail;
 use crate::reach::{Reach, show_outside};
+use crate::top_end::top_end;
 
 mod commands;
 
@@ -111,6 +112,7 @@ fn signed_in(
     let settings_open = signal(false);
     let search_open = signal(false);
     let sign_in_request = signal(None);
+    let top_end_width = signal(0.0_f32);
     let shell = Shell::new(
         &hiphile,
         workspace,
@@ -152,14 +154,7 @@ fn signed_in(
         .flex()
         .flex_row()
         .on_resized(move |w, _| width.set(w))
-        .child(rail(
-            navigation,
-            expanded,
-            hiphile.clone(),
-            shown,
-            cx.commands.clone(),
-            sign_in_request,
-        ))
+        .child(rail(navigation, expanded, cx.commands.clone()))
         .child(
             div()
                 .flex_1()
@@ -189,11 +184,23 @@ fn signed_in(
                                         actions,
                                         body,
                                     } = screen(destination, navigation.location(), &cx);
+                                    // The queue's own bar takes the window's top end while it shows
+                                    let bar = div().flex_none().dyn_style(move |s| {
+                                        s.pr(if panels.is_queue_shown() {
+                                            0.0
+                                        } else {
+                                            top_end_width.get()
+                                        })
+                                    });
                                     div()
                                         .size_full()
                                         .flex()
                                         .flex_col()
-                                        .child(app_bar(going(navigation), title, actions))
+                                        .child(bar.child(app_bar(
+                                            going(navigation),
+                                            title,
+                                            actions,
+                                        )))
                                         .child(room_for(body, panels))
                                 }
                             },
@@ -204,6 +211,13 @@ fn signed_in(
                         })),
                 )
                 .child(player_bar(player, cover, panels).mr(16))
+                .child(top_end(
+                    hiphile.clone(),
+                    shown,
+                    cx.commands.clone(),
+                    sign_in_request,
+                    top_end_width,
+                ))
                 .child(search(&cx, search_open)),
         )
         .child(shell.dialogs.view(&cx))

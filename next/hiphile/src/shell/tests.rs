@@ -111,6 +111,33 @@ fn signing_out_from_the_servers_goes_back_to_signing_in() {
 }
 
 #[test]
+fn in_the_smallest_window_the_rail_fits_and_the_screens_actions_keep_clear_of_the_settings() {
+    let (_core, hiphile) = signed_in_core(NOWHERE);
+    let mut ui = next_ui::testing::start_at(
+        move || app(hiphile, signal(false), MenuBar::new(), Reach::Window),
+        crate::SMALLEST_WINDOW,
+    );
+    press(&mut ui, Role::Button, "Songs");
+    let sort = || {
+        nodes(Role::Button).into_iter().find(|node| {
+            node.label
+                .as_deref()
+                .is_some_and(|label| label.starts_with("Sort"))
+        })
+    };
+    wait_until(&mut ui, || sort().is_some());
+    let (width, height) = crate::SMALLEST_WINDOW;
+
+    let favorites = find(Role::Button, "Favorites").expect("the last destination");
+    assert!(favorites.bounds.bottom() <= height as f32);
+    let settings = find(Role::Button, "Settings").expect("the settings");
+    assert!(sort().expect("the sort").bounds.right() <= settings.bounds.x);
+    let servers = find(Role::Button, "Servers").expect("the servers");
+    assert!(settings.bounds.right() <= servers.bounds.x);
+    assert!(servers.bounds.right() <= width as f32);
+}
+
+#[test]
 fn the_rail_closes_in_a_narrow_window() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
     let _ui = next_ui::testing::start_at(
