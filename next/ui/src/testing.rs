@@ -271,8 +271,8 @@ pub const NOWHERE: &str = "http://127.0.0.1:9";
 /// What a test keeps until it ends: the core's runtime and the folder of its settings.
 pub struct TestCore {
     runtime: Option<tokio::runtime::Runtime>,
-    /// Dropped after the runtime: the last of a client must not go inside it, as the runtime's
-    /// tasks that hold the core would otherwise drop it there.
+    /// Never dropped. The last of a client must not go on the runtime's threads, which drop the
+    /// tasks that hold the core in the background once it shuts down.
     nets: Vec<net::Client>,
     _dir: tempfile::TempDir,
 }
@@ -282,6 +282,9 @@ impl Drop for TestCore {
         // Without waiting for blocking work, which may wait on a server that never answers
         if let Some(runtime) = self.runtime.take() {
             runtime.shutdown_background();
+        }
+        for net in self.nets.drain(..) {
+            std::mem::forget(net);
         }
     }
 }
