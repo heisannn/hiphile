@@ -423,7 +423,7 @@ fn an_older_removal_cant_be_undone() {
     select_song(&mut opened.ui, "Song 3");
     key(&mut opened.ui, NamedKey::Backspace);
 
-    wait_until(&mut opened.ui, || has_text("No songs yet"));
+    wait_until(&mut opened.ui, || has_text("No songs"));
     wait_until(&mut opened.ui, || server.songs("a").is_empty());
 }
 
