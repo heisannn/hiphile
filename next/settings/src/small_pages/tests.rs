@@ -1,0 +1,97 @@
+use anti_webui::core::access::Checked;
+use anti_webui::prelude::Role;
+use config::{Appearance, LyricsHighlight};
+use next_ui::testing::{core, find, has_text, press, start, wait_until};
+
+use super::*;
+
+/// A settings file that is no TOML.
+const UNREADABLE: &str = "skip_instrumentals =\n";
+
+fn is_checked(role: Role, name: &str) -> bool {
+    find(role, name).and_then(|node| node.checked) == Some(Checked::True)
+}
+
+#[test]
+fn skip_instrumentals_is_saved_and_shown() {
+    let (_core, hiphile) = core("");
+    let queue = hiphile.settings().queue().clone();
+    let mut ui = start({
+        let queue = queue.clone();
+        move || queue_page(&queue)
+    });
+    assert!(!is_checked(Role::Switch, "Skip instrumentals"));
+
+    press(&mut ui, Role::Switch, "Skip instrumentals");
+    assert!(queue.snapshot().is_skip_instrumentals_on());
+    wait_until(&mut ui, || is_checked(Role::Switch, "Skip instrumentals"));
+}
+
+#[test]
+fn a_setting_that_cannot_be_read_says_so() {
+    let (_core, hiphile) = core(UNREADABLE);
+    let queue = hiphile.settings().queue().clone();
+    let error = queue.snapshot().error().expect("an error").to_owned();
+    let _ui = start(move || queue_page(&queue));
+
+    assert!(error.starts_with("Couldn't read this setting"), "{error}");
+    assert!(has_text(&error));
+}
+
+#[test]
+fn the_highlight_is_one_of_the_radio_buttons() {
+    let (_core, hiphile) = core("");
+    let lyrics = hiphile.settings().lyrics().clone();
+    let mut ui = start({
+        let lyrics = lyrics.clone();
+        move || lyrics_page(&lyrics)
+    });
+    assert!(find(Role::RadioGroup, "Highlight").is_some());
+    assert!(is_checked(Role::Radio, "By word"));
+
+    press(&mut ui, Role::Radio, "By line");
+    assert_eq!(lyrics.snapshot().highlight(), LyricsHighlight::ByLine);
+    wait_until(&mut ui, || is_checked(Role::Radio, "By line"));
+    assert!(!is_checked(Role::Radio, "By word"));
+}
+
+#[test]
+fn a_label_chooses_its_radio_button() {
+    let (_core, hiphile) = core("");
+    let lyrics = hiphile.settings().lyrics().clone();
+    let mut ui = start({
+        let lyrics = lyrics.clone();
+        move || lyrics_page(&lyrics)
+    });
+
+    next_ui::testing::click_text(&mut ui, "By line");
+    assert_eq!(lyrics.snapshot().highlight(), LyricsHighlight::ByLine);
+}
+
+#[test]
+fn the_theme_is_chosen_and_saved() {
+    let (_core, hiphile) = core("");
+    let appearance = hiphile.settings().appearance().clone();
+    let mut ui = start({
+        let appearance = appearance.clone();
+        move || appearance_page(&appearance)
+    });
+    assert!(is_checked(Role::Radio, "System"));
+
+    press(&mut ui, Role::Radio, "Dark");
+    assert_eq!(appearance.snapshot().appearance(), Some(Appearance::Dark));
+    wait_until(&mut ui, || is_checked(Role::Radio, "Dark"));
+
+    press(&mut ui, Role::Radio, "System");
+    assert_eq!(appearance.snapshot().appearance(), None);
+}
+
+#[test]
+fn a_theme_that_cannot_be_read_says_so() {
+    let (_core, hiphile) = core("appearance = \"purple\"\n");
+    let appearance = hiphile.settings().appearance().clone();
+    let error = appearance.snapshot().error().expect("an error").to_owned();
+    let _ui = start(move || appearance_page(&appearance));
+
+    assert!(has_text(&error));
+}

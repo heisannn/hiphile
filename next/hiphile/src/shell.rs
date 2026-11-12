@@ -8,6 +8,7 @@ use hiphile_core::{Hiphile, HiphileSnapshot, Workspace};
 use next_account::{sign_in, sign_in_dialog};
 use next_host::follow;
 use next_player::{Panels, cover_seed, now_playing_cover, player_bar};
+use next_settings::settings_popup;
 use next_ui::cover::install_covers;
 use next_ui::theme::{follow_theme, is_dark};
 use next_ui::type_scale::body;
@@ -19,7 +20,6 @@ use crate::menu_bar::Shown;
 use crate::navigation::{Navigation, index_of};
 use crate::rail::rail;
 use crate::reach::{Reach, show_outside};
-use crate::settings_popup::settings_popup;
 
 /// Narrower than this, the rail closes over its labels.
 const WIDE: f32 = 1000.0;
@@ -149,7 +149,7 @@ fn signed_in(
                 )))
                 .child(player_bar(player, cover, panels).mr(16)),
         )
-        .child(settings_popup(settings_open))
+        .child(settings_popup(hiphile.clone(), settings_open))
         .child(sign_in_dialog(hiphile, sign_in_request))
 }
 
