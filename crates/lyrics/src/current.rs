@@ -274,11 +274,13 @@ fn query_for(song: &Song) -> TrackQuery {
 fn describe(error: &Error) -> String {
     match error {
         Error::Network(_) => {
-            "Couldn't load lyrics. Check your connection and try again.".to_owned()
+            "Couldn't reach the lyrics services. Check your connection and try again.".to_owned()
         }
-        Error::HttpStatus(_) | Error::Api { .. } | Error::InvalidResponse | Error::TokenUnavailable => {
-            "Couldn't load lyrics. The lyrics services aren't answering as they should, so try again later."
-                .to_owned()
+        Error::HttpStatus(_)
+        | Error::Api { .. }
+        | Error::InvalidResponse
+        | Error::TokenUnavailable => {
+            "The lyrics services aren't answering as they should. Try again later.".to_owned()
         }
     }
 }
