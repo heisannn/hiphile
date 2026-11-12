@@ -96,7 +96,11 @@ impl Shell {
                 }
             }
             Command::OpenSettings => self.settings_open.set(true),
-            Command::OpenSearch => self.search_open.set(true),
+            // The search opens among the screens, which the lyrics cover
+            Command::OpenSearch => {
+                self.close_lyrics();
+                self.search_open.set(true);
+            }
             // What could not play is told by the player's alerts
             Command::Play { songs, start } => {
                 let _ = match start {

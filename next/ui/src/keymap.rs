@@ -61,13 +61,27 @@ thread_local! {
     /// The handler whose element had the focus last.
     static LAST_FOCUSED: Cell<Option<u64>> = const { Cell::new(None) };
     static KEEPER: RefCell<Option<Fallback>> = RefCell::default();
+    static STROKES: RefCell<Vec<(Keystroke, &'static str)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Adds to this thread's keymap of `C`. Of the bindings of one stroke in one context, the last
 /// one whose command is enabled wins. A menu bar reads the bindings when it is built, so bind
 /// before.
 pub fn bind_keys<C: 'static>(bindings: impl IntoIterator<Item = KeyBinding<C>>) {
+    let bindings: Vec<_> = bindings.into_iter().collect();
+    STROKES.with(|strokes| {
+        strokes.borrow_mut().extend(
+            bindings
+                .iter()
+                .map(|binding| (binding.keystroke.clone(), binding.context)),
+        );
+    });
     keymap::<C>().borrow_mut().extend(bindings);
+}
+
+/// Every stroke bound on this thread, whatever its command, with its context.
+pub fn bound_strokes() -> Vec<(Keystroke, &'static str)> {
+    STROKES.with(|strokes| strokes.borrow().clone())
 }
 
 /// The bindings of `context`, in the order they were bound.
