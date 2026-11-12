@@ -11,9 +11,10 @@ use anti_webui::core::event::{
     Key, KeyEvent, Modifiers, NamedKey, PointerButton, ScrollPhase, ScrollSource, WindowEvent,
 };
 use anti_webui::core::geometry::{PointF, Scale, SizeI};
-use anti_webui::core::tree::{NodeKind, with_doc};
+use anti_webui::core::tree::{Document, NodeId, NodeKind, with_doc};
 use anti_webui::prelude::{IntoView, Role, on_cleanup};
 use anti_webui_md3e::components::snackbars;
+use slotmap::KeyData;
 
 use crate::{Command, Commands, Covers, Known, ScreenContext};
 
@@ -91,16 +92,51 @@ pub fn nodes(role: Role) -> Vec<AccessNode> {
 /// Presses the node with `role` and `label`, as assistive technology does, which also reaches
 /// what is in a popup.
 pub fn press(ui: &mut Ui, role: Role, label: &str) {
-    let node = find(role, label).unwrap_or_else(|| panic!("no {role:?} named {label:?}"));
+    let node = reachable(role, label);
     assert!(!node.disabled, "{role:?} {label:?} is disabled");
     perform(node.id, AccessAction::Click);
     ui.update();
 }
 
 pub fn focus(ui: &mut Ui, role: Role, label: &str) {
-    let node = find(role, label).unwrap_or_else(|| panic!("no {role:?} named {label:?}"));
+    let node = reachable(role, label);
     perform(node.id, AccessAction::Focus);
     ui.update();
+}
+
+/// The node with `role` and `label`, which must be where the user could reach it. Assistive
+/// technology reaches what a modal popup covers, which neither the pointer nor the keys do.
+fn reachable(role: Role, label: &str) -> AccessNode {
+    let node = find(role, label).unwrap_or_else(|| panic!("no {role:?} named {label:?}"));
+    assert!(
+        is_over_every_modal(node.id),
+        "{role:?} {label:?} is under a modal popup"
+    );
+    node
+}
+
+/// Whether a modal popup is open, which stays a while as it closes.
+pub fn is_modal_open() -> bool {
+    with_doc(|d| d.popups.iter().any(|popup| is_modal(d, popup)))
+}
+
+fn is_modal(d: &Document, popup: &NodeId) -> bool {
+    d.get(*popup)
+        .is_some_and(|node| node.visible && node.popup().is_some_and(|popup| popup.modal))
+}
+
+/// Whether the node that assistive technology knows as `id` is in the topmost modal popup, or in
+/// a popup opened over it, or no modal popup is open.
+fn is_over_every_modal(id: u64) -> bool {
+    with_doc(|d| {
+        let Some(top) = d.popups.iter().rposition(|popup| is_modal(d, popup)) else {
+            return true;
+        };
+        let over = &d.popups[top..];
+        d.ancestors(KeyData::from_ffi(id).into())
+            .iter()
+            .any(|node| over.contains(node))
+    })
 }
 
 thread_local! {

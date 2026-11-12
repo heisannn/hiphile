@@ -1,3 +1,6 @@
+use std::cell::Cell;
+use std::rc::Rc;
+
 use anti_webui::prelude::*;
 use anti_webui_md3e::color_scheme;
 use anti_webui_md3e::components::{IconButtonStyle, Snackbars, snackbars, styled_icon_button};
@@ -11,6 +14,7 @@ use next_player::{Panels, cover_seed, lyrics_overlay, now_playing_cover, player_
 use next_search::search;
 use next_settings::settings_popup;
 use next_ui::cover::install_covers;
+use next_ui::keymap::keeps_focus;
 use next_ui::list_detail::{DETAIL_MIN_WIDTH, LIST_MIN_WIDTH};
 use next_ui::pane::GAP;
 use next_ui::theme::{follow_theme, is_dark};
@@ -199,7 +203,8 @@ fn signed_in(
     });
     // What the lyrics cover takes no keys and no Tab
     let covered = move || panels.is_covered();
-    div()
+    let screen_home = Rc::new(Cell::new(None::<NodeRef>));
+    let root = div()
         .size_full()
         .relative()
         .flex()
@@ -225,38 +230,13 @@ fn signed_in(
                         .on_resized(move |w, _| {
                             panels.set_queue_room(w - SCREENS_MIN_WIDTH - 2.0 * GAP);
                         })
-                        .child(div().flex_1().min_w(0).flex().flex_col().child(for_each(
-                            move || vec![navigation.destination()],
-                            |destination| index_of(*destination),
-                            {
-                                let cx = cx.clone();
-                                move |destination| {
-                                    let Screen {
-                                        title,
-                                        actions,
-                                        body,
-                                    } = screen(destination, navigation.location(), &cx);
-                                    // The queue's own bar takes the window's top end while it shows
-                                    let bar = div().flex_none().dyn_style(move |s| {
-                                        s.pr(if panels.is_queue_shown() {
-                                            0.0
-                                        } else {
-                                            top_end_width.get()
-                                        })
-                                    });
-                                    div()
-                                        .size_full()
-                                        .flex()
-                                        .flex_col()
-                                        .child(bar.child(app_bar(
-                                            going(navigation),
-                                            title,
-                                            actions,
-                                        )))
-                                        .child(room_for(body, panels))
-                                }
-                            },
-                        )))
+                        .child(screens(
+                            navigation,
+                            &cx,
+                            panels,
+                            top_end_width,
+                            screen_home.clone(),
+                        ))
                         .child(show(move || panels.is_queue_shown(), {
                             let cx = cx.clone();
                             move || queue(&cx, panels).mr(GAP)
@@ -275,10 +255,51 @@ fn signed_in(
         .child(lyrics_overlay(&cx, cover, panels, reduces_motion))
         .child(shell.dialogs.view(&cx))
         .child(settings_popup(hiphile.clone(), settings_open))
-        .child(sign_in_dialog(hiphile, sign_in_request))
+        .child(sign_in_dialog(hiphile, sign_in_request));
+    // A menu that closes, a row that goes and a press on what takes no focus each leave the focus
+    // nowhere, where no key reaches the screens
+    keeps_focus(root, move || screen_home.get())
 }
 
-/// What `destination` shows.
+/// The screen of where the window is, under its bar. `home` takes where its keys go while nothing
+/// has the focus.
+fn screens(
+    navigation: Navigation,
+    cx: &ScreenContext,
+    panels: Panels,
+    top_end_width: Signal<f32>,
+    home: Rc<Cell<Option<NodeRef>>>,
+) -> Div {
+    let cx = cx.clone();
+    div().flex_1().min_w(0).flex().flex_col().child(for_each(
+        move || vec![navigation.destination()],
+        |destination| index_of(*destination),
+        move |destination| {
+            let Screen {
+                title,
+                actions,
+                body,
+                home: screen_home,
+            } = screen(destination, navigation.location(), &cx);
+            home.set(screen_home);
+            // The queue's own bar takes the window's top end while it shows
+            let bar = div().flex_none().dyn_style(move |s| {
+                s.pr(if panels.is_queue_shown() {
+                    0.0
+                } else {
+                    top_end_width.get()
+                })
+            });
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(bar.child(app_bar(going(navigation), title, actions)))
+                .child(room_for(body, panels))
+        },
+    ))
+}
+
 /// What `destination` shows, which reads from `location` what is selected on it.
 fn screen(destination: Destination, location: Signal<Location>, cx: &ScreenContext) -> Screen {
     match destination {

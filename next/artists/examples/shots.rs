@@ -151,6 +151,7 @@ fn shot(
                 title,
                 actions,
                 body: pane,
+                ..
             } = artists(location, &cx);
             window(title, actions, pane)
         },

@@ -144,7 +144,7 @@ pub fn favorites(cx: &ScreenContext) -> Screen {
         .child(refresh_error(&view))
         .child(body(view.clone()))
         .child(view.menu.view());
-    Screen::new("Favorites", key_context(pane(content), &context))
+    Screen::new("Favorites", key_context(pane(content), &context)).home(view.list)
 }
 
 /// What the user goes from kind to kind with.

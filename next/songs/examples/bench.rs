@@ -320,6 +320,7 @@ fn window(screen: Screen) -> Div {
         title,
         actions,
         body: panes,
+        ..
     } = screen;
     body(div())
         .size_full()

@@ -34,7 +34,9 @@ pub fn songs(cx: &ScreenContext) -> Screen {
         .child(failed_refresh(&table))
         .child(content(&table))
         .child(table.menu.view());
-    Screen::new(Destination::Songs.label(), pane(body)).action(sort(&table))
+    Screen::new(Destination::Songs.label(), pane(body))
+        .action(sort(&table))
+        .home(table.list)
 }
 
 /// What the pane shows below its header.

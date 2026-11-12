@@ -20,6 +20,7 @@ net = { workspace = true, optional = true }
 next-host.workspace = true
 playback.workspace = true
 serde_json = { workspace = true, optional = true }
+slotmap = { workspace = true, optional = true }
 subsonic.workspace = true
 tempfile = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt-multi-thread"] }
@@ -34,6 +35,7 @@ test-support = [
   "dep:lyrics",
   "dep:net",
   "dep:serde_json",
+  "dep:slotmap",
   "dep:tempfile",
   "dep:tokio",
   "hiphile-core/test-support",

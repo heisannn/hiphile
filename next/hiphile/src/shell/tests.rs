@@ -259,3 +259,55 @@ fn the_queue_opens_from_the_bar_beside_the_screens() {
     press(&mut ui, Role::ToggleButton, "Queue");
     assert!(find(Role::ListBox, "Queue").is_none());
 }
+
+fn song_rows() -> Vec<anti_webui::core::access::AccessNode> {
+    let mut rows = nodes(Role::ListOption);
+    rows.sort_by(|a, b| a.bounds.y.total_cmp(&b.bounds.y));
+    rows
+}
+
+/// The title of the song selected, without what its row says of it playing.
+fn selected_song() -> Option<String> {
+    let label = song_rows()
+        .into_iter()
+        .find(|row| row.selected == Some(true))?
+        .label?;
+    Some(label.split(", ").next().unwrap_or_default().to_owned())
+}
+
+#[test]
+fn once_a_rows_menu_has_closed_the_keys_go_to_the_list_again() {
+    let song = |id: &str, title: &str| json!({ "id": id, "title": title, "duration": 100 });
+    let server = hiphile_core::test_support::SongsServer::new(vec![
+        song("a", "Airegin"),
+        song("b", "Blues"),
+        song("c", "Cherokee"),
+    ]);
+    let (_core, hiphile) = signed_in_core(server.url());
+    let mut ui = start(move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window));
+    press(&mut ui, Role::Button, "Songs");
+    wait_until(&mut ui, || {
+        song_rows()
+            .iter()
+            .filter_map(|row| row.label.as_deref())
+            .eq(["Airegin", "Blues", "Cherokee"])
+    });
+
+    let blues = song_rows().remove(1).bounds;
+    next_ui::testing::right_click(
+        &mut ui,
+        blues.x + blues.width / 2.0,
+        blues.y + blues.height / 2.0,
+    );
+    let item = nodes(Role::MenuItem)
+        .into_iter()
+        .filter_map(|item| item.label)
+        .find(|label| label.starts_with("Add to Queue"))
+        .expect("the row's menu");
+    press(&mut ui, Role::MenuItem, &item);
+    frames(&mut ui, 400);
+    assert_eq!(selected_song().as_deref(), Some("Blues"));
+
+    key(&mut ui, NamedKey::ArrowDown);
+    wait_until(&mut ui, || selected_song().as_deref() == Some("Cherokee"));
+}

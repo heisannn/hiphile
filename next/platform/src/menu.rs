@@ -116,6 +116,22 @@ impl Shortcut {
         }
     }
 
+    pub fn key(&self) -> Key {
+        self.key
+    }
+
+    pub fn has_shift(&self) -> bool {
+        self.shift
+    }
+
+    pub fn has_option(&self) -> bool {
+        self.option
+    }
+
+    pub fn has_control(&self) -> bool {
+        self.control
+    }
+
     /// Whether a text field uses it, to move its caret or its selection to the start or the end of
     /// a line or of the text.
     pub(crate) fn is_for_text_fields(&self) -> bool {

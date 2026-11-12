@@ -140,7 +140,11 @@ pub fn menus() -> Vec<Menu<Command>> {
                     Command::ToggleQueue,
                     Shortcut::command('u').option(),
                 ),
-                Item::command("Lyrics", Command::ToggleLyrics, Shortcut::command('l')),
+                Item::command(
+                    "Lyrics",
+                    Command::ToggleLyrics,
+                    Shortcut::command('l').option(),
+                ),
             ])
             .collect(),
         ),

@@ -5802,6 +5802,7 @@ dependencies = [
  "next-ui",
  "playback",
  "serde_json",
+ "slotmap",
  "subsonic",
  "tempfile",
  "tokio",

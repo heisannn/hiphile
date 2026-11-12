@@ -54,7 +54,9 @@ pub fn albums(location: Signal<Location>, cx: &ScreenContext) -> Screen {
         scroll: true,
         focus: true,
     });
-    Screen::new("Albums", body).action(order_menu(&model))
+    Screen::new("Albums", body)
+        .action(order_menu(&model))
+        .home(model.album_rows)
 }
 
 /// What the albums' screen goes by, and what it does. Cheap to clone.

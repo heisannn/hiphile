@@ -288,7 +288,9 @@ pub(crate) fn artists_view(location: Signal<Location>, cx: &ScreenContext) -> (R
     view.focus_list();
     let body = list_detail(Split::new(), list::list_pane(&view), page::page_pane(&view))
         .child(view.menu.view());
-    let screen = Screen::new("Artists", body).action(sort(&view));
+    let screen = Screen::new("Artists", body)
+        .action(sort(&view))
+        .home(view.list_node);
     (view, screen)
 }
 

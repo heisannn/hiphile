@@ -593,3 +593,89 @@ fn the_lyrics_close_when_there_is_no_song() {
     });
     assert!(!menu_bar.state_of(&Command::ToggleLyrics).is_enabled());
 }
+
+#[test]
+fn searching_closes_the_lyrics_over_the_screens_the_search_opens_on() {
+    let (_core, mut ui, menu_bar, _player) = on_a_song();
+    menu_bar.choose(Command::ToggleLyrics);
+    ui.update();
+
+    menu_bar.choose(Command::OpenSearch);
+    ui.update();
+
+    assert!(!menu_bar.state_of(&Command::ToggleLyrics).is_checked());
+    let search = || {
+        nodes(Role::TextInput)
+            .into_iter()
+            .find(|node| node.label.is_none())
+    };
+    wait_until(&mut ui, || search().is_some_and(|field| !field.disabled));
+    frames(&mut ui, 1500);
+    assert!(find(Role::Dialog, "Lyrics").is_none());
+}
+
+/// What `shortcut` is as a key the window's keymap binds.
+fn stroke_of(shortcut: Shortcut) -> next_ui::keymap::Keystroke {
+    use anti_webui::prelude::NamedKey;
+    use next_ui::keymap::Keystroke;
+
+    let stroke = match shortcut.key() {
+        Key::Char(c) => Keystroke::character(c),
+        Key::Left => Keystroke::named(NamedKey::ArrowLeft),
+        Key::Right => Keystroke::named(NamedKey::ArrowRight),
+        Key::Up => Keystroke::named(NamedKey::ArrowUp),
+        Key::Down => Keystroke::named(NamedKey::ArrowDown),
+        key => panic!("no stroke for {key:?}"),
+    }
+    .with_primary();
+    let stroke = if shortcut.has_shift() {
+        stroke.with_shift()
+    } else {
+        stroke
+    };
+    let stroke = if shortcut.has_option() {
+        stroke.with_alt()
+    } else {
+        stroke
+    };
+    if shortcut.has_control() {
+        stroke.with_ctrl()
+    } else {
+        stroke
+    }
+}
+
+/// The menu bar's keys come before the window's, so a key bound in both would never reach the
+/// window.
+#[test]
+fn the_menu_bar_takes_no_key_the_window_binds() {
+    let (_core, mut ui, menu_bar, _player) = on_a_song();
+    for destination in Destination::ALL {
+        menu_bar.choose(Command::Show(crate::navigation::location_of(destination)));
+        frames(&mut ui, 100);
+    }
+    menu_bar.choose(Command::ToggleQueue);
+    frames(&mut ui, 100);
+    menu_bar.choose(Command::ToggleLyrics);
+    frames(&mut ui, 100);
+    let bound = next_ui::keymap::bound_strokes();
+    let contexts: std::collections::HashSet<_> =
+        bound.iter().map(|(_, context)| *context).collect();
+    assert!(contexts.len() >= 7, "only {contexts:?} were bound");
+
+    for (command, shortcut) in every_item() {
+        let Some(shortcut) = shortcut else {
+            continue;
+        };
+        let stroke = stroke_of(shortcut);
+        let also: Vec<_> = bound
+            .iter()
+            .filter(|(bound, _)| *bound == stroke)
+            .map(|(_, context)| *context)
+            .collect();
+        assert!(
+            also.is_empty(),
+            "{command:?} takes {stroke}, bound in {also:?}"
+        );
+    }
+}
