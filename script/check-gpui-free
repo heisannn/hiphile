@@ -6,7 +6,7 @@ crates=(
   soxr executor updater session hiphile-core hiphile-cli
 )
 # The app on AntiWebUI, which shares the core with the GPUI app but not GPUI
-next_crates=(next-host next-ui next-platform next-account next-favorites next-player next-settings next-hiphile)
+next_crates=(next-host next-ui next-platform next-account next-favorites next-player next-search next-settings next-hiphile)
 root="$(cd "$(dirname "$0")/.." && pwd)"
 status=0
 for crate in "${crates[@]}" "${next_crates[@]}"; do

@@ -2,7 +2,8 @@ use anti_webui::core::event::NamedKey;
 use anti_webui::prelude::Role;
 use next_player::testing::{CoverServer, png};
 use next_ui::testing::{
-    NOWHERE, core, find, frames, has_text, key, nodes, press, signed_in_core, start, wait_until,
+    NOWHERE, SavedLibrary, core, find, frames, has_text, key, nodes, press, signed_in_core,
+    signed_in_core_with_library, start, typed, wait_until,
 };
 use serde_json::json;
 
@@ -160,4 +161,46 @@ fn the_colors_follow_the_cover_of_what_plays() {
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
     assert_ne!(color_scheme().primary, before);
+}
+
+fn focus_role() -> Option<Role> {
+    let tree = anti_webui::core::access::snapshot();
+    tree.get(tree.focus?).map(|node| node.role)
+}
+
+#[test]
+fn the_rail_opens_the_search_over_the_screens_with_the_focus_in_it() {
+    let (_core, hiphile) = signed_in_core(NOWHERE);
+    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new(), Reach::Window));
+    press(&mut ui, Role::Button, "Albums");
+
+    press(&mut ui, Role::Button, "Search");
+    assert_eq!(focus_role(), Some(Role::TextInput));
+
+    key(&mut ui, NamedKey::Escape);
+    frames(&mut ui, 1000);
+    assert!(nodes(Role::TextInput).is_empty());
+    assert_eq!(find(Role::Button, "Albums").unwrap().selected, Some(true));
+}
+
+#[test]
+fn choosing_an_album_in_the_search_goes_to_it() {
+    let library = SavedLibrary {
+        albums: serde_json::from_value(json!([
+            { "id": "blue", "name": "Kind of Blue", "artist": "Miles Davis", "artistId": "miles" },
+        ]))
+        .unwrap(),
+        ..SavedLibrary::default()
+    };
+    let (_core, hiphile, _catalog) = signed_in_core_with_library(NOWHERE, &library);
+    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new(), Reach::Window));
+    press(&mut ui, Role::Button, "Search");
+
+    typed(&mut ui, "kind of blue");
+    wait_until(&mut ui, || find(Role::ListOption, "Kind of Blue").is_some());
+    key(&mut ui, NamedKey::Enter);
+
+    assert_eq!(find(Role::Button, "Albums").unwrap().selected, Some(true));
+    frames(&mut ui, 1000);
+    assert!(nodes(Role::TextInput).is_empty());
 }

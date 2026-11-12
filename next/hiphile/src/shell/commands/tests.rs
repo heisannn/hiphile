@@ -40,6 +40,7 @@ fn on(server: &str) -> Shown {
                 workspace,
                 Navigation::new(),
                 signal(false),
+                signal(false),
                 snackbars,
             );
             let cx = shell.context();

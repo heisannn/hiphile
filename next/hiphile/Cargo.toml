@@ -23,6 +23,7 @@ next-favorites.workspace = true
 next-host.workspace = true
 next-platform.workspace = true
 next-player.workspace = true
+next-search.workspace = true
 next-settings.workspace = true
 next-ui.workspace = true
 presence.workspace = true

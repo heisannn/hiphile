@@ -1,0 +1,23 @@
+[package]
+name = "next-search"
+description = "The search on AntiWebUI, which opens over every screen and finds anything in the saved library."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+anti-webui.workspace = true
+anti-webui-md3e.workspace = true
+hiphile-core.workspace = true
+next-host.workspace = true
+next-ui.workspace = true
+subsonic.workspace = true
+
+[dev-dependencies]
+catalog.workspace = true
+next-ui = { workspace = true, features = ["test-support"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true

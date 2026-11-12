@@ -7,14 +7,17 @@ use std::path::{Path, PathBuf};
 use anti_webui::app::headless;
 use anti_webui::core::Ui;
 use anti_webui::core::access::{AccessAction, perform};
-use anti_webui::core::event::{Modifiers, WindowEvent};
+use anti_webui::core::event::{Modifiers, NamedKey, WindowEvent};
 use anti_webui::core::geometry::PointF;
 use anti_webui::prelude::{Role, signal};
 use anti_webui_md3e::color_scheme;
 use hiphile_core::Hiphile;
 use next_hiphile::{MenuBar, Reach, SMALLEST_WINDOW, WINDOW, app};
 use next_player::testing::{CoverServer, png};
-use next_ui::testing::{NOWHERE, click, core, find, frames, press, signed_in_core};
+use next_ui::testing::{
+    NOWHERE, SavedLibrary, click, core, find, frames, has_text, key, press, signed_in_core,
+    signed_in_core_with_library, typed, wait_until,
+};
 use next_ui::theme::{DEFAULT_SEED, scheme};
 use serde_json::json;
 use subsonic::Song;
@@ -112,6 +115,7 @@ fn main() {
             SMALLEST_WINDOW,
             |ui| settings(ui, "Audio"),
         );
+        search_shots(&folder, theme, dark, &covers);
         playing_shot(
             &folder.join(format!("player-playing-{theme}.png")),
             dark,
@@ -182,6 +186,68 @@ fn shot_at(
     render(path, dark, hiphile, size, drive);
 }
 
+fn search_shots(folder: &Path, theme: &str, dark: bool, covers: &CoverServer) {
+    for (name, size) in [("search", WINDOW), ("search-narrow", SMALLEST_WINDOW)] {
+        search_shot(
+            &folder.join(format!("{name}-{theme}.png")),
+            dark,
+            covers,
+            size,
+            |ui| {
+                typed(ui, "blue");
+                wait_until(ui, || find(Role::ListOption, "Blue in Green").is_some());
+                key(ui, NamedKey::ArrowDown);
+                key(ui, NamedKey::ArrowDown);
+            },
+        );
+    }
+    search_shot(
+        &folder.join(format!("search-opened-{theme}.png")),
+        dark,
+        covers,
+        WINDOW,
+        |_| {},
+    );
+    search_shot(
+        &folder.join(format!("search-no-matches-{theme}.png")),
+        dark,
+        covers,
+        WINDOW,
+        |ui| {
+            typed(ui, "xylophone");
+            wait_until(ui, || has_text("Nothing matches."));
+        },
+    );
+    shot(
+        &folder.join(format!("search-no-library-{theme}.png")),
+        dark,
+        true,
+        |ui| press(ui, Role::Button, "Search"),
+    );
+}
+
+/// The search open over Home, on a saved library whose covers come from `covers`, after `drive`.
+fn search_shot(
+    path: &Path,
+    dark: bool,
+    covers: &CoverServer,
+    size: (i32, i32),
+    drive: impl FnOnce(&mut Ui),
+) {
+    let (_core, hiphile, _catalog) = signed_in_core_with_library(covers.url(), &library());
+    render(path, dark, hiphile, size, move |ui| {
+        press(ui, Role::Button, "Search");
+        // For the bar to open to its full size
+        frames(ui, 600);
+        drive(ui);
+        // For the covers to come
+        for _ in 0..50 {
+            frames(ui, 16);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    });
+}
+
 /// A song with a cover from `covers` in the queue, in the state that `setup` puts the player in.
 /// The shot waits for the colors that the cover gives.
 fn playing_shot(
@@ -236,6 +302,87 @@ fn render(
     .expect("a GPU to draw with");
     headless::write_png(path, width, height, &pixels).expect("the shot written");
     println!("{}", path.display());
+}
+
+fn library() -> SavedLibrary {
+    let album = |id: &str, name: &str, artist: &str, artist_id: &str| {
+        json!({ "id": id, "name": name, "artist": artist, "artistId": artist_id,
+                "coverArt": format!("al-{id}") })
+    };
+    let song =
+        |id: &str, title: &str, artist: &str, artist_id: &str, album: &str, album_id: &str| {
+            json!({ "id": id, "title": title, "artist": artist, "artistId": artist_id,
+                "album": album, "albumId": album_id, "coverArt": format!("al-{album_id}") })
+        };
+    SavedLibrary {
+        albums: serde_json::from_value(json!([
+            album("kind", "Kind of Blue", "Miles Davis", "miles"),
+            album("train", "Blue Train", "John Coltrane", "john"),
+            album("hours", "Blue Hours", "Mina Arai", "mina"),
+            album("tide", "Low Tide Lights", "Mira Okada", "mira"),
+        ]))
+        .unwrap(),
+        songs: serde_json::from_value(json!([
+            song(
+                "green",
+                "Blue in Green",
+                "Miles Davis",
+                "miles",
+                "Kind of Blue",
+                "kind"
+            ),
+            song(
+                "train",
+                "Blue Train",
+                "John Coltrane",
+                "john",
+                "Blue Train",
+                "train"
+            ),
+            song(
+                "hours",
+                "Blue Hours",
+                "Mina Arai",
+                "mina",
+                "Blue Hours",
+                "hours"
+            ),
+            song(
+                "lanterns",
+                "Paper Lanterns Over the Blue Harbor on a Very Long Summer Evening",
+                "The Weatherhouse Quartet",
+                "weatherhouse",
+                "Blue Hours",
+                "hours",
+            ),
+            song(
+                "notice",
+                "Moment's Notice",
+                "John Coltrane",
+                "john",
+                "Blue Train",
+                "train"
+            ),
+            song(
+                "glass",
+                "Glass Harbor",
+                "Mira Okada",
+                "mira",
+                "Low Tide Lights",
+                "tide"
+            ),
+            song(
+                "bluebird",
+                "Bluebird",
+                "Blue Note Trio",
+                "trio",
+                "Low Tide Lights",
+                "tide"
+            ),
+        ]))
+        .unwrap(),
+        ..SavedLibrary::default()
+    }
 }
 
 fn song() -> Song {

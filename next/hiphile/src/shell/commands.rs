@@ -20,6 +20,7 @@ pub(super) struct Shell {
     navigation: Navigation,
     workspace: Workspace,
     settings_open: Signal<bool>,
+    search_open: Signal<bool>,
     pub(super) dialogs: PlaylistDialogs,
     known: Known,
     snackbars: Snackbars,
@@ -37,6 +38,7 @@ impl Shell {
         workspace: Workspace,
         navigation: Navigation,
         settings_open: Signal<bool>,
+        search_open: Signal<bool>,
         snackbars: Snackbars,
     ) -> Self {
         tell_notices(&workspace, snackbars);
@@ -45,6 +47,7 @@ impl Shell {
             known: Known::follow(hiphile, &workspace),
             workspace,
             settings_open,
+            search_open,
             dialogs: PlaylistDialogs::new(),
             snackbars,
             scope: Scope::here(),
@@ -66,7 +69,7 @@ impl Shell {
             Command::GoBack => self.navigation.back(),
             Command::GoForward => self.navigation.forward(),
             Command::OpenSettings => self.settings_open.set(true),
-            Command::OpenSearch => {}
+            Command::OpenSearch => self.search_open.set(true),
             // What could not play is told by the player's alerts
             Command::Play { songs, start } => {
                 let _ = match start {

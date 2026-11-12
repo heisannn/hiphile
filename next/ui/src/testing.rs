@@ -17,6 +17,10 @@ use anti_webui_md3e::components::snackbars;
 
 use crate::{Command, Commands, Known, ScreenContext};
 
+mod library;
+
+pub use library::{SavedLibrary, save_library, signed_in_core_with_library};
+
 /// The size the main window opens at.
 pub const WINDOW: (i32, i32) = (1200, 760);
 

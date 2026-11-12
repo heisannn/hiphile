@@ -5627,6 +5627,7 @@ dependencies = [
  "next-host",
  "next-platform",
  "next-player",
+ "next-search",
  "next-settings",
  "next-ui",
  "playback",
@@ -5675,6 +5676,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "next-search"
+version = "0.5.0"
+dependencies = [
+ "anti-webui",
+ "anti-webui-md3e",
+ "catalog",
+ "hiphile-core",
+ "next-host",
+ "next-ui",
+ "serde_json",
+ "subsonic",
+]
+
+[[package]]
 name = "next-settings"
 version = "0.5.0"
 dependencies = [
@@ -5694,8 +5709,11 @@ version = "0.5.0"
 dependencies = [
  "anti-webui",
  "anti-webui-md3e",
+ "catalog",
+ "client",
  "config 0.5.0",
  "executor",
+ "futures",
  "hiphile-core",
  "net",
  "next-host",

@@ -1,9 +1,12 @@
 use std::cell::Cell;
 
 use anti_webui::core::Ui;
+use anti_webui::core::event::NamedKey;
 use hiphile_core::Hiphile;
 use hiphile_core::navigation::Location;
-use next_ui::testing::{NOWHERE, core, find, nodes, press, signed_in_core, start, wait_until};
+use next_ui::testing::{
+    NOWHERE, core, find, frames, key, nodes, press, signed_in_core, start, wait_until,
+};
 
 use super::*;
 use crate::app;
@@ -187,4 +190,24 @@ fn once_signed_out_the_menu_bar_goes_nowhere_again() {
     menu_bar.choose(Command::OpenSettings);
     ui.update();
     assert!(nodes(Role::Dialog).is_empty());
+}
+
+#[test]
+fn while_the_search_is_open_the_menu_bar_goes_nowhere() {
+    let (_core, hiphile) = signed_in_core(NOWHERE);
+    let (mut ui, menu_bar) = start_with_menu_bar(hiphile);
+    assert!(menu_bar.state_of(&Command::OpenSearch).is_enabled());
+
+    menu_bar.choose(Command::OpenSearch);
+    ui.update();
+    assert!(!menu_bar.state_of(&Command::OpenSearch).is_enabled());
+    assert!(
+        !menu_bar
+            .state_of(&Command::Show(Location::Songs))
+            .is_enabled()
+    );
+
+    key(&mut ui, NamedKey::Escape);
+    frames(&mut ui, 1000);
+    assert!(menu_bar.state_of(&Command::OpenSearch).is_enabled());
 }

@@ -8,6 +8,7 @@ use hiphile_core::{Hiphile, HiphileSnapshot, Workspace};
 use next_account::{sign_in, sign_in_dialog};
 use next_host::follow;
 use next_player::{Panels, cover_seed, now_playing_cover, player_bar};
+use next_search::search;
 use next_settings::settings_popup;
 use next_ui::cover::install_covers;
 use next_ui::pane::{GAP, pane};
@@ -105,14 +106,22 @@ fn signed_in(
     let expanded = signal(true);
     effect(move || expanded.set(wide.get()));
     let settings_open = signal(false);
+    let search_open = signal(false);
     let sign_in_request = signal(None);
-    let shell = Shell::new(&hiphile, workspace, navigation, settings_open, snackbars);
+    let shell = Shell::new(
+        &hiphile,
+        workspace,
+        navigation,
+        settings_open,
+        search_open,
+        snackbars,
+    );
     let cx = shell.context();
     menu_bar.attach(cx.commands.clone(), move || Shown {
         destination: Some(navigation.destination()),
         can_go_back: navigation.can_go_back(),
         can_go_forward: navigation.can_go_forward(),
-        covered: settings_open.get() || sign_in_request.with(Option::is_some),
+        covered: settings_open.get() || search_open.get() || sign_in_request.with(Option::is_some),
     });
     div()
         .size_full()
@@ -132,6 +141,7 @@ fn signed_in(
                 .flex_1()
                 .min_w(0)
                 .h_full()
+                .relative()
                 .flex()
                 .flex_col()
                 .child(div().flex_1().min_h(0).flex().flex_col().child(for_each(
@@ -154,7 +164,8 @@ fn signed_in(
                         }
                     },
                 )))
-                .child(player_bar(player, cover, panels).mr(16)),
+                .child(player_bar(player, cover, panels).mr(16))
+                .child(search(&cx, search_open)),
         )
         .child(shell.dialogs.view(&cx))
         .child(settings_popup(hiphile.clone(), settings_open))

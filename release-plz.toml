@@ -87,6 +87,10 @@ name = "next-player"
 release = false
 
 [[package]]
+name = "next-search"
+release = false
+
+[[package]]
 name = "next-settings"
 release = false
 

@@ -9,12 +9,16 @@ license.workspace = true
 [dependencies]
 anti-webui.workspace = true
 anti-webui-md3e.workspace = true
+catalog = { workspace = true, optional = true }
+client = { workspace = true, optional = true }
 config.workspace = true
 executor = { workspace = true, optional = true }
+futures = { workspace = true, optional = true }
 hiphile-core.workspace = true
 net = { workspace = true, optional = true }
 next-host.workspace = true
 playback.workspace = true
+serde_json = { workspace = true, optional = true }
 subsonic.workspace = true
 tempfile = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt-multi-thread"] }
@@ -22,8 +26,12 @@ tokio = { workspace = true, optional = true, features = ["rt-multi-thread"] }
 [features]
 # Driving views without a window, on a core of their own, for the tests of the crates that show them
 test-support = [
+  "dep:catalog",
+  "dep:client",
   "dep:executor",
+  "dep:futures",
   "dep:net",
+  "dep:serde_json",
   "dep:tempfile",
   "dep:tokio",
   "hiphile-core/test-support",
