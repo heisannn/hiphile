@@ -20,7 +20,6 @@ use next_ui::load_state::{
 };
 use next_ui::menus::{album_menu, artist_menu, show_in_albums_item, song_menu};
 use next_ui::now_playing::NowPlaying;
-use next_ui::now_playing::follow_now_playing;
 use next_ui::pane::pane;
 use next_ui::row_list::Selection;
 use next_ui::{AlbumAction, Command, Screen, ScreenContext};
@@ -105,7 +104,7 @@ pub fn favorites(cx: &ScreenContext) -> Screen {
         section: signal(Section::Songs),
         selections: [Selection::new(), Selection::new(), Selection::new()],
         menu: ContextMenu::new(cx.overlays),
-        now_playing: follow_now_playing(&cx.workspace),
+        now_playing: cx.known.now_playing(),
         list: node_ref(),
         tabs: node_ref(),
         focus_list: Cell::new(false),

@@ -14,7 +14,7 @@ use hiphile_core::selection::after_removal;
 use next_host::{Pending, Scope, follow};
 use next_ui::context_menu::ContextMenu;
 use next_ui::list_detail::{Split, list_detail};
-use next_ui::now_playing::{NowPlaying, follow_now_playing};
+use next_ui::now_playing::NowPlaying;
 use next_ui::row_list::{ROW_HEIGHT, Selection, reveal};
 use next_ui::{AlbumAction, Command, Screen, ScreenContext};
 use subsonic::{Playlist, PlaylistId, Song};
@@ -95,7 +95,7 @@ impl Playlists {
                 _ => None,
             })
         });
-        let now_playing = follow_now_playing(&cx.workspace);
+        let now_playing = cx.known.now_playing();
         let filter = signal(state.query());
         {
             let state = state.clone();

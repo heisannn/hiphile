@@ -102,15 +102,7 @@ impl Model {
         let status = follow(list.subscribe());
         let detail = AlbumDetail::new(next_host::executor(), workspace.session().clone());
         let album = follow(detail.subscribe());
-        let player = follow(workspace.player().subscribe());
-        let now_playing = memo(move || {
-            player.with(|player| {
-                NowPlaying::new(
-                    player.current_song().map(|song| song.id().clone()),
-                    player.is_playing(),
-                )
-            })
-        });
+        let now_playing = cx.known.now_playing();
         let here = memo(move || match location.get() {
             Location::Albums(album) => Some(album),
             _ => None,

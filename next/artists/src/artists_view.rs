@@ -16,7 +16,7 @@ use next_ui::card_grid::{GridMotion, columns_for, step};
 use next_ui::context_menu::ContextMenu;
 use next_ui::keymap::{KeyBinding, Keystroke, bind_keys, is_bound};
 use next_ui::list_detail::{Split, list_detail};
-use next_ui::now_playing::{NowPlaying, follow_now_playing};
+use next_ui::now_playing::NowPlaying;
 use next_ui::row_list::{ROW_HEIGHT, Selection, scroll_to_row};
 use next_ui::sort_menu::{SortOption, sort_menu};
 use next_ui::{AlbumAction, Command, Screen, ScreenContext};
@@ -227,7 +227,7 @@ pub(crate) fn artists_view(
         fetching: signal(None),
         action: RefCell::default(),
         menu: ContextMenu::new(cx.overlays),
-        now_playing: follow_now_playing(&cx.workspace),
+        now_playing: cx.known.now_playing(),
         list_node: node_ref(),
         page_node: node_ref(),
         page_focused: signal(false),

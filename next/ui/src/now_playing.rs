@@ -5,7 +5,6 @@ use anti_webui::prelude::*;
 use anti_webui_md3e::color_scheme;
 use anti_webui_md3e::components::sized_icon;
 use anti_webui_md3e::icons;
-use hiphile_core::Workspace;
 use subsonic::SongId;
 
 /// The icon's size, and the width of its lane, which is there with no icon too, so that what comes
@@ -45,17 +44,6 @@ impl NowPlaying {
     pub fn state_of(&self, song: &SongId) -> Option<PlayState> {
         (&self.song == song).then_some(self.state)
     }
-}
-
-/// What the player of `workspace` is on, for as long as the current owner lives.
-pub fn follow_now_playing(workspace: &Workspace) -> Memo<Option<NowPlaying>> {
-    let shown = next_host::follow(workspace.player().subscribe());
-    memo(move || {
-        shown.with(|shown| {
-            let song = shown.current_song().map(|song| song.id().clone());
-            NowPlaying::new(song, shown.is_playing())
-        })
-    })
 }
 
 /// The icon of `state`, in a lane of its own. It says nothing to assistive technology, as the

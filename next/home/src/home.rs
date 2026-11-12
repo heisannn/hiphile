@@ -24,7 +24,7 @@ use next_ui::load_state::{
     HOME, MOST_PLAYED, NEW_ALBUMS, NONE_ON_SERVER, RECENTLY_PLAYED, RECOMMENDATIONS, load_failure,
 };
 use next_ui::menus::{album_menu, show_in_albums_item, song_menu};
-use next_ui::now_playing::{NowPlaying, follow_now_playing, song_row_label};
+use next_ui::now_playing::{NowPlaying, song_row_label};
 use next_ui::page_row::{PageRow, page_row};
 use next_ui::pane::pane;
 use next_ui::row_buttons::RowButtons;
@@ -143,7 +143,7 @@ fn page(cx: &ScreenContext, node: NodeRef) -> Div {
         node,
         menu: ContextMenu::new(cx.overlays),
         places: Places::default(),
-        now_playing: follow_now_playing(workspace),
+        now_playing: cx.known.now_playing(),
     };
     let shelves = page.shelves;
     let sections = memo(move || shelves.with(Shelves::sections));
