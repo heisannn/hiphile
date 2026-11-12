@@ -14,14 +14,14 @@ for crate in "${crates[@]}" "${next_crates[@]}"; do
   spec="path+file://$root/crates/$crate"
   # Named apart from their folders
   [[ $crate == next-* ]] && spec="path+file://$root/next/${crate#next-}#$crate"
-  if ! tree="$(cargo tree --locked -p "$spec" -e normal --prefix none)"; then
+  if ! tree="$(cargo tree --locked -p "$spec" -e normal,dev --prefix none)"; then
     echo "error: could not list what $crate depends on" >&2
     status=1
     continue
   fi
   if grep -qi '^gpui' <<<"$tree"; then
     echo "error: $crate depends on GPUI" >&2
-    cargo tree --locked -p "$spec" -e normal -i gpui-pre 2>/dev/null | head -20 >&2 || true
+    cargo tree --locked -p "$spec" -e normal,dev -i gpui-pre 2>/dev/null | head -20 >&2 || true
     status=1
   fi
 done
