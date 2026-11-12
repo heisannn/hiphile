@@ -18,6 +18,7 @@ use next_ui::keymap::{KeyBinding, Keystroke, bind_keys, is_bound};
 use next_ui::list_detail::{Split, list_detail};
 use next_ui::now_playing::NowPlaying;
 use next_ui::row_list::{ROW_HEIGHT, Selection, scroll_to_row};
+use next_ui::selection::KeysShown;
 use next_ui::sort_menu::{SortOption, sort_menu};
 use next_ui::{AlbumAction, Command, Screen, ScreenContext};
 use playback::Placement;
@@ -175,6 +176,7 @@ pub(crate) struct View {
     pub(crate) list_node: NodeRef,
     pub(crate) page_node: NodeRef,
     pub(crate) page_focused: Signal<bool>,
+    pub(crate) page_keys: KeysShown,
     pub(crate) layout: Rc<PageLayout>,
     /// The artist the page was last made to show.
     shown_artist: RefCell<Option<ArtistId>>,
@@ -231,6 +233,7 @@ pub(crate) fn artists_view(
         list_node: node_ref(),
         page_node: node_ref(),
         page_focused: signal(false),
+        page_keys: KeysShown::new(),
         layout: Rc::new(PageLayout::new()),
         shown_artist: RefCell::default(),
         listed: RefCell::default(),
@@ -613,6 +616,22 @@ impl View {
             .then_some(item)
     }
 
+    /// Whether the keys are on `item` while the page's focus shows: the selected one, or the first
+    /// with none.
+    pub(crate) fn has_keys_on(&self, item: &Item) -> bool {
+        if !self.page_keys.get() || !self.page_focused.get() {
+            return false;
+        }
+        match self.item.get() {
+            Some(selected) => selected == *item,
+            None => self
+                .rows()
+                .first()
+                .and_then(|(_, row)| row.first())
+                .is_some_and(|first| first == item),
+        }
+    }
+
     fn is_at_row_start(&self) -> bool {
         let Some(item) = self.item_on_show() else {
             return true;
@@ -845,6 +864,7 @@ impl View {
 
     pub(crate) fn run_on_page(&self, command: ArtistsCommand) {
         use ArtistsCommand::*;
+        self.page_keys.used_a_key();
         match command {
             Move(GridMotion::Left) if self.is_at_row_start() => self.focus_list(),
             Move(motion) => self.move_item(motion),

@@ -15,7 +15,7 @@ use hiphile_core::Shown;
 use crate::context_menu::pressed_at;
 use crate::focus_ring::inner_focus_ring;
 use crate::keymap::{Keystroke, handles_keys};
-use crate::selection::{CORNER, selection_fill, shows_keys_on};
+use crate::selection::{CORNER, KeysShown, selection_fill, shows_keys_on};
 
 mod selection;
 
@@ -365,10 +365,9 @@ pub fn row_list<S: RowSource, K: Clone + Eq + Hash + 'static>(list: RowList<S, K
     let selection = selection.unwrap_or_else(Selection::new);
     let node = node.unwrap_or_else(node_ref);
     let focused = signal(false);
-    // Whether the focus shows: it came with the keys or they were used since, and the pointer has
-    // not pressed in the list since. What has the focus is the list; the row the keys are on shows
-    // it, as md3e's tabs show their row's
-    let keyed = signal(false);
+    // What has the focus is the list; the row the keys are on shows it, as md3e's tabs show their
+    // row's
+    let keyed = KeysShown::new();
     let shown = signal(untrack(|| rows()));
     let shared = Rc::new(Shared {
         rows: shown,
@@ -426,9 +425,8 @@ pub fn row_list<S: RowSource, K: Clone + Eq + Hash + 'static>(list: RowList<S, K
         let a = a.role(Role::ListBox).label(label.clone());
         if is_single { a } else { a.multiselectable() }
     })
-    .on_focus_change(move |on| focused.set(on))
-    .on_focus_visible(move |on| keyed.set(on))
-    .on_pointer_down(move |_| keyed.set(false));
+    .on_focus_change(move |on| focused.set(on));
+    let list = keyed.follow(list);
     handles_keys(list, move |stroke| {
         let took = take_key(
             stroke,
@@ -443,7 +441,7 @@ pub fn row_list<S: RowSource, K: Clone + Eq + Hash + 'static>(list: RowList<S, K
             },
         );
         if took {
-            keyed.set(true);
+            keyed.used_a_key();
         }
         took
     })

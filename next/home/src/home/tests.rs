@@ -13,7 +13,8 @@ use next_ui::cover::install_covers;
 use next_ui::keymap::Keystroke;
 use next_ui::testing::{
     TestCore, click_text, double_click, find, focus, key, key_with, middle_of, nodes, press,
-    recording_commands, right_click, screen_context, signed_in_core, start_at, wait_until,
+    recording_commands, right_click, screen_context, shows_keys, signed_in_core, start_at,
+    wait_until,
 };
 use next_ui::{AlbumAction, Known};
 use playback::Placement;
@@ -335,6 +336,24 @@ fn the_cards_across_follow_the_width_of_the_window() {
     // No more than the shelves have albums for
     shown.resize(300 * 16);
     assert_eq!(new_cards(), 2 * MAX_COLUMNS);
+}
+
+#[test]
+fn the_keys_show_where_they_are_until_the_pointer_presses() {
+    let mut shown = settled_home_on(server(&[], 2), SIX_ACROSS);
+    assert!(!shows_keys(Role::ListOption, "a0"));
+
+    shown.keys(&[NamedKey::ArrowDown]);
+    assert_eq!(selected_label().as_deref(), Some("a0"));
+    assert!(shows_keys(Role::ListOption, "a0"));
+    shown.keys(&[NamedKey::ArrowRight]);
+    assert!(shows_keys(Role::ListOption, "a1"));
+    assert!(!shows_keys(Role::ListOption, "a0"));
+
+    click_text(&mut shown.ui, "a0");
+    shown.lay_out();
+    assert_eq!(selected_label().as_deref(), Some("a0"));
+    assert!(!shows_keys(Role::ListOption, "a0"));
 }
 
 #[test]

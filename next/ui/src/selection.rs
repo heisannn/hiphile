@@ -36,6 +36,41 @@ pub fn selection_fill(c: &ColorScheme, selected: bool, focused: bool) -> Option<
     }
 }
 
+/// Whether the focus of what holds the items shows on the one the keys are on: from when the focus
+/// comes with the keys, or a key is used, until the pointer presses in it or the focus goes. Cheap
+/// to copy.
+#[derive(Clone, Copy)]
+pub struct KeysShown(Signal<bool>);
+
+impl KeysShown {
+    pub fn new() -> Self {
+        Self(signal(false))
+    }
+
+    /// `holder`, the focusable element the items are in, followed by this.
+    pub fn follow(self, holder: Div) -> Div {
+        let shown = self.0;
+        holder
+            .on_focus_visible(move |on| shown.set(on))
+            .on_pointer_down(move |_| shown.set(false))
+    }
+
+    /// To be told of each key the holder takes.
+    pub fn used_a_key(self) {
+        self.0.set(true);
+    }
+
+    pub fn get(self) -> bool {
+        self.0.get()
+    }
+}
+
+impl Default for KeysShown {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Makes `ink`, which paints an item, show its focus layer while `keyed` says the keys are on the
 /// item.
 pub(crate) fn shows_keys_on(ink: &Ink, keyed: Memo<bool>) {

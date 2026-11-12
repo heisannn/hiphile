@@ -76,7 +76,7 @@ pub(super) fn page_pane(view: &Rc<View>) -> Div {
             height.set_if_changed(h);
         })
         .child(content(view.clone()));
-    key_context(page, &context)
+    key_context(view.page_keys.follow(page), &context)
 }
 
 /// What the page shows of the artist.
@@ -391,7 +391,8 @@ fn song_row(view: &Rc<View>, position: usize, song: Song) -> Div {
         PageRow::new(content)
             .label(label)
             .selected_when(selected)
-            .focused_when(move || focused.get()),
+            .focused_when(move || focused.get())
+            .keyed_when(keyed_on(view, &item)),
     )
     .node_ref(node)
     .on_click(move |e| {
@@ -709,7 +710,8 @@ fn on_card(
     let focused = view.page_focused;
     let shown = shown
         .selected_when(is_selected(view, &item))
-        .focused_when(move || focused.get());
+        .focused_when(move || focused.get())
+        .keyed_when(keyed_on(view, &item));
     let (clicked, pressed) = (view.clone(), view.clone());
     let clicked_item = item.clone();
     card(shown)
@@ -725,6 +727,11 @@ fn on_card(
                 pressed.menu.open_at(pressed_at(e), menu());
             }
         })
+}
+
+fn keyed_on(view: &Rc<View>, item: &Item) -> impl Fn() -> bool + 'static {
+    let (view, item) = (view.clone(), item.clone());
+    move || view.has_keys_on(&item)
 }
 
 fn is_selected(view: &Rc<View>, item: &Item) -> impl Fn() -> bool + 'static {

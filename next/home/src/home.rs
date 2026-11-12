@@ -33,6 +33,7 @@ use next_ui::row_list::is_context_click;
 use next_ui::section::{
     section_failure, section_heading, section_heading_with, section_loading, section_note,
 };
+use next_ui::selection::KeysShown;
 use next_ui::song_row::{SongRow, song_words};
 use next_ui::{Command, Screen, ScreenContext};
 use subsonic::{Album, Song};
@@ -113,6 +114,9 @@ struct Page {
     selection: Signal<Option<Item>>,
     /// Whether the page itself has the focus, rather than a button on it.
     focused: Signal<bool>,
+    /// The item the keys are on while the focus shows: the selected one, or the first with none.
+    keys_on: Memo<Option<Item>>,
+    keys: KeysShown,
     node: NodeRef,
     menu: ContextMenu,
     places: Places,
@@ -129,23 +133,35 @@ fn page(cx: &ScreenContext, node: NodeRef) -> Div {
         move |failed: ReloadFailed| snackbars.show(Snackbar::new(failed.message()).long()),
     );
     let width = signal(0.0f32);
+    let shelves = memo(move || {
+        recommended.with(|recommended| shelved.with(|shelved| Shelves::of(recommended, shelved)))
+    });
+    let columns = memo(move || columns_for(width.get()).min(MAX_COLUMNS));
+    let (selection, focused, keys) = (signal(None), signal(false), KeysShown::new());
+    let keys_on = memo(move || {
+        if !keys.get() || !focused.get() {
+            return None;
+        }
+        selection.get().or_else(|| {
+            let columns = columns.get();
+            shelves.with(|shelves| shelves.rows(columns).into_iter().flatten().next())
+        })
+    });
     let page = Page {
         cx: cx.clone(),
-        shelves: memo(move || {
-            recommended
-                .with(|recommended| shelved.with(|shelved| Shelves::of(recommended, shelved)))
-        }),
+        shelves,
         is_reloadable: memo(move || recommended.with(|status| status.is_reloadable())),
         is_recommending: memo(move || recommended.with(|status| status.is_recommending())),
-        columns: memo(move || columns_for(width.get()).min(MAX_COLUMNS)),
-        selection: signal(None),
-        focused: signal(false),
+        columns,
+        selection,
+        focused,
+        keys_on,
+        keys,
         node,
         menu: ContextMenu::new(cx.overlays),
         places: Places::default(),
         now_playing: cx.known.now_playing(),
     };
-    let shelves = page.shelves;
     let sections = memo(move || shelves.with(Shelves::sections));
     let common_failure = memo(move || shelves.with(Shelves::common_failure));
     let (focused, node) = (page.focused, page.node);
@@ -183,6 +199,7 @@ fn page(cx: &ScreenContext, node: NodeRef) -> Div {
             }
         }))
         .child(page.menu.view());
+    let view = keys.follow(view);
     let context = {
         let (asked, taken) = (page.clone(), page);
         KeyContext::new(
@@ -306,7 +323,8 @@ impl Page {
         let look = Card::new(cover(url, CoverKind::Album), album.name())
             .line(line)
             .selected_when(self.is_selected(&item))
-            .focused_when(self.is_focused());
+            .focused_when(self.is_focused())
+            .keyed_when(self.is_keyed(&item));
         let open = {
             let (this, item) = (self.clone(), item.clone());
             move |e: &PointerEvent| {
@@ -395,7 +413,8 @@ impl Page {
         let row = PageRow::new(content)
             .label(label)
             .selected_when(self.is_selected(&item))
-            .focused_when(self.is_focused());
+            .focused_when(self.is_focused())
+            .keyed_when(self.is_keyed(&item));
         let click = {
             let (this, item, songs) = (self.clone(), item.clone(), songs.clone());
             move |e: &PointerEvent| {
@@ -452,6 +471,11 @@ impl Page {
         move || selection.with(|selected| selected.as_ref() == Some(&item))
     }
 
+    fn is_keyed(&self, item: &Item) -> impl Fn() -> bool + 'static {
+        let (keys_on, item) = (self.keys_on, item.clone());
+        move || keys_on.with(|on| on.as_ref() == Some(&item))
+    }
+
     fn is_focused(&self) -> impl Fn() -> bool + 'static {
         let focused = self.focused;
         move || focused.get()
@@ -501,6 +525,7 @@ impl Page {
     }
 
     fn take(&self, asked: Asked) {
+        self.keys.used_a_key();
         match asked {
             Asked::Move(motion) => self.move_selection(motion),
             Asked::Do(intent) => self.run(intent),

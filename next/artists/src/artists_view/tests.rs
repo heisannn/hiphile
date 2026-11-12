@@ -7,7 +7,7 @@ use hiphile_core::test_support::ArtistsServer;
 use hiphile_core::{Hiphile, Shelf};
 use next_ui::testing::{
     TestCore, click_text, find, focus, frames, has_text, key, key_with, middle_of, nodes, press,
-    right_click, screen_context, signed_in_core, start, typed, wait_until,
+    right_click, screen_context, shows_keys, signed_in_core, start, typed, wait_until,
 };
 use next_ui::{Commands, Screen};
 use serde_json::{Value, json};
@@ -482,6 +482,27 @@ fn the_arrows_move_through_songs_then_cards() {
 
     key(&mut shown.ui, NamedKey::Escape);
     assert_eq!(focused_label().as_deref(), Some("Artists"));
+}
+
+#[test]
+fn the_keys_show_where_they_are_on_the_page_until_the_pointer_presses() {
+    let server = server(1);
+    let mut shown = Shown::at(&server, artist("m"));
+    shown.page_of("m");
+    shown.focus_list();
+    // The focus the keys move shows
+    key(&mut shown.ui, NamedKey::Enter);
+    assert!(shows_keys(Role::ListOption, "Song 0"));
+
+    key(&mut shown.ui, NamedKey::ArrowDown);
+    assert_eq!(shown.item(), Some(Item::Album(AlbumId::new("a2"))));
+    assert!(shows_keys(Role::ListOption, "Album a2"));
+    assert!(!shows_keys(Role::ListOption, "Song 0"));
+
+    click_text(&mut shown.ui, "Song 0");
+    shown.ui.update();
+    assert_eq!(shown.item(), Some(Item::Song(SongId::new("s0"))));
+    assert!(!shows_keys(Role::ListOption, "Song 0"));
 }
 
 #[test]
