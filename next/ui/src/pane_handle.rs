@@ -4,6 +4,7 @@ use anti_webui::prelude::*;
 use anti_webui_md3e::color_scheme;
 use anti_webui_md3e::motion::{fast_effects, fast_spatial};
 
+use crate::focus_ring::focus_ring;
 use crate::pane::GAP;
 
 /// How far a press of Left or Right moves the handle.
@@ -69,13 +70,7 @@ pub fn pane_handle(
                 .w(pill_width.get())
                 .h(pill_height.get())
                 .bg(c.outline.mix(c.on_surface, strong.get().clamp(0.0, 1.0)));
-            if keyed.get() {
-                s.outline(3.0_f32)
-                    .outline_offset(2.0_f32)
-                    .outline_color(c.secondary)
-            } else {
-                s
-            }
+            focus_ring(s, keyed.get(), &c)
         });
     div()
         .flex()

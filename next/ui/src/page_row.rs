@@ -7,8 +7,9 @@ use anti_webui::prelude::*;
 use anti_webui_md3e::color_scheme;
 use anti_webui_md3e::components::Ink;
 
+use crate::focus_ring::inner_focus_ring;
 use crate::row_list::{ROW_HEIGHT, ROW_PADDING};
-use crate::selection::{CORNER, When, focus_ring, selection_fill, shows_keys_on};
+use crate::selection::{CORNER, When, selection_fill, shows_keys_on};
 
 /// From the edge of the page to the row, which puts what the row shows on the line of the rest of
 /// the pane, as in a row list.
@@ -94,7 +95,7 @@ pub fn page_row(row: PageRow) -> Div {
         })
         .dyn_style(move |s| {
             let c = color_scheme();
-            let s = focus_ring(s.text_color(c.on_surface), keyed.get(), &c);
+            let s = inner_focus_ring(s.text_color(c.on_surface), keyed.get(), &c);
             match selection_fill(&c, selected.get(), focused.get()) {
                 Some(fill) => s.bg(fill),
                 None => s,

@@ -12,8 +12,9 @@ use anti_webui_md3e::color_scheme;
 use anti_webui_md3e::components::Ink;
 use hiphile_core::Shown;
 
+use crate::focus_ring::inner_focus_ring;
 use crate::keymap::{Keystroke, handles_keys};
-use crate::selection::{CORNER, focus_ring, selection_fill, shows_keys_on};
+use crate::selection::{CORNER, selection_fill, shows_keys_on};
 
 mod selection;
 
@@ -699,7 +700,7 @@ impl<S: RowSource, K: Clone + Eq + Hash + 'static> Place<S, K> {
             })
             .dyn_style(move |s| {
                 let c = color_scheme();
-                let s = focus_ring(s.text_color(c.on_surface), is_keyed.get(), &c);
+                let s = inner_focus_ring(s.text_color(c.on_surface), is_keyed.get(), &c);
                 match selection_fill(&c, selected.get(), focused.get()) {
                     Some(fill) => s.bg(fill),
                     None => s,

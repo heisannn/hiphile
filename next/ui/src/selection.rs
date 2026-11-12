@@ -17,8 +17,6 @@ use anti_webui_md3e::components::Ink;
 /// How much of the focused selection's fill an unfocused selection has, over the fill of a card at
 /// rest. Less, and in a dark scheme it looks as a row the pointer is over does.
 const UNFOCUSED: f32 = 0.5;
-/// As wide as md3e's focus ring.
-const RING: f32 = 3.0;
 
 /// The corners of an item, which its fill, its state layer and its ring follow.
 pub(crate) const CORNER: f32 = 12.0;
@@ -35,17 +33,6 @@ pub fn selection_fill(c: &ColorScheme, selected: bool, focused: bool) -> Option<
                 .mix(c.secondary_container, UNFOCUSED),
         ),
         (false, _) => None,
-    }
-}
-
-/// md3e's focus ring, inside the edge, while the keys are on the item.
-pub fn focus_ring(s: Style, keyed: bool, c: &ColorScheme) -> Style {
-    if keyed {
-        s.outline(RING)
-            .outline_offset(-RING)
-            .outline_color(c.secondary)
-    } else {
-        s
     }
 }
 

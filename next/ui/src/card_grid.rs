@@ -9,10 +9,11 @@ use anti_webui_md3e::components::{Ink, filled_card};
 use anti_webui_md3e::typography::TextStyle;
 
 use crate::cover::ROUND;
+use crate::focus_ring::inner_focus_ring;
 use crate::keymap::Keystroke;
 use crate::pane::INSET;
 use crate::row_text::faded_end;
-use crate::selection::{CORNER, When, focus_ring, selection_fill, shows_keys_on};
+use crate::selection::{CORNER, When, selection_fill, shows_keys_on};
 
 pub const CARD_MIN_WIDTH: f32 = 160.0;
 /// Between cards, across and down.
@@ -246,7 +247,7 @@ pub fn card(card: Card) -> Div {
         .inset(0)
         .rounded(CORNER)
         .pointer_events_none()
-        .dyn_style(move |s| focus_ring(s, keyed.get(), &color_scheme()));
+        .dyn_style(move |s| inner_focus_ring(s, keyed.get(), &color_scheme()));
     let card = filled_card()
         .relative()
         .min_w(0)
