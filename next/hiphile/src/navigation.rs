@@ -16,6 +16,11 @@ impl Navigation {
         }
     }
 
+    /// Where the window is, which also says what is selected there.
+    pub(crate) fn location(&self) -> Signal<Location> {
+        self.location
+    }
+
     pub(crate) fn destination(&self) -> Destination {
         self.location.with(Location::destination)
     }

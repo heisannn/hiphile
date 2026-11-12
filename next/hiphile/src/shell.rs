@@ -2,7 +2,7 @@ use anti_webui::prelude::*;
 use anti_webui_md3e::color_scheme;
 use anti_webui_md3e::components::{IconButtonStyle, Snackbars, snackbars, styled_icon_button};
 use anti_webui_md3e::icons;
-use hiphile_core::navigation::Destination;
+use hiphile_core::navigation::{Destination, Location};
 use hiphile_core::settings::AppearanceSnapshot;
 use hiphile_core::{Hiphile, HiphileSnapshot, Workspace};
 use next_account::{sign_in, sign_in_dialog};
@@ -144,7 +144,7 @@ fn signed_in(
                                 title,
                                 actions,
                                 body,
-                            } = screen(destination, &cx);
+                            } = screen(destination, navigation.location(), &cx);
                             div()
                                 .size_full()
                                 .flex()
@@ -162,7 +162,19 @@ fn signed_in(
 }
 
 /// What `destination` shows.
-fn screen(destination: Destination, _cx: &ScreenContext) -> Screen {
+/// What `destination` shows, which reads from `location` what is selected on it.
+fn screen(destination: Destination, _location: Signal<Location>, _cx: &ScreenContext) -> Screen {
+    match destination {
+        Destination::Home => empty(destination),
+        Destination::Artists => empty(destination),
+        Destination::Albums => empty(destination),
+        Destination::Songs => empty(destination),
+        Destination::Playlists => empty(destination),
+        Destination::Favorites => empty(destination),
+    }
+}
+
+fn empty(destination: Destination) -> Screen {
     Screen::new(destination.label(), pane(div()))
 }
 
