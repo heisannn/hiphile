@@ -59,7 +59,7 @@ fn song_cache_group(songs: &CacheLimit, usage: &SongCacheUsage) -> Div {
                 "Clear",
                 ButtonStyle::outlined().disabled_when(nothing_to_clear),
             )
-            .access(|a| a.label("Clear song cache"))
+            .access(|a| a.label("Clear Song Cache"))
             .on_click(move |_| usage.clear());
             div()
                 .flex()
@@ -113,7 +113,7 @@ fn romaji_search_group(readings: &Readings) -> Div {
                         download_progress(state).into_view()
                     } else {
                         styled_button("Retry", ButtonStyle::outlined())
-                            .access(|a| a.label("Retry downloading the dictionary"))
+                            .access(|a| a.label("Retry Downloading the Dictionary"))
                             .on_click(move |_| readings.retry())
                             .into_view()
                     }
@@ -157,7 +157,7 @@ fn download_progress(state: Memo<ReadingsState>) -> Div {
         .child(
             linear_progress(fraction)
                 .w(PROGRESS)
-                .access(|a| a.label("Dictionary download")),
+                .access(|a| a.label("Dictionary Download")),
         )
         .child(
             TextStyle::BODY_MEDIUM

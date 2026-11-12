@@ -7,6 +7,7 @@ use anti_webui_md3e::components::{
 use anti_webui_md3e::icons::{self, Symbol};
 use anti_webui_md3e::typography::TextStyle;
 use next_host::follow;
+use next_ui::row_text::faded_end;
 use next_ui::type_scale::{error_text, muted_text, styled_text};
 use playback::{PlayerSnapshot, RepeatMode};
 use subsonic::Song;
@@ -32,7 +33,7 @@ pub fn player_bar(player: playback::Player, cover: Signal<Option<Cover>>, panels
         .py(12.0_f32)
         .access(|a| a.role(Role::Toolbar).label("Player"))
         .child(now_playing(shown, cover, panels))
-        .child(transport(player.clone(), shown))
+        .child(transport(player.clone(), shown, panels))
         .child(extras(player, shown, panels))
 }
 
@@ -70,13 +71,12 @@ pub(crate) fn song_words(shown: Signal<PlayerSnapshot>, style: TextStyle) -> Div
     let status = dyn_view(move || match error.get() {
         Some(error) => untrack(|| error_text(error)),
         None => untrack(|| {
-            muted_text(TextStyle::BODY_MEDIUM, move || {
+            faded_end(muted_text(TextStyle::BODY_MEDIUM, move || {
                 details.get().unwrap_or_default()
-            })
-            .whitespace_nowrap()
+            }))
         }),
     });
-    let title = styled_text(style, move || title.get().unwrap_or_default()).whitespace_nowrap();
+    let title = faded_end(styled_text(style, move || title.get().unwrap_or_default()));
     div()
         .flex()
         .flex_col()
@@ -158,7 +158,14 @@ pub(crate) fn cover_toggle(
         .select_none()
         .cursor(CursorIcon::Pointer)
         .focusable()
-        .access(|a| a.role(Role::Button).label("Lyrics"))
+        .access(move |a| {
+            let name = if lyrics.get() {
+                "Hide Lyrics"
+            } else {
+                "Show Lyrics"
+            };
+            a.role(Role::Button).label(name)
+        })
         .dyn_style(move |s| {
             let s = s.rounded(corner());
             if focused.get() {
@@ -179,12 +186,12 @@ fn small() -> IconButtonStyle {
     IconButtonStyle::standard().size(ButtonSize::Small)
 }
 
-fn transport(player: playback::Player, shown: Signal<PlayerSnapshot>) -> Div {
+fn transport(player: playback::Player, shown: Signal<PlayerSnapshot>, panels: Panels) -> Div {
     let has_song = memo(move || shown.with(PlayerSnapshot::has_song));
     let controls = controls(player.clone(), shown);
     let position = div().h(LANE).child(show(
         move || has_song.get(),
-        move || position_line(player.clone(), shown),
+        move || position_line(player.clone(), shown, move || panels.is_covered()),
     ));
     div()
         .flex()

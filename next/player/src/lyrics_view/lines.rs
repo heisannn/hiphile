@@ -19,8 +19,10 @@ use next_ui::load_state::{empty_state, load_failure, pane_loading};
 use next_ui::type_scale::{muted_text, styled_text};
 use playback::PlayerSnapshot;
 
-/// How often the position is read while the lines show: the parts of a line light at finer steps
-/// than the bar moves.
+use crate::reading::{keep_reading, read};
+
+/// How often the position is read while the timed lines show: the parts of a line light at finer
+/// steps than the bar moves.
 pub(super) const REFRESH: Duration = Duration::from_millis(50);
 /// How far down the lines the one being sung rests, as a part of their height.
 pub(super) const CURRENT_LINE_AT: f32 = 0.36;
@@ -51,19 +53,12 @@ pub(super) fn lines(
     let shown = follow(lyrics.subscribe());
     let lookup = memo(move || shown.with(|shown| shown.lookup().clone()));
     let highlight = memo(move || shown.with(LyricsSnapshot::highlight));
-    let position = signal(player.position());
-    keep_reading(player.clone(), position);
     let is_playing = memo(move || playing.with(PlayerSnapshot::is_playing));
-    let song = Playing {
-        player,
-        position,
-        is_playing,
-    };
     div().size_full().flex().flex_col().child(dyn_view(move || {
         let lookup = lookup.get();
         untrack(|| match lookup {
             Lookup::Nothing => div().into_view(),
-            Lookup::Loading(_) => pane_loading("Loading lyrics").into_view(),
+            Lookup::Loading(_) => pane_loading("Loading Lyrics").into_view(),
             Lookup::Failed(_, reason) => {
                 let lyrics = lyrics.clone();
                 load_failure("Lyrics didn't load", reason.to_string(), move || {
@@ -74,7 +69,8 @@ pub(super) fn lines(
             Lookup::Done(_, found) => match &*found {
                 Lyrics::Timed(timed) => timed_lines(
                     Rc::new(timed.clone()),
-                    song.clone(),
+                    player.clone(),
+                    is_playing,
                     highlight,
                     reduces_motion,
                 )
@@ -109,55 +105,17 @@ fn want_while(lyrics: &CurrentLyrics, open: Signal<bool>) {
     });
 }
 
-/// What the lines follow of the player.
+/// Where the song of the player is, as the lines read it.
 #[derive(Clone)]
 struct Playing {
     player: playback::Player,
     position: Signal<Duration>,
-    is_playing: Memo<bool>,
 }
 
 impl Playing {
     fn read(&self) {
         read(&self.player, self.position);
     }
-}
-
-/// Keeps `position` to where the song is, reading it every [`REFRESH`] while the current owner
-/// lives.
-fn keep_reading(player: playback::Player, position: Signal<Duration>) {
-    let next: Rc<Cell<Option<Timeout>>> = Rc::default();
-    let called_off = next.clone();
-    on_cleanup(move || {
-        if let Some(next) = called_off.take() {
-            next.cancel();
-        }
-    });
-    read_after(player, position, next);
-}
-
-fn read(player: &playback::Player, position: Signal<Duration>) {
-    let now = player.position();
-    if position.get_untracked() != now {
-        position.set(now);
-    }
-}
-
-/// Timers run outside any owner, which keeps no cleanup for them: each one after the first is
-/// called off through `next` alone.
-fn read_after(
-    player: playback::Player,
-    position: Signal<Duration>,
-    next: Rc<Cell<Option<Timeout>>>,
-) {
-    let again = next.clone();
-    next.set(Some(set_timeout(REFRESH, move || {
-        if !position.is_alive() {
-            return;
-        }
-        read(&player, position);
-        read_after(player, position, again);
-    })));
 }
 
 /// While a part is between dim and lit, each frame reads where the song is, so that it fades
@@ -206,15 +164,22 @@ struct Following {
     scroll: Animated<f32>,
     /// The lines have been put in place once, after which they move there.
     placed: Signal<bool>,
+    /// How many times a line has been followed, so that an attempt waiting for the layout gives
+    /// way to a later one. Never tracked.
+    attempts: Signal<u64>,
 }
 
+/// The lines, which read where the song is for as long as they show.
 fn timed_lines(
     lyrics: Rc<TimedLyrics>,
-    song: Playing,
+    player: playback::Player,
+    is_playing: Memo<bool>,
     highlight: Memo<config::LyricsHighlight>,
     reduces_motion: Signal<bool>,
 ) -> Div {
-    let (position, is_playing) = (song.position, song.is_playing);
+    let position = signal(player.position());
+    keep_reading(player.clone(), position, REFRESH, || true);
+    let song = Playing { player, position };
     let current = {
         let lyrics = lyrics.clone();
         memo(move || Lit::of(&lyrics, position.get(), highlight.get()).line)
@@ -236,6 +201,7 @@ fn timed_lines(
         on: signal(true),
         scroll: animated(0.0_f32),
         placed: signal(false),
+        attempts: signal(0),
     };
     let line_nodes: Rc<[NodeRef]> = lyrics.lines().iter().map(|_| node_ref()).collect();
     effect(move || {
@@ -248,7 +214,20 @@ fn timed_lines(
             let line = current.get().unwrap_or(0);
             let (on, height) = (following.on.get(), height.get());
             if on && height > 0.0 {
-                untrack(|| follow_line(line_nodes[line], nodes, height, following, reduces_motion));
+                let attempt = following.attempts.update_untracked(|attempts| {
+                    *attempts += 1;
+                    *attempts
+                });
+                untrack(|| {
+                    follow_line(
+                        line_nodes[line],
+                        nodes,
+                        height,
+                        following,
+                        attempt,
+                        reduces_motion,
+                    );
+                });
             }
         });
     }
@@ -315,12 +294,14 @@ fn timed_lines(
 
 /// Scrolls the lines so that `line` rests where the one being sung does: at once the first time
 /// and while motion is reduced, and else from where they are. The layout comes from the last
-/// frame, so until there is one it waits for the next.
+/// frame, so until there is one it waits for the next, unless an attempt after `attempt` has
+/// come meanwhile.
 fn follow_line(
     line: NodeRef,
     nodes: ListNodes,
     height: f32,
     following: Following,
+    attempt: u64,
     reduces_motion: Signal<bool>,
 ) {
     let scroller = nodes.list;
@@ -335,8 +316,11 @@ fn follow_line(
         nodes.words.logical_rect(),
     ) else {
         request_frame(move |_| {
-            if following.on.is_alive() && following.on.get_untracked() {
-                follow_line(line, nodes, height, following, reduces_motion);
+            if following.on.is_alive()
+                && following.on.get_untracked()
+                && following.attempts.get_untracked() == attempt
+            {
+                follow_line(line, nodes, height, following, attempt, reduces_motion);
             }
         });
         return;

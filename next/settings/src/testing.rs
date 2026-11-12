@@ -1,7 +1,5 @@
 //! What the tests of the settings share.
 
-use std::time::Duration;
-
 use anti_webui::core::Ui;
 use anti_webui::core::event::{Key, Modifiers, NamedKey};
 use anti_webui::prelude::Role;
@@ -29,13 +27,4 @@ pub(crate) fn value(role: Role, name: &str) -> String {
         .unwrap_or_else(|| panic!("no {role:?} named {name:?}"))
         .value_text
         .unwrap_or_default()
-}
-
-/// Waits longer than the core takes to count what is typed.
-pub(crate) fn settle(ui: &mut Ui) {
-    std::thread::sleep(Duration::from_millis(700));
-    for _ in 0..20 {
-        ui.update();
-        std::thread::sleep(Duration::from_millis(5));
-    }
 }

@@ -495,12 +495,13 @@ fn entries_view(
     .keys_start_at(move || current.get());
 
     // The current entry comes into view as the queue opens, as another becomes current, and as
-    // the order changes with the shuffle
+    // the order changes with the shuffle. Not as it moves with what is before it, which would
+    // take the rows in view away from where the user is
     let laid_out = signal(false);
     effect(move || {
-        let (current, _) = (current_ix.get(), is_shuffled.get());
-        if let (true, Some(current)) = (laid_out.get(), current) {
-            untrack(|| scroll_to_row(list, current, ROW_HEIGHT));
+        let (_, _, laid_out) = (current.get(), is_shuffled.get(), laid_out.get());
+        if let (true, Some(at)) = (laid_out, untrack(|| current_ix.get())) {
+            untrack(|| scroll_to_row(list, at, ROW_HEIGHT));
         }
     });
 

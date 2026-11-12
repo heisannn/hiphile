@@ -6,7 +6,7 @@ use next_ui::testing::{WINDOW, click, find, frames, press, scroll, wait_until};
 
 use super::*;
 use crate::lyrics_view::TOP;
-use crate::lyrics_view::tests::{Stand, stand, timed};
+use crate::lyrics_view::tests::{Stand, song, stand, timed};
 
 /// Where the line being sung rests in the window, by its middle.
 fn resting_place() -> f32 {
@@ -76,9 +76,10 @@ fn the_lines_move_on_from_where_they_are() {
     let mut stand = open_at(61);
     let before = line(12).y;
 
+    let start = Instant::now();
     stand.player.place_at(Duration::from_secs(71));
     after(&mut stand, REFRESH * 2);
-    frames(&mut stand.ui, 48);
+    stand.frames_from(start, 48);
     let midway = line(12).y;
     assert!(midway < before && midway > before - 2.0 * line(12).height - 8.0);
 }
@@ -95,6 +96,26 @@ fn with_motion_reduced_the_lines_jump() {
 }
 
 #[test]
+fn a_line_reached_before_the_lines_of_another_song_are_in_place_is_where_they_rest() {
+    let mut stand = stand(WINDOW);
+    stand.finds.answer_with(Ok(timed(30)));
+    stand.finds.answer_with(Ok(timed(30)));
+    stand.open();
+    wait_until(&mut stand.ui, || find(Role::Button, "line 0").is_some());
+    stand.settle();
+    let before = find(Role::Button, "line 0").unwrap().id;
+
+    stand.player.fill_queue(&[song("a"), song("b")], 1);
+    wait_until(&mut stand.ui, || {
+        find(Role::Button, "line 0").is_some_and(|line| line.id != before)
+    });
+    stand.player.place_at(Duration::from_secs(121));
+    after(&mut stand, REFRESH * 2);
+    stand.settle();
+    assert_resting(22);
+}
+
+#[test]
 fn scrolling_stops_following_until_asked_to() {
     let mut stand = open_at(61);
     assert!(sync().is_none());
@@ -108,9 +129,10 @@ fn scrolling_stops_following_until_asked_to() {
     stand.settle();
     assert_eq!(line(10).y, left);
 
+    let pressed = Instant::now();
     press(&mut stand.ui, Role::Button, "Sync");
     // From where the user left them
-    frames(&mut stand.ui, 0);
+    stand.frames_from(pressed, 8);
     assert!((line(10).y - left).abs() < 20.0);
     stand.settle();
     assert_resting(12);

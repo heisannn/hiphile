@@ -29,8 +29,12 @@ fn each_cache_has_its_limit() {
 fn nothing_kept_leaves_nothing_to_clear() {
     let (_core, hiphile) = core("");
     let settings = hiphile.settings().clone();
-    let (usage, readings) = (hiphile.song_cache_usage(), hiphile.readings().clone());
-    let _ui = start(move || {
+    let readings = hiphile.readings().clone();
+    // The test's core keeps no songs, which would never be counted
+    let songs = tempfile::tempdir().unwrap();
+    let store = catalog::SongStore::at(songs.path(), 0);
+    let usage = SongCacheUsage::new(next_host::executor(), Some(store));
+    let mut ui = start(move || {
         storage_page(
             settings.song_cache(),
             settings.cover_cache(),
@@ -39,7 +43,8 @@ fn nothing_kept_leaves_nothing_to_clear() {
         )
     });
 
-    assert!(find(Role::Button, "Clear song cache").unwrap().disabled);
+    wait_until(&mut ui, || has_text("0 MiB"));
+    assert!(find(Role::Button, "Clear Song Cache").unwrap().disabled);
 }
 
 #[test]
@@ -64,11 +69,11 @@ fn a_dictionary_that_cannot_be_fetched_says_why_and_can_be_tried_again() {
         format_size(BUNDLE.download_bytes),
         format_size(BUNDLE.disk_bytes),
     )));
-    assert!(find(Role::Button, "Retry downloading the dictionary").is_none());
+    assert!(find(Role::Button, "Retry Downloading the Dictionary").is_none());
 
     press(&mut ui, Role::Switch, "Find kanji by romaji");
     wait_until(&mut ui, || {
-        find(Role::Button, "Retry downloading the dictionary").is_some()
+        find(Role::Button, "Retry Downloading the Dictionary").is_some()
     });
     let ReadingsState::Failed(error) = readings.status().state().clone() else {
         panic!("the dictionary was fetched");

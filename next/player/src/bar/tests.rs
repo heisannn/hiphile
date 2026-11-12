@@ -190,6 +190,7 @@ fn the_toggles_open_and_close_their_panels() {
 fn the_cover_opens_the_lyrics() {
     let mut bar = bar(with_a_song);
 
-    press(&mut bar.ui, Role::Button, "Lyrics");
+    press(&mut bar.ui, Role::Button, "Show Lyrics");
     assert!(bar.panels.lyrics.get());
+    assert!(find(Role::Button, "Hide Lyrics").is_some());
 }

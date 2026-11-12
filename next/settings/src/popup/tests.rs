@@ -3,10 +3,12 @@ use anti_webui::core::access::{AccessNode, snapshot};
 use anti_webui::core::event::NamedKey;
 use anti_webui_md3e::components::button;
 use next_ui::testing::{
-    TestCore, WINDOW, click, core, find, focus, frames, key, nodes, press, start,
+    TestCore, WINDOW, click, core, find, focus, frames, has_text, key, nodes, press, start,
+    wait_until,
 };
 
 use super::*;
+use crate::testing::{replace, value};
 
 struct Fixture {
     open: Signal<bool>,
@@ -120,6 +122,60 @@ fn the_close_button_closes_it() {
     let mut it = fixture("");
     press(&mut it.ui, Role::Button, "Close");
     assert!(!it.open.get_untracked());
+}
+
+const ATTENUATION: &str = "r8brain attenuation";
+
+/// The settings with r8brain, `999` typed into the attenuation, beyond what it takes.
+fn typed_beyond_the_attenuation() -> Fixture {
+    let mut it = fixture("resampling = \"r8brain\"\n");
+    replace(&mut it.ui, Role::TextInput, ATTENUATION, "999");
+    assert!(has_text("Enter 49 to 218."));
+    it
+}
+
+/// Closing counts what was typed as leaving the field does, at once, and opening again shows it.
+fn assert_counted_once_closed(it: &mut Fixture) {
+    assert!(!it.open.get_untracked());
+    wait_until(&mut it.ui, || value(Role::TextInput, ATTENUATION) == "218");
+    assert!(!has_text("Enter 49 to 218."));
+    frames(&mut it.ui, 600);
+    assert!(nodes(Role::Dialog).is_empty());
+
+    it.open.set(true);
+    frames(&mut it.ui, 400);
+    assert_eq!(value(Role::TextInput, ATTENUATION), "218");
+    assert!(!has_text("Enter 49 to 218."));
+}
+
+#[test]
+fn escape_counts_what_was_typed() {
+    let mut it = typed_beyond_the_attenuation();
+    key(&mut it.ui, NamedKey::Escape);
+    assert_counted_once_closed(&mut it);
+}
+
+#[test]
+fn the_scrim_counts_what_was_typed() {
+    let mut it = typed_beyond_the_attenuation();
+    click(&mut it.ui, 10.0, 10.0);
+    assert_counted_once_closed(&mut it);
+}
+
+#[test]
+fn the_close_button_counts_what_was_typed() {
+    let mut it = typed_beyond_the_attenuation();
+    press(&mut it.ui, Role::Button, "Close");
+    assert_counted_once_closed(&mut it);
+}
+
+#[test]
+fn choosing_another_page_counts_what_was_typed() {
+    let mut it = typed_beyond_the_attenuation();
+    press(&mut it.ui, Role::Tab, "Storage");
+    press(&mut it.ui, Role::Tab, "Audio");
+    assert_eq!(value(Role::TextInput, ATTENUATION), "218");
+    assert!(!has_text("Enter 49 to 218."));
 }
 
 #[test]

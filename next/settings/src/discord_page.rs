@@ -42,16 +42,10 @@ pub(crate) fn discord_page(discord: &DiscordSettings) -> Div {
 }
 
 /// Only this field changes the key, so what it shows never has to follow the settings, and they
-/// cannot replace what is being typed. Its look is chosen when it is made, so showing what is
-/// typed makes it anew.
+/// cannot replace what is being typed. It starts from what was typed last, which may not have
+/// settled yet. Its look is chosen when it is made, so showing what is typed makes it anew.
 fn imgbb_key_field(discord: &DiscordSettings, disabled: crate::group::When) -> Div {
-    let key = signal(
-        discord
-            .snapshot()
-            .imgbb_key()
-            .unwrap_or_default()
-            .to_owned(),
-    );
+    let key = signal(discord.typed_key().unwrap_or_default());
     let first = Cell::new(true);
     let typed = discord.clone();
     effect(move || {
@@ -86,7 +80,7 @@ fn imgbb_key_field(discord: &DiscordSettings, disabled: crate::group::When) -> D
                         visible,
                         IconButtonStyle::standard().disabled_when(move || toggle_off()),
                     )
-                    .access(|a| a.label("Show ImgBB API key")),
+                    .access(|a| a.label("Show ImgBB API Key")),
                 );
                 if !shown {
                     style = style.password();

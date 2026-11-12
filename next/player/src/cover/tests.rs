@@ -1,8 +1,9 @@
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use anti_webui::core::Ui;
-use next_ui::testing::{signed_in_core, start, wait_until};
+use next_ui::testing::{has_text, signed_in_core, start, wait_until};
 use serde_json::json;
 
 use super::*;
@@ -20,14 +21,22 @@ fn red(_: u32, _: u32) -> [u8; 4] {
     [200, 40, 40, 255]
 }
 
-/// The cover that the view shows, read from outside it.
+/// The cover that the view shows, read from outside it, beside the title of the song.
 fn watched(hiphile: Hiphile) -> (Ui, Signal<Option<Cover>>) {
     let seen = Rc::new(Cell::new(None));
     let kept = seen.clone();
     let workspace = hiphile.workspace().unwrap();
     let ui = start(move || {
         kept.set(Some(now_playing_cover(&hiphile, &workspace)));
-        div()
+        let shown = follow(workspace.player().subscribe());
+        div().child(text(move || {
+            shown.with(|shown| {
+                shown
+                    .current_song()
+                    .map(|song| song.title().to_owned())
+                    .unwrap_or_default()
+            })
+        }))
     });
     (ui, seen.get().unwrap())
 }
@@ -57,9 +66,15 @@ fn a_song_with_the_same_cover_keeps_it_without_asking_again() {
     let first = cover.get();
 
     player.fill_queue(&songs, 1);
-    ui.update();
+    wait_until(&mut ui, || has_text("b"));
+    // Long enough for a fetch to reach the server
+    let until = Instant::now() + Duration::from_millis(300);
+    while Instant::now() < until {
+        ui.update();
+        assert_eq!(server.asked(), 1);
+        std::thread::sleep(Duration::from_millis(5));
+    }
     assert_eq!(cover.get(), first);
-    assert_eq!(server.asked(), 1);
 }
 
 #[test]

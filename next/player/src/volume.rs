@@ -7,7 +7,7 @@ use crate::control::{STANDARD, icon_control};
 use crate::position::{HANDLE, flat_line, handle, lane};
 
 const WIDTH: f32 = 96.0;
-const LOCKED: &str = "Set the volume on the DAC while playing DSD";
+const LOCKED: &str = "Set the volume on the DAC while playing DSD.";
 
 /// Mute and the level. The level is kept for the next launch once it is let go.
 pub(crate) fn volume(player: playback::Player, shown: Signal<PlayerSnapshot>) -> Div {

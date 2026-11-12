@@ -408,7 +408,7 @@ fn details(
         let player = player.clone();
         div().h(LANE).mt(16.0_f32).child(show(
             move || has_song.get(),
-            move || position_line(player.clone(), playing),
+            move || position_line(player.clone(), playing, || false),
         ))
     };
     let panels_and_volume = div()
