@@ -138,6 +138,7 @@ fn a_bit_depth_sets_the_attenuation_and_other_values_read_other() {
         assert_eq!(settings.r8brain_bit_depth_value(), "Other");
         assert!(labels(&settings).contains(&"Other".to_owned()));
     }
+    cx.run_until_parked();
 }
 
 #[test]
@@ -155,6 +156,7 @@ fn a_phase_is_chosen_by_its_place() {
         assert_eq!(settings.r8brain_phase_ix(), 1);
         assert_eq!(settings.r8brain_filter().phase, R8brainPhase::Minimum);
     }
+    cx.run_until_parked();
 }
 
 #[test]
@@ -263,6 +265,7 @@ fn a_preset_leaves_what_does_not_change_the_sound_alone() {
         assert!(performance.extended_fft);
         assert_eq!(performance.max_input_frames, 4096);
     }
+    cx.run_until_parked();
 }
 
 #[test]
@@ -305,6 +308,7 @@ fn enter_counts_at_once_held_to_the_range() {
     let snapshot = settings.snapshot();
     assert_eq!(snapshot.r8brain_filter().attenuation, 218.0);
     assert_eq!(snapshot.r8brain_text(R8brainNumber::Attenuation), "218");
+    cx.run_until_parked();
 }
 
 #[test]
@@ -324,6 +328,7 @@ fn a_typed_number_beyond_the_range_waits_for_enter() {
     let snapshot = settings.snapshot();
     assert_eq!(snapshot.r8brain_filter().attenuation, 49.0);
     assert_eq!(snapshot.r8brain_text(R8brainNumber::Attenuation), "49");
+    cx.run_until_parked();
 }
 
 #[test]
@@ -336,6 +341,7 @@ fn text_that_is_no_number_gives_way_to_the_number() {
     let snapshot = settings.snapshot();
     assert_eq!(snapshot.r8brain_filter().transition_band, 2.0);
     assert_eq!(snapshot.r8brain_text(R8brainNumber::TransitionBand), "2");
+    cx.run_until_parked();
 }
 
 #[test]
@@ -358,6 +364,7 @@ fn no_filter_positions_let_the_resampler_choose_them() {
     let snapshot = settings.snapshot();
     assert_eq!(snapshot.r8brain_filter().filter_fractions, None);
     assert_eq!(snapshot.r8brain_text(positions), "");
+    cx.run_until_parked();
 }
 
 #[test]
@@ -369,6 +376,7 @@ fn whole_numbers_stay_whole() {
     enter(&settings, R8brainNumber::FilterCacheSize, "3.6");
     let performance = settings.snapshot().r8brain_parameters().performance;
     assert_eq!(performance.filter_cache_size, 4);
+    cx.run_until_parked();
 }
 
 #[test]
@@ -446,6 +454,7 @@ fn what_leaves_the_sound_alone_leaves_the_preset_too() {
 
     settings.set_r8brain_whole_stepping(false);
     assert_eq!(settings.snapshot().r8brain_quality_ix(), 4);
+    cx.run_until_parked();
 }
 
 #[test]
@@ -498,6 +507,7 @@ fn numbers_that_differ_between_presets_go_back_with_the_preset() {
         settings.snapshot().r8brain_parameters().quality,
         R8brainQuality::default()
     );
+    cx.run_until_parked();
 }
 
 #[test]
@@ -538,6 +548,7 @@ fn the_switches_and_the_phase_go_back_to_their_defaults() {
         snapshot.r8brain_parameters().performance,
         R8brainParameters::default().performance
     );
+    cx.run_until_parked();
 }
 
 #[test]

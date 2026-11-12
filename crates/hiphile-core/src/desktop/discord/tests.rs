@@ -70,6 +70,7 @@ fn a_cover_is_looked_for_only_with_a_key_and_while_on() {
 
     status.set_cover_key(Some("another"));
     assert_eq!(sought(), None, "a new key tries again");
+    cx.run_until_parked();
 }
 
 #[test]

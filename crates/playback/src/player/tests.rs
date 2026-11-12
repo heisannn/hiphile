@@ -510,6 +510,7 @@ fn unmuting_at_no_volume_brings_back_the_level_kept_before() {
     player.toggle_mute();
     assert!(!player.snapshot().is_muted());
     assert_eq!(player.snapshot().volume(), 0.7);
+    cx.run_until_parked();
 }
 
 #[test]
@@ -524,6 +525,7 @@ fn unmuting_at_no_volume_with_no_level_known_goes_halfway() {
     player.toggle_mute();
     assert_eq!(player.snapshot().volume(), 0.5);
     assert!(!player.snapshot().is_muted());
+    cx.run_until_parked();
 }
 
 #[test]

@@ -676,6 +676,7 @@ mod tests {
 
         settings.set_device(DAC);
         assert!(settings.snapshot().is_dsd_on());
+        cx.run_until_parked();
     }
 
     #[test]
@@ -725,6 +726,7 @@ mod tests {
         let settings = settings.snapshot();
         assert_eq!(settings.dsd_cutoff_value(), "0.85");
         assert_eq!(settings.dsd_cutoff_options().len(), CUTOFFS.len() + 1);
+        cx.run_until_parked();
     }
 
     #[test]
@@ -741,6 +743,7 @@ mod tests {
             settings.snapshot().dsd_noise_band_value(),
             NARROW_NOISE_BAND
         );
+        cx.run_until_parked();
     }
 
     #[test]
@@ -904,6 +907,7 @@ mod tests {
         assert_eq!(snapshot.dsd_format_warning(DOP), None);
         settings.set_dsd_format(PCM);
         assert_eq!(settings.snapshot().dsd_format_value(), PCM);
+        cx.run_until_parked();
     }
 
     #[test]
@@ -935,6 +939,7 @@ mod tests {
 
         settings.set_dsd_base_rate(STANDARD_BASE_RATE);
         assert!(!settings.snapshot().matches_song_family());
+        cx.run_until_parked();
     }
 
     #[test]
@@ -962,6 +967,7 @@ mod tests {
             all.iter()
                 .all(|pcm| settings.snapshot().dsd_note(*pcm).is_some())
         );
+        cx.run_until_parked();
     }
 
     #[test]

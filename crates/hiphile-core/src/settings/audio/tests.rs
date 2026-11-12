@@ -134,6 +134,7 @@ fn each_resampler_comes_back_at_the_quality_it_had() {
 
     settings.select_resampler(1);
     assert_eq!(settings.snapshot().r8brain_quality_ix(), 0);
+    cx.run_until_parked();
 }
 
 #[test]
@@ -219,6 +220,7 @@ fn another_value_turns_a_preset_custom_and_the_same_one_does_not() {
     let snapshot = settings.snapshot();
     assert_eq!(snapshot.fft_size_value(), "4096");
     assert_eq!(snapshot.window_value(), "Blackman-Harris²");
+    cx.run_until_parked();
 }
 
 #[test]
@@ -333,6 +335,7 @@ fn the_crossfade_note_says_when_the_device_may_have_to_switch() {
     assert!(settings.snapshot().crossfade_note().is_some());
     settings.set_rate("48000");
     assert!(settings.snapshot().crossfade_note().is_none());
+    cx.run_until_parked();
 }
 
 #[test]
@@ -383,6 +386,7 @@ fn each_change_is_published_at_once() {
         changes.borrow_and_update().output().sample_rate(),
         SampleRate::Fixed(48_000)
     );
+    cx.run_until_parked();
 }
 
 #[test]
@@ -590,4 +594,5 @@ fn with_dsd_on_the_crossfade_note_says_dsd_plays_songs_whole() {
         snapshot.crossfade_note(),
         snapshot.dsd_note(PcmSetting::Crossfade)
     );
+    cx.run_until_parked();
 }

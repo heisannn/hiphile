@@ -100,6 +100,7 @@ fn a_new_song_starts_over_and_found_lyrics_are_kept() {
     current.set_song(Some(&song("a")));
     assert!(matches!(lookup(&current), Lookup::Done(song, _) if song.to_string() == "a"));
     assert_eq!(finds.asked().len(), 2);
+    cx.run_until_parked();
 }
 
 #[test]
@@ -116,6 +117,7 @@ fn an_answer_after_the_song_changed_is_kept_for_going_back() {
     current.set_song(Some(&song("a")));
     assert!(matches!(lookup(&current), Lookup::Done(..)));
     assert_eq!(finds.asked().len(), 2);
+    cx.run_until_parked();
 }
 
 #[test]
@@ -130,6 +132,7 @@ fn wanting_looks_for_the_current_song_once() {
 
     assert_eq!(finds.asked().len(), 1);
     assert!(finds.asked()[0].contains("Title of a"));
+    cx.run_until_parked();
 }
 
 #[test]
@@ -144,6 +147,7 @@ fn all_that_want_the_lyrics_share_one_lookup() {
     drop(first);
     current.set_song(Some(&song("b")));
     assert_eq!(finds.asked().len(), 2);
+    cx.run_until_parked();
 }
 
 #[test]
@@ -161,6 +165,7 @@ fn a_song_that_comes_while_no_one_wants_the_lyrics_waits_until_someone_does() {
 
     current.set_song(None);
     assert_eq!(lookup(&current), Lookup::Nothing);
+    cx.run_until_parked();
 }
 
 #[test]
