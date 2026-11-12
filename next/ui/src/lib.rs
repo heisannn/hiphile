@@ -1,8 +1,11 @@
-//! What the screens on AntiWebUI share: the theme, the type, and the parts that more than one
-//! screen shows.
+//! What the screens on AntiWebUI share: the theme, the type, keys, and the parts that more than
+//! one screen shows.
 
 mod command;
 pub mod cover;
+pub mod keymap;
+pub mod row_list;
+pub mod row_text;
 mod screen;
 pub mod theme;
 pub mod type_scale;
