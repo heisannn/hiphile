@@ -36,6 +36,11 @@ impl Navigation {
         self.location.set(to);
     }
 
+    /// Goes to `to` without making where the window is somewhere to go back to.
+    pub(crate) fn show_in_place(&self, to: Location) {
+        self.location.set_if_changed(to);
+    }
+
     pub(crate) fn back(&self) {
         let now = self.location.get_untracked();
         if let Some(previous) = self.history.update(|history| history.back(now)) {

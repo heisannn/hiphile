@@ -15,6 +15,9 @@ use subsonic::{AlbumId, PlaylistId, Song};
 #[derive(Clone, Debug, PartialEq)]
 pub enum Command {
     Show(Location),
+    /// Shows `location` in place of where the window is, which is then not somewhere to go back
+    /// to: a selection the keys move through, or one a screen makes for itself.
+    ShowInPlace(Location),
     GoBack,
     GoForward,
     OpenSearch,
@@ -25,6 +28,9 @@ pub enum Command {
         songs: Arc<[Song]>,
         start: Option<usize>,
     },
+    /// Turns shuffling on and plays `songs` from any of them, in place of what the queue has.
+    /// Those skipped as instrumentals are left out.
+    Shuffle(Arc<[Song]>),
     /// Adds `songs` to the queue, starting them when nothing is playing.
     Enqueue {
         songs: Arc<[Song]>,

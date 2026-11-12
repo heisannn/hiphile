@@ -69,6 +69,7 @@ impl Shell {
         let workspace = &self.workspace;
         match command {
             Command::Show(location) => self.navigation.go(location),
+            Command::ShowInPlace(location) => self.navigation.show_in_place(location),
             Command::GoBack => self.navigation.back(),
             Command::GoForward => self.navigation.forward(),
             Command::OpenSettings => self.settings_open.set(true),
@@ -79,6 +80,13 @@ impl Shell {
                     Some(start) => workspace.player().play(&songs, start),
                     None => workspace.player().play_whole(&songs),
                 };
+            }
+            Command::Shuffle(songs) => {
+                let player = workspace.player();
+                if !songs.is_empty() && !player.snapshot().is_shuffled() {
+                    player.toggle_shuffle();
+                }
+                let _ = player.play_whole(&songs);
             }
             Command::Enqueue { songs, placement } => {
                 workspace.player().enqueue(&songs, placement);

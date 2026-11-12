@@ -100,6 +100,35 @@ fn show_goes_there() {
 }
 
 #[test]
+fn showing_in_place_leaves_nowhere_to_go_back_to() {
+    let mut shown = on(next_ui::testing::NOWHERE);
+    shown.run(Command::Show(Location::Albums(Some(AlbumId::new("a")))));
+    let navigation = shown.shell.navigation;
+    assert!(untrack(|| navigation.can_go_back()));
+
+    shown.run(Command::ShowInPlace(Location::Albums(Some(AlbumId::new(
+        "b",
+    )))));
+    shown.run(Command::GoBack);
+
+    assert_eq!(
+        untrack(|| navigation.location().get()),
+        Location::Home,
+        "back past the album shown in place"
+    );
+}
+
+#[test]
+fn nothing_to_shuffle_leaves_shuffling_as_it_was() {
+    let mut shown = on(next_ui::testing::NOWHERE);
+    let player = shown.shell.workspace.player().clone();
+
+    shown.run(Command::Shuffle(songs(&[])));
+
+    assert!(!player.snapshot().is_shuffled());
+}
+
+#[test]
 fn toggling_a_favorite_stars_it_on_the_server() {
     let server = FavoritesServer::new(&[]);
     let mut shown = on(server.url());

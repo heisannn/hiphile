@@ -128,6 +128,11 @@ impl AlbumList {
         self.0.state.subscribe()
     }
 
+    /// What the albums are searched for, as last set.
+    pub fn query(&self) -> String {
+        self.0.state.read(|state| state.query.clone())
+    }
+
     pub fn set_query(&self, query: &str) {
         self.0.state.update(|state| {
             if state.query != query {

@@ -2,11 +2,13 @@
 
 mod favorites_server;
 mod home_server;
+mod library_server;
 mod playlists_server;
 mod songs_server;
 
 pub use favorites_server::{FavoritesServer, song_json};
 pub use home_server::HomeServer;
+pub use library_server::LibraryServer;
 pub use playlists_server::{PlaylistsServer, Request};
 pub use songs_server::SongsServer;
 

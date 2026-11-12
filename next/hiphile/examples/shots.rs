@@ -12,6 +12,7 @@ use anti_webui::core::geometry::PointF;
 use anti_webui::prelude::{Role, signal};
 use anti_webui_md3e::color_scheme;
 use hiphile_core::Hiphile;
+use hiphile_core::test_support::LibraryServer;
 use next_hiphile::{MenuBar, Reach, SMALLEST_WINDOW, WINDOW, app};
 use next_player::testing::{CoverServer, png};
 use next_ui::testing::{
@@ -19,7 +20,7 @@ use next_ui::testing::{
     signed_in_core, signed_in_core_with_library, typed, wait_until,
 };
 use next_ui::theme::{DEFAULT_SEED, scheme};
-use serde_json::json;
+use serde_json::{Value, json};
 use subsonic::Song;
 
 const SCALE: f64 = 2.0;
@@ -55,6 +56,18 @@ fn main() {
                 press(ui, Role::Button, "Albums");
             },
         );
+        for (name, size, album) in [
+            ("albums", WINDOW, Some("Low Tide Lights")),
+            ("albums-compilation", WINDOW, Some("Night Market Radio")),
+            ("albums-smallest", SMALLEST_WINDOW, None),
+        ] {
+            albums_shot(
+                &folder.join(format!("{name}-{theme}.png")),
+                dark,
+                size,
+                album,
+            );
+        }
         shot(
             &folder.join(format!("add-server-{theme}.png")),
             dark,
@@ -568,4 +581,223 @@ fn point_at(ui: &mut Ui, x: f32, y: f32) {
         modifiers: Modifiers::default(),
     });
     ui.update();
+}
+
+/// Albums on a server of [`library`] with covers, showing `album`, or the first.
+fn albums_shot(path: &Path, dark: bool, size: (i32, i32), album: Option<&str>) {
+    let server = LibraryServer::new(albums_library());
+    server.serve_covers(|id| Some(png(256, |x, y| album_cover_pixel(id, x, y))));
+    let (_core, hiphile) = signed_in_core(server.url());
+    render(path, dark, hiphile, size, |ui| {
+        press(ui, Role::Button, "Albums");
+        wait_until(ui, || find(Role::ListBox, "Songs").is_some());
+        if let Some(album) = album {
+            press(ui, Role::ListOption, album);
+            wait_until(ui, || {
+                find(Role::Heading, album).is_some() && find(Role::ListBox, "Songs").is_some()
+            });
+        }
+        // The covers come over the network
+        for _ in 0..150 {
+            ui.poll_images();
+            frames(ui, 8);
+            std::thread::sleep(std::time::Duration::from_millis(4));
+        }
+    });
+}
+
+/// A made-up album: its name, its artist, its year, and the titles and lengths in seconds of its
+/// songs, none for one by several artists.
+type MadeUpAlbum = (
+    &'static str,
+    &'static str,
+    u32,
+    &'static [(&'static str, u32)],
+);
+
+const ALBUMS: [MadeUpAlbum; 14] = [
+    (
+        "Low Tide Lights",
+        "Mira Okada",
+        2021,
+        &[
+            ("Glass Harbor", 245),
+            ("Paper Lanterns", 212),
+            ("The Long Swim Home", 318),
+            ("Undertow", 197),
+            ("Salt on the Window", 264),
+            ("Breakwater", 233),
+            (
+                "Ferry Lights at Four in the Morning, Seen from the Pier",
+                291,
+            ),
+            ("Kelp Forest", 186),
+            ("Low Tide", 402),
+        ],
+    ),
+    (
+        "Paper Satellites",
+        "The Quiet Engines",
+        2019,
+        &[
+            ("Orbit", 221),
+            ("Static Bloom", 248),
+            ("Ground Control", 305),
+        ],
+    ),
+    (
+        "Northbound Static",
+        "Ines Calder",
+        2023,
+        &[("Radio North", 233), ("Snowline", 279)],
+    ),
+    (
+        "Glass Orchard",
+        "Hollow Pines",
+        2017,
+        &[("Orchard", 256), ("Frost Fruit", 199)],
+    ),
+    (
+        "Saltwater Hymns",
+        "Mira Okada",
+        2018,
+        &[("Hymn I", 188), ("Hymn II", 207)],
+    ),
+    ("Night Market Radio", "Various Artists", 2022, &[]),
+    (
+        "Amber Signal",
+        "Tomas Reyes Trio",
+        2015,
+        &[("Amber", 342), ("Signal Fire", 411)],
+    ),
+    (
+        "Field Notes",
+        "Ada Lindqvist",
+        2020,
+        &[("Notebook", 174), ("Meadow", 230)],
+    ),
+    (
+        "Velvet Interval",
+        "Kaito Mori",
+        2016,
+        &[("Interval", 265), ("Velvet", 241)],
+    ),
+    (
+        "Small Weather",
+        "The Lantern Club",
+        2024,
+        &[("Drizzle", 162), ("Small Weather", 219)],
+    ),
+    (
+        "Copper Coast",
+        "Ines Calder",
+        2014,
+        &[("Copper", 247), ("Coastline", 288)],
+    ),
+    (
+        "Echo Garden",
+        "Sunfold",
+        2012,
+        &[("Echo", 301), ("Garden", 276)],
+    ),
+    (
+        "Midnight Ferry",
+        "Hollow Pines",
+        2021,
+        &[("Midnight", 239), ("Ferry", 254)],
+    ),
+    (
+        "A Long Way to the Lighthouse (Deluxe Edition, Remastered)",
+        "The Quiet Engines",
+        2010,
+        &[("Lighthouse", 296), ("Keeper", 233)],
+    ),
+];
+
+/// The songs of the album by several artists: titles, artists and lengths in seconds.
+const COMPILATION: [(&str, &str, u32); 6] = [
+    ("Neon Noodle Stand", "Kaito Mori", 204),
+    ("Lantern Row", "The Lantern Club", 231),
+    ("Two for One", "Ada Lindqvist", 188),
+    ("Closing Time Shutters", "Sunfold", 266),
+    ("Rain on Tarp", "Mira Okada", 242),
+    ("Last Bus", "Tomas Reyes Trio", 315),
+];
+
+/// Albums of made-up artists, one of them by several, as `getAlbum` gives them, in the order of
+/// their names as a server lists them.
+fn albums_library() -> Vec<Value> {
+    let mut albums = ALBUMS.to_vec();
+    albums.sort_by_key(|(name, ..)| name.to_lowercase());
+    albums
+        .iter()
+        .enumerate()
+        .map(|(at, (name, artist, year, songs))| {
+            let id = format!("al-{at}");
+            let song = |track: usize, title: &str, by: &str, duration: u32| {
+                json!({
+                    "id": format!("{id}-{track}"),
+                    "title": title,
+                    "track": track,
+                    "duration": duration,
+                    "artist": by,
+                    "artistId": by.to_lowercase().replace(' ', "-"),
+                    "album": name,
+                    "albumId": id,
+                    "coverArt": id,
+                })
+            };
+            let songs: Vec<Value> = if songs.is_empty() {
+                COMPILATION
+                    .iter()
+                    .enumerate()
+                    .map(|(at, (title, by, duration))| song(at + 1, title, by, *duration))
+                    .collect()
+            } else {
+                songs
+                    .iter()
+                    .enumerate()
+                    .map(|(at, (title, duration))| song(at + 1, title, artist, *duration))
+                    .collect()
+            };
+            let mut album = json!({
+                "id": id,
+                "name": name,
+                "artist": artist,
+                "year": year,
+                "coverArt": id,
+                "songCount": songs.len(),
+                "song": songs,
+            });
+            if *artist != "Various Artists" {
+                album["artistId"] = json!(artist.to_lowercase().replace(' ', "-"));
+            }
+            album
+        })
+        .collect()
+}
+
+/// A cover of its own for each album: a sky that fades to a sea, with a sun.
+fn album_cover_pixel(id: &str, x: u32, y: u32) -> [u8; 4] {
+    const SKIES: [([f32; 3], [f32; 3]); 7] = [
+        ([28.0, 36.0, 92.0], [236.0, 120.0, 84.0]),
+        ([18.0, 70.0, 64.0], [190.0, 214.0, 140.0]),
+        ([90.0, 24.0, 60.0], [250.0, 170.0, 120.0]),
+        ([40.0, 40.0, 48.0], [170.0, 180.0, 200.0]),
+        ([12.0, 52.0, 110.0], [120.0, 200.0, 230.0]),
+        ([70.0, 40.0, 20.0], [240.0, 200.0, 110.0]),
+        ([50.0, 20.0, 90.0], [200.0, 150.0, 240.0]),
+    ];
+    let index: usize = id.bytes().map(usize::from).sum();
+    let (top, bottom) = SKIES[index % SKIES.len()];
+    let (fx, fy) = (x as f32 / 255.0, y as f32 / 255.0);
+    let sun_x = 0.25 + (index % 5) as f32 * 0.12;
+    if ((fx - sun_x).powi(2) + (fy - 0.5).powi(2)).sqrt() < 0.13 {
+        return [255, 236, 200, 255];
+    }
+    let t = fy.min(0.65) / 0.65;
+    let shade = if fy > 0.65 { 0.45 } else { 1.0 };
+    let mix =
+        |channel: usize| ((top[channel] + (bottom[channel] - top[channel]) * t) * shade) as u8;
+    [mix(0), mix(1), mix(2), 255]
 }

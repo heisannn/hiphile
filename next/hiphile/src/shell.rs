@@ -211,11 +211,11 @@ fn signed_in(
 
 /// What `destination` shows.
 /// What `destination` shows, which reads from `location` what is selected on it.
-fn screen(destination: Destination, _location: Signal<Location>, cx: &ScreenContext) -> Screen {
+fn screen(destination: Destination, location: Signal<Location>, cx: &ScreenContext) -> Screen {
     match destination {
         Destination::Home => next_home::home(cx),
         Destination::Artists => empty(destination),
-        Destination::Albums => empty(destination),
+        Destination::Albums => next_library::albums(location, cx),
         Destination::Songs => next_songs::songs(cx),
         Destination::Playlists => empty(destination),
         Destination::Favorites => next_favorites::favorites(cx),

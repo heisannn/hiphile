@@ -163,6 +163,13 @@ fn the_colors_follow_the_cover_of_what_plays() {
     assert_ne!(color_scheme().primary, before);
 }
 
+/// The search's field is the one text input without a name; the screens name theirs.
+fn search_is_open() -> bool {
+    nodes(Role::TextInput)
+        .iter()
+        .any(|node| node.label.is_none())
+}
+
 fn focus_role() -> Option<Role> {
     let tree = anti_webui::core::access::snapshot();
     tree.get(tree.focus?).map(|node| node.role)
@@ -175,11 +182,12 @@ fn the_rail_opens_the_search_over_the_screens_with_the_focus_in_it() {
     press(&mut ui, Role::Button, "Albums");
 
     press(&mut ui, Role::Button, "Search");
+    assert!(search_is_open());
     assert_eq!(focus_role(), Some(Role::TextInput));
 
     key(&mut ui, NamedKey::Escape);
     frames(&mut ui, 1000);
-    assert!(nodes(Role::TextInput).is_empty());
+    assert!(!search_is_open());
     assert_eq!(find(Role::Button, "Albums").unwrap().selected, Some(true));
 }
 
@@ -202,7 +210,7 @@ fn choosing_an_album_in_the_search_goes_to_it() {
 
     assert_eq!(find(Role::Button, "Albums").unwrap().selected, Some(true));
     frames(&mut ui, 1000);
-    assert!(nodes(Role::TextInput).is_empty());
+    assert!(!search_is_open());
 }
 
 #[test]

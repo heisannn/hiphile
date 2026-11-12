@@ -5626,6 +5626,7 @@ dependencies = [
  "next-favorites",
  "next-home",
  "next-host",
+ "next-library",
  "next-platform",
  "next-player",
  "next-search",
@@ -5662,6 +5663,20 @@ dependencies = [
  "anti-webui",
  "executor",
  "tokio",
+]
+
+[[package]]
+name = "next-library"
+version = "0.5.0"
+dependencies = [
+ "anti-webui",
+ "anti-webui-md3e",
+ "hiphile-core",
+ "next-host",
+ "next-ui",
+ "playback",
+ "serde_json",
+ "subsonic",
 ]
 
 [[package]]

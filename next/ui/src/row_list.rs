@@ -416,6 +416,21 @@ fn device_row_height(row_height: f32) -> f32 {
     scale.px(row_height) as f32 / scale.as_f32()
 }
 
+/// Scrolls the list `node` refers to just far enough to show the row at `position`, as a selection
+/// made other than by the keys needs. A list not laid out yet, as large as nothing, is left as it
+/// is: [`has_room_for_rows`] says when it can.
+pub fn scroll_to_row(node: NodeRef, position: usize, row_height: f32) {
+    if has_room_for_rows(node, row_height) {
+        reveal(node, position, row_height);
+    }
+}
+
+/// Whether the list `node` refers to is laid out, with room for a row.
+pub fn has_room_for_rows(node: NodeRef, row_height: f32) -> bool {
+    node.logical_rect()
+        .is_some_and(|rect| rect.height >= row_height)
+}
+
 /// Scrolls the list just far enough to show the row at `position`, once it is laid out, which it
 /// may not be yet for rows that just came.
 fn reveal(node: NodeRef, position: usize, row_height: f32) {
@@ -434,12 +449,6 @@ fn reveal(node: NodeRef, position: usize, row_height: f32) {
     };
     let scale = untrack(window_scale);
     node.scroll_to_after_layout(scale.px(at.x), scale.px(y));
-}
-
-/// Scrolls the list that `node` refers to just far enough to show the row at `position`, once it is
-/// laid out.
-pub fn scroll_to_row(node: NodeRef, position: usize, row_height: f32) {
-    reveal(node, position, row_height);
 }
 
 /// Whole rows in view, at least one.
