@@ -1,5 +1,6 @@
 //! The menu bar, in place of the one AntiWebUI puts there. AppKit takes the shortcuts of its items
-//! before the window sees a key, except those of disabled items.
+//! before the window sees a key, except those of disabled items, and those that a focused text
+//! field moves its caret with, which go back to the window.
 
 use std::rc::Rc;
 
@@ -114,6 +115,14 @@ impl Shortcut {
             ..self
         }
     }
+
+    /// Whether a text field uses it, to move its caret or its selection to the start or the end of
+    /// a line or of the text.
+    pub(crate) fn is_for_text_fields(&self) -> bool {
+        matches!(self.key, Key::Left | Key::Right | Key::Up | Key::Down)
+            && !self.option
+            && !self.control
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -184,9 +193,16 @@ impl<C: Clone + 'static> MainMenu<C> {
     /// starts and never again. What is chosen comes to `on_command` later, on the UI thread, rather
     /// than inside AppKit's callback. A menu with no items is left out.
     ///
+    /// While `is_typing` says a text field has the focus, the shortcuts it uses go to the window
+    /// in place of the items they are of. It is asked inside AppKit's callback.
+    ///
     /// Call inside `App::run`, in an owner: before AntiWebUI starts, its own menu would replace
     /// these, and without an owner what is chosen goes nowhere. Off the main thread nothing changes.
-    pub fn install(menus: &[Menu<C>], on_command: impl Fn(C) + 'static) -> Self {
+    pub fn install(
+        menus: &[Menu<C>],
+        on_command: impl Fn(C) + 'static,
+        is_typing: fn() -> bool,
+    ) -> Self {
         let commands: Rc<[C]> = commands_of(menus).into();
         let chosen = {
             let commands = commands.clone();
@@ -197,10 +213,10 @@ impl<C: Clone + 'static> MainMenu<C> {
             })
         };
         #[cfg(not(target_os = "macos"))]
-        drop(chosen);
+        let _ = (chosen, is_typing);
         Self {
             #[cfg(target_os = "macos")]
-            native: crate::mac::menu::install(menus, chosen).map(Rc::new),
+            native: crate::mac::menu::install(menus, chosen, is_typing).map(Rc::new),
             commands,
         }
     }

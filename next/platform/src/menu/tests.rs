@@ -57,3 +57,15 @@ fn an_item_is_unchecked_unless_said() {
     assert!(ItemState::enabled(false).checked(true).is_checked());
     assert!(!ItemState::default().is_enabled());
 }
+
+#[test]
+fn only_the_arrows_a_text_field_moves_its_caret_with_go_back_to_it() {
+    for key in [Key::Left, Key::Right, Key::Up, Key::Down] {
+        assert!(Shortcut::command(key).is_for_text_fields());
+        assert!(Shortcut::command(key).shift().is_for_text_fields());
+        assert!(!Shortcut::command(key).option().is_for_text_fields());
+        assert!(!Shortcut::command(key).control().is_for_text_fields());
+    }
+    assert!(!Shortcut::command('n').is_for_text_fields());
+    assert!(!Shortcut::command('[').is_for_text_fields());
+}

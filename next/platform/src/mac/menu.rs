@@ -1,10 +1,12 @@
+use std::cell::RefCell;
+
 use anti_webui::prelude::UiSender;
 use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSApplication, NSControlStateValueOff, NSControlStateValueOn, NSEventModifierFlags, NSMenu,
-    NSMenuItem,
+    NSApplication, NSControlStateValueOff, NSControlStateValueOn, NSEventModifierFlags,
+    NSEventType, NSMenu, NSMenuItem,
 };
 use objc2_foundation::NSString;
 
@@ -15,7 +17,7 @@ define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "HiphileNextMenuTarget"]
-    #[ivars = UiSender<usize>]
+    #[ivars = Chooser]
     struct Target;
 
     unsafe impl NSObjectProtocol for Target {}
@@ -23,18 +25,62 @@ define_class!(
     impl Target {
         #[unsafe(method(choose:))]
         fn choose(&self, item: &NSMenuItem) {
-            if let Ok(tag) = usize::try_from(item.tag()) {
-                self.ivars().send(tag);
+            let Ok(tag) = usize::try_from(item.tag()) else {
+                return;
+            };
+            if !self.gives_back(tag) {
+                self.ivars().chosen.send(tag);
             }
         }
     }
 );
 
+struct Chooser {
+    chosen: UiSender<usize>,
+    is_typing: fn() -> bool,
+    /// Whether a text field uses the shortcut of the item at each tag.
+    for_text_fields: RefCell<Vec<bool>>,
+}
+
 impl Target {
-    fn new(mtm: MainThreadMarker, chosen: UiSender<usize>) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(chosen);
+    fn new(
+        mtm: MainThreadMarker,
+        chosen: UiSender<usize>,
+        is_typing: fn() -> bool,
+    ) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(Chooser {
+            chosen,
+            is_typing,
+            for_text_fields: RefCell::default(),
+        });
         // SAFETY: `init` of NSObject, on an instance just allocated
         unsafe { msg_send![super(this), init] }
+    }
+
+    /// Hands the key that chose the item at `tag` to the window instead, when it is one that the
+    /// text field with the focus uses. Whether it did.
+    fn gives_back(&self, tag: usize) -> bool {
+        let chooser = self.ivars();
+        let is_for_text_fields = chooser.for_text_fields.borrow().get(tag).copied();
+        if is_for_text_fields != Some(true) {
+            return false;
+        }
+        let mtm = self.mtm();
+        // Chosen with the pointer, the current event is not a key's
+        let Some(event) = NSApplication::sharedApplication(mtm)
+            .currentEvent()
+            .filter(|event| event.r#type() == NSEventType::KeyDown)
+        else {
+            return false;
+        };
+        if !(chooser.is_typing)() {
+            return false;
+        }
+        let Some(responder) = event.window(mtm).and_then(|window| window.firstResponder()) else {
+            return false;
+        };
+        responder.keyDown(&event);
+        true
     }
 }
 
@@ -64,9 +110,13 @@ impl Native {
     }
 }
 
-pub(crate) fn install<C>(menus: &[Menu<C>], chosen: UiSender<usize>) -> Option<Native> {
+pub(crate) fn install<C>(
+    menus: &[Menu<C>],
+    chosen: UiSender<usize>,
+    is_typing: fn() -> bool,
+) -> Option<Native> {
     let mtm = MainThreadMarker::new()?;
-    let target = Target::new(mtm, chosen);
+    let target = Target::new(mtm, chosen, is_typing);
     let mut items = Vec::new();
     let bar = NSMenu::new(mtm);
     for menu in menus {
@@ -109,6 +159,11 @@ fn build<C>(
                 added.setTag(items.len() as isize);
                 shown.addItem(&added);
                 items.push(added);
+                target
+                    .ivars()
+                    .for_text_fields
+                    .borrow_mut()
+                    .push(shortcut.is_some_and(|shortcut| shortcut.is_for_text_fields()));
             }
             Item::Standard { title, action } => {
                 let (action, shortcut) = standard(*action);

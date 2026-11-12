@@ -38,7 +38,11 @@ fn main() {
         .run(move || {
             next_host::install(executor);
             let menu_bar = MenuBar::new();
-            let main_menu = MainMenu::install(&menus(), move |command| menu_bar.choose(command));
+            let main_menu = MainMenu::install(
+                &menus(),
+                move |command| menu_bar.choose(command),
+                next_ui::keymap::is_typing,
+            );
             effect(move || main_menu.update(|command| menu_bar.state_of(command)));
             // AntiWebUI opens the window once this has run
             request_frame(|_| set_up_window());
