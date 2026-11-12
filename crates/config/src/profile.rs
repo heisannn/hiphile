@@ -54,6 +54,26 @@ pub enum LyricsHighlight {
     ByLine,
 }
 
+/// A pane the user makes wider or narrower, whose width is kept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Pane {
+    ArtistList,
+    AlbumList,
+    PlaylistList,
+}
+
+impl Pane {
+    pub const ALL: [Self; 3] = [Self::ArtistList, Self::AlbumList, Self::PlaylistList];
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::ArtistList => "artist_list_width",
+            Self::AlbumList => "album_list_width",
+            Self::PlaylistList => "playlist_list_width",
+        }
+    }
+}
+
 pub const SAMPLE_RATE_MULTIPLES: [u32; 4] = [2, 4, 8, 16];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -702,6 +722,9 @@ struct Settings {
     discord_presence: Typed<bool>,
     auto_update: Typed<bool>,
     imgbb_api_key: Option<String>,
+    artist_list_width: Typed<f32>,
+    album_list_width: Typed<f32>,
+    playlist_list_width: Typed<f32>,
     profiles: Option<Lenient<Vec<Lenient<SavedProfile>>>>,
 }
 
@@ -1233,6 +1256,9 @@ fn soxr_items(parameters: SoxrParameters) -> [(&'static str, Option<toml_edit::I
 /// discord_presence = false
 /// auto_update = false
 /// imgbb_api_key = "..."
+/// artist_list_width = 320.0 # In logical pixels
+/// album_list_width = 360.0
+/// playlist_list_width = 280.0
 ///
 /// [[profiles]]
 /// server = "https://music.example.com"
@@ -1573,6 +1599,19 @@ impl Store {
     pub fn imgbb_api_key(&self) -> Result<Option<String>, Error> {
         let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
         Ok(usable_key(settings.imgbb_api_key))
+    }
+
+    /// The width the user gave `pane`, in logical pixels, if one was saved.
+    pub fn pane_width(&self, pane: Pane) -> Result<Option<f32>, Error> {
+        let settings = self.read(config_rs::Environment::with_prefix(ENV_PREFIX))?;
+        let width = match pane {
+            Pane::ArtistList => settings.artist_list_width,
+            Pane::AlbumList => settings.album_list_width,
+            Pane::PlaylistList => settings.playlist_list_width,
+        };
+        Ok(self
+            .typed(pane.key(), width)?
+            .filter(|width| width.is_finite() && *width > 0.0))
     }
 
     fn parse_appearance(&self, value: Option<&str>) -> Result<Option<Appearance>, Error> {
@@ -2316,6 +2355,12 @@ impl Store {
 
     pub fn save_discord_presence(&self, is_on: bool) -> Result<(), Error> {
         self.edit(|document| document["discord_presence"] = toml_edit::value(is_on))
+    }
+
+    pub fn save_pane_width(&self, pane: Pane, width: f32) -> Result<(), Error> {
+        // Whole pixels are plenty, and keep the file readable
+        let width = f64::from(width).round();
+        self.edit(|document| document[pane.key()] = toml_edit::value(width))
     }
 
     pub fn save_auto_update(&self, is_on: bool) -> Result<(), Error> {
@@ -4142,6 +4187,42 @@ mod tests {
         assert_eq!(settings.crossfade_seconds, Typed::Unread);
         assert_eq!(settings.volume, Some(0.5));
         assert_eq!(settings.exclusive_mode, Some(true));
+    }
+
+    #[test]
+    fn a_panes_width_round_trips_in_whole_pixels_apart_from_the_others() {
+        let store = temporary_store("pane-width");
+        store.save_volume(0.5).unwrap();
+        assert_eq!(store.pane_width(Pane::AlbumList).unwrap(), None);
+
+        store.save_pane_width(Pane::AlbumList, 351.6).unwrap();
+        store.save_pane_width(Pane::PlaylistList, 280.0).unwrap();
+
+        assert_eq!(store.pane_width(Pane::AlbumList).unwrap(), Some(352.0));
+        assert_eq!(store.pane_width(Pane::PlaylistList).unwrap(), Some(280.0));
+        assert_eq!(store.pane_width(Pane::ArtistList).unwrap(), None);
+        assert_eq!(read(&store, &[]).volume, Some(0.5));
+    }
+
+    #[test]
+    fn a_pane_width_written_by_hand_is_read_as_a_number_or_named_as_wrong() {
+        let store = temporary_store("pane-width-by-hand");
+        std::fs::create_dir_all(store.dir()).unwrap();
+        std::fs::write(
+            store.config_path(),
+            "album_list_width = 400\nartist_list_width = \"wide\"\nplaylist_list_width = -1\n",
+        )
+        .unwrap();
+
+        assert_eq!(store.pane_width(Pane::AlbumList).unwrap(), Some(400.0));
+        assert!(matches!(
+            store.pane_width(Pane::ArtistList),
+            Err(Error::InvalidSetting {
+                key: "artist_list_width",
+                ..
+            })
+        ));
+        assert_eq!(store.pane_width(Pane::PlaylistList).unwrap(), None);
     }
 
     #[test]

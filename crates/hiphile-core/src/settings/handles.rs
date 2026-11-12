@@ -6,7 +6,7 @@ use crate::hiphile::share;
 
 use super::{
     AppearanceSettings, AudioSettings, CacheKind, CacheLimit, DiscordSettings, DspSettings,
-    LyricsSettings, QueueSettings,
+    LyricsSettings, PaneWidths, QueueSettings,
 };
 
 /// Every setting the app keeps, each a handle of its own that reads its part of one store.
@@ -20,6 +20,7 @@ pub struct Settings {
     dsp: DspSettings,
     lyrics: LyricsSettings,
     queue: QueueSettings,
+    pane_widths: PaneWidths,
 }
 
 impl Settings {
@@ -33,7 +34,8 @@ impl Settings {
             discord: DiscordSettings::new(executor.clone(), share(&store)),
             dsp: DspSettings::new(executor.clone(), share(&store)),
             lyrics: LyricsSettings::new(executor.clone(), share(&store)),
-            queue: QueueSettings::new(executor, share(&store)),
+            queue: QueueSettings::new(executor.clone(), share(&store)),
+            pane_widths: PaneWidths::new(executor, share(&store)),
         }
     }
 
@@ -67,6 +69,10 @@ impl Settings {
 
     pub fn queue(&self) -> &QueueSettings {
         &self.queue
+    }
+
+    pub fn pane_widths(&self) -> &PaneWidths {
+        &self.pane_widths
     }
 
     /// Writes what is still settling or waiting, which nothing would write once the app has
