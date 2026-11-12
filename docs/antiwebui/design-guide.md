@@ -157,7 +157,7 @@ Material 3 Expressive にデザインし直す Hiphile を、詰まったデス�
 | 画面の見出し | 戻ると進む、画面のタイトル、並べ替えと絞り込みを持つ小さなアプリバー（`next_ui::app_bar`）。長いリストの上に大きく畳まるバーは置かない |
 | 画面の本体 | レールとバーから離した `surface_container` のペイン（角 28） |
 | Albums、Artists、Playlists | `next_ui::list_detail` の一覧と詳細のペイン。一覧は決まった幅を保ち、残りを詳細に渡す（widgets の `split_row` は比率で分けるので使わない）。詳細のヘッダーは大きなカバーと、`button_group` に入れた `extended_fab` の再生とトーンのシャッフル |
-| Home | Recommended は `carousel`（multi-browse）。棚は `clickable_card` の並び。下に行 |
+| Home | どの棚も `next_ui::card_grid` のカードの 1 行と、曲の行。並びはコアの `sections()` のとおり。md3e の `carousel` は、キーとフォーカスが無く、外からスクロールできず、縦のホイールを取ってページを止めるので使わない |
 | Songs | 詰めた行と並べ替えられる列の `row_list` |
 | Favorites | md3e の secondary の `tabs` |
 | 検索 | md3e の `search_bar` と、その下に付く結果。レールの FAB とキーで開く |

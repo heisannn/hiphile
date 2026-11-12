@@ -278,7 +278,7 @@ Expressive にデザインし直してみる。どんな感じになるかを見
 | 検索 | ダイアログの中の `Command` パレット | md3e の `search_bar` と、その下に付く結果。レールの FAB とキーで開く |
 | 画面の見出し | 文字の見出し | 戻ると進む、画面のタイトル、並べ替えと絞り込みを持つ小さな `TopAppBar`。長いリストの上に大きく畳まるバーは置かない |
 | Albums、Artists、Playlists | `MasterDetail` | `next_ui::list_detail` の一覧と詳細のペイン（`split_row` は比率で分け、px の最小と最大が無いので使わない）。詳細のヘッダーは大きなカバーと、`button_group` に入れた `extended_fab` の再生とトーンのシャッフル |
-| Home | カードの棚、最近再生した曲 | Recommended は `carousel`（multi-browse）。棚は `clickable_card` の並び。下に行 |
+| Home | カードの棚、最近再生した曲 | どの棚も `next_ui::card_grid` のカードの 1 行と、曲の行（`carousel` はキーとフォーカスが無く、縦のホイールを取るので使わない） |
 | Songs | ライブラリ全体の `uniform_list` | 詰めた行と並べ替えられる列の `row_list` |
 | Favorites | セグメントのタブ | md3e の secondary の `tabs` |
 | プレーヤーバー | ボタン、スライダー、音量 | 下に付くツールバー。操作は `button_group` で、塗りの再生ボタンは丸と四角の間で形を変える。位置は再生中は波が流れ、一時停止中は平ら（`slider_with` に `wavy_progress_eased` と `linear_progress` の見た目）。音量は普通のスライダー。キューと歌詞は `icon_toggle_button` |
