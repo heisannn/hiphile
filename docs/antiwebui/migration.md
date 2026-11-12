@@ -270,7 +270,7 @@ Expressive にデザインし直してみる。どんな感じになるかを見
 
 | | 決まり |
 | --- | --- |
-| 色 | md3e の `ColorScheme` を種の色から `SchemeVariant::Content` で作る。種は再生中の曲のカバー（約 128 px に縮めたカバーにタスクで `dynamic::seed_colors` をかける）が既定で、Appearance で固定の色も選べる。どちらでも、アプリ全体がその配色に従う。曲が変わると `motion::slow_effects` で配色をクロスフェードする。Light、Dark、System は今と同じ。テーマの外に色のリテラルを書かない |
+| 色 | md3e の `ColorScheme` を種の色から作る。種は再生中の曲のカバー（約 128 px に縮めたカバーにタスクで `dynamic::seed_colors` をかける）が既定で、`SchemeVariant::Content` で作る。Appearance で固定の色も選べ、Material You が利用者の選んだ色に使う `TonalSpot` で作る。どちらでも、アプリ全体がその配色に従う。曲が変わると `motion::slow_effects` で配色をクロスフェードする。Light、Dark、System は今と同じ。テーマの外に色のリテラルを書かない |
 | 文字 | md3e の `TextStyle` の段階を Roboto Flex で使い、日本語はシステムのフォールバック（`LANG` を入れたうえで Hiragino Sans）にする。まずは画面のタイトルを `TITLE_LARGE`、行のタイトルを `TITLE_SMALL`、詳細を `on_surface_variant` の `BODY_MEDIUM`、歌詞の行を `HEADLINE_LARGE` にする |
 | 密度 | 長いリストは Hiphile の行の寸法を使い、今と同じ高さ（カバー付きで 48 px）にする。md3e の 56 dp と 72 dp のリスト項目は設定と短いリストに使う |
 | 形 | md3e の角の丸み。ペインは大きな角と余白のある `surface_container`。`MaterialShape` は形に意味があるところだけ：再生ボタンの変形、読み込み。カバーは四角のまま、アーティストの写真は円にする。形では子を切り抜けないため（d15:303） |
@@ -393,7 +393,8 @@ step 0 の検証：
   再生と一時停止は ⌥⌘P にした。Space は入力欄とボタンから奪い、⌘P はプリントの決まったキーなので使わない。
 - 設定はサインインの前にも開ける。
 - テストの executor は、走れる仕事を残して終わったテストを落とす。
-- Appearance で固定の色を選ぶところはまだ作っていない。種はいつも再生中の曲のカバー。
+- Appearance で色を選べる（2026-11-13）。既定は再生中の曲のカバーで、ほかに 8 色から選ぶ。選んだ色は
+  `theme_color` に保存する。
 
 step 6 の前に分かっていること：
 

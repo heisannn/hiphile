@@ -1,17 +1,29 @@
 use std::cell::Cell;
 
-use anti_webui::prelude::{Color, effect, rgb, untrack};
+use anti_webui::prelude::{Color, Memo, Signal, effect, memo, rgb, untrack};
+use anti_webui_md3e::dynamic::Hct;
 use anti_webui_md3e::{
     ColorScheme, SchemeOptions, SchemeVariant, motion, set_color_scheme, set_color_scheme_animated,
 };
-use config::Appearance;
+use config::{Appearance, ThemeColor};
 
-/// The seed while nothing playing gives one.
+/// The seed of the cover's colors while nothing playing gives one.
 pub const DEFAULT_SEED: Color = rgb(0x4f5bd5);
 
-/// The scheme the app is drawn with: the content variant, which keeps a seed taken from a cover
+/// The scheme the app is drawn with in `color`. A picked color gives tonal spot, the scheme
+/// Material You makes of a color the user picks, and the cover gives [`cover_scheme`].
+/// `cover_seed` is the seed of the cover of what plays, `None` while there is none.
+pub fn scheme(color: ThemeColor, cover_seed: Option<Color>, dark: bool) -> ColorScheme {
+    match picked_hue(color) {
+        // Tonal spot takes nothing but the hue from a seed
+        Some(hue) => ColorScheme::from_seed(Hct::new(hue, 48.0, 50.0).to_color(), dark),
+        None => cover_scheme(cover_seed.unwrap_or(DEFAULT_SEED), dark),
+    }
+}
+
+/// The scheme of the colors of a cover: the content variant, which keeps a seed taken from a cover
 /// recognizable.
-pub fn scheme(seed: Color, dark: bool) -> ColorScheme {
+pub fn cover_scheme(seed: Color, dark: bool) -> ColorScheme {
     ColorScheme::from_seed_with(
         seed,
         SchemeOptions {
@@ -20,6 +32,48 @@ pub fn scheme(seed: Color, dark: bool) -> ColorScheme {
             contrast: 0.0,
         },
     )
+}
+
+/// Where each color that can be picked is on HCT's circle of hues.
+fn picked_hue(color: ThemeColor) -> Option<f64> {
+    let hue = match color {
+        ThemeColor::Cover => return None,
+        ThemeColor::Red => 25.0,
+        ThemeColor::Orange => 50.0,
+        ThemeColor::Yellow => 90.0,
+        ThemeColor::Green => 145.0,
+        ThemeColor::Teal => 185.0,
+        ThemeColor::Blue => 255.0,
+        ThemeColor::Purple => 300.0,
+        ThemeColor::Pink => 350.0,
+    };
+    Some(hue)
+}
+
+/// What the window's scheme is made of besides the color chosen. Cheap to copy.
+#[derive(Clone, Copy)]
+pub struct Schemes {
+    is_dark: Memo<bool>,
+    cover_seed: Signal<Option<Color>>,
+}
+
+impl Schemes {
+    /// `cover_seed` is the seed of the cover of what plays, `None` while there is none.
+    pub fn new(is_dark: impl Fn() -> bool + 'static, cover_seed: Signal<Option<Color>>) -> Self {
+        Self {
+            is_dark: memo(is_dark),
+            cover_seed,
+        }
+    }
+
+    /// The scheme that `color` gives the window now. Reading it tracks it.
+    pub fn of(&self, color: ThemeColor) -> ColorScheme {
+        let cover_seed = match color {
+            ThemeColor::Cover => self.cover_seed.get(),
+            _ => None,
+        };
+        scheme(color, cover_seed, self.is_dark.get())
+    }
 }
 
 /// `None` follows the system.
@@ -31,16 +85,15 @@ pub fn is_dark(appearance: Option<Appearance>, system_is_dark: bool) -> bool {
     }
 }
 
-/// Keeps the thread's scheme to `dark` and `seed`: at once the first time and while
-/// `reduces_motion`, and else by a cross-fade. A seed of `None` is [`DEFAULT_SEED`].
+/// Keeps the thread's scheme to what `scheme` gives: at once the first time and while
+/// `reduces_motion`, and else by a cross-fade.
 pub fn follow_theme(
-    dark: impl Fn() -> bool + 'static,
-    seed: impl Fn() -> Option<Color> + 'static,
+    scheme: impl Fn() -> ColorScheme + 'static,
     reduces_motion: impl Fn() -> bool + 'static,
 ) {
     let first = Cell::new(true);
     effect(move || {
-        let colors = scheme(seed().unwrap_or(DEFAULT_SEED), dark());
+        let colors = scheme();
         if first.replace(false) || untrack(&reduces_motion) {
             set_color_scheme(colors);
         } else {

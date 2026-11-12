@@ -64,11 +64,17 @@ Material 3 Expressive にデザインし直す Hiphile を、詰まったデス�
 
 ### 色
 
-- 配色は md3e の `ColorScheme` を種の色から `SchemeVariant::Content` で作る（`next_ui::theme::scheme`）。
-  種は再生中の曲のカバーで、アプリ全体がその配色に従う。Appearance で固定の色を選べるようにするのは
-  まだ（migration.md の「進み具合」）。
-  曲が変わると `motion::slow_effects` でクロスフェードする（`next_ui::theme::follow_theme`）。何も再生して
-  いない間は `DEFAULT_SEED`。
+- 配色は Material You に従い、種の色から md3e の `ColorScheme` を作る（`next_ui::theme::scheme`）。
+  アプリ全体が 1 つの配色に従う。
+  - 既定の種は再生中の曲のカバーで、`SchemeVariant::Content` で作る。カバーの色が分かるまま残るため。
+    曲が変わると `motion::slow_effects` でクロスフェードする（`next_ui::theme::follow_theme`）。何も再生して
+    いない間は `DEFAULT_SEED`。
+  - Appearance の Color で、カバーの代わりに 8 色から選べる。選んだ色は Material You が利用者の選んだ色に
+    使う `SchemeVariant::TonalSpot` で作り、カバーには従わない。色は HCT の色相で決め、`next_ui::theme` に
+    だけ置く。
+  - 色の選択肢は Android と同じく、その色が作る配色の見本で見せる（上の半分が primary、下が secondary と
+    tertiary）。見本は今の Light と Dark で描く。選んだものは角を四角くし、チェックを付ける。
+    カバーの見本には、アルバムの印と名前のツールチップを付ける。
 - Light、Dark、System は今と同じ。System はシステムの外観に従う。
 - 色は役割で使う：
 
@@ -88,7 +94,7 @@ Material 3 Expressive にデザインし直す Hiphile を、詰まったデス�
 - 状態の色を飾りに使わない。意味を色だけで表さない（アイコン、文字、形も添える）。
 - 色のリテラルを書くのはテーマ（`next_ui::theme`）と、色そのものがデータであるもの（カバーの絵）だけ。
   役割が足りなければテーマに足す。
-- どの面も、ライトとダークと、色の違う何種類かのカバーの配色で確かめる。地が白、文字が黒とは決めつけない。
+- どの面も、ライトとダークと、色の違う何種類かのカバーと選べる色の配色で確かめる。地が白、文字が黒とは決めつけない。
   カバーから作った配色は彩度も明るさもまちまちになる。
 
 ### 文字
@@ -166,7 +172,7 @@ Material 3 Expressive にデザインし直す Hiphile を、詰まったデス�
 | キュー | `surface_container_low` の右のペイン。ドラッグとキーで並べ替える |
 | 歌詞 | ウィンドウ全体に出す。点いた語は色と不透明度で示し、ラテン文字には `GRAD` を足す。カバーはバーから飛ぶ |
 | サインイン | レールは出さない。枠線のテキストフィールド、表示を切り替えられるパスワード、塗りのボタン |
-| 設定 | 同じウィンドウのポップアップ。`surface_container_high` で角 28、ウィンドウに合わせて広げる。左にページの一覧、右にそのページ。グループは `segmented_list`。スイッチ、`dropdown_field`、ラジオボタン、中央を起点にしたバランスのスライダーを行の後ろに置く。Escape と scrim で閉じる |
+| 設定 | 同じウィンドウのポップアップ。`surface_container_high` で角 28、ウィンドウに合わせて広げる。左にページの一覧、右にそのページ。グループは `segmented_list`。スイッチ、`dropdown_field`、ラジオボタン、中央を起点にしたバランスのスライダーを行の後ろに置く。配色は色の見本のラジオグループで選ぶ。Escape と scrim で閉じる |
 | 通知 | `snackbars`。元に戻すものは `lasting` で時間を付ける。同期の進み具合は一覧のペインの見出しの `circular_progress` |
 | 長い名前 | はみ出しは切って右端を薄くする。「…」は出ない |
 

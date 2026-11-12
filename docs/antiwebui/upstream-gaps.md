@@ -135,13 +135,20 @@ md3e にも 287 か所ある。
   押された点に `portal` で大きさのある見えない要素を置き、そこに付ける（`next_ui::context_menu`）。
 - **スナックバーは 1 つずつ順に出る。** アクションのあるものは閉じるまで残り、後のものを止める。元に戻す
   スナックバーには `lasting` で時間を付ける。
+- **色を選ぶ部品が無い。** 設定の色は、widgets の `radio_group_with` の振る舞いに自前の見本の見た目を
+  載せる（`next/settings/src/swatches.rs`）。
 - **寸法を外に出さない。** segmented list の角（`next/settings/src/group.rs` の `OUTER` と `INNER`）と、
   検索のバーの寸法（`next/search/src/results.rs` の `ROOM`）は、md3e の値を写して持つ。
 
 ### レイアウトと描画
 
-- **角の丸みで子を切り抜けない**（d15:303）。カードのカバーは、カバー自身の上の角を丸める
+- **子を形で切り抜けない**（d15:303）。切り抜けるのは `overflow_hidden` の箱の角の丸みだけで、
+  `MaterialShape` の形にはならない。カードのカバーは、カバー自身の上の角を丸める
   （`next/ui/src/card_grid.rs`）。
+- **角の丸みは、箱の短い辺の半分までに切り詰められる**（`anti-webui-wgpu/src/renderer.rs:382-383`、
+  `anti-webui-wgpu/src/shader.wgsl:44`）。CSS のように隣り合う角の和で縮めないので、40×20 の箱の上の角を
+  20 にしても半円にならない。設定の色の見本は、丸めた `overflow_hidden` の箱の中に四角を並べて切り抜く
+  （`next/settings/src/swatches.rs`）。
 - **`virtual_list` は行の高さが 1 種類で、キー操作が無い。** `table` は 1 行しか選べない。
   `next_ui::row_list` が、曲についていく選択、Shift と ⌘ での選択、キーでの移動、ドラッグでの並べ替えを持つ。
   見出しの固定は無い。

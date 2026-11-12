@@ -28,7 +28,11 @@ fn fixture(config: &str) -> Fixture {
             div()
                 .size_full()
                 .child(button("Behind").on_click(move |_| open.set(true)))
-                .child(settings_popup(hiphile, open))
+                .child(settings_popup(
+                    hiphile,
+                    open,
+                    Schemes::new(|| false, signal(None)),
+                ))
         }
     });
     let mut it = Fixture {

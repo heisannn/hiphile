@@ -1,6 +1,6 @@
 use anti_webui::core::access::Checked;
 use anti_webui::prelude::Role;
-use config::{Appearance, LyricsHighlight};
+use config::{Appearance, LyricsHighlight, ThemeColor};
 use next_ui::testing::{core, find, has_text, press, start, wait_until};
 
 use super::*;
@@ -68,13 +68,17 @@ fn a_label_chooses_its_radio_button() {
     assert_eq!(lyrics.snapshot().highlight(), LyricsHighlight::ByLine);
 }
 
+fn appearance_page_in_light(appearance: &AppearanceSettings) -> Div {
+    appearance_page(appearance, Schemes::new(|| false, signal(None)))
+}
+
 #[test]
 fn the_theme_is_chosen_and_saved() {
     let (_core, hiphile) = core("");
     let appearance = hiphile.settings().appearance().clone();
     let mut ui = start({
         let appearance = appearance.clone();
-        move || appearance_page(&appearance)
+        move || appearance_page_in_light(&appearance)
     });
     assert!(is_checked(Role::Radio, "System"));
 
@@ -90,8 +94,46 @@ fn the_theme_is_chosen_and_saved() {
 fn a_theme_that_cannot_be_read_says_so() {
     let (_core, hiphile) = core("appearance = \"purple\"\n");
     let appearance = hiphile.settings().appearance().clone();
-    let error = appearance.snapshot().error().expect("an error").to_owned();
-    let _ui = start(move || appearance_page(&appearance));
+    let error = appearance
+        .snapshot()
+        .errors()
+        .next()
+        .expect("an error")
+        .to_owned();
+    let _ui = start(move || appearance_page_in_light(&appearance));
 
     assert!(has_text(&error));
+}
+
+#[test]
+fn the_color_is_the_cover_until_one_is_chosen() {
+    let (_core, hiphile) = core("");
+    let appearance = hiphile.settings().appearance().clone();
+    let mut ui = start({
+        let appearance = appearance.clone();
+        move || appearance_page_in_light(&appearance)
+    });
+    assert!(is_checked(Role::Radio, "From the cover"));
+
+    press(&mut ui, Role::Radio, "Teal");
+    assert_eq!(appearance.snapshot().theme_color(), ThemeColor::Teal);
+    wait_until(&mut ui, || is_checked(Role::Radio, "Teal"));
+    assert!(!is_checked(Role::Radio, "From the cover"));
+}
+
+#[test]
+fn a_color_that_cannot_be_read_says_so() {
+    let (_core, hiphile) = core("theme_color = \"mauve\"\n");
+    let appearance = hiphile.settings().appearance().clone();
+    let error = appearance
+        .snapshot()
+        .errors()
+        .next()
+        .expect("an error")
+        .to_owned();
+    let _ui = start(move || appearance_page_in_light(&appearance));
+
+    assert!(error.starts_with("Couldn't read the color"), "{error}");
+    assert!(has_text(&error));
+    assert!(is_checked(Role::Radio, "From the cover"));
 }

@@ -20,7 +20,7 @@ use next_ui::cover::install_covers;
 use next_ui::list_detail::Split;
 use next_ui::pane::GAP;
 use next_ui::testing::{focus, frames, key, press, screen_context, scroll, signed_in_core};
-use next_ui::theme::{DEFAULT_SEED, scheme};
+use next_ui::theme::{DEFAULT_SEED, cover_scheme};
 use next_ui::type_scale::body;
 use next_ui::{Command, Commands, Screen, app_bar};
 use serde_json::{Value, json};
@@ -140,7 +140,7 @@ fn shot(
         h,
         SCALE,
         move || {
-            set_color_scheme(scheme(DEFAULT_SEED, dark));
+            set_color_scheme(cover_scheme(DEFAULT_SEED, dark));
             let location = signal(at);
             let commands = Commands::new(move |command| {
                 if let Command::Show(to) | Command::ShowInPlace(to) = command {

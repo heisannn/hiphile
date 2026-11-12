@@ -28,7 +28,7 @@ use next_host::follow;
 use next_songs::songs;
 use next_ui::pane::GAP;
 use next_ui::testing::{nodes, recording_commands, screen_context, signed_in_core};
-use next_ui::theme::{DEFAULT_SEED, scheme};
+use next_ui::theme::{DEFAULT_SEED, cover_scheme};
 use next_ui::type_scale::body;
 use next_ui::{Screen, app_bar};
 use serde_json::{Value, json};
@@ -361,7 +361,7 @@ fn main() {
     let mut ui = Ui::new({
         let (kept, hiphile) = (kept.clone(), hiphile.clone());
         move || {
-            set_color_scheme(scheme(DEFAULT_SEED, false));
+            set_color_scheme(cover_scheme(DEFAULT_SEED, false));
             kept.set(Some(follow(workspace.songs().subscribe())));
             let (commands, _) = recording_commands();
             window(songs(&screen_context(&hiphile, commands)))

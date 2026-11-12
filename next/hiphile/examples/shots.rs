@@ -16,11 +16,11 @@ use hiphile_core::test_support::{LibraryServer, PlaylistsServer};
 use next_hiphile::{MenuBar, Reach, SMALLEST_WINDOW, System, WINDOW, app};
 use next_player::testing::{CoverServer, png};
 use next_ui::testing::{
-    NOWHERE, SavedLibrary, click, click_with, core, find, frames, has_text, key, key_with, press,
-    scroll, signed_in_core, signed_in_core_with_library, signed_in_core_with_lyrics, typed,
+    NOWHERE, SavedLibrary, click, click_with, core, find, focus, frames, has_text, key, key_with,
+    press, scroll, signed_in_core, signed_in_core_with_library, signed_in_core_with_lyrics, typed,
     wait_until,
 };
-use next_ui::theme::{DEFAULT_SEED, scheme};
+use next_ui::theme::{DEFAULT_SEED, cover_scheme};
 use serde_json::{Value, json};
 use subsonic::Song;
 
@@ -86,6 +86,17 @@ fn main() {
                 |ui| settings(ui, page),
             );
         }
+        shot(
+            &folder.join(format!("settings-appearance-picked-{theme}.png")),
+            dark,
+            true,
+            |ui| {
+                settings(ui, "Appearance");
+                focus(ui, Role::RadioGroup, "Color");
+                key(ui, NamedKey::ArrowLeft);
+                frames(ui, 1000);
+            },
+        );
         for resampler in ["r8brain", "soxr"] {
             shot(
                 &folder.join(format!("settings-{resampler}-{theme}.png")),
@@ -302,7 +313,7 @@ fn lyrics_playing(
 }
 
 fn wait_for_cover_colors(ui: &mut Ui, dark: bool) {
-    let default = scheme(DEFAULT_SEED, dark).primary;
+    let default = cover_scheme(DEFAULT_SEED, dark).primary;
     for _ in 0..500 {
         if color_scheme().primary != default {
             break;
@@ -568,7 +579,7 @@ fn playing_shot_at(
     let player = hiphile.workspace().expect("signed in").player().clone();
     player.fill_queue(queue, 3.min(queue.len() - 1));
     setup(&player);
-    let default = scheme(DEFAULT_SEED, dark).primary;
+    let default = cover_scheme(DEFAULT_SEED, dark).primary;
     render(path, dark, hiphile, size, move |ui| {
         // The scheme cross-fades, which takes frames
         for _ in 0..500 {

@@ -33,7 +33,7 @@ use next_ui::section::{
 };
 use next_ui::sort_menu::{SortOption, sort_menu};
 use next_ui::testing::{frames, key, key_with, scroll};
-use next_ui::theme::{DEFAULT_SEED, scheme};
+use next_ui::theme::{DEFAULT_SEED, cover_scheme};
 use next_ui::type_scale::{body, muted_text};
 use next_ui::{Overlays, app_bar};
 
@@ -128,7 +128,7 @@ fn shot<V: IntoView>(
         h,
         SCALE,
         move || {
-            set_color_scheme(scheme(DEFAULT_SEED, dark));
+            set_color_scheme(cover_scheme(DEFAULT_SEED, dark));
             view()
         },
         |ui| {

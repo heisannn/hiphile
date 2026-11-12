@@ -5,9 +5,11 @@ use hiphile_core::settings::{
     APPEARANCES, AppearanceSettings, AppearanceSnapshot, LYRICS_HIGHLIGHTS, LyricsSettings,
     LyricsSnapshot, QueueSettings, QueueSnapshot,
 };
+use next_ui::theme::Schemes;
 
 use crate::controls::{never, radios, switch_of};
 use crate::group::{Group, Row, page};
+use crate::swatches::swatches;
 
 pub(crate) fn queue_page(queue: &QueueSettings) -> Div {
     let shown = next_host::follow(queue.subscribe());
@@ -60,9 +62,22 @@ pub(crate) fn lyrics_page(lyrics: &LyricsSettings) -> Div {
     ])
 }
 
-/// The theme the window shows: the shell follows what is chosen here, the screen behind too.
-pub(crate) fn appearance_page(appearance: &AppearanceSettings) -> Div {
+/// The theme and the colors the window shows: the shell follows what is chosen here, the screen
+/// behind too. The colors that can be chosen show in `schemes`.
+pub(crate) fn appearance_page(appearance: &AppearanceSettings, schemes: Schemes) -> Div {
     let shown = next_host::follow(appearance.subscribe());
+    let color = Row::new("Color", {
+        let appearance = appearance.clone();
+        move || {
+            let appearance = appearance.clone();
+            swatches(
+                move || shown.with(AppearanceSnapshot::theme_color),
+                move |color| appearance.set_theme_color(color),
+                schemes,
+            )
+        }
+    })
+    .stacked();
     let appearance = appearance.clone();
     let theme = Row::new("Theme", move || {
         let appearance = appearance.clone();
@@ -89,7 +104,10 @@ pub(crate) fn appearance_page(appearance: &AppearanceSettings) -> Div {
     page(vec![
         Group::new()
             .row(theme)
-            .errors(move || shown.with(|shown: &AppearanceSnapshot| error(shown.error())))
+            .row(color)
+            .errors(move || {
+                shown.with(|shown: &AppearanceSnapshot| shown.errors().map(str::to_owned).collect())
+            })
             .view()
             .into_view(),
     ])
