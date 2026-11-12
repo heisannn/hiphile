@@ -256,8 +256,12 @@ AntiWebUI のシグナルはスレッドローカルで、細かく更新され�
 - 部品をまとめて作るとき（リスト、メニュー）は、矢印での移動、Home と End、決定、取り消し、Tab まで、
   移動の型をひととおり作る。
 - 押せるものを作るときは、まず md3e の部品を使う。自分の `div` を押せるようにするときは、`focusable`、
-  役割、名前に加えて、`Ink` でホバーと押下とフォーカスの見た目を付ける。`focusable` な要素では Space と
-  Enter がクリックになる。
+  役割、名前、`CursorIcon::Pointer` に加えて、`Ink` でホバーと押下の見た目を付け、
+  `next_ui::focus_ring::focus_ring` でキーのフォーカスの輪を描く。`focusable` な要素では Space と Enter が
+  クリックになる。
+- 一覧やグリッドの項目はフォーカスを持たない。フォーカスを持つ箱を `selection::KeysShown` で包み、受けた
+  キーを `used_a_key` で知らせ、キーのいる項目に `inner_focus_ring` を描く（`row_list`、`card_grid` の
+  `keyed_when`、`page_row` の `keyed_when`）。
 
 ## 非同期の仕事
 
