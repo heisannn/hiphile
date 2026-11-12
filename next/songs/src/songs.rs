@@ -11,7 +11,7 @@ use next_ui::load_state::{empty_state, load_failure, no_matches, pane_loading};
 use next_ui::pane::pane;
 use next_ui::sort_menu::{SortOption, sort_menu};
 use next_ui::{Screen, ScreenContext};
-use subsonic::SongId;
+use subsonic::{Song, SongId};
 
 mod columns;
 mod commands;
@@ -201,9 +201,18 @@ fn keep_first_selected(table: &Table) {
             let is_chosen = chose.get()
                 || selection.with(|selected| {
                     let picked = picked.borrow();
-                    let is_picked = selected.len() == 1
-                        && picked.as_ref().is_some_and(|id| selected.contains(id));
-                    !selected.is_empty() && !is_picked
+                    let on_show = shown.with(|shown| {
+                        shown.as_ref().map_or(0, |shown| {
+                            selected.count_in(
+                                (0..shown.visible().len())
+                                    .filter_map(|position| shown.get(position))
+                                    .map(Song::id),
+                            )
+                        })
+                    });
+                    let is_picked =
+                        on_show == 1 && picked.as_ref().is_some_and(|id| selected.contains(id));
+                    on_show > 0 && !is_picked
                 });
             if is_chosen {
                 return;

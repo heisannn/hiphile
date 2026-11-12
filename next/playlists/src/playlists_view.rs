@@ -183,11 +183,11 @@ impl Playlists {
         // One playlist is chosen at a time, so the rows a selection could take in besides go
         let this = self.clone();
         effect(move || {
-            let only = this.list_selection.with(|selected| {
-                (selected.len() == 1)
-                    .then(|| selected.ids().next().cloned())
-                    .flatten()
-            });
+            let listed = untrack(|| this.listed_ids());
+            let only = match this.list_selection.in_order(listed).as_slice() {
+                [only] => Some(only.clone()),
+                _ => None,
+            };
             untrack(|| {
                 let Some(wanted) = this.wanted.get() else {
                     return;
@@ -250,21 +250,23 @@ impl Playlists {
     }
 
     fn select_in_list(&self, wanted: Option<PlaylistId>) {
-        let selection = self.list_selection;
         match wanted {
-            Some(playlist) => {
-                let is_only =
-                    selection.with(|selected| selected.len() == 1 && selected.contains(&playlist));
-                if !is_only {
-                    selection.select(playlist);
-                }
-            }
-            None => {
-                if !selection.with(|selected| selected.is_empty()) {
-                    selection.clear();
-                }
-            }
+            Some(playlist) => self.list_selection.select(playlist),
+            None => self.list_selection.clear(),
         }
+    }
+
+    /// The playlists the list shows, in its order.
+    fn listed_ids(&self) -> Vec<PlaylistId> {
+        self.shown.with(|shown| {
+            (0..shown.visible().len())
+                .filter_map(|at| {
+                    shown
+                        .visible_playlist(at)
+                        .map(|playlist| playlist.id().clone())
+                })
+                .collect()
+        })
     }
 
     /// Opening a playlist reads its songs again, so the one open stays as it is.
@@ -532,9 +534,15 @@ impl Playlists {
         let narrowed = signal(None::<EntryId>);
         effect(move || {
             let several = selection.with(|selected| {
-                (selected.len() > 1)
-                    .then(|| selected.cursor().copied())
-                    .flatten()
+                let listed = shown.with_untracked(|shown| {
+                    shown.open_playlist().map_or(0, |open| {
+                        let entries = open.entries();
+                        selected.count_in(
+                            (0..entries.len()).filter_map(|ix| Some(entries.get(ix)?.id())),
+                        )
+                    })
+                });
+                (listed > 1).then(|| selected.cursor().copied()).flatten()
             });
             if several.is_some() {
                 untrack(|| narrowed.set(several));

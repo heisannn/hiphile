@@ -118,13 +118,18 @@ impl<K: Clone + Eq + Hash + 'static> Selection<K> {
             .with(|selected| ids.into_iter().filter(|id| selected.contains(id)).collect())
     }
 
-    /// Selects `id` and nothing else.
+    /// Selects `id` and nothing else. What reads the selection is told only if that changes it.
     pub fn select(&self, id: K) {
-        self.0.update(|selected| selected.select_only(id));
+        if !self.0.with_untracked(|selected| selected.is_only(&id)) {
+            self.0.update(|selected| selected.select_only(id));
+        }
     }
 
+    /// What reads the selection is told only if something was selected.
     pub fn clear(&self) {
-        self.0.update(Selected::clear);
+        if !self.0.with_untracked(Selected::is_cleared) {
+            self.0.update(Selected::clear);
+        }
     }
 }
 

@@ -295,6 +295,56 @@ fn scrolling_shows_the_rows_it_comes_to_and_keeps_the_selection() {
 }
 
 #[test]
+fn the_selection_is_counted_among_the_rows_on_show_and_kept_past_them() {
+    let list = List::of(999);
+    let mut ui = list.start();
+    click_song(&mut ui, 0);
+    key_with(&mut ui, Key::Character("a".into()), Modifiers::PRIMARY);
+
+    list.rows.set(songs(0..4));
+    ui.update();
+    let shown = || {
+        list.rows
+            .get_untracked()
+            .iter()
+            .map(|song| song.id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        list.selection.with(|selected| selected.count_in(shown())),
+        4
+    );
+    assert_eq!(list.selection.in_order(shown()), [0, 1, 2, 3]);
+
+    list.rows.set(songs(0..999));
+    ui.update();
+    assert_eq!(list.selected(), ids(0..999));
+}
+
+#[test]
+fn selecting_what_is_selected_or_clearing_what_is_clear_tells_nothing() {
+    let selection = Selection::new();
+    let told = Rc::new(Cell::new(0));
+    let _ui = start({
+        let told = told.clone();
+        move || {
+            effect(move || {
+                selection.with(|_| ());
+                told.set(told.get() + 1);
+            });
+            div()
+        }
+    });
+
+    selection.select(1);
+    selection.select(1);
+    selection.clear();
+    selection.clear();
+
+    assert_eq!(told.get(), 3);
+}
+
+#[test]
 fn rows_that_come_before_one_out_of_view_leave_the_scroll() {
     let list = List::of(200);
     let mut ui = list.start();

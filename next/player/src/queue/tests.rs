@@ -105,14 +105,13 @@ impl Shown {
     fn selected(&self) -> Vec<usize> {
         let shown = self.player.snapshot();
         let queue = shown.queue();
-        let mut at: Vec<usize> = self.panels.queue_selection.with(|selected| {
-            selected
-                .ids()
-                .filter_map(|id| queue.position(*id))
-                .collect()
-        });
-        at.sort_unstable();
-        at
+        let listed = queue.entries().iter().map(|entry| entry.id());
+        self.panels
+            .queue_selection
+            .in_order(listed)
+            .into_iter()
+            .filter_map(|id| queue.position(id))
+            .collect()
     }
 
     /// Lets what changed in the core come to the view.

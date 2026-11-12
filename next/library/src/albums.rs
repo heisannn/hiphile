@@ -167,15 +167,32 @@ impl Model {
         let this = self.clone();
         effect(move || {
             let cursor = this.albums.cursor();
-            let several = this.albums.with(|selected| selected.len() > 1);
+            let several = this.albums.with(|selected| {
+                let listed = this.status.with_untracked(|status| {
+                    status.shown().map_or(0, |shown| {
+                        selected.count_in(
+                            (0..shown.visible().len())
+                                .filter_map(|position| shown.get(position))
+                                .map(Album::id),
+                        )
+                    })
+                });
+                listed > 1
+            });
             untrack(|| this.follow_album_selection(cursor, several));
         });
-        let songs = self.songs;
+        let (songs, album) = (self.songs, self.album);
         effect(move || {
             let cursor = songs.cursor();
-            if songs.with(|selected| selected.len() > 1)
-                && let Some(cursor) = cursor
-            {
+            let several = songs.with(|selected| {
+                let listed = album.with_untracked(|album| {
+                    album.loaded().map_or(0, |loaded| {
+                        selected.count_in(loaded.songs().iter().map(Song::id))
+                    })
+                });
+                listed > 1
+            });
+            if several && let Some(cursor) = cursor {
                 untrack(|| songs.select(cursor));
             }
         });
