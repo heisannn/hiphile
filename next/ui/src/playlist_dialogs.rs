@@ -231,8 +231,7 @@ fn choose_playlist(dialogs: PlaylistDialogs, cx: &ScreenContext, songs: Arc<[Son
     );
     let height = move || {
         let rows = known.playlist_choices().len().clamp(1, ROWS_SHOWN);
-        // With the room between the edge of the list and its rows
-        rows as f32 * ROW_HEIGHT + 16.0
+        rows as f32 * ROW_HEIGHT
     };
     let rows = div().w(WIDTH).dyn_style(move |s| s.h(height())).child(rows);
     let row = dialog_actions()

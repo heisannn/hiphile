@@ -6,7 +6,7 @@ use anti_webui_md3e::color_scheme;
 use anti_webui_md3e::components::sized_icon;
 use anti_webui_md3e::icons;
 use hiphile_core::Workspace;
-use subsonic::{Song, SongId};
+use subsonic::SongId;
 
 /// The icon's size, and the width of its lane, which is there with no icon too, so that what comes
 /// after it stays in line.
@@ -99,11 +99,6 @@ pub fn song_row_label(title: &str, state: Option<PlayState>, is_skipped: bool) -
     };
     let skipped = if is_skipped { ", skipped" } else { "" };
     format!("{title}{state}{skipped}")
-}
-
-/// Whether the player passes `song` over, given whether it skips instrumentals.
-pub fn is_skipped(song: &Song, is_skipping: bool) -> bool {
-    playback::is_skipped(song, is_skipping)
 }
 
 /// `content`, faded while `skipped` says so. It is what a row holds, not the row itself, whose

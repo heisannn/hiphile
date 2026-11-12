@@ -1,11 +1,5 @@
-use serde_json::json;
-
 use super::*;
 use crate::testing::{has_text, nodes, start};
-
-fn song(title: &str) -> Song {
-    serde_json::from_value(json!({ "id": title, "title": title })).unwrap()
-}
 
 #[test]
 fn only_the_song_the_player_is_on_has_a_state() {
@@ -26,13 +20,6 @@ fn a_rows_label_says_what_its_icon_and_its_look_show() {
         song_row_label("One", Some(PlayState::Paused), true),
         "One, paused, skipped"
     );
-}
-
-#[test]
-fn instrumentals_are_skipped_only_while_the_player_skips_them() {
-    assert!(is_skipped(&song("One (Instrumental)"), true));
-    assert!(!is_skipped(&song("One (Instrumental)"), false));
-    assert!(!is_skipped(&song("One"), true));
 }
 
 #[test]

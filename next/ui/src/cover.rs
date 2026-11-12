@@ -13,6 +13,8 @@ use next_host::on_ui;
 
 /// How many covers stay known once no view shows them. Each is a path or an image still held.
 const KEPT: usize = 512;
+/// More than half of any picture, which corners are cut down to: a circle.
+pub(crate) const ROUND: f32 = 10_000.0;
 
 /// What a cover stands for while there is no picture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

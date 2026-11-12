@@ -8,10 +8,11 @@ use anti_webui_md3e::color_scheme;
 use anti_webui_md3e::components::{Ink, filled_card};
 use anti_webui_md3e::typography::TextStyle;
 
+use crate::cover::ROUND;
 use crate::keymap::Keystroke;
 use crate::pane::INSET;
 use crate::row_text::faded_end;
-use crate::selection::selection_fill;
+use crate::selection::{CORNER, When, selection_fill};
 
 pub const CARD_MIN_WIDTH: f32 = 160.0;
 /// Between cards, across and down.
@@ -21,11 +22,7 @@ const CARD_PADDING: f32 = 12.0;
 /// Rows of songs and of cards differ too much in height for a page to be a number of them. This
 /// many stays in view.
 const PAGE_ROWS: usize = 4;
-/// More than half of any picture, which corners are cut down to: a circle.
-const ROUND: f32 = 10_000.0;
-/// A card's corners. A cover that fills the top of one is rounded as much: a picture cuts what is
-/// in it square, as if its card did not round it.
-const CORNER: f32 = 12.0;
+
 /// How many cards fit across a pane `width` wide.
 pub fn columns_for(width: f32) -> usize {
     let room = width - INSET * 2.0 + CARD_GAP;
@@ -121,8 +118,6 @@ pub fn card_row(columns: usize, cards: Vec<Div>) -> Div {
         )
 }
 
-type When = Rc<dyn Fn() -> bool>;
-
 /// What [`card`] shows.
 pub struct Card {
     cover: Div,
@@ -202,6 +197,8 @@ pub fn card(card: Card) -> Div {
             .p(CARD_PADDING)
             .child(cover.w_full().aspect_ratio(1.0_f32).rounded(ROUND))
     } else {
+        // As round as md3e's card: a picture cuts what is in it square, as if the card did not
+        // round it
         cover
             .flex_none()
             .w_full()

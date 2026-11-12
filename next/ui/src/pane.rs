@@ -9,6 +9,12 @@ pub const RADIUS: f32 = 28.0;
 /// From a pane's edge to what is in it: the line its headings, cards and the words of its rows
 /// start on.
 pub const INSET: f32 = 16.0;
+/// As high as a small icon button: a line that may end in one, such as a heading, keeps its
+/// height with it.
+pub(crate) const LINE: f32 = 40.0;
+/// What a small icon button has between its edge and its icon, which brings it closer to the edge
+/// than text for its icon to line up.
+pub(crate) const BUTTON_PADDING: f32 = 8.0;
 
 /// `content` on a pane of its own, which it fills and is cut to.
 pub fn pane(content: Div) -> Div {

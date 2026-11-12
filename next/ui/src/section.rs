@@ -6,16 +6,11 @@ use anti_webui_md3e::components::indeterminate_circular_progress;
 use anti_webui_md3e::typography::TextStyle;
 
 use crate::load_state::retry_button;
-use crate::pane::INSET;
+use crate::pane::{BUTTON_PADDING, INSET, LINE};
 use crate::type_scale::{error_text, muted_text, styled_text};
 
 /// Above a heading: what parts it from the section before.
 const ABOVE: f32 = 16.0;
-/// A heading's line is as high as a button at its end, so that one moves nothing.
-const LINE: f32 = 40.0;
-/// What a small icon button has between its edge and its icon, which brings it closer to the edge
-/// than text for its icon to line up.
-const BUTTON_PADDING: f32 = 8.0;
 /// Where a section waits.
 const LOADING_HEIGHT: f32 = 64.0;
 

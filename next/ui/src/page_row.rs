@@ -8,14 +8,11 @@ use anti_webui_md3e::color_scheme;
 use anti_webui_md3e::components::Ink;
 
 use crate::row_list::{ROW_HEIGHT, ROW_PADDING};
-use crate::selection::selection_fill;
+use crate::selection::{CORNER, When, selection_fill};
 
 /// From the edge of the page to the row, which puts what the row shows on the line of the rest of
 /// the pane, as in a row list.
 const INSET: f32 = crate::pane::INSET - ROW_PADDING;
-const CORNER: f32 = 12.0;
-
-type When = Rc<dyn Fn() -> bool>;
 
 /// What [`page_row`] shows.
 pub struct PageRow {

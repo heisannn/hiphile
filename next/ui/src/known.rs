@@ -51,3 +51,6 @@ impl Known {
         playback::is_skipped(song, self.skips_instrumentals())
     }
 }
+
+#[cfg(test)]
+mod tests;

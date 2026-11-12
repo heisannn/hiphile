@@ -4,15 +4,13 @@ use anti_webui::prelude::*;
 use hiphile_core::Workspace;
 use subsonic::CoverArtId;
 
-use crate::cover::{CoverKind, cover};
+use crate::cover::{CoverKind, ROUND, cover};
 
 /// A cover's side in a row of [`ROW_HEIGHT`](crate::row_list::ROW_HEIGHT).
 pub const ROW_COVER: f32 = 40.0;
 /// What `next_player` asks the bar's cover at, so that the song that plays needs no second image.
 const PIXELS: u32 = 128;
 const CORNER: f32 = 8.0;
-/// More than half of the cover, which its corners are cut down to: a circle.
-const ROUND: f32 = 10_000.0;
 
 /// The cover `cover_art` names on the server of `workspace`: square with rounded corners for an
 /// album or a song, a circle for an artist.
