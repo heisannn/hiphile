@@ -154,6 +154,7 @@ type Look<S, K> = Rc<dyn Fn(&<S as RowSource>::Item, RowState<K>) -> Div>;
 type IdOf<S, K> = Rc<dyn Fn(&<S as RowSource>::Item) -> K>;
 type LabelOf<S> = Rc<dyn Fn(&<S as RowSource>::Item) -> String>;
 type OnReorder<K> = Rc<dyn Fn(Vec<K>, usize)>;
+type KeysStart<K> = Rc<dyn Fn() -> Option<K>>;
 
 /// A row list to be made by [`row_list`].
 pub struct RowList<S: RowSource, K: 'static> {
@@ -168,6 +169,7 @@ pub struct RowList<S: RowSource, K: 'static> {
     on_open: Option<Rc<dyn Fn(K)>>,
     on_context_menu: Option<Rc<dyn Fn(K, PointF)>>,
     on_reorder: Option<OnReorder<K>>,
+    keys_start: Option<KeysStart<K>>,
 }
 
 impl<S: RowSource, K: Clone + Eq + Hash + 'static> RowList<S, K> {
@@ -192,6 +194,7 @@ impl<S: RowSource, K: Clone + Eq + Hash + 'static> RowList<S, K> {
             on_open: None,
             on_context_menu: None,
             on_reorder: None,
+            keys_start: None,
         }
     }
 
@@ -237,6 +240,13 @@ impl<S: RowSource, K: Clone + Eq + Hash + 'static> RowList<S, K> {
     /// go before, which is the number of rows for after the last.
     pub fn on_reorder(mut self, reorder: impl Fn(Vec<K>, usize) + 'static) -> Self {
         self.on_reorder = Some(Rc::new(reorder));
+        self
+    }
+
+    /// The row that a step of the keys lands on while no row is the cursor, such as the song that
+    /// plays. It is the first row otherwise.
+    pub fn keys_start_at(mut self, start: impl Fn() -> Option<K> + 'static) -> Self {
+        self.keys_start = Some(Rc::new(start));
         self
     }
 }
@@ -303,6 +313,7 @@ pub fn row_list<S: RowSource, K: Clone + Eq + Hash + 'static>(list: RowList<S, K
         on_open,
         on_context_menu,
         on_reorder,
+        keys_start,
     } = list;
     let selection = selection.unwrap_or_else(Selection::new);
     let node = node.unwrap_or_else(node_ref);
@@ -356,6 +367,7 @@ pub fn row_list<S: RowSource, K: Clone + Eq + Hash + 'static>(list: RowList<S, K
             node,
             row_height,
             on_open.as_deref(),
+            keys_start.as_deref(),
         )
     })
 }
@@ -424,6 +436,12 @@ fn reveal(node: NodeRef, position: usize, row_height: f32) {
     node.scroll_to_after_layout(scale.px(at.x), scale.px(y));
 }
 
+/// Scrolls the list that `node` refers to just far enough to show the row at `position`, once it is
+/// laid out.
+pub fn scroll_to_row(node: NodeRef, position: usize, row_height: f32) {
+    reveal(node, position, row_height);
+}
+
 /// Whole rows in view, at least one.
 fn rows_in_view(node: NodeRef, row_height: f32) -> usize {
     node.logical_rect()
@@ -438,6 +456,7 @@ fn take_key<S: RowSource, K: Clone + Eq + Hash + 'static>(
     node: NodeRef,
     row_height: f32,
     on_open: Option<&dyn Fn(K)>,
+    keys_start: Option<&dyn Fn() -> Option<K>>,
 ) -> bool {
     let m = stroke.modifiers();
     if m.primary() && !m.shift && !m.alt && stroke.key().is_char('a') {
@@ -469,10 +488,25 @@ fn take_key<S: RowSource, K: Clone + Eq + Hash + 'static>(
         NamedKey::End => Motion::Last,
         _ => return false,
     };
-    let page = rows_in_view(node, row_height);
-    let to = selection
-        .0
-        .update(|selected| selected.move_by(motion, m.shift, shared, page));
+    let has_cursor = selection
+        .cursor()
+        .is_some_and(|cursor| shared.position_of(&cursor).is_some());
+    let start = keys_start
+        .filter(|_| !has_cursor && matches!(motion, Motion::By(_) | Motion::Pages(_)))
+        .and_then(untrack)
+        .and_then(|id| Some((shared.position_of(&id)?, id)));
+    let to = match start {
+        Some((position, id)) => {
+            selection.0.update(|selected| selected.select_only(id));
+            Some(position)
+        }
+        None => {
+            let page = rows_in_view(node, row_height);
+            selection
+                .0
+                .update(|selected| selected.move_by(motion, m.shift, shared, page))
+        }
+    };
     if let Some(to) = to {
         reveal(node, to, row_height);
     }

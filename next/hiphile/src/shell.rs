@@ -7,10 +7,11 @@ use hiphile_core::settings::AppearanceSnapshot;
 use hiphile_core::{Hiphile, HiphileSnapshot, Workspace};
 use next_account::{sign_in, sign_in_dialog};
 use next_host::follow;
-use next_player::{Panels, cover_seed, now_playing_cover, player_bar};
+use next_player::{Panels, cover_seed, now_playing_cover, player_bar, queue};
 use next_search::search;
 use next_settings::settings_popup;
 use next_ui::cover::install_covers;
+use next_ui::list_detail::{DETAIL_MIN_WIDTH, LIST_MIN_WIDTH};
 use next_ui::pane::{GAP, pane};
 use next_ui::theme::{follow_theme, is_dark};
 use next_ui::type_scale::body;
@@ -29,6 +30,8 @@ use commands::Shell;
 
 /// Narrower than this, the rail closes over its labels.
 const WIDE: f32 = 1000.0;
+/// What the screens keep beside the queue: a list and a detail at their least.
+const SCREENS_MIN_WIDTH: f32 = LIST_MIN_WIDTH + GAP + DETAIL_MIN_WIDTH;
 
 /// What fills the window: signing in, or the workspace of whoever is signed in. Its colors follow
 /// the appearance chosen, `system_is_dark` when that follows the system, and the cover of what
@@ -95,7 +98,7 @@ fn signed_in(
     });
     show_outside(&workspace, reach);
     let player = workspace.player().clone();
-    let panels = Panels::new();
+    let playing = follow(player.subscribe());
     let navigation = Navigation::new();
     effect({
         let workspace = workspace.clone();
@@ -117,11 +120,30 @@ fn signed_in(
         snackbars,
     );
     let cx = shell.context();
-    menu_bar.attach(cx.commands.clone(), move || Shown {
-        destination: Some(navigation.destination()),
-        can_go_back: navigation.can_go_back(),
-        can_go_forward: navigation.can_go_forward(),
-        covered: settings_open.get() || search_open.get() || sign_in_request.with(Option::is_some),
+    let panels = shell.panels;
+    menu_bar.attach(cx.commands.clone(), move || {
+        let (has_song, has_queue, shuffled, repeat) = playing.with(|playing| {
+            (
+                playing.has_song(),
+                playing.has_queued_songs(),
+                playing.is_shuffled(),
+                playing.repeat(),
+            )
+        });
+        Shown {
+            destination: Some(navigation.destination()),
+            can_go_back: navigation.can_go_back(),
+            can_go_forward: navigation.can_go_forward(),
+            covered: settings_open.get()
+                || search_open.get()
+                || sign_in_request.with(Option::is_some),
+            has_song,
+            has_queue,
+            shuffled,
+            repeat: Some(repeat),
+            queue_fits: panels.queue_fits(),
+            queue_shown: panels.is_queue_shown(),
+        }
     });
     div()
         .size_full()
@@ -144,26 +166,41 @@ fn signed_in(
                 .relative()
                 .flex()
                 .flex_col()
-                .child(div().flex_1().min_h(0).flex().flex_col().child(for_each(
-                    move || vec![navigation.destination()],
-                    |destination| index_of(*destination),
-                    {
-                        let cx = cx.clone();
-                        move |destination| {
-                            let Screen {
-                                title,
-                                actions,
-                                body,
-                            } = screen(destination, navigation.location(), &cx);
-                            div()
-                                .size_full()
-                                .flex()
-                                .flex_col()
-                                .child(app_bar(going(navigation), title, actions))
-                                .child(room_for(body))
-                        }
-                    },
-                )))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h(0)
+                        .flex()
+                        .flex_row()
+                        // Less the handle before the queue and the gap after it
+                        .on_resized(move |w, _| {
+                            panels.set_queue_room(w - SCREENS_MIN_WIDTH - 2.0 * GAP);
+                        })
+                        .child(div().flex_1().min_w(0).flex().flex_col().child(for_each(
+                            move || vec![navigation.destination()],
+                            |destination| index_of(*destination),
+                            {
+                                let cx = cx.clone();
+                                move |destination| {
+                                    let Screen {
+                                        title,
+                                        actions,
+                                        body,
+                                    } = screen(destination, navigation.location(), &cx);
+                                    div()
+                                        .size_full()
+                                        .flex()
+                                        .flex_col()
+                                        .child(app_bar(going(navigation), title, actions))
+                                        .child(room_for(body, panels))
+                                }
+                            },
+                        )))
+                        .child(show(move || panels.is_queue_shown(), {
+                            let cx = cx.clone();
+                            move || queue(&cx, panels).mr(GAP)
+                        })),
+                )
                 .child(player_bar(player, cover, panels).mr(16))
                 .child(search(&cx, search_open)),
         )
@@ -189,14 +226,15 @@ fn empty(destination: Destination) -> Screen {
     Screen::new(destination.label(), pane(div()))
 }
 
-/// Where a screen's panes go, apart from the rail and the bar.
-fn room_for(body: Div) -> Div {
+/// Where a screen's panes go, apart from the rail, the bar and the queue.
+fn room_for(body: Div, panels: Panels) -> Div {
     div()
         .flex_1()
         .min_h(0)
         .flex()
         .flex_col()
-        .mr(GAP)
+        // The queue's handle is the gap while it shows
+        .dyn_style(move |s| s.mr(if panels.is_queue_shown() { 0.0 } else { GAP }))
         .child(body.flex_1().min_h(0))
 }
 

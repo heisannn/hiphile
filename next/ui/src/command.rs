@@ -7,7 +7,7 @@ use hiphile_core::favorites::Favorite;
 use hiphile_core::library::album_songs;
 use hiphile_core::navigation::Location;
 use next_host::{Pending, Scope};
-use playback::Placement;
+use playback::{EntryId, Placement, RepeatMode};
 use subsonic::{AlbumId, PlaylistId, Song};
 
 /// What a screen asks of the shell, which goes elsewhere, opens what is the window's, or acts on
@@ -48,6 +48,21 @@ pub enum Command {
     ToggleFavorite(Favorite),
     /// Reads again what the screen on show shows.
     Refresh,
+    /// Plays the entry of the queue, wherever it is now.
+    PlayEntry(EntryId),
+    TogglePlayback,
+    Next,
+    Previous,
+    SeekForward,
+    SeekBackward,
+    VolumeUp,
+    VolumeDown,
+    ToggleMute,
+    ToggleShuffle,
+    SetRepeat(RepeatMode),
+    ToggleQueue,
+    /// Asks for a name and makes a playlist of the songs in the queue.
+    SaveQueue,
 }
 
 /// Where a screen sends its [`Command`]s. Cheap to clone.

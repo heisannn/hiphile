@@ -8,6 +8,7 @@ use hiphile_core::favorites::FavoritesNotice;
 use hiphile_core::playlists::PlaylistsNotice;
 use hiphile_core::{Hiphile, Workspace};
 use next_host::{Pending, Scope, notices};
+use next_player::Panels;
 use next_ui::playlist_dialogs::{PlaylistDialog, PlaylistDialogs};
 use next_ui::{AlbumAction, Command, Commands, Known, ScreenContext};
 use subsonic::{AlbumId, Song};
@@ -22,6 +23,7 @@ pub(super) struct Shell {
     settings_open: Signal<bool>,
     search_open: Signal<bool>,
     pub(super) dialogs: PlaylistDialogs,
+    pub(super) panels: Panels,
     known: Known,
     snackbars: Snackbars,
     scope: Scope,
@@ -49,6 +51,7 @@ impl Shell {
             settings_open,
             search_open,
             dialogs: PlaylistDialogs::new(),
+            panels: Panels::new(),
             snackbars,
             scope: Scope::here(),
             album: Rc::default(),
@@ -88,6 +91,31 @@ impl Shell {
             Command::ActOnAlbum { album, action } => self.act_on_album(album, action),
             Command::ToggleFavorite(favorite) => workspace.favorites().toggle(favorite),
             Command::Refresh => workspace.refresh(untrack(|| self.navigation.destination())),
+            Command::PlayEntry(entry) => workspace.player().play_entry(entry),
+            Command::TogglePlayback => workspace.player().toggle_playback(),
+            Command::Next => workspace.player().next(),
+            Command::Previous => workspace.player().previous(),
+            // The bar reads where the song is often enough to show where it went
+            Command::SeekForward => {
+                workspace.player().seek_forward();
+            }
+            Command::SeekBackward => {
+                workspace.player().seek_backward();
+            }
+            Command::VolumeUp => workspace.player().volume_up(),
+            Command::VolumeDown => workspace.player().volume_down(),
+            Command::ToggleMute => workspace.player().toggle_mute(),
+            Command::ToggleShuffle => workspace.player().toggle_shuffle(),
+            Command::SetRepeat(repeat) => workspace.player().set_repeat(repeat),
+            Command::ToggleQueue => self.panels.toggle_queue(),
+            Command::SaveQueue => self.save_queue(),
+        }
+    }
+
+    fn save_queue(&self) {
+        let songs = self.workspace.player().snapshot().queued_songs();
+        if !songs.is_empty() {
+            self.dialogs.open(PlaylistDialog::New(songs));
         }
     }
 

@@ -19,6 +19,7 @@ pub mod menus;
 pub mod now_playing;
 pub mod page_row;
 pub mod pane;
+pub mod pane_handle;
 pub mod playlist_dialogs;
 pub mod row_cover;
 pub mod row_list;
@@ -34,7 +35,7 @@ pub mod window;
 
 pub use command::{AlbumAction, Command, Commands};
 pub use known::Known;
-pub use screen::{Screen, app_bar};
+pub use screen::{APP_BAR_HEIGHT, Screen, app_bar};
 pub use screen_context::ScreenContext;
 
 #[cfg(any(test, feature = "test-support"))]

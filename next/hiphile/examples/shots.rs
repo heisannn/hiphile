@@ -15,8 +15,8 @@ use hiphile_core::Hiphile;
 use next_hiphile::{MenuBar, Reach, SMALLEST_WINDOW, WINDOW, app};
 use next_player::testing::{CoverServer, png};
 use next_ui::testing::{
-    NOWHERE, SavedLibrary, click, core, find, frames, has_text, key, press, signed_in_core,
-    signed_in_core_with_library, typed, wait_until,
+    NOWHERE, SavedLibrary, click, click_with, core, find, frames, has_text, key, press,
+    signed_in_core, signed_in_core_with_library, typed, wait_until,
 };
 use next_ui::theme::{DEFAULT_SEED, scheme};
 use serde_json::json;
@@ -148,6 +148,74 @@ fn main() {
             |player| player.set_error("The file couldn't be read. Press Play to try again."),
             |_| {},
         );
+        queue_shots(&folder, dark, theme, &covers);
+    }
+}
+
+/// The queue where it fits in windows of a few sizes, with rows selected, and empty.
+fn queue_shots(folder: &Path, dark: bool, theme: &str, covers: &CoverServer) {
+    for (name, size) in [
+        ("queue", WINDOW),
+        ("queue-wide", WIDE_WINDOW),
+        ("queue-narrow", SMALLEST_WINDOW),
+    ] {
+        playing_shot_at(
+            &folder.join(format!("{name}-{theme}.png")),
+            dark,
+            covers,
+            size,
+            &queue(),
+            |player| player.pretend_playing(true),
+            open_queue,
+        );
+    }
+    playing_shot_at(
+        &folder.join(format!("queue-selected-{theme}.png")),
+        dark,
+        covers,
+        WINDOW,
+        &queue(),
+        |player| player.pretend_playing(false),
+        |ui| {
+            open_queue(ui);
+            select_rows(ui, &["Night Ferry", "Breakwater"]);
+        },
+    );
+    shot(
+        &folder.join(format!("queue-empty-{theme}.png")),
+        dark,
+        true,
+        open_queue,
+    );
+}
+
+/// Wider than most windows open, to show the queue at its own width.
+const WIDE_WINDOW: (i32, i32) = (1440, 900);
+
+/// Opens the queue where it fits.
+fn open_queue(ui: &mut Ui) {
+    let toggle = find(Role::ToggleButton, "Queue").expect("the queue's toggle");
+    if !toggle.disabled {
+        press(ui, Role::ToggleButton, "Queue");
+    }
+}
+
+/// Clicks the first of the rows named `titles` and adds the rest to the selection, as ⌘ does.
+fn select_rows(ui: &mut Ui, titles: &[&str]) {
+    let scale = SCALE as f32;
+    for (at, title) in titles.iter().enumerate() {
+        let row = find(Role::ListOption, title).expect("the row");
+        let (x, y) = (
+            (row.bounds.x + row.bounds.width / 2.0) * scale,
+            (row.bounds.y + row.bounds.height / 2.0) * scale,
+        );
+        let modifiers = if at == 0 {
+            Modifiers::default()
+        } else {
+            Modifiers::PRIMARY
+        };
+        click_with(ui, x, y, modifiers);
+        frames(ui, 400);
     }
 }
 
@@ -257,12 +325,26 @@ fn playing_shot(
     setup: impl FnOnce(&playback::Player),
     drive: impl FnOnce(&mut Ui),
 ) {
+    playing_shot_at(path, dark, covers, WINDOW, &[song()], setup, drive);
+}
+
+/// As [`playing_shot`], in a window of `size` with `queue` in the queue: its fourth song is the
+/// current one where it has four.
+fn playing_shot_at(
+    path: &Path,
+    dark: bool,
+    covers: &CoverServer,
+    size: (i32, i32),
+    queue: &[Song],
+    setup: impl FnOnce(&playback::Player),
+    drive: impl FnOnce(&mut Ui),
+) {
     let (_core, hiphile) = signed_in_core(covers.url());
     let player = hiphile.workspace().expect("signed in").player().clone();
-    player.fill_queue(&[song()], 0);
+    player.fill_queue(queue, 3.min(queue.len() - 1));
     setup(&player);
     let default = scheme(DEFAULT_SEED, dark).primary;
-    render(path, dark, hiphile, WINDOW, move |ui| {
+    render(path, dark, hiphile, size, move |ui| {
         // The scheme cross-fades, which takes frames
         for _ in 0..500 {
             if color_scheme().primary != default {
@@ -396,6 +478,47 @@ fn song() -> Song {
         "suffix": "flac",
     }))
     .unwrap()
+}
+
+/// Songs of a few albums, one with a title too long for the queue's rows.
+fn queue() -> Vec<Song> {
+    [
+        ("Glass Harbor", "Mira Okada", 245),
+        ("Paper Lanterns", "Mira Okada", 198),
+        ("Undertow", "Mira Okada", 312),
+        (
+            "Signal Fires Along the Northern Coastline at Dusk",
+            "Mira Okada & The Low Tide Ensemble",
+            427,
+        ),
+        ("Saltwater", "Kenji Arai", 181),
+        ("Night Ferry", "Kenji Arai", 264),
+        ("Breakwater", "Mira Okada", 233),
+        ("Harbor Lights (Reprise)", "Mira Okada", 95),
+        ("Drift", "Sora Lin", 289),
+        ("Tidal", "Sora Lin", 204),
+        ("Low Tide Lights", "Mira Okada", 356),
+        ("Afterglow", "Sora Lin", 242),
+        ("Moonlit Pier", "Kenji Arai", 301),
+        ("Shoreline", "Sora Lin", 219),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(at, (title, artist, duration))| {
+        serde_json::from_value(json!({
+            "id": format!("q{at}"),
+            "title": title,
+            "artist": artist,
+            "artistId": format!("ar-{artist}"),
+            "album": "Low Tide Lights",
+            "albumId": "al-1",
+            "coverArt": "al-1",
+            "duration": duration,
+            "suffix": "flac",
+        }))
+        .unwrap()
+    })
+    .collect()
 }
 
 /// A dusk over the sea: dark blue above, orange near the horizon, and a pale sun.

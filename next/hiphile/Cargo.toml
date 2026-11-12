@@ -28,6 +28,7 @@ next-search.workspace = true
 next-settings.workspace = true
 next-songs.workspace = true
 next-ui.workspace = true
+playback.workspace = true
 presence.workspace = true
 subsonic.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }

@@ -204,3 +204,23 @@ fn choosing_an_album_in_the_search_goes_to_it() {
     frames(&mut ui, 1000);
     assert!(nodes(Role::TextInput).is_empty());
 }
+
+#[test]
+fn the_queue_opens_from_the_bar_beside_the_screens() {
+    let (_core, hiphile) = signed_in_core(NOWHERE);
+    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new(), Reach::Window));
+
+    press(&mut ui, Role::ToggleButton, "Queue");
+
+    let title = find(Role::Heading, "Home").unwrap().bounds;
+    let queue_title = find(Role::Heading, "Queue").unwrap().bounds;
+    assert_eq!(queue_title.y, title.y);
+    let handle = find(Role::Separator, "Queue Width").unwrap().bounds;
+    let bar = find(Role::Toolbar, "Player").unwrap().bounds;
+    assert_eq!(handle.y + handle.height, bar.y);
+    let list = find(Role::ListBox, "Queue").unwrap().bounds;
+    assert_eq!(list.x + list.width + GAP, crate::WINDOW.0 as f32);
+
+    press(&mut ui, Role::ToggleButton, "Queue");
+    assert!(find(Role::ListBox, "Queue").is_none());
+}

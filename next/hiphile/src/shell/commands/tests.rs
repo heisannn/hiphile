@@ -7,6 +7,7 @@ use hiphile_core::favorites::Favorite;
 use hiphile_core::navigation::{Destination, Location};
 use hiphile_core::test_support::{FavoritesServer, PlaylistsServer};
 use next_ui::testing::{TestCore, find, frames, nodes, signed_in_core, start, wait_until};
+use playback::RepeatMode;
 use serde_json::json;
 use subsonic::{PlaylistId, StarTarget};
 
@@ -218,4 +219,58 @@ fn refresh_reads_again_what_is_on_show() {
 
     shown.run(Command::Refresh);
     shown.wait_until(|| server.reads() > read);
+}
+
+#[test]
+fn saving_the_queue_asks_for_the_name_of_a_playlist_of_its_songs() {
+    let mut shown = on(next_ui::testing::NOWHERE);
+    let player = shown.shell.workspace.player().clone();
+    player.fill_queue(&songs(&["a", "b"]), 1);
+
+    shown.run(Command::SaveQueue);
+
+    assert!(find(Role::Heading, "New Playlist").is_some());
+    assert!(shows_text_with("Starts with 2 songs"));
+}
+
+#[test]
+fn an_empty_queue_is_not_saved() {
+    let mut shown = on(next_ui::testing::NOWHERE);
+
+    shown.run(Command::SaveQueue);
+
+    assert!(nodes(Role::Dialog).is_empty());
+}
+
+#[test]
+fn the_controls_that_play_nothing_change_the_player() {
+    let mut shown = on(next_ui::testing::NOWHERE);
+    let player = shown.shell.workspace.player().clone();
+    player.fill_queue(&songs(&["a", "b"]), 0);
+    let volume = player.snapshot().volume();
+
+    shown.run(Command::ToggleShuffle);
+    shown.run(Command::SetRepeat(RepeatMode::One));
+    shown.run(Command::VolumeDown);
+    assert!(player.snapshot().volume() < volume);
+    shown.run(Command::VolumeUp);
+    shown.run(Command::ToggleMute);
+
+    let after = player.snapshot();
+    assert!(after.is_shuffled());
+    assert_eq!(after.repeat(), RepeatMode::One);
+    assert_eq!(after.volume(), volume);
+    assert!(after.is_muted());
+    assert!(!after.is_playing());
+}
+
+#[test]
+fn the_queue_opens_and_closes() {
+    let mut shown = on(next_ui::testing::NOWHERE);
+    let panels = shown.shell.panels;
+
+    shown.run(Command::ToggleQueue);
+    assert!(panels.queue.get_untracked());
+    shown.run(Command::ToggleQueue);
+    assert!(!panels.queue.get_untracked());
 }

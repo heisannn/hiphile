@@ -446,3 +446,35 @@ fn a_rows_name_follows_what_it_reads() {
     ui.update();
     assert_eq!(labels(), ["Song 0", "Song 1, playing"]);
 }
+
+#[test]
+fn with_no_cursor_a_step_lands_where_the_keys_start() {
+    let rows = songs(0..10);
+    let selection = Selection::new();
+    let mut ui = start(move || {
+        let list = RowList::new(
+            "Songs",
+            move || rows.clone(),
+            |song: &Song| song.id,
+            |song, _| row_text(song.title.clone(), None),
+        )
+        .selection(selection)
+        .keys_start_at(|| Some(6));
+        div().size_full().flex().flex_col().child(row_list(list))
+    });
+    crate::testing::focus(&mut ui, Role::ListBox, "Songs");
+    let selected = || {
+        selection
+            .0
+            .with_untracked(|s| s.ids().copied().collect::<Vec<_>>())
+    };
+
+    key(&mut ui, NamedKey::ArrowDown);
+    assert_eq!(selected(), [6]);
+    key(&mut ui, NamedKey::ArrowDown);
+    assert_eq!(selected(), [7]);
+
+    selection.clear();
+    key(&mut ui, NamedKey::Home);
+    assert_eq!(selected(), [0]);
+}

@@ -3,6 +3,7 @@ use anti_webui::core::event::WindowEvent;
 use anti_webui::core::geometry::{Scale, SizeI};
 
 use super::*;
+use crate::pane_handle::KEY_STEP;
 use crate::testing::{drag, find, focus, frames, key, start_at};
 
 fn view(split: Split) -> Div {
