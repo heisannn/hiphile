@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use anti_webui::prelude::*;
@@ -9,6 +9,7 @@ use anti_webui_md3e::components::{
 use anti_webui_md3e::icons;
 use hiphile_core::{Hiphile, SignInRefused};
 use next_host::{Pending, Scope, follow};
+use next_ui::dialog_parts::{focus_field, focused_field, focused_once_laid_out};
 use next_ui::type_scale::error_text;
 use session::SignInField;
 
@@ -59,6 +60,18 @@ impl Fields {
         });
     }
 
+    /// The first field with nothing in it, where typing starts.
+    fn first_empty(&self) -> Option<SignInField> {
+        [
+            (self.server, SignInField::Server),
+            (self.username, SignInField::Username),
+            (self.password, SignInField::Password),
+        ]
+        .into_iter()
+        .find(|(value, _)| value.with_untracked(String::is_empty))
+        .map(|(_, which)| which)
+    }
+
     /// The profile the fields name, as typed.
     pub(crate) fn profile(&self) -> config::Profile {
         config::Profile::new(
@@ -68,8 +81,36 @@ impl Fields {
     }
 }
 
-/// The fields, a failure, and a row of `actions` before the button that signs in.
+/// Where each field is, to give it the focus.
+#[derive(Clone, Copy)]
+struct Places {
+    server: NodeRef,
+    username: NodeRef,
+    password: NodeRef,
+}
+
+impl Places {
+    fn new() -> Self {
+        Self {
+            server: node_ref(),
+            username: node_ref(),
+            password: node_ref(),
+        }
+    }
+
+    fn of(&self, field: SignInField) -> NodeRef {
+        match field {
+            SignInField::Server => self.server,
+            SignInField::Username => self.username,
+            SignInField::Password => self.password,
+        }
+    }
+}
+
+/// The fields, a failure, and a row of `actions` before the button that signs in. The first empty
+/// field takes the focus, and so does one that is wrong.
 pub(crate) fn form(hiphile: Hiphile, fields: Fields, actions: Vec<Div>) -> Div {
+    let places = Places::new();
     let shown = follow(hiphile.subscribe());
     let signing_in = move || shown.with(|shown| shown.is_signing_in());
     let scope = Scope::here();
@@ -91,37 +132,54 @@ pub(crate) fn form(hiphile: Hiphile, fields: Fields, actions: Vec<Div>) -> Div {
                     invalid.field(),
                     invalid.message().to_owned(),
                 ));
+                focus_field(places.of(invalid.field()));
             }
             Err(SignInRefused::SigningIn) => {}
         }
     });
 
     let status = fields.status;
+    let first = fields.first_empty();
+    let placed = move |which: SignInField, field: Div| {
+        let field = field.node_ref(places.of(which));
+        if first == Some(which) {
+            focused_field(field)
+        } else {
+            field
+        }
+    };
     let inputs = div()
         .flex()
         .flex_col()
         .gap(4.0_f32)
-        .child(field(
-            fields.server,
-            "Server",
+        .child(placed(
             SignInField::Server,
-            status,
-            submit.clone(),
-            signing_in,
+            field(
+                fields.server,
+                "Server",
+                SignInField::Server,
+                status,
+                submit.clone(),
+                signing_in,
+            ),
         ))
-        .child(field(
-            fields.username,
-            "Username",
+        .child(placed(
             SignInField::Username,
-            status,
-            submit.clone(),
-            signing_in,
+            field(
+                fields.username,
+                "Username",
+                SignInField::Username,
+                status,
+                submit.clone(),
+                signing_in,
+            ),
         ))
         .child(password_field(
             fields.password,
             status,
             submit.clone(),
             signing_in,
+            (places.password, first == Some(SignInField::Password)),
         ));
     let failure = show(
         move || matches!(status.get(), Status::Failed(_)),
@@ -172,31 +230,49 @@ fn field(
     outlined_text_field(value, with_error(style, which, status)).w(WIDTH)
 }
 
-/// Its look is chosen when it is made, so showing what is typed makes it anew.
+/// Its look is chosen when it is made, so showing what is typed makes it anew. It stays at `at`,
+/// and takes the focus when it is first made if `focused` says so.
 fn password_field(
     value: Signal<String>,
     status: Signal<Status>,
     submit: Rc<dyn Fn()>,
     signing_in: impl Fn() -> bool + Clone + 'static,
+    (at, focused): (NodeRef, bool),
 ) -> View {
     let visible = signal(false);
+    let made = Cell::new(false);
+    // The button that goes is not told it lost the focus, so the one made anew takes it back
+    let toggle_focused = Rc::new(Cell::new(false));
     dyn_view(move || {
         let shown = visible.get();
         let (submit, signing_in) = (submit.clone(), signing_in.clone());
-        untrack(move || {
+        let toggle_focused = toggle_focused.clone();
+        let again = made.replace(true);
+        let field = untrack(move || {
+            let mut toggle =
+                icon_toggle_button(icons::VISIBILITY, visible, IconButtonStyle::standard())
+                    .access(move |a| a.label("Show Password"));
+            if toggle_focused.get() {
+                toggle = focused_once_laid_out(toggle, |_, id| Some(id));
+            }
+            let toggle = toggle.on_focus_change(move |focused| toggle_focused.set(focused));
             let mut style = TextFieldStyle::new()
                 .label("Password")
                 .on_submit(move |_| submit())
                 .disabled_when(signing_in)
-                .trailing(
-                    icon_toggle_button(icons::VISIBILITY, visible, IconButtonStyle::standard())
-                        .access(move |a| a.label("Show Password")),
-                );
+                .trailing(toggle);
             if !shown {
                 style = style.password();
             }
-            outlined_text_field(value, with_error(style, SignInField::Password, status)).w(WIDTH)
-        })
+            outlined_text_field(value, with_error(style, SignInField::Password, status))
+                .w(WIDTH)
+                .node_ref(at)
+        });
+        if focused && !again {
+            focused_field(field)
+        } else {
+            field
+        }
     })
 }
 
