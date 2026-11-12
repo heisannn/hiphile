@@ -72,9 +72,10 @@ Material 3 Expressive にデザインし直す Hiphile を、詰まったデス�
   - Appearance の Color で、カバーの代わりに 8 色から選べる。選んだ色は Material You が利用者の選んだ色に
     使う `SchemeVariant::TonalSpot` で作り、カバーには従わない。色は HCT の色相で決め、`next_ui::theme` に
     だけ置く。
-  - 色の選択肢は Android と同じく、その色が作る配色の見本で見せる（上の半分が primary、下が secondary と
-    tertiary）。見本は今の Light と Dark で描く。選んだものは角を四角くし、チェックを付ける。
-    カバーの見本には、アルバムの印と名前のツールチップを付ける。
+  - 色の選択肢は、その色の見本で見せる（`next_ui::theme::swatch`）。上の半分が種の色、下が tertiary と淡い
+    primary。Material の fixed 系の役割と同じく、Light と Dark で同じ色にし、灰色に寄らない明るさ（種は
+    tone 70、下は 80 と 90）で描く。配色の役割の色を tone 40 のまま並べると、濁って見える。選んだものは角を
+    四角くし、チェックを付ける。カバーの見本には、アルバムの印と名前のツールチップを付ける。
 - Light、Dark、System は今と同じ。System はシステムの外観に従う。
 - 色は役割で使う：
 

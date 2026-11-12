@@ -69,6 +69,21 @@ fn each_picked_color_gives_tonal_spots_primary_in_its_own_hue() {
 }
 
 #[test]
+fn a_swatch_shows_its_seed_and_stays_as_colorful_as_it() {
+    for (color, _) in THEME_COLORS {
+        let seed = Hct::from_color(swatch(color, None).seed);
+        assert!(seed.chroma() > 40.0, "{color:?}: {}", seed.chroma());
+        assert!(
+            (seed.tone() - 70.0).abs() < 1.0,
+            "{color:?}: {}",
+            seed.tone()
+        );
+    }
+    let gray = swatch(ThemeColor::Cover, Some(rgb(0x808080)));
+    assert!(Hct::from_color(gray.seed).chroma() < 5.0);
+}
+
+#[test]
 fn with_less_motion_the_scheme_changes_at_once() {
     let dark = signal(false);
     let mut ui = start(move || {

@@ -14,10 +14,47 @@ pub const DEFAULT_SEED: Color = rgb(0x4f5bd5);
 /// Material You makes of a color the user picks, and the cover gives [`cover_scheme`].
 /// `cover_seed` is the seed of the cover of what plays, `None` while there is none.
 pub fn scheme(color: ThemeColor, cover_seed: Option<Color>, dark: bool) -> ColorScheme {
+    let seed = seed(color, cover_seed);
+    match color {
+        ThemeColor::Cover => cover_scheme(seed, dark),
+        _ => ColorScheme::from_seed(seed, dark),
+    }
+}
+
+/// The colors that show `color` where it can be picked: its seed over its tertiary and a light
+/// primary. Like Material's fixed roles, they are the same in light and dark, at tones that keep
+/// them clear of gray.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Swatch {
+    pub seed: Color,
+    pub tertiary: Color,
+    pub primary: Color,
+    /// What marks the swatch, and the icon on it.
+    pub mark: Color,
+    pub on_mark: Color,
+}
+
+pub fn swatch(color: ThemeColor, cover_seed: Option<Color>) -> Swatch {
+    let colors = scheme(color, cover_seed, false);
+    let at = |color: Color, tone: f64| {
+        let color = Hct::from_color(color);
+        Hct::new(color.hue(), color.chroma(), tone).to_color()
+    };
+    Swatch {
+        seed: at(seed(color, cover_seed), 70.0),
+        tertiary: at(colors.tertiary, 80.0),
+        primary: at(colors.primary, 90.0),
+        mark: at(colors.primary, 30.0),
+        on_mark: at(colors.primary, 90.0),
+    }
+}
+
+/// A picked color's seed is its hue at a chroma that shows clearly in a swatch: tonal spot takes
+/// nothing but the hue.
+fn seed(color: ThemeColor, cover_seed: Option<Color>) -> Color {
     match picked_hue(color) {
-        // Tonal spot takes nothing but the hue from a seed
-        Some(hue) => ColorScheme::from_seed(Hct::new(hue, 48.0, 50.0).to_color(), dark),
-        None => cover_scheme(cover_seed.unwrap_or(DEFAULT_SEED), dark),
+        Some(hue) => Hct::new(hue, 48.0, 50.0).to_color(),
+        None => cover_seed.unwrap_or(DEFAULT_SEED),
     }
 }
 
@@ -68,11 +105,20 @@ impl Schemes {
 
     /// The scheme that `color` gives the window now. Reading it tracks it.
     pub fn of(&self, color: ThemeColor) -> ColorScheme {
-        let cover_seed = match color {
+        scheme(color, self.cover_seed_of(color), self.is_dark.get())
+    }
+
+    /// The [`Swatch`] of `color` now. Reading it tracks it.
+    pub fn swatch(&self, color: ThemeColor) -> Swatch {
+        swatch(color, self.cover_seed_of(color))
+    }
+
+    /// Only the cover's colors read it, and change with what plays.
+    fn cover_seed_of(&self, color: ThemeColor) -> Option<Color> {
+        match color {
             ThemeColor::Cover => self.cover_seed.get(),
             _ => None,
-        };
-        scheme(color, cover_seed, self.is_dark.get())
+        }
     }
 }
 

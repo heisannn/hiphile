@@ -3,11 +3,11 @@
 
 use anti_webui::prelude::*;
 use anti_webui_md3e::components::{Ink, sized_icon, tooltip};
-use anti_webui_md3e::{ColorScheme, color_scheme, icons};
+use anti_webui_md3e::{color_scheme, icons};
 use config::ThemeColor;
 use hiphile_core::settings::THEME_COLORS;
 use next_ui::focus_ring::focus_ring;
-use next_ui::theme::Schemes;
+use next_ui::theme::{Schemes, Swatch};
 
 const SWATCH: f32 = 40.0;
 /// The chosen swatch squares off, as a selected toggle of Material 3 Expressive does.
@@ -41,7 +41,6 @@ pub(crate) fn swatches(
     .access(|a| a.label("Color"))
 }
 
-/// The primary role over the secondary and the tertiary, as Android draws a scheme to pick.
 fn swatch(
     group: RadioGroupState<ThemeColor>,
     ix: usize,
@@ -49,7 +48,7 @@ fn swatch(
     name: &'static str,
     schemes: Schemes,
 ) -> Div {
-    let colors = memo(move || schemes.of(color));
+    let colors = memo(move || schemes.swatch(color));
     let chosen = memo(move || group.is_selected(ix));
     let corner = move || {
         if chosen.get() {
@@ -58,7 +57,7 @@ fn swatch(
             SWATCH / 2.0
         }
     };
-    let part = move |w: f32, role: fn(&ColorScheme) -> Color| {
+    let part = move |w: f32, role: fn(&Swatch) -> Color| {
         div()
             .w(w)
             .h(SWATCH / 2.0)
@@ -82,7 +81,7 @@ fn swatch(
                 .rounded(MARK / 2.0)
                 .dyn_style(move |s| {
                     let c = colors.get();
-                    s.bg(c.primary_container).text_color(c.on_primary_container)
+                    s.bg(c.mark).text_color(c.on_mark)
                 })
                 .child(dyn_view(move || {
                     let icon = if chosen.get() {
@@ -112,13 +111,13 @@ fn swatch(
             let keyed = group.focus_visible() && chosen.get();
             focus_ring(s.rounded(corner()), keyed, &color_scheme())
         })
-        .child(part(SWATCH, |c| c.primary))
+        .child(part(SWATCH, |c| c.seed))
         .child(
             div()
                 .flex()
                 .flex_row()
-                .child(part(SWATCH / 2.0, |c| c.secondary))
-                .child(part(SWATCH / 2.0, |c| c.tertiary)),
+                .child(part(SWATCH / 2.0, |c| c.tertiary))
+                .child(part(SWATCH / 2.0, |c| c.primary)),
         )
         .child(mark)
         .child(layer);
