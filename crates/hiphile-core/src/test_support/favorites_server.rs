@@ -2,11 +2,12 @@
 //! the tests of the core and of the views.
 
 use std::collections::HashSet;
-use std::io::{Read as _, Write as _};
-use std::net::TcpListener;
+use std::net::TcpStream;
 use std::sync::{Arc, Condvar, Mutex};
 
 use serde_json::{Value, json};
+
+use super::http;
 
 #[derive(Default)]
 struct ServerState {
@@ -30,17 +31,9 @@ pub struct FavoritesServer {
 impl FavoritesServer {
     /// Serves the songs `songs` names, an album and an artist.
     pub fn new(songs: &[&str]) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
         let state = Shared::default();
         state.0.lock().unwrap().songs = songs.iter().map(|song| (*song).to_owned()).collect();
-        let shared = state.clone();
-        std::thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
-                let state = shared.clone();
-                std::thread::spawn(move || serve(stream, &state));
-            }
-        });
+        let url = http::listen(state.clone(), serve);
         Self { url, state }
     }
 
@@ -88,24 +81,17 @@ pub fn song_json(id: &str) -> Value {
     json!({ "id": id, "title": id, "artistId": format!("artist-{id}"), "albumId": format!("album-{id}") })
 }
 
-fn serve(mut stream: std::net::TcpStream, shared: &Shared) {
-    let mut bytes = [0; 4096];
-    let Ok(read) = stream.read(&mut bytes) else {
+fn serve(mut stream: TcpStream, shared: &Shared) {
+    let Some(request) = http::read_request(&mut stream) else {
         return;
     };
-    let head = String::from_utf8_lossy(&bytes[..read]).into_owned();
-    let target = head.split(' ').nth(1).unwrap_or_default();
-    let (path, query) = target.split_once('?').unwrap_or((target, ""));
-    let method = path.rsplit('/').next().unwrap_or_default().to_owned();
-    let named = query
-        .split('&')
-        .find(|param| {
-            ["id=", "albumId=", "artistId="]
-                .iter()
-                .any(|name| param.starts_with(name))
-        })
-        .unwrap_or_default()
-        .to_owned();
+    let method = &request.method;
+    let named = request
+        .params
+        .iter()
+        .find(|(name, _)| ["id", "albumId", "artistId"].contains(&name.as_str()));
+    let id = named.map_or("", |(_, id)| id.as_str()).to_owned();
+    let named = named.map_or(String::new(), |(name, id)| format!("{name}={id}"));
 
     let (lock, released) = &**shared;
     let mut state = lock.lock().unwrap();
@@ -119,15 +105,13 @@ fn serve(mut stream: std::net::TcpStream, shared: &Shared) {
     // once let go.
     let songs_when_read = state.songs.clone();
     let mut state = released
-        .wait_while(state, |state| state.held.contains(&method))
+        .wait_while(state, |state| state.held.contains(method))
         .unwrap();
-    let mut body = json!({ "status": "ok", "version": "1.16.1" });
-    let refused_once = state.refused_once.remove(&method);
-    if refused_once || state.refused.contains(&method) {
-        body["status"] = json!("failed");
-        body["error"] = json!({ "code": 0, "message": "Refused" });
+    let mut body = http::ok();
+    let refused_once = state.refused_once.remove(method);
+    if refused_once || state.refused.contains(method) {
+        http::fail(&mut body, 0, "Refused");
     } else if is_write {
-        let id = named.split_once('=').map_or("", |(_, id)| id).to_owned();
         if method == "star" {
             state.songs.insert(0, id);
         } else {
@@ -148,10 +132,5 @@ fn serve(mut stream: std::net::TcpStream, shared: &Shared) {
         });
     }
     drop(state);
-    let body = json!({ "subsonic-response": body }).to_string();
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    stream.write_all(response.as_bytes()).ok();
+    http::write_json(&mut stream, body);
 }

@@ -2,11 +2,12 @@
 //! artists, and the songs of their albums, for the tests and the shots of the views.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{Read as _, Write as _};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::sync::{Arc, Condvar, Mutex};
 
 use serde_json::{Value, json};
+
+use super::http;
 
 type Covers = Arc<dyn Fn(&str) -> Vec<u8> + Send + Sync>;
 
@@ -40,16 +41,8 @@ impl Default for ArtistsServer {
 impl ArtistsServer {
     /// Knows of no artists, and of no favorites or playlists.
     pub fn new() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
         let state = Shared::default();
-        let shared = state.clone();
-        std::thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
-                let state = shared.clone();
-                std::thread::spawn(move || serve(stream, &state));
-            }
-        });
+        let url = http::listen(state.clone(), serve);
         Self { url, state }
     }
 
@@ -136,51 +129,28 @@ impl ArtistsServer {
 }
 
 fn serve(mut stream: TcpStream, shared: &Shared) {
-    let mut bytes = [0; 4096];
-    let Ok(read) = stream.read(&mut bytes) else {
+    let Some(request) = http::read_request(&mut stream) else {
         return;
     };
-    let head = String::from_utf8_lossy(&bytes[..read]).into_owned();
-    let target = head.split(' ').nth(1).unwrap_or_default();
-    let (path, query) = target.split_once('?').unwrap_or((target, ""));
-    let method = path
-        .rsplit('/')
-        .next()
-        .unwrap_or_default()
-        .trim_end_matches(".view")
-        .to_owned();
-    let params: HashMap<String, String> = query
-        .split('&')
-        .filter_map(|param| param.split_once('='))
-        .map(|(name, value)| (name.to_owned(), decoded(value)))
-        .collect();
-    let param = |name: &str| params.get(name).cloned().unwrap_or_default();
+    let method = &request.method;
+    let param = |name: &str| request.value(name).unwrap_or_default().to_owned();
 
     let (lock, released) = &**shared;
     let mut state = lock.lock().unwrap();
     *state.asked.entry(method.clone()).or_default() += 1;
     let state = released
-        .wait_while(state, |state| state.held.contains(&method))
+        .wait_while(state, |state| state.held.contains(method))
         .unwrap();
     if method == "getCoverArt" {
         let cover = state.covers.clone();
         drop(state);
-        match cover {
-            Some(cover) => write_answer(&mut stream, "image/png", &cover(&param("id"))),
-            None => {
-                let _ = stream.write_all(
-                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                );
-            }
-        }
+        let image = cover.map(|cover| cover(&param("id")));
+        http::write_image(&mut stream, image.as_deref());
         return;
     }
-    let mut body = json!({ "status": "ok", "version": "1.16.1" });
-    let failed = |body: &mut Value, message: &str| {
-        body["status"] = json!("failed");
-        body["error"] = json!({ "code": 70, "message": message });
-    };
-    if state.refused.contains(&method) {
+    let mut body = http::ok();
+    let failed = |body: &mut Value, message: &str| http::fail(body, 70, message);
+    if state.refused.contains(method) {
         failed(&mut body, "Refused");
     } else {
         match method.as_str() {
@@ -230,35 +200,5 @@ fn serve(mut stream: TcpStream, shared: &Shared) {
         }
     }
     drop(state);
-    let body = json!({ "subsonic-response": body }).to_string();
-    write_answer(&mut stream, "application/json", body.as_bytes());
-}
-
-fn write_answer(stream: &mut TcpStream, content_type: &str, body: &[u8]) {
-    let head = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    let _ = stream.write_all(head.as_bytes());
-    let _ = stream.write_all(body);
-}
-
-/// A value of a query as it was sent, with `+` and `%XX` taken back to what they stand for.
-fn decoded(value: &str) -> String {
-    let mut bytes = Vec::with_capacity(value.len());
-    let mut rest = value.bytes();
-    while let Some(byte) = rest.next() {
-        match byte {
-            b'+' => bytes.push(b' '),
-            b'%' => {
-                let hex: Vec<u8> = rest.by_ref().take(2).collect();
-                let code = std::str::from_utf8(&hex)
-                    .ok()
-                    .and_then(|hex| u8::from_str_radix(hex, 16).ok());
-                bytes.extend(code.map_or(hex, |code| vec![code]));
-            }
-            byte => bytes.push(byte),
-        }
-    }
-    String::from_utf8_lossy(&bytes).into_owned()
+    http::write_json(&mut stream, body);
 }
