@@ -1,10 +1,11 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use anti_webui::core::event::Modifiers;
 use anti_webui_md3e::components::icon_button;
 
 use super::*;
-use crate::testing::{find, focus, has_text, key, press, start, typed};
+use crate::testing::{find, focus, has_text, key, key_with, press, start, typed};
 
 #[test]
 fn the_header_says_how_many_once_that_is_known() {
@@ -51,7 +52,23 @@ fn the_headers_buttons_are_at_its_end() {
 
 fn filter() -> (Signal<String>, impl FnOnce() -> Div) {
     let value = signal(String::new());
-    (value, move || list_filter(value, "Filter Albums"))
+    (value, move || {
+        let list = node_ref();
+        div()
+            .child(list_filter(value, "Filter Albums", list))
+            .child(
+                div()
+                    .node_ref(list)
+                    .focusable()
+                    .access(|a| a.role(Role::ListBox).label("Albums")),
+            )
+    })
+}
+
+fn is_focused(role: Role, label: &str) -> bool {
+    let tree = anti_webui::core::access::snapshot();
+    let focused = tree.focus.and_then(|focus| tree.get(focus));
+    focused.is_some_and(|node| node.role == role && node.label.as_deref() == Some(label))
 }
 
 #[test]
@@ -89,6 +106,29 @@ fn escape_empties_the_filter() {
     key(&mut ui, NamedKey::Escape);
 
     assert_eq!(value.get_untracked(), "");
+}
+
+#[test]
+fn enter_in_the_filter_goes_on_to_the_list() {
+    let (_, view) = filter();
+    let mut ui = start(view);
+    focus(&mut ui, Role::TextInput, "Filter Albums");
+    typed(&mut ui, "blue");
+
+    key(&mut ui, NamedKey::Enter);
+
+    assert!(is_focused(Role::ListBox, "Albums"));
+}
+
+#[test]
+fn enter_with_a_modifier_stays_in_the_filter() {
+    let (_, view) = filter();
+    let mut ui = start(view);
+    focus(&mut ui, Role::TextInput, "Filter Albums");
+
+    key_with(&mut ui, Key::Named(NamedKey::Enter), Modifiers::PRIMARY);
+
+    assert!(is_focused(Role::TextInput, "Filter Albums"));
 }
 
 #[test]

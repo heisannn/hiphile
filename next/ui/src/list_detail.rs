@@ -29,8 +29,13 @@ impl Default for Split {
 
 impl Split {
     pub fn new() -> Self {
+        Self::with_list_width(LIST_WIDTH)
+    }
+
+    /// Starting from the width the user gave the list before.
+    pub fn with_list_width(list_width: f32) -> Self {
         Self {
-            list_width: signal(LIST_WIDTH),
+            list_width: signal(list_width),
         }
     }
 

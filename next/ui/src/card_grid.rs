@@ -45,26 +45,19 @@ pub enum GridMotion {
 }
 
 impl GridMotion {
-    /// What an arrow, Page Up, Page Down, Home or End without modifiers asks for.
-    pub fn of(stroke: &Keystroke) -> Option<Self> {
-        let m = stroke.modifiers();
-        if m.shift || m.ctrl || m.alt || m.logo {
-            return None;
-        }
-        let Key::Named(key) = stroke.key() else {
-            return None;
-        };
-        Some(match key {
-            NamedKey::ArrowUp => Self::Up,
-            NamedKey::ArrowDown => Self::Down,
-            NamedKey::ArrowLeft => Self::Left,
-            NamedKey::ArrowRight => Self::Right,
-            NamedKey::PageUp => Self::PageUp,
-            NamedKey::PageDown => Self::PageDown,
-            NamedKey::Home => Self::First,
-            NamedKey::End => Self::Last,
-            _ => return None,
-        })
+    /// What asks for each motion: an arrow, Page Up, Page Down, Home or End, without modifiers.
+    pub fn strokes() -> [(Keystroke, Self); 8] {
+        [
+            (NamedKey::ArrowUp, Self::Up),
+            (NamedKey::ArrowDown, Self::Down),
+            (NamedKey::ArrowLeft, Self::Left),
+            (NamedKey::ArrowRight, Self::Right),
+            (NamedKey::PageUp, Self::PageUp),
+            (NamedKey::PageDown, Self::PageDown),
+            (NamedKey::Home, Self::First),
+            (NamedKey::End, Self::Last),
+        ]
+        .map(|(key, motion)| (Keystroke::named(key), motion))
     }
 }
 

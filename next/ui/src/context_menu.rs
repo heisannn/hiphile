@@ -124,6 +124,15 @@ impl ContextMenu {
     }
 }
 
+/// Where `e` was pressed, in logical pixels of the window, as a menu opens at.
+pub fn pressed_at(e: &PointerEvent) -> PointF {
+    let scale = window_scale();
+    PointF::new(
+        scale.to_logical(e.position.x),
+        scale.to_logical(e.position.y),
+    )
+}
+
 /// The button at the end of a row or a bar that opens `menu` with what `groups` makes then, below
 /// it. Pressing it does nothing to the row it is in.
 pub fn more_button(menu: ContextMenu, groups: impl Fn() -> Vec<Vec<MenuItem>> + 'static) -> Div {

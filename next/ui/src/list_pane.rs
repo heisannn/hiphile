@@ -93,8 +93,8 @@ pub fn list_header(header: ListHeader) -> Div {
 }
 
 /// The field that filters a list, bound to `value`. `label` says what it filters, such as "Filter
-/// Albums". Escape empties it.
-pub fn list_filter(value: Signal<String>, label: impl Into<String>) -> Div {
+/// Albums". Escape empties it, and Enter goes on to `list`.
+pub fn list_filter(value: Signal<String>, label: impl Into<String>, list: NodeRef) -> Div {
     let is_empty = move || value.with(String::is_empty);
     let clear = move || value.set(String::new());
     let field = outlined_text_field(
@@ -113,11 +113,15 @@ pub fn list_filter(value: Signal<String>, label: impl Into<String>) -> Div {
     )
     .w_full()
     .on_key_down(move |e| {
-        if matches!(e.key, Key::Named(NamedKey::Escape)) && !untrack(is_empty) {
-            e.stop_propagation();
-            e.prevent_default();
-            clear();
+        let m = e.modifiers;
+        let plain = !(m.shift || m.ctrl || m.alt || m.logo);
+        match e.key {
+            Key::Named(NamedKey::Escape) if !untrack(is_empty) => clear(),
+            Key::Named(NamedKey::Enter) if plain => list.focus(),
+            _ => return,
         }
+        e.stop_propagation();
+        e.prevent_default();
     });
     div()
         .flex()

@@ -298,10 +298,12 @@ fn albums(covers: Rc<[PathBuf]>, narrow: bool) -> Div {
     )
     .row_height(56.0)
     .selection(selection);
+    let rows = node_ref();
+    let list = list.node_ref(rows);
     let mut list_pane = div()
         .flex()
         .flex_col()
-        .child(list_filter(filter, "Filter Albums"))
+        .child(list_filter(filter, "Filter Albums", rows))
         .child(list_header(
             ListHeader::new(|| Some(format_album_count(128))).updating("Updating Albums", || true),
         ));
@@ -428,10 +430,12 @@ fn artist(covers: Rc<[PathBuf]>) -> Div {
     )
     .row_height(56.0)
     .selection(selection);
+    let rows = node_ref();
+    let list = list.node_ref(rows);
     let list_pane = div()
         .flex()
         .flex_col()
-        .child(list_filter(signal(String::new()), "Filter Artists"))
+        .child(list_filter(signal(String::new()), "Filter Artists", rows))
         .child(list_header(ListHeader::new(|| {
             Some("5 artists".to_owned())
         })))

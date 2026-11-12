@@ -88,20 +88,15 @@ fn columns_follow_the_width_and_never_reach_zero() {
 }
 
 #[test]
-fn keys_with_modifiers_are_not_moves() {
-    assert_eq!(
-        GridMotion::of(&Keystroke::named(NamedKey::ArrowDown)),
-        Some(GridMotion::Down)
-    );
-    assert_eq!(
-        GridMotion::of(&Keystroke::named(NamedKey::End)),
-        Some(GridMotion::Last)
-    );
-    assert_eq!(
-        GridMotion::of(&Keystroke::named(NamedKey::ArrowDown).with_shift()),
-        None
-    );
-    assert_eq!(GridMotion::of(&Keystroke::character('j')), None);
+fn the_moves_are_the_arrows_and_the_page_keys_alone() {
+    let strokes = GridMotion::strokes();
+
+    assert!(strokes.contains(&(Keystroke::named(NamedKey::ArrowDown), GridMotion::Down)));
+    assert!(strokes.contains(&(Keystroke::named(NamedKey::End), GridMotion::Last)));
+    assert!(strokes.iter().all(|(stroke, _)| {
+        let m = stroke.modifiers();
+        !(m.shift || m.ctrl || m.alt || m.logo)
+    }));
 }
 
 #[test]
