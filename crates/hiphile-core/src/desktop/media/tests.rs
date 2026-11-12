@@ -1,19 +1,9 @@
 use std::time::Duration;
 
 use executor::testing::TestExecutor;
-use raw_window_handle::{HandleError, HasWindowHandle, WindowHandle};
 
 use super::*;
 use crate::testing::NOWHERE;
-
-/// A window with no native handle, so nothing reaches the system's media controls.
-struct NoWindow;
-
-impl HasWindowHandle for NoWindow {
-    fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
-        Err(HandleError::Unavailable)
-    }
-}
 
 fn controls(cx: &TestExecutor) -> (SystemMediaControls, playback::Player) {
     let executor = cx.executor();
@@ -29,7 +19,7 @@ fn controls(cx: &TestExecutor) -> (SystemMediaControls, playback::Player) {
         player.clone(),
         crate::test_support::session(NOWHERE),
         None,
-        MediaControls::connect(&NoWindow),
+        MediaControls::disconnected(),
     );
     (controls, player)
 }
@@ -175,7 +165,7 @@ fn shutting_the_core_down_clears_what_the_system_shows() {
     let controls = hiphile
         .workspace()
         .unwrap()
-        .connect_media_controls(MediaControls::connect(&NoWindow));
+        .connect_media_controls(MediaControls::disconnected());
     let cover = CoverArtId::new("c");
     let file = CoverFile::write(b"image").unwrap();
     controls.lock().controls.set_cover(cover.clone(), file);
