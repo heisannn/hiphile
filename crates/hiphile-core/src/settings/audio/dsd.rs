@@ -631,21 +631,22 @@ fn numbers_or(
 
 #[cfg(test)]
 mod tests {
-    use gpui_kit::TestAppContext;
+    use executor::testing::TestExecutor;
 
     use super::*;
     use crate::settings::audio::tests::{DAC, dac, settings_saving_to, told};
 
     /// With the DAC listed and chosen.
-    fn settings_on_the_dac(store: &config::Store, cx: &mut TestAppContext) -> AudioSettings {
+    fn settings_on_the_dac(store: &config::Store, cx: &TestExecutor) -> AudioSettings {
         let settings = settings_saving_to(store, cx);
         settings.pretend_listed(vec![dac()]);
         settings.set_device(DAC);
         settings
     }
 
-    #[gpui_kit::test]
-    fn dsd_goes_on_for_the_chosen_device_and_is_saved(cx: &mut TestAppContext) {
+    #[test]
+    fn dsd_goes_on_for_the_chosen_device_and_is_saved() {
+        let cx = &TestExecutor::new();
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
         let settings = settings_on_the_dac(&store, cx);
@@ -663,8 +664,9 @@ mod tests {
         assert!(settings.output().dop().is_some());
     }
 
-    #[gpui_kit::test]
-    fn another_device_plays_pcm_until_dsd_is_turned_on_for_it(cx: &mut TestAppContext) {
+    #[test]
+    fn another_device_plays_pcm_until_dsd_is_turned_on_for_it() {
+        let cx = &TestExecutor::new();
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
         let settings = settings_on_the_dac(&store, cx);
@@ -676,8 +678,9 @@ mod tests {
         assert!(settings.snapshot().is_dsd_on());
     }
 
-    #[gpui_kit::test]
-    fn the_fade_can_be_turned_off_and_reaches_the_output(cx: &mut TestAppContext) {
+    #[test]
+    fn the_fade_can_be_turned_off_and_reaches_the_output() {
+        let cx = &TestExecutor::new();
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
         let settings = settings_on_the_dac(&store, cx);
@@ -697,8 +700,9 @@ mod tests {
         assert!(!settings.output().dop_fades_in());
     }
 
-    #[gpui_kit::test]
-    fn max_reaches_the_output_and_stays_selected(cx: &mut TestAppContext) {
+    #[test]
+    fn max_reaches_the_output_and_stays_selected() {
+        let cx = &TestExecutor::new();
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
         let settings = settings_saving_to(&store, cx);
@@ -710,8 +714,9 @@ mod tests {
         assert_eq!(settings.dsd_sinc_length_value(), "2048");
     }
 
-    #[gpui_kit::test]
-    fn a_chosen_cutoff_is_listed_once(cx: &mut TestAppContext) {
+    #[test]
+    fn a_chosen_cutoff_is_listed_once() {
+        let cx = &TestExecutor::new();
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
         let settings = settings_on_the_dac(&store, cx);
@@ -722,8 +727,9 @@ mod tests {
         assert_eq!(settings.dsd_cutoff_options().len(), CUTOFFS.len() + 1);
     }
 
-    #[gpui_kit::test]
-    fn the_wide_noise_band_shows_only_where_it_applies(cx: &mut TestAppContext) {
+    #[test]
+    fn the_wide_noise_band_shows_only_where_it_applies() {
+        let cx = &TestExecutor::new();
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
         let settings = settings_on_the_dac(&store, cx);
@@ -737,8 +743,9 @@ mod tests {
         );
     }
 
-    #[gpui_kit::test]
-    fn the_system_default_can_have_no_dsd(cx: &mut TestAppContext) {
+    #[test]
+    fn the_system_default_can_have_no_dsd() {
+        let cx = &TestExecutor::new();
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
         let settings = settings_saving_to(&store, cx);
@@ -747,8 +754,9 @@ mod tests {
         assert!(!settings.snapshot().is_dsd_on());
     }
 
-    #[gpui_kit::test]
-    fn a_new_rate_or_preset_reaches_the_output(cx: &mut TestAppContext) {
+    #[test]
+    fn a_new_rate_or_preset_reaches_the_output() {
+        let cx = &TestExecutor::new();
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
         let settings = settings_on_the_dac(&store, cx);
@@ -769,8 +777,9 @@ mod tests {
         assert_eq!(saved.quality, DsdQuality::Low);
     }
 
-    #[gpui_kit::test]
-    fn matching_the_song_family_is_off_until_asked_for(cx: &mut TestAppContext) {
+    #[test]
+    fn matching_the_song_family_is_off_until_asked_for() {
+        let cx = &TestExecutor::new();
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
         let settings = settings_on_the_dac(&store, cx);
@@ -790,8 +799,9 @@ mod tests {
         assert_eq!(frame_rates(&settings.snapshot()), 768_000);
     }
 
-    #[gpui_kit::test]
-    fn changing_a_value_makes_the_quality_custom_from_the_values_in_use(cx: &mut TestAppContext) {
+    #[test]
+    fn changing_a_value_makes_the_quality_custom_from_the_values_in_use() {
+        let cx = &TestExecutor::new();
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
         let settings = settings_saving_to(&store, cx);
@@ -806,8 +816,9 @@ mod tests {
         assert_eq!(settings.snapshot().dsd_quality_ix(), 4);
     }
 
-    #[gpui_kit::test]
-    fn choosing_custom_changes_nothing_until_a_value_does(cx: &mut TestAppContext) {
+    #[test]
+    fn choosing_custom_changes_nothing_until_a_value_does() {
+        let cx = &TestExecutor::new();
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
         let settings = settings_saving_to(&store, cx);
@@ -820,8 +831,9 @@ mod tests {
         );
     }
 
-    #[gpui_kit::test]
-    fn the_filter_keeps_its_window_and_each_kind_its_own_values(cx: &mut TestAppContext) {
+    #[test]
+    fn the_filter_keeps_its_window_and_each_kind_its_own_values() {
+        let cx = &TestExecutor::new();
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
         let settings = settings_saving_to(&store, cx);
@@ -839,8 +851,9 @@ mod tests {
         );
     }
 
-    #[gpui_kit::test]
-    fn off_values_come_back_as_none(cx: &mut TestAppContext) {
+    #[test]
+    fn off_values_come_back_as_none() {
+        let cx = &TestExecutor::new();
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
         let settings = settings_saving_to(&store, cx);
@@ -852,8 +865,9 @@ mod tests {
         assert_eq!(parameters.limiter_ceiling_db, None);
     }
 
-    #[gpui_kit::test]
-    fn dsd_stays_off_for_a_device_that_cannot_take_it(cx: &mut TestAppContext) {
+    #[test]
+    fn dsd_stays_off_for_a_device_that_cannot_take_it() {
+        let cx = &TestExecutor::new();
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
         let settings = settings_saving_to(&store, cx);
@@ -871,8 +885,9 @@ mod tests {
         assert!(!store.dsd_output().unwrap().is_on);
     }
 
-    #[gpui_kit::test]
-    fn turning_dsd_on_asks_first_in_the_device_s_name(cx: &mut TestAppContext) {
+    #[test]
+    fn turning_dsd_on_asks_first_in_the_device_s_name() {
+        let cx = &TestExecutor::new();
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
         let settings = settings_on_the_dac(&store, cx);
@@ -891,16 +906,18 @@ mod tests {
         assert_eq!(settings.snapshot().dsd_format_value(), PCM);
     }
 
-    #[gpui_kit::test]
-    fn without_dsd_there_is_nothing_to_ask(cx: &mut TestAppContext) {
+    #[test]
+    fn without_dsd_there_is_nothing_to_ask() {
+        let cx = &TestExecutor::new();
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
         let settings = settings_saving_to(&store, cx);
         assert_eq!(settings.snapshot().dsd_format_warning(DOP), None);
     }
 
-    #[gpui_kit::test]
-    fn only_matching_the_song_family_asks_first(cx: &mut TestAppContext) {
+    #[test]
+    fn only_matching_the_song_family_asks_first() {
+        let cx = &TestExecutor::new();
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
         let settings = settings_on_the_dac(&store, cx);
@@ -920,8 +937,9 @@ mod tests {
         assert!(!settings.snapshot().matches_song_family());
     }
 
-    #[gpui_kit::test]
-    fn dsd_says_why_the_pcm_settings_are_off_only_while_it_is_on(cx: &mut TestAppContext) {
+    #[test]
+    fn dsd_says_why_the_pcm_settings_are_off_only_while_it_is_on() {
+        let cx = &TestExecutor::new();
         let all = [
             PcmSetting::SampleRate,
             PcmSetting::ExclusiveMode,

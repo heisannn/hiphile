@@ -181,8 +181,8 @@ mod tests {
     use std::sync::Mutex;
     use std::time::Duration;
 
+    use executor::testing::TestExecutor;
     use executor::{BoxFuture, Detach, Spawned, Spawner};
-    use gpui_kit::TestAppContext;
 
     use super::*;
     use crate::settings::freshness::REFRESH;
@@ -252,23 +252,24 @@ mod tests {
         assert_eq!(usage.snapshot().kept(), Some(0));
     }
 
-    #[gpui_kit::test]
-    fn songs_kept_meanwhile_show_up_while_it_is_kept_fresh(cx: &mut TestAppContext) {
+    #[test]
+    fn songs_kept_meanwhile_show_up_while_it_is_kept_fresh() {
+        let cx = &TestExecutor::new();
         let (_cache, songs) = keeping(100);
-        let executor = cx.update(|cx| gpui_host::executor(cx));
+        let executor = cx.executor();
         let usage = SongCacheUsage::new(executor, Some(songs.clone()));
         let fresh = usage.keep_fresh();
         cx.run_until_parked();
         assert_eq!(usage.snapshot().kept(), Some(100));
 
         put(&songs, "so-2", 50);
-        cx.executor().advance_clock(REFRESH);
+        cx.advance_clock(REFRESH);
         cx.run_until_parked();
         assert_eq!(usage.snapshot().kept(), Some(150));
 
         drop(fresh);
         put(&songs, "so-3", 50);
-        cx.executor().advance_clock(REFRESH);
+        cx.advance_clock(REFRESH);
         cx.run_until_parked();
         assert_eq!(usage.snapshot().kept(), Some(150));
     }

@@ -1,4 +1,4 @@
-use gpui_kit::TestAppContext;
+use executor::testing::TestExecutor;
 use serde_json::{Value, json};
 
 use super::*;
@@ -36,15 +36,15 @@ fn saved_songs(songs: Vec<Song>) -> (tempfile::TempDir, catalog::Catalog) {
     (dir, catalog)
 }
 
-fn song_list(catalog: Option<catalog::Catalog>, url: &str, cx: &mut TestAppContext) -> SongList {
+fn song_list(catalog: Option<catalog::Catalog>, url: &str, cx: &TestExecutor) -> SongList {
     // The requests wake the test from the network's own thread
-    cx.executor().allow_parking();
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+    cx.allow_parking();
+    let executor = cx.executor();
     SongList::new(executor, session_saving_into(catalog, url))
 }
 
 /// Waits for the songs read last to show.
-fn wait_until_shown(list: &SongList, cx: &mut TestAppContext) {
+fn wait_until_shown(list: &SongList, cx: &TestExecutor) {
     wait_for(cx, || {
         let status = list.status();
         !status.is_loading()
@@ -69,7 +69,7 @@ fn shown(list: &SongList) -> Vec<String> {
 }
 
 /// Three songs read from `catalog` and on show.
-fn shown_list(cx: &mut TestAppContext) -> (SongList, tempfile::TempDir, catalog::Catalog) {
+fn shown_list(cx: &TestExecutor) -> (SongList, tempfile::TempDir, catalog::Catalog) {
     let (dir, catalog) = saved_songs(songs());
     let list = song_list(Some(catalog.clone()), NOWHERE, cx);
     list.open();
@@ -77,8 +77,9 @@ fn shown_list(cx: &mut TestAppContext) -> (SongList, tempfile::TempDir, catalog:
     (list, dir, catalog)
 }
 
-#[gpui_kit::test]
-fn nothing_is_read_until_the_list_opens(cx: &mut TestAppContext) {
+#[test]
+fn nothing_is_read_until_the_list_opens() {
+    let cx = &TestExecutor::new();
     let list = song_list(None, NOWHERE, cx);
 
     list.reload();
@@ -89,8 +90,9 @@ fn nothing_is_read_until_the_list_opens(cx: &mut TestAppContext) {
     assert_eq!(*status.songs(), Shelf::Loading);
 }
 
-#[gpui_kit::test]
-fn with_nothing_saved_the_servers_songs_show_by_title(cx: &mut TestAppContext) {
+#[test]
+fn with_nothing_saved_the_servers_songs_show_by_title() {
+    let cx = &TestExecutor::new();
     let url = server_answering(json!({ "searchResult3": { "song": [
         song_json("c", "Cherokee", 100),
         song_json("a", "Airegin", 300),
@@ -105,16 +107,18 @@ fn with_nothing_saved_the_servers_songs_show_by_title(cx: &mut TestAppContext) {
     assert_eq!(shown(&list), ["a", "b", "c"]);
 }
 
-#[gpui_kit::test]
-fn the_saved_songs_show_without_asking_the_server(cx: &mut TestAppContext) {
+#[test]
+fn the_saved_songs_show_without_asking_the_server() {
+    let cx = &TestExecutor::new();
     let (list, _dir, _catalog) = shown_list(cx);
 
     assert_eq!(shown(&list), ["a", "b", "c"]);
     assert_eq!(list.status().failure(), None);
 }
 
-#[gpui_kit::test]
-fn other_songs_read_again_replace_those_on_show(cx: &mut TestAppContext) {
+#[test]
+fn other_songs_read_again_replace_those_on_show() {
+    let cx = &TestExecutor::new();
     let (list, _dir, catalog) = shown_list(cx);
     let one_song = Saved {
         songs: songs().into_iter().take(1).collect(),
@@ -128,8 +132,9 @@ fn other_songs_read_again_replace_those_on_show(cx: &mut TestAppContext) {
     assert_eq!(shown(&list), ["c"]);
 }
 
-#[gpui_kit::test]
-fn the_same_songs_read_again_keep_their_index(cx: &mut TestAppContext) {
+#[test]
+fn the_same_songs_read_again_keep_their_index() {
+    let cx = &TestExecutor::new();
     let (list, _dir, _catalog) = shown_list(cx);
     let before = list.status().shown().unwrap().items().clone();
 
@@ -143,8 +148,9 @@ fn the_same_songs_read_again_keep_their_index(cx: &mut TestAppContext) {
     assert_eq!(shown(&list), ["c", "b", "a"]);
 }
 
-#[gpui_kit::test]
-fn a_failed_first_reading_says_why(cx: &mut TestAppContext) {
+#[test]
+fn a_failed_first_reading_says_why() {
+    let cx = &TestExecutor::new();
     let list = song_list(None, NOWHERE, cx);
 
     list.open();
@@ -155,8 +161,9 @@ fn a_failed_first_reading_says_why(cx: &mut TestAppContext) {
     assert_eq!(status.failure(), None);
 }
 
-#[gpui_kit::test]
-fn a_failed_reload_keeps_the_songs_until_a_new_try_starts(cx: &mut TestAppContext) {
+#[test]
+fn a_failed_reload_keeps_the_songs_until_a_new_try_starts() {
+    let cx = &TestExecutor::new();
     let (list, _dir, catalog) = shown_list(cx);
     // With nothing saved, the server is asked, and cannot be reached
     keep(&catalog, &Saved::default());
@@ -170,8 +177,9 @@ fn a_failed_reload_keeps_the_songs_until_a_new_try_starts(cx: &mut TestAppContex
     assert_eq!(list.status().failure(), None);
 }
 
-#[gpui_kit::test]
-fn a_sort_chosen_during_the_first_reading_holds_when_the_songs_arrive(cx: &mut TestAppContext) {
+#[test]
+fn a_sort_chosen_during_the_first_reading_holds_when_the_songs_arrive() {
+    let cx = &TestExecutor::new();
     let (_dir, catalog) = saved_songs(songs());
     let list = song_list(Some(catalog), NOWHERE, cx);
 
@@ -182,8 +190,9 @@ fn a_sort_chosen_during_the_first_reading_holds_when_the_songs_arrive(cx: &mut T
     assert_eq!(shown(&list), ["c", "b", "a"]);
 }
 
-#[gpui_kit::test]
-fn a_query_given_during_a_reload_holds_when_the_songs_arrive(cx: &mut TestAppContext) {
+#[test]
+fn a_query_given_during_a_reload_holds_when_the_songs_arrive() {
+    let cx = &TestExecutor::new();
     let (list, _dir, _catalog) = shown_list(cx);
 
     list.reload();
@@ -195,8 +204,9 @@ fn a_query_given_during_a_reload_holds_when_the_songs_arrive(cx: &mut TestAppCon
     assert_eq!(shown(&list), ["b"]);
 }
 
-#[gpui_kit::test]
-fn the_last_order_asked_for_is_the_one_that_shows(cx: &mut TestAppContext) {
+#[test]
+fn the_last_order_asked_for_is_the_one_that_shows() {
+    let cx = &TestExecutor::new();
     let (list, _dir, _catalog) = shown_list(cx);
 
     list.sort_by(Column::Time);
@@ -206,8 +216,9 @@ fn the_last_order_asked_for_is_the_one_that_shows(cx: &mut TestAppContext) {
     assert_eq!(shown(&list), ["c"]);
 }
 
-#[gpui_kit::test]
-fn a_sort_chosen_during_a_query_holds_until_the_query_is_emptied(cx: &mut TestAppContext) {
+#[test]
+fn a_sort_chosen_during_a_query_holds_until_the_query_is_emptied() {
+    let cx = &TestExecutor::new();
     let (list, _dir, _catalog) = shown_list(cx);
 
     list.set_query("e");
@@ -225,8 +236,9 @@ fn a_sort_chosen_during_a_query_holds_until_the_query_is_emptied(cx: &mut TestAp
     assert_eq!(list.status().sort().column, Column::Time);
 }
 
-#[gpui_kit::test]
-fn choosing_the_sort_already_chosen_keeps_its_direction(cx: &mut TestAppContext) {
+#[test]
+fn choosing_the_sort_already_chosen_keeps_its_direction() {
+    let cx = &TestExecutor::new();
     let (list, _dir, _catalog) = shown_list(cx);
 
     list.choose_sort(Column::Added);
@@ -237,8 +249,9 @@ fn choosing_the_sort_already_chosen_keeps_its_direction(cx: &mut TestAppContext)
     assert!(!list.status().sort().is_descending);
 }
 
-#[gpui_kit::test]
-fn a_library_without_songs_shows_as_loaded(cx: &mut TestAppContext) {
+#[test]
+fn a_library_without_songs_shows_as_loaded() {
+    let cx = &TestExecutor::new();
     let url = server_answering(json!({ "searchResult3": { "song": [] }}));
     let list = song_list(None, &url, cx);
 

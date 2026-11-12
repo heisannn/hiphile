@@ -1,5 +1,5 @@
 use config::{R8brainParameters, R8brainPhase, R8brainQuality, ResamplingQuality};
-use gpui_kit::TestAppContext;
+use executor::testing::TestExecutor;
 
 use super::{R8brainNumber, R8brainSetting, SETTLE};
 use crate::settings::audio::tests::{settings_saving_to, told};
@@ -12,19 +12,20 @@ fn enter(settings: &AudioSettings, number: R8brainNumber, text: &str) {
 }
 
 /// On r8brain, at its default quality.
-fn r8brain_saving_to(store: &config::Store, cx: &mut TestAppContext) -> AudioSettings {
+fn r8brain_saving_to(store: &config::Store, cx: &TestExecutor) -> AudioSettings {
     let settings = settings_saving_to(store, cx);
     settings.select_resampler(1);
     settings
 }
 
-fn settle(cx: &mut TestAppContext) {
-    cx.executor().advance_clock(SETTLE);
+fn settle(cx: &TestExecutor) {
+    cx.advance_clock(SETTLE);
     cx.run_until_parked();
 }
 
-#[gpui_kit::test]
-fn a_changed_parameter_is_told_saved_and_reaches_the_output(cx: &mut TestAppContext) {
+#[test]
+fn a_changed_parameter_is_told_saved_and_reaches_the_output() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -47,8 +48,9 @@ fn a_changed_parameter_is_told_saved_and_reaches_the_output(cx: &mut TestAppCont
     }
 }
 
-#[gpui_kit::test]
-fn the_parameters_come_back_after_another_quality(cx: &mut TestAppContext) {
+#[test]
+fn the_parameters_come_back_after_another_quality() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -79,8 +81,9 @@ fn the_parameters_come_back_after_another_quality(cx: &mut TestAppContext) {
     assert_eq!(filter.phase, R8brainPhase::Minimum);
 }
 
-#[gpui_kit::test]
-fn a_change_that_comes_after_another_quality_leaves_that_quality(cx: &mut TestAppContext) {
+#[test]
+fn a_change_that_comes_after_another_quality_leaves_that_quality() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -105,8 +108,9 @@ fn a_change_that_comes_after_another_quality_leaves_that_quality(cx: &mut TestAp
     );
 }
 
-#[gpui_kit::test]
-fn a_bit_depth_sets_the_attenuation_and_other_values_read_other(cx: &mut TestAppContext) {
+#[test]
+fn a_bit_depth_sets_the_attenuation_and_other_values_read_other() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -136,8 +140,9 @@ fn a_bit_depth_sets_the_attenuation_and_other_values_read_other(cx: &mut TestApp
     }
 }
 
-#[gpui_kit::test]
-fn a_phase_is_chosen_by_its_place(cx: &mut TestAppContext) {
+#[test]
+fn a_phase_is_chosen_by_its_place() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -152,8 +157,9 @@ fn a_phase_is_chosen_by_its_place(cx: &mut TestAppContext) {
     }
 }
 
-#[gpui_kit::test]
-fn a_preset_is_told_saved_and_reaches_the_output(cx: &mut TestAppContext) {
+#[test]
+fn a_preset_is_told_saved_and_reaches_the_output() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -180,8 +186,9 @@ fn a_preset_is_told_saved_and_reaches_the_output(cx: &mut TestAppContext) {
     }
 }
 
-#[gpui_kit::test]
-fn another_value_makes_the_preset_custom_and_the_same_one_does_not(cx: &mut TestAppContext) {
+#[test]
+fn another_value_makes_the_preset_custom_and_the_same_one_does_not() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -208,8 +215,9 @@ fn another_value_makes_the_preset_custom_and_the_same_one_does_not(cx: &mut Test
     assert_eq!(saved.filter().attenuation, 150.0);
 }
 
-#[gpui_kit::test]
-fn choosing_custom_keeps_the_sound_and_a_preset_replaces_its_values(cx: &mut TestAppContext) {
+#[test]
+fn choosing_custom_keeps_the_sound_and_a_preset_replaces_its_values() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -237,8 +245,9 @@ fn choosing_custom_keeps_the_sound_and_a_preset_replaces_its_values(cx: &mut Tes
     assert!(!text.contains("r8brain_attenuation"), "{text}");
 }
 
-#[gpui_kit::test]
-fn a_preset_leaves_what_does_not_change_the_sound_alone(cx: &mut TestAppContext) {
+#[test]
+fn a_preset_leaves_what_does_not_change_the_sound_alone() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -256,8 +265,9 @@ fn a_preset_leaves_what_does_not_change_the_sound_alone(cx: &mut TestAppContext)
     }
 }
 
-#[gpui_kit::test]
-fn a_typed_number_counts_once_it_has_settled(cx: &mut TestAppContext) {
+#[test]
+fn a_typed_number_counts_once_it_has_settled() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = r8brain_saving_to(&store, cx);
@@ -272,8 +282,9 @@ fn a_typed_number_counts_once_it_has_settled(cx: &mut TestAppContext) {
     assert_eq!(saved.transition_band, 3.5);
 }
 
-#[gpui_kit::test]
-fn only_the_last_of_several_typed_numbers_counts(cx: &mut TestAppContext) {
+#[test]
+fn only_the_last_of_several_typed_numbers_counts() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = r8brain_saving_to(&store, cx);
@@ -284,8 +295,9 @@ fn only_the_last_of_several_typed_numbers_counts(cx: &mut TestAppContext) {
     assert_eq!(settings.snapshot().r8brain_filter().attenuation, 100.0);
 }
 
-#[gpui_kit::test]
-fn enter_counts_at_once_held_to_the_range(cx: &mut TestAppContext) {
+#[test]
+fn enter_counts_at_once_held_to_the_range() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = r8brain_saving_to(&store, cx);
@@ -295,8 +307,9 @@ fn enter_counts_at_once_held_to_the_range(cx: &mut TestAppContext) {
     assert_eq!(snapshot.r8brain_text(R8brainNumber::Attenuation), "218");
 }
 
-#[gpui_kit::test]
-fn a_typed_number_beyond_the_range_waits_for_enter(cx: &mut TestAppContext) {
+#[test]
+fn a_typed_number_beyond_the_range_waits_for_enter() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = r8brain_saving_to(&store, cx);
@@ -313,8 +326,9 @@ fn a_typed_number_beyond_the_range_waits_for_enter(cx: &mut TestAppContext) {
     assert_eq!(snapshot.r8brain_text(R8brainNumber::Attenuation), "49");
 }
 
-#[gpui_kit::test]
-fn text_that_is_no_number_gives_way_to_the_number(cx: &mut TestAppContext) {
+#[test]
+fn text_that_is_no_number_gives_way_to_the_number() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = r8brain_saving_to(&store, cx);
@@ -324,8 +338,9 @@ fn text_that_is_no_number_gives_way_to_the_number(cx: &mut TestAppContext) {
     assert_eq!(snapshot.r8brain_text(R8brainNumber::TransitionBand), "2");
 }
 
-#[gpui_kit::test]
-fn no_filter_positions_let_the_resampler_choose_them(cx: &mut TestAppContext) {
+#[test]
+fn no_filter_positions_let_the_resampler_choose_them() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = r8brain_saving_to(&store, cx);
@@ -345,8 +360,9 @@ fn no_filter_positions_let_the_resampler_choose_them(cx: &mut TestAppContext) {
     assert_eq!(snapshot.r8brain_text(positions), "");
 }
 
-#[gpui_kit::test]
-fn whole_numbers_stay_whole(cx: &mut TestAppContext) {
+#[test]
+fn whole_numbers_stay_whole() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = r8brain_saving_to(&store, cx);
@@ -355,8 +371,9 @@ fn whole_numbers_stay_whole(cx: &mut TestAppContext) {
     assert_eq!(performance.filter_cache_size, 4);
 }
 
-#[gpui_kit::test]
-fn a_preset_replaces_a_typed_number(cx: &mut TestAppContext) {
+#[test]
+fn a_preset_replaces_a_typed_number() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = r8brain_saving_to(&store, cx);
@@ -378,8 +395,9 @@ fn a_preset_replaces_a_typed_number(cx: &mut TestAppContext) {
     );
 }
 
-#[gpui_kit::test]
-fn a_typed_number_keeps_its_form_until_enter(cx: &mut TestAppContext) {
+#[test]
+fn a_typed_number_keeps_its_form_until_enter() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = r8brain_saving_to(&store, cx);
@@ -394,8 +412,9 @@ fn a_typed_number_keeps_its_form_until_enter(cx: &mut TestAppContext) {
     assert_eq!(settings.snapshot().r8brain_text(band), "3.5");
 }
 
-#[gpui_kit::test]
-fn another_number_counting_leaves_a_typed_one_alone(cx: &mut TestAppContext) {
+#[test]
+fn another_number_counting_leaves_a_typed_one_alone() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = r8brain_saving_to(&store, cx);
@@ -412,8 +431,9 @@ fn another_number_counting_leaves_a_typed_one_alone(cx: &mut TestAppContext) {
     assert_eq!(settings.snapshot().r8brain_filter().attenuation, 150.0);
 }
 
-#[gpui_kit::test]
-fn what_leaves_the_sound_alone_leaves_the_preset_too(cx: &mut TestAppContext) {
+#[test]
+fn what_leaves_the_sound_alone_leaves_the_preset_too() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = r8brain_saving_to(&store, cx);
@@ -428,8 +448,9 @@ fn what_leaves_the_sound_alone_leaves_the_preset_too(cx: &mut TestAppContext) {
     assert_eq!(settings.snapshot().r8brain_quality_ix(), 4);
 }
 
-#[gpui_kit::test]
-fn a_number_goes_back_to_its_default(cx: &mut TestAppContext) {
+#[test]
+fn a_number_goes_back_to_its_default() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = r8brain_saving_to(&store, cx);
@@ -456,8 +477,9 @@ fn a_number_goes_back_to_its_default(cx: &mut TestAppContext) {
     );
 }
 
-#[gpui_kit::test]
-fn numbers_that_differ_between_presets_go_back_with_the_preset(cx: &mut TestAppContext) {
+#[test]
+fn numbers_that_differ_between_presets_go_back_with_the_preset() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = r8brain_saving_to(&store, cx);
@@ -478,8 +500,9 @@ fn numbers_that_differ_between_presets_go_back_with_the_preset(cx: &mut TestAppC
     );
 }
 
-#[gpui_kit::test]
-fn the_switches_and_the_phase_go_back_to_their_defaults(cx: &mut TestAppContext) {
+#[test]
+fn the_switches_and_the_phase_go_back_to_their_defaults() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = r8brain_saving_to(&store, cx);

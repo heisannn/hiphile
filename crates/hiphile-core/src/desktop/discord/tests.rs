@@ -1,12 +1,12 @@
 use std::time::Duration;
 
-use gpui_kit::TestAppContext;
+use executor::testing::TestExecutor;
 
 use super::*;
 use crate::testing::NOWHERE;
 
-fn status(cx: &mut TestAppContext) -> (DiscordStatus, playback::Player) {
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+fn status(cx: &TestExecutor) -> (DiscordStatus, playback::Player) {
+    let executor = cx.executor();
     let player = playback::Player::new(
         executor.clone(),
         crate::test_support::session(NOWHERE),
@@ -31,8 +31,9 @@ fn song(id: &str) -> Song {
     .unwrap()
 }
 
-#[gpui_kit::test]
-fn the_status_follows_the_song_only_while_it_plays(cx: &mut TestAppContext) {
+#[test]
+fn the_status_follows_the_song_only_while_it_plays() {
+    let cx = &TestExecutor::new();
     let (status, player) = status(cx);
     let is_refreshing = || status.lock()._refresh.is_some();
     player.fill_queue(&[song("a")], 0);
@@ -48,8 +49,9 @@ fn the_status_follows_the_song_only_while_it_plays(cx: &mut TestAppContext) {
     assert!(!is_refreshing());
 }
 
-#[gpui_kit::test]
-fn a_cover_is_looked_for_only_with_a_key_and_while_on(cx: &mut TestAppContext) {
+#[test]
+fn a_cover_is_looked_for_only_with_a_key_and_while_on() {
+    let cx = &TestExecutor::new();
     let (status, player) = status(cx);
     let sought = || status.lock().sought_cover.clone();
     player.fill_queue(&[song("a")], 0);
@@ -70,10 +72,11 @@ fn a_cover_is_looked_for_only_with_a_key_and_while_on(cx: &mut TestAppContext) {
     assert_eq!(sought(), None, "a new key tries again");
 }
 
-#[gpui_kit::test]
-fn the_status_follows_the_discord_settings(cx: &mut TestAppContext) {
-    cx.executor().allow_parking();
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+#[test]
+fn the_status_follows_the_discord_settings() {
+    let cx = &TestExecutor::new();
+    cx.allow_parking();
+    let executor = cx.executor();
     let settings = crate::settings::Settings::new(executor.clone(), Err(config::Error::NoHomeDir));
     let parts = crate::workspace::Parts {
         executor,
@@ -94,7 +97,7 @@ fn the_status_follows_the_discord_settings(cx: &mut TestAppContext) {
 
     settings.discord().set_presence_on(false);
     settings.discord().set_typed("key");
-    cx.executor().advance_clock(Duration::from_secs(5));
+    cx.advance_clock(Duration::from_secs(5));
     cx.run_until_parked();
 
     assert!(!status.lock().presence.is_on());

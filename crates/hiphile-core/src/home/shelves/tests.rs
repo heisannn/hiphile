@@ -1,4 +1,4 @@
-use gpui_kit::TestAppContext;
+use executor::testing::TestExecutor;
 use serde_json::json;
 
 use super::*;
@@ -19,15 +19,14 @@ fn albums(count: usize) -> Vec<Album> {
     (0..count).map(|ix| album(&format!("a{ix}"))).collect()
 }
 
-/// On GPUI's executor, which the test's `run_until_parked` drives, for a server at `url`.
-fn shelves_on(url: &str, cx: &mut TestAppContext) -> HomeShelves {
+fn shelves_on(url: &str, cx: &TestExecutor) -> HomeShelves {
     shelves_with(session(url), cx).0
 }
 
-fn shelves_with(session: Session, cx: &mut TestAppContext) -> (HomeShelves, DailyRecommendations) {
+fn shelves_with(session: Session, cx: &TestExecutor) -> (HomeShelves, DailyRecommendations) {
     // The requests wake the test from the network's own thread
-    cx.executor().allow_parking();
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+    cx.allow_parking();
+    let executor = cx.executor();
     let recommendations = DailyRecommendations::new(executor.clone(), session.clone());
     let shelves = HomeShelves::new(executor, session, recommendations.clone());
     (shelves, recommendations)
@@ -53,8 +52,9 @@ fn is_loading(status: &ShelvesStatus) -> bool {
         || matches!(status.new_albums, Shelf::Loading)
 }
 
-#[gpui_kit::test]
-fn the_shelves_load_from_the_server(cx: &mut TestAppContext) {
+#[test]
+fn the_shelves_load_from_the_server() {
+    let cx = &TestExecutor::new();
     let url = server_answering(json!({
         "albumList2": { "album": [{ "id": "a1", "name": "a1" }] },
         "album": {
@@ -84,8 +84,9 @@ fn the_shelves_load_from_the_server(cx: &mut TestAppContext) {
     assert_eq!(status.new_albums().items(), [album("a1")]);
 }
 
-#[gpui_kit::test]
-fn the_album_shelves_keep_their_albums_off_the_recommendations(cx: &mut TestAppContext) {
+#[test]
+fn the_album_shelves_keep_their_albums_off_the_recommendations() {
+    let cx = &TestExecutor::new();
     let url = server_answering(json!({
         "albumList2": { "album": [{ "id": "r1", "name": "r1" }] },
     }));
@@ -103,8 +104,9 @@ fn the_album_shelves_keep_their_albums_off_the_recommendations(cx: &mut TestAppC
     assert_eq!(recommendations.status().albums().items(), [album("r0")]);
 }
 
-#[gpui_kit::test]
-fn a_shelf_that_never_showed_says_why_it_failed(cx: &mut TestAppContext) {
+#[test]
+fn a_shelf_that_never_showed_says_why_it_failed() {
+    let cx = &TestExecutor::new();
     let shelves = shelves_on(NOWHERE, cx);
 
     wait_for(cx, || !is_loading(&shelves.status()));
@@ -123,8 +125,9 @@ fn failure<T>(shelf: &Shelf<T>) -> Option<&str> {
     }
 }
 
-#[gpui_kit::test]
-fn a_play_reloads_the_shelves_it_changes_keeping_what_is_on_show(cx: &mut TestAppContext) {
+#[test]
+fn a_play_reloads_the_shelves_it_changes_keeping_what_is_on_show() {
+    let cx = &TestExecutor::new();
     let shelves = shelves_on(NOWHERE, cx);
     update(&shelves, |state| fill(state, &["s1"], 1));
 
@@ -140,8 +143,9 @@ fn a_play_reloads_the_shelves_it_changes_keeping_what_is_on_show(cx: &mut TestAp
     cx.run_until_parked();
 }
 
-#[gpui_kit::test]
-fn a_library_sync_reloads_the_album_shelves_keeping_what_is_on_show(cx: &mut TestAppContext) {
+#[test]
+fn a_library_sync_reloads_the_album_shelves_keeping_what_is_on_show() {
+    let cx = &TestExecutor::new();
     let shelves = shelves_on(NOWHERE, cx);
     update(&shelves, |state| fill(state, &["s1"], 1));
 
@@ -179,8 +183,9 @@ fn an_incomplete_first_load_shows_what_it_found() {
     assert_eq!(shelf.items().len(), 1);
 }
 
-#[gpui_kit::test]
-fn a_retry_loads_again_the_shelf_that_failed(cx: &mut TestAppContext) {
+#[test]
+fn a_retry_loads_again_the_shelf_that_failed() {
+    let cx = &TestExecutor::new();
     let (shelves, recommendations) = shelves_with(session(NOWHERE), cx);
     wait_for(cx, || {
         !is_loading(&shelves.status()) && !recommendations.status().is_recommending()

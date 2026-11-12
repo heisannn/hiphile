@@ -1,11 +1,11 @@
 //! What the tests of several handles share. Apart from [`crate::test_support`], which the views'
-//! tests use too, as `wait_for` needs GPUI, a dev-dependency only.
+//! tests use too, as `wait_for` needs the test executor, a dev-dependency only.
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::net::TcpListener;
 use std::time::Duration;
 
-use gpui_kit::TestAppContext;
+use executor::testing::TestExecutor;
 use serde_json::{Value, json};
 use subsonic::{Album, Artist, ScanStatus, Song};
 
@@ -69,7 +69,7 @@ pub(crate) fn server_answering_each(
 }
 
 /// Runs what is under way until `done`, as answers from the network arrive off the executor.
-pub(crate) fn wait_for(cx: &mut TestAppContext, mut done: impl FnMut() -> bool) {
+pub(crate) fn wait_for(cx: &TestExecutor, mut done: impl FnMut() -> bool) {
     for _ in 0..500 {
         cx.run_until_parked();
         if done() {

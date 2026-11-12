@@ -117,15 +117,16 @@ fn read_saved(
 
 #[cfg(test)]
 mod tests {
-    use gpui_kit::TestAppContext;
+    use executor::testing::TestExecutor;
 
     use super::*;
 
-    #[gpui_kit::test]
-    fn a_new_choice_is_told_and_saved_and_the_same_one_is_neither(cx: &mut TestAppContext) {
+    #[test]
+    fn a_new_choice_is_told_and_saved_and_the_same_one_is_neither() {
+        let cx = &TestExecutor::new();
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
-        let executor = cx.update(|cx| gpui_host::executor(cx));
+        let executor = cx.executor();
         let settings = QueueSettings::with(executor, Some(store.clone()), false, None);
         let told = settings.subscribe();
 

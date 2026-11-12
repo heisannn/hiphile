@@ -1,4 +1,4 @@
-use gpui_kit::TestAppContext;
+use executor::testing::TestExecutor;
 use serde_json::json;
 
 use super::*;
@@ -17,15 +17,11 @@ fn catalog_in(dir: &tempfile::TempDir) -> catalog::Catalog {
     catalog::Catalog::open(dir.path()).unwrap()
 }
 
-/// On GPUI's executor, which the test's `run_until_parked` and clock drive, for `alice`, who
-/// keeps her picks in `catalog`, with a server that cannot be reached.
-fn recommendations(
-    catalog: Option<catalog::Catalog>,
-    cx: &mut TestAppContext,
-) -> DailyRecommendations {
+/// For `alice`, who keeps her picks in `catalog`, with a server that cannot be reached.
+fn recommendations(catalog: Option<catalog::Catalog>, cx: &TestExecutor) -> DailyRecommendations {
     // The failing requests wake the test from the network's own thread
-    cx.executor().allow_parking();
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+    cx.allow_parking();
+    let executor = cx.executor();
     DailyRecommendations::new(executor, session_saving_into(catalog, NOWHERE))
 }
 
@@ -70,8 +66,9 @@ fn shown(state: &State) -> Vec<String> {
         .collect()
 }
 
-#[gpui_kit::test]
-fn a_complete_pick_settles_the_day_and_is_kept(cx: &mut TestAppContext) {
+#[test]
+fn a_complete_pick_settles_the_day_and_is_kept() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let catalog = catalog_in(&dir);
     let recommendations = recommendations(Some(catalog.clone()), cx);
@@ -88,8 +85,9 @@ fn a_complete_pick_settles_the_day_and_is_kept(cx: &mut TestAppContext) {
     assert_eq!(kept.albums[0].id().as_str(), "r0");
 }
 
-#[gpui_kit::test]
-fn an_incomplete_pick_is_not_kept_and_leaves_what_is_on_show(cx: &mut TestAppContext) {
+#[test]
+fn an_incomplete_pick_is_not_kept_and_leaves_what_is_on_show() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let catalog = catalog_in(&dir);
     let recommendations = recommendations(Some(catalog.clone()), cx);
@@ -106,8 +104,9 @@ fn an_incomplete_pick_is_not_kept_and_leaves_what_is_on_show(cx: &mut TestAppCon
     assert!(catalog.recommended("alice").unwrap().is_none());
 }
 
-#[gpui_kit::test]
-fn an_incomplete_pick_shows_with_nothing_else_to_show(cx: &mut TestAppContext) {
+#[test]
+fn an_incomplete_pick_shows_with_nothing_else_to_show() {
+    let cx = &TestExecutor::new();
     let recommendations = recommendations(None, cx);
     update(&recommendations, |this, state| {
         clear(state);
@@ -118,8 +117,9 @@ fn an_incomplete_pick_shows_with_nothing_else_to_show(cx: &mut TestAppContext) {
     });
 }
 
-#[gpui_kit::test]
-fn a_failed_pick_does_not_settle_the_day(cx: &mut TestAppContext) {
+#[test]
+fn a_failed_pick_does_not_settle_the_day() {
+    let cx = &TestExecutor::new();
     let recommendations = recommendations(None, cx);
     update(&recommendations, |this, state| {
         clear(state);
@@ -131,8 +131,9 @@ fn a_failed_pick_does_not_settle_the_day(cx: &mut TestAppContext) {
     });
 }
 
-#[gpui_kit::test]
-fn an_empty_pick_is_not_kept_and_leaves_what_is_on_show(cx: &mut TestAppContext) {
+#[test]
+fn an_empty_pick_is_not_kept_and_leaves_what_is_on_show() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let catalog = catalog_in(&dir);
     catalog
@@ -156,8 +157,9 @@ fn an_empty_pick_is_not_kept_and_leaves_what_is_on_show(cx: &mut TestAppContext)
     );
 }
 
-#[gpui_kit::test]
-fn a_library_sync_gives_an_empty_shelf_another_pick(cx: &mut TestAppContext) {
+#[test]
+fn a_library_sync_gives_an_empty_shelf_another_pick() {
+    let cx = &TestExecutor::new();
     let recommendations = recommendations(None, cx);
     update(&recommendations, |this, state| {
         clear(state);
@@ -169,8 +171,9 @@ fn a_library_sync_gives_an_empty_shelf_another_pick(cx: &mut TestAppContext) {
     assert!(recommendations.status().is_recommending());
 }
 
-#[gpui_kit::test]
-fn a_library_sync_leaves_the_days_pick_alone(cx: &mut TestAppContext) {
+#[test]
+fn a_library_sync_leaves_the_days_pick_alone() {
+    let cx = &TestExecutor::new();
     let recommendations = recommendations(None, cx);
     update(&recommendations, |this, state| {
         clear(state);
@@ -182,8 +185,9 @@ fn a_library_sync_leaves_the_days_pick_alone(cx: &mut TestAppContext) {
     assert!(!recommendations.status().is_recommending());
 }
 
-#[gpui_kit::test]
-fn a_pick_that_went_wrong_is_not_made_again_right_away(cx: &mut TestAppContext) {
+#[test]
+fn a_pick_that_went_wrong_is_not_made_again_right_away() {
+    let cx = &TestExecutor::new();
     let recommendations = recommendations(None, cx);
     update(&recommendations, |this, state| {
         clear(state);
@@ -193,14 +197,15 @@ fn a_pick_that_went_wrong_is_not_made_again_right_away(cx: &mut TestAppContext) 
     recommendations.renew();
     assert!(!recommendations.status().is_recommending());
 
-    cx.executor().advance_clock(RETRY_AFTER);
+    cx.advance_clock(RETRY_AFTER);
     cx.run_until_parked();
     recommendations.renew();
     assert!(recommendations.status().is_recommending());
 }
 
-#[gpui_kit::test]
-fn retry_does_not_wait(cx: &mut TestAppContext) {
+#[test]
+fn retry_does_not_wait() {
+    let cx = &TestExecutor::new();
     let recommendations = recommendations(None, cx);
     update(&recommendations, |this, state| {
         clear(state);
@@ -215,8 +220,9 @@ fn retry_does_not_wait(cx: &mut TestAppContext) {
     });
 }
 
-#[gpui_kit::test]
-fn a_pick_that_leaves_albums_on_show_says_why(cx: &mut TestAppContext) {
+#[test]
+fn a_pick_that_leaves_albums_on_show_says_why() {
+    let cx = &TestExecutor::new();
     let recommendations = recommendations(None, cx);
     update(&recommendations, |this, state| {
         clear(state);
@@ -235,8 +241,9 @@ fn a_pick_that_leaves_albums_on_show_says_why(cx: &mut TestAppContext) {
     });
 }
 
-#[gpui_kit::test]
-fn a_failure_that_shows_on_the_shelf_needs_no_other_word(cx: &mut TestAppContext) {
+#[test]
+fn a_failure_that_shows_on_the_shelf_needs_no_other_word() {
+    let cx = &TestExecutor::new();
     let recommendations = recommendations(None, cx);
     update(&recommendations, |this, state| {
         clear(state);
@@ -246,8 +253,9 @@ fn a_failure_that_shows_on_the_shelf_needs_no_other_word(cx: &mut TestAppContext
     });
 }
 
-#[gpui_kit::test]
-fn only_a_reload_says_why_it_left_the_albums_on_show(cx: &mut TestAppContext) {
+#[test]
+fn only_a_reload_says_why_it_left_the_albums_on_show() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let catalog = catalog_in(&dir);
     catalog
@@ -275,8 +283,9 @@ fn only_a_reload_says_why_it_left_the_albums_on_show(cx: &mut TestAppContext) {
     });
 }
 
-#[gpui_kit::test]
-fn todays_kept_pick_shows_again_with_no_new_pick(cx: &mut TestAppContext) {
+#[test]
+fn todays_kept_pick_shows_again_with_no_new_pick() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let catalog = catalog_in(&dir);
     catalog
@@ -293,8 +302,9 @@ fn todays_kept_pick_shows_again_with_no_new_pick(cx: &mut TestAppContext) {
     });
 }
 
-#[gpui_kit::test]
-fn yesterdays_kept_pick_shows_while_a_new_one_is_made(cx: &mut TestAppContext) {
+#[test]
+fn yesterdays_kept_pick_shows_while_a_new_one_is_made() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let catalog = catalog_in(&dir);
     catalog
@@ -311,8 +321,9 @@ fn yesterdays_kept_pick_shows_while_a_new_one_is_made(cx: &mut TestAppContext) {
     });
 }
 
-#[gpui_kit::test]
-fn another_users_kept_pick_does_not_show(cx: &mut TestAppContext) {
+#[test]
+fn another_users_kept_pick_does_not_show() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let catalog = catalog_in(&dir);
     catalog
@@ -327,8 +338,9 @@ fn another_users_kept_pick_does_not_show(cx: &mut TestAppContext) {
     });
 }
 
-#[gpui_kit::test]
-fn the_recommendations_stay_for_the_day(cx: &mut TestAppContext) {
+#[test]
+fn the_recommendations_stay_for_the_day() {
+    let cx = &TestExecutor::new();
     let recommendations = recommendations(None, cx);
     update(&recommendations, |this, state| {
         clear(state);
@@ -338,8 +350,9 @@ fn the_recommendations_stay_for_the_day(cx: &mut TestAppContext) {
     });
 }
 
-#[gpui_kit::test]
-fn another_day_picks_new_recommendations_with_the_old_on_show(cx: &mut TestAppContext) {
+#[test]
+fn another_day_picks_new_recommendations_with_the_old_on_show() {
+    let cx = &TestExecutor::new();
     let recommendations = recommendations(None, cx);
     update(&recommendations, |this, state| {
         clear(state);
@@ -353,8 +366,9 @@ fn another_day_picks_new_recommendations_with_the_old_on_show(cx: &mut TestAppCo
     });
 }
 
-#[gpui_kit::test]
-fn a_pick_on_its_way_is_not_started_again(cx: &mut TestAppContext) {
+#[test]
+fn a_pick_on_its_way_is_not_started_again() {
+    let cx = &TestExecutor::new();
     let recommendations = recommendations(None, cx);
     update(&recommendations, |this, state| {
         clear(state);
@@ -371,8 +385,9 @@ fn ids(ids: &[&str]) -> Vec<AlbumId> {
     ids.iter().map(|id| AlbumId::new(*id)).collect()
 }
 
-#[gpui_kit::test]
-fn an_album_on_another_shelf_leaves_the_recommendations(cx: &mut TestAppContext) {
+#[test]
+fn an_album_on_another_shelf_leaves_the_recommendations() {
+    let cx = &TestExecutor::new();
     let recommendations = recommendations(None, cx);
     update(&recommendations, |_, state| {
         clear(state);
@@ -386,8 +401,9 @@ fn an_album_on_another_shelf_leaves_the_recommendations(cx: &mut TestAppContext)
     });
 }
 
-#[gpui_kit::test]
-fn a_pick_leaves_out_the_albums_on_other_shelves_but_keeps_them(cx: &mut TestAppContext) {
+#[test]
+fn a_pick_leaves_out_the_albums_on_other_shelves_but_keeps_them() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let catalog = catalog_in(&dir);
     let recommendations = recommendations(Some(catalog.clone()), cx);
@@ -404,10 +420,9 @@ fn a_pick_leaves_out_the_albums_on_other_shelves_but_keeps_them(cx: &mut TestApp
     assert_eq!(kept.albums.len(), 2);
 }
 
-#[gpui_kit::test]
-fn a_library_sync_picks_again_when_other_shelves_show_every_recommendation(
-    cx: &mut TestAppContext,
-) {
+#[test]
+fn a_library_sync_picks_again_when_other_shelves_show_every_recommendation() {
+    let cx = &TestExecutor::new();
     let recommendations = recommendations(None, cx);
     update(&recommendations, |this, state| {
         clear(state);
@@ -420,8 +435,9 @@ fn a_library_sync_picks_again_when_other_shelves_show_every_recommendation(
     assert!(recommendations.status().is_recommending());
 }
 
-#[gpui_kit::test]
-fn only_albums_on_show_are_worth_a_reload(cx: &mut TestAppContext) {
+#[test]
+fn only_albums_on_show_are_worth_a_reload() {
+    let cx = &TestExecutor::new();
     let recommendations = recommendations(None, cx);
     update(&recommendations, |_, state| {
         state.status.albums = Shelf::Failed("offline".into());

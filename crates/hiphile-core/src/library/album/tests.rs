@@ -1,4 +1,4 @@
-use gpui_kit::TestAppContext;
+use executor::testing::TestExecutor;
 use serde_json::json;
 
 use super::*;
@@ -59,11 +59,10 @@ fn saved(albums: &[AlbumWithSongs]) -> (tempfile::TempDir, catalog::Catalog) {
     (dir, catalog)
 }
 
-/// On GPUI's executor, which the test's `run_until_parked` drives.
-fn detail_on(catalog: Option<catalog::Catalog>, url: &str, cx: &mut TestAppContext) -> AlbumDetail {
+fn detail_on(catalog: Option<catalog::Catalog>, url: &str, cx: &TestExecutor) -> AlbumDetail {
     // The requests wake the test from the network's own thread
-    cx.executor().allow_parking();
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+    cx.allow_parking();
+    let executor = cx.executor();
     AlbumDetail::new(executor, session_saving_into(catalog, url))
 }
 
@@ -77,8 +76,9 @@ fn song_ids(detail: &AlbumDetail) -> Vec<String> {
         .collect()
 }
 
-#[gpui_kit::test]
-fn a_saved_album_shows_without_the_server(cx: &mut TestAppContext) {
+#[test]
+fn a_saved_album_shows_without_the_server() {
+    let cx = &TestExecutor::new();
     let (_dir, catalog) = saved(&[album_with("a", &["a1"])]);
     let detail = detail_on(Some(catalog), NOWHERE, cx);
 
@@ -92,8 +92,9 @@ fn a_saved_album_shows_without_the_server(cx: &mut TestAppContext) {
     assert_eq!(song_ids(&detail), ["a1"]);
 }
 
-#[gpui_kit::test]
-fn the_servers_album_replaces_the_saved_one_and_is_saved(cx: &mut TestAppContext) {
+#[test]
+fn the_servers_album_replaces_the_saved_one_and_is_saved() {
+    let cx = &TestExecutor::new();
     let (_dir, catalog) = saved(&[album_with("a", &["a1"])]);
     let url = server_answering(json!({ "album": album_json("a", &["a1", "a2"]) }));
     let detail = detail_on(Some(catalog.clone()), &url, cx);
@@ -112,8 +113,9 @@ fn the_servers_album_replaces_the_saved_one_and_is_saved(cx: &mut TestAppContext
     });
 }
 
-#[gpui_kit::test]
-fn an_album_neither_saved_nor_reached_fails_with_why(cx: &mut TestAppContext) {
+#[test]
+fn an_album_neither_saved_nor_reached_fails_with_why() {
+    let cx = &TestExecutor::new();
     let detail = detail_on(None, NOWHERE, cx);
 
     detail.show(AlbumId::new("a"));
@@ -130,8 +132,9 @@ fn an_album_neither_saved_nor_reached_fails_with_why(cx: &mut TestAppContext) {
     );
 }
 
-#[gpui_kit::test]
-fn a_failure_leaves_the_saved_songs_on_show(cx: &mut TestAppContext) {
+#[test]
+fn a_failure_leaves_the_saved_songs_on_show() {
+    let cx = &TestExecutor::new();
     let detail = detail_on(None, NOWHERE, cx);
     let saved = AlbumDetailSnapshot::Loaded(album_with("a", &["a1"]).into());
 
@@ -143,8 +146,9 @@ fn a_failure_leaves_the_saved_songs_on_show(cx: &mut TestAppContext) {
     assert_eq!(detail.snapshot(), saved);
 }
 
-#[gpui_kit::test]
-fn what_an_album_replaced_brings_is_dropped(cx: &mut TestAppContext) {
+#[test]
+fn what_an_album_replaced_brings_is_dropped() {
+    let cx = &TestExecutor::new();
     let (_dir, catalog) = saved(&[album_with("a", &["a1"]), album_with("b", &["b1"])]);
     let detail = detail_on(Some(catalog), NOWHERE, cx);
     detail.show(AlbumId::new("a"));
@@ -163,8 +167,9 @@ fn what_an_album_replaced_brings_is_dropped(cx: &mut TestAppContext) {
     assert_eq!(song_ids(&detail), ["b1"]);
 }
 
-#[gpui_kit::test]
-fn clearing_leaves_nothing_on_show(cx: &mut TestAppContext) {
+#[test]
+fn clearing_leaves_nothing_on_show() {
+    let cx = &TestExecutor::new();
     let (_dir, catalog) = saved(&[album_with("a", &["a1"])]);
     let detail = detail_on(Some(catalog), NOWHERE, cx);
     detail.show(AlbumId::new("a"));
@@ -178,10 +183,10 @@ fn clearing_leaves_nothing_on_show(cx: &mut TestAppContext) {
 fn songs_found(
     catalog: Option<catalog::Catalog>,
     url: &str,
-    cx: &mut TestAppContext,
+    cx: &TestExecutor,
 ) -> Result<Vec<String>, String> {
-    cx.executor().allow_parking();
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+    cx.allow_parking();
+    let executor = cx.executor();
     let session = session_saving_into(catalog, url);
     let task = album_songs(&executor, &session, AlbumId::new("a"));
     let found = std::sync::Arc::new(std::sync::Mutex::new(None));
@@ -196,24 +201,27 @@ fn songs_found(
     Ok(songs.iter().map(|song| song.id().to_string()).collect())
 }
 
-#[gpui_kit::test]
-fn the_songs_to_act_on_are_the_saved_ones_when_there_are_any(cx: &mut TestAppContext) {
+#[test]
+fn the_songs_to_act_on_are_the_saved_ones_when_there_are_any() {
+    let cx = &TestExecutor::new();
     let (_dir, catalog) = saved(&[album_with("a", &["a1"])]);
     let url = server_answering(json!({ "album": album_json("a", &["a1", "a2"]) }));
 
     assert_eq!(songs_found(Some(catalog), &url, cx).unwrap(), ["a1"]);
 }
 
-#[gpui_kit::test]
-fn the_songs_to_act_on_come_from_the_server_when_none_are_saved(cx: &mut TestAppContext) {
+#[test]
+fn the_songs_to_act_on_come_from_the_server_when_none_are_saved() {
+    let cx = &TestExecutor::new();
     let (_dir, catalog) = saved(&[]);
     let url = server_answering(json!({ "album": album_json("a", &["a1", "a2"]) }));
 
     assert_eq!(songs_found(Some(catalog), &url, cx).unwrap(), ["a1", "a2"]);
 }
 
-#[gpui_kit::test]
-fn songs_that_cannot_be_had_say_so_and_why(cx: &mut TestAppContext) {
+#[test]
+fn songs_that_cannot_be_had_say_so_and_why() {
+    let cx = &TestExecutor::new();
     assert_eq!(
         songs_found(None, NOWHERE, cx),
         Err(

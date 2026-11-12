@@ -256,7 +256,7 @@ fn read_saved(
 
 #[cfg(test)]
 mod tests {
-    use gpui_kit::TestAppContext;
+    use executor::testing::TestExecutor;
 
     use super::*;
 
@@ -270,11 +270,12 @@ mod tests {
         }
     }
 
-    #[gpui_kit::test]
-    fn turning_the_status_off_is_told_and_saved_and_doing_so_twice_is_not(cx: &mut TestAppContext) {
+    #[test]
+    fn turning_the_status_off_is_told_and_saved_and_doing_so_twice_is_not() {
+        let cx = &TestExecutor::new();
         let dir = tempfile::tempdir().unwrap();
         let store = config::Store::at(dir.path());
-        let executor = cx.update(|cx| gpui_host::executor(cx));
+        let executor = cx.executor();
         let settings = DiscordSettings::with(executor, Some(store.clone()), presence(true));
         let mut told = settings.subscribe();
 
@@ -289,9 +290,10 @@ mod tests {
         assert!(!store.discord_presence().unwrap());
     }
 
-    #[gpui_kit::test]
-    fn with_the_status_off_a_late_upload_error_is_not_shown(cx: &mut TestAppContext) {
-        let executor = cx.update(|cx| gpui_host::executor(cx));
+    #[test]
+    fn with_the_status_off_a_late_upload_error_is_not_shown() {
+        let cx = &TestExecutor::new();
+        let executor = cx.executor();
         let settings = DiscordSettings::with(executor, None, presence(false));
 
         settings.set_upload_error(Some("gone"));

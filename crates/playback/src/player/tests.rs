@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use gpui_kit::TestAppContext;
+use executor::testing::TestExecutor;
 use serde_json::json;
 use subsonic::Credentials;
 
@@ -28,8 +28,8 @@ fn session(url: &str) -> session::Session {
 }
 
 /// A player that plays nothing, so nothing reaches a device or the server.
-fn idle_player(cx: &mut TestAppContext) -> Player {
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+fn idle_player(cx: &TestExecutor) -> Player {
+    let executor = cx.executor();
     Player::new(
         executor,
         session("http://127.0.0.1:9"),
@@ -55,8 +55,9 @@ fn current_title(player: &Player) -> Option<String> {
         .map(|song| song.title().to_owned())
 }
 
-#[gpui_kit::test]
-fn skipped_songs_stay_out_of_the_queue(cx: &mut TestAppContext) {
+#[test]
+fn skipped_songs_stay_out_of_the_queue() {
+    let cx = &TestExecutor::new();
     let player = idle_player(cx);
     player.set_skip_instrumentals(true);
     let inst = named_song("a [instrumental]");
@@ -82,8 +83,9 @@ fn skipped_songs_stay_out_of_the_queue(cx: &mut TestAppContext) {
     assert_eq!(queued_titles(&player), ["b", "c"]);
 }
 
-#[gpui_kit::test]
-fn each_command_left_with_nothing_but_skipped_songs_says_so(cx: &mut TestAppContext) {
+#[test]
+fn each_command_left_with_nothing_but_skipped_songs_says_so() {
+    let cx = &TestExecutor::new();
     let player = idle_player(cx);
     player.set_skip_instrumentals(true);
     let inst = named_song("a [instrumental]");
@@ -101,8 +103,9 @@ fn each_command_left_with_nothing_but_skipped_songs_says_so(cx: &mut TestAppCont
     assert_eq!(told, [PlayerNotice::Skipped; 3]);
 }
 
-#[gpui_kit::test]
-fn turning_on_skipping_takes_out_what_waits_but_not_what_plays(cx: &mut TestAppContext) {
+#[test]
+fn turning_on_skipping_takes_out_what_waits_but_not_what_plays() {
+    let cx = &TestExecutor::new();
     let player = idle_player(cx);
     player.fill_queue(
         &[
@@ -123,8 +126,9 @@ fn turning_on_skipping_takes_out_what_waits_but_not_what_plays(cx: &mut TestAppC
     assert_eq!(current_title(&player).as_deref(), Some("c [instrumental]"));
 }
 
-#[gpui_kit::test]
-fn a_skipped_song_goes_when_the_player_moves_on_and_never_comes_back(cx: &mut TestAppContext) {
+#[test]
+fn a_skipped_song_goes_when_the_player_moves_on_and_never_comes_back() {
+    let cx = &TestExecutor::new();
     let player = idle_player(cx);
     player.fill_queue(
         &[
@@ -148,8 +152,9 @@ fn a_skipped_song_goes_when_the_player_moves_on_and_never_comes_back(cx: &mut Te
     assert_eq!(queued_titles(&player), ["a", "c"]);
 }
 
-#[gpui_kit::test]
-fn turning_off_skipping_keeps_the_current_song(cx: &mut TestAppContext) {
+#[test]
+fn turning_off_skipping_keeps_the_current_song() {
+    let cx = &TestExecutor::new();
     let player = idle_player(cx);
     player.set_skip_instrumentals(true);
     player.fill_queue(&[named_song("a [instrumental]"), named_song("b")], 0);
@@ -160,8 +165,9 @@ fn turning_off_skipping_keeps_the_current_song(cx: &mut TestAppContext) {
     assert_eq!(queued_titles(&player), ["a [instrumental]", "b"]);
 }
 
-#[gpui_kit::test]
-fn play_and_pause_only_change_what_they_name(cx: &mut TestAppContext) {
+#[test]
+fn play_and_pause_only_change_what_they_name() {
+    let cx = &TestExecutor::new();
     let player = idle_player(cx);
     player.fill_queue(&[named_song("a")], 0);
     player.pretend_playing(true);
@@ -179,8 +185,9 @@ fn play_and_pause_only_change_what_they_name(cx: &mut TestAppContext) {
     assert!(!is_playing());
 }
 
-#[gpui_kit::test]
-fn stop_keeps_the_song_for_what_is_added_next(cx: &mut TestAppContext) {
+#[test]
+fn stop_keeps_the_song_for_what_is_added_next() {
+    let cx = &TestExecutor::new();
     let player = idle_player(cx);
     player.fill_queue(&[named_song("a"), named_song("b")], 0);
     player.pretend_playing(true);
@@ -192,8 +199,9 @@ fn stop_keeps_the_song_for_what_is_added_next(cx: &mut TestAppContext) {
     assert!(!player.snapshot().is_playing());
 }
 
-#[gpui_kit::test]
-fn seeking_stays_in_the_song_until_its_end(cx: &mut TestAppContext) {
+#[test]
+fn seeking_stays_in_the_song_until_its_end() {
+    let cx = &TestExecutor::new();
     let player = idle_player(cx);
     player.fill_queue(&[named_song("a"), named_song("b")], 0);
     let seconds = Duration::from_secs;
@@ -210,8 +218,9 @@ fn seeking_stays_in_the_song_until_its_end(cx: &mut TestAppContext) {
     assert_eq!(current_title(&player).as_deref(), Some("b"));
 }
 
-#[gpui_kit::test]
-fn opening_is_playing_unless_a_pause_came_meanwhile(cx: &mut TestAppContext) {
+#[test]
+fn opening_is_playing_unless_a_pause_came_meanwhile() {
+    let cx = &TestExecutor::new();
     let player = idle_player(cx);
     player.fill_queue(&[named_song("a")], 0);
     assert!(player.snapshot().is_stopped());
@@ -246,8 +255,9 @@ fn resume_of(player: &Player) -> Option<Resume> {
     read(player, |core| core.shown.resume)
 }
 
-#[gpui_kit::test]
-fn a_song_that_stops_arriving_picks_up_where_it_was(cx: &mut TestAppContext) {
+#[test]
+fn a_song_that_stops_arriving_picks_up_where_it_was() {
+    let cx = &TestExecutor::new();
     let player = idle_player(cx);
     player.fill_queue(&[named_song("a")], 0);
     player.pretend_playing(true);
@@ -269,8 +279,9 @@ fn a_song_that_stops_arriving_picks_up_where_it_was(cx: &mut TestAppContext) {
     assert!(resume_of(&player).is_some(), "Play did not start it over");
 }
 
-#[gpui_kit::test]
-fn a_song_that_cannot_be_decoded_starts_over(cx: &mut TestAppContext) {
+#[test]
+fn a_song_that_cannot_be_decoded_starts_over() {
+    let cx = &TestExecutor::new();
     let player = idle_player(cx);
     player.fill_queue(&[named_song("a")], 0);
     player.pretend_playing(true);
@@ -280,8 +291,9 @@ fn a_song_that_cannot_be_decoded_starts_over(cx: &mut TestAppContext) {
     assert_eq!(resume_of(&player), None);
 }
 
-#[gpui_kit::test]
-fn a_kept_file_that_breaks_is_fetched_again_from_where_it_was(cx: &mut TestAppContext) {
+#[test]
+fn a_kept_file_that_breaks_is_fetched_again_from_where_it_was() {
+    let cx = &TestExecutor::new();
     let player = idle_player(cx);
     player.fill_queue(&[named_song("a")], 0);
     player.pretend_playing(true);
@@ -292,9 +304,10 @@ fn a_kept_file_that_breaks_is_fetched_again_from_where_it_was(cx: &mut TestAppCo
     assert!(resume_of(&player).is_some());
 }
 
-#[gpui_kit::test]
-fn another_output_picks_up_only_what_the_output_stopped(cx: &mut TestAppContext) {
-    let stopped_by = |error: audio::Error, cx: &mut TestAppContext| {
+#[test]
+fn another_output_picks_up_only_what_the_output_stopped() {
+    let cx = &TestExecutor::new();
+    let stopped_by = |error: audio::Error, cx: &TestExecutor| {
         let player = idle_player(cx);
         player.fill_queue(&[named_song("a")], 0);
         player.pretend_playing(true);
@@ -328,10 +341,11 @@ fn another_output_picks_up_only_what_the_output_stopped(cx: &mut TestAppContext)
     assert!(player.snapshot().error().is_some());
 }
 
-#[gpui_kit::test]
-fn a_fault_in_the_engine_stops_the_player_and_says_so(cx: &mut TestAppContext) {
+#[test]
+fn a_fault_in_the_engine_stops_the_player_and_says_so() {
+    let cx = &TestExecutor::new();
     // The engine's thread wakes the test as it ends
-    cx.executor().allow_parking();
+    cx.allow_parking();
     let player = idle_player(cx);
     player.fill_queue(&[named_song("a")], 0);
     player.pretend_playing(true);
@@ -347,9 +361,10 @@ fn a_fault_in_the_engine_stops_the_player_and_says_so(cx: &mut TestAppContext) {
     assert!(error.ends_with(ENGINE_GONE), "{error}");
 }
 
-#[gpui_kit::test]
-fn a_fault_in_the_engine_with_nothing_queued_is_told_too(cx: &mut TestAppContext) {
-    cx.executor().allow_parking();
+#[test]
+fn a_fault_in_the_engine_with_nothing_queued_is_told_too() {
+    let cx = &TestExecutor::new();
+    cx.allow_parking();
     let player = idle_player(cx);
 
     read(&player, |core| core.engine.crash());
@@ -360,8 +375,9 @@ fn a_fault_in_the_engine_with_nothing_queued_is_told_too(cx: &mut TestAppContext
     assert_eq!(player.snapshot().error(), Some(ENGINE_GONE));
 }
 
-#[gpui_kit::test]
-fn shutting_down_is_not_told_as_a_fault(cx: &mut TestAppContext) {
+#[test]
+fn shutting_down_is_not_told_as_a_fault() {
+    let cx = &TestExecutor::new();
     let player = idle_player(cx);
     player.fill_queue(&[named_song("a")], 0);
     player.pretend_playing(true);
@@ -372,8 +388,9 @@ fn shutting_down_is_not_told_as_a_fault(cx: &mut TestAppContext) {
     assert_eq!(player.snapshot().error(), None);
 }
 
-#[gpui_kit::test]
-fn every_change_is_published_at_once(cx: &mut TestAppContext) {
+#[test]
+fn every_change_is_published_at_once() {
+    let cx = &TestExecutor::new();
     let player = idle_player(cx);
     let mut changes = player.subscribe();
     player.fill_queue(&[named_song("a"), named_song("b")], 0);
@@ -395,8 +412,8 @@ fn every_change_is_published_at_once(cx: &mut TestAppContext) {
     assert!(!changes.has_changed().unwrap(), "nothing changed");
 }
 
-fn player_saving_to(store: &config::Store, cx: &mut TestAppContext) -> Player {
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+fn player_saving_to(store: &config::Store, cx: &TestExecutor) -> Player {
+    let executor = cx.executor();
     Player::new(
         executor,
         session("http://127.0.0.1:9"),
@@ -406,8 +423,9 @@ fn player_saving_to(store: &config::Store, cx: &mut TestAppContext) -> Player {
     )
 }
 
-#[gpui_kit::test]
-fn a_volume_step_is_kept_for_the_next_launch(cx: &mut TestAppContext) {
+#[test]
+fn a_volume_step_is_kept_for_the_next_launch() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let player = player_saving_to(&store, cx);
@@ -420,8 +438,9 @@ fn a_volume_step_is_kept_for_the_next_launch(cx: &mut TestAppContext) {
     assert_eq!(player_saving_to(&store, cx).snapshot().volume(), 0.8);
 }
 
-#[gpui_kit::test]
-fn the_saved_volume_is_used_though_another_setting_cannot_be_read(cx: &mut TestAppContext) {
+#[test]
+fn the_saved_volume_is_used_though_another_setting_cannot_be_read() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     std::fs::write(
@@ -435,8 +454,9 @@ fn the_saved_volume_is_used_though_another_setting_cannot_be_read(cx: &mut TestA
     assert_eq!(player.snapshot().volume(), 0.2);
 }
 
-#[gpui_kit::test]
-fn a_dragged_volume_is_kept_only_once_let_go(cx: &mut TestAppContext) {
+#[test]
+fn a_dragged_volume_is_kept_only_once_let_go() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let player = player_saving_to(&store, cx);
@@ -449,8 +469,9 @@ fn a_dragged_volume_is_kept_only_once_let_go(cx: &mut TestAppContext) {
     assert_eq!(store.volume().unwrap(), Some(0.3));
 }
 
-#[gpui_kit::test]
-fn muting_keeps_the_level_and_moving_it_unmutes(cx: &mut TestAppContext) {
+#[test]
+fn muting_keeps_the_level_and_moving_it_unmutes() {
+    let cx = &TestExecutor::new();
     let player = idle_player(cx);
     player.set_volume(0.5);
     player.toggle_mute();
@@ -464,8 +485,9 @@ fn muting_keeps_the_level_and_moving_it_unmutes(cx: &mut TestAppContext) {
     assert!(player.snapshot().is_muted());
 }
 
-#[gpui_kit::test]
-fn unmuting_at_no_volume_brings_back_the_level_kept_before(cx: &mut TestAppContext) {
+#[test]
+fn unmuting_at_no_volume_brings_back_the_level_kept_before() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let player = player_saving_to(&store, cx);
@@ -490,8 +512,9 @@ fn unmuting_at_no_volume_brings_back_the_level_kept_before(cx: &mut TestAppConte
     assert_eq!(player.snapshot().volume(), 0.7);
 }
 
-#[gpui_kit::test]
-fn unmuting_at_no_volume_with_no_level_known_goes_halfway(cx: &mut TestAppContext) {
+#[test]
+fn unmuting_at_no_volume_with_no_level_known_goes_halfway() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     store.save_volume(0.0).unwrap();
@@ -503,8 +526,9 @@ fn unmuting_at_no_volume_with_no_level_known_goes_halfway(cx: &mut TestAppContex
     assert!(!player.snapshot().is_muted());
 }
 
-#[gpui_kit::test]
-fn only_a_started_song_with_a_duration_is_seekable(cx: &mut TestAppContext) {
+#[test]
+fn only_a_started_song_with_a_duration_is_seekable() {
+    let cx = &TestExecutor::new();
     let player = idle_player(cx);
     let untimed: Song = serde_json::from_value(json!({ "id": "u", "title": "u" })).unwrap();
     player.fill_queue(&[named_song("a")], 0);
@@ -515,8 +539,9 @@ fn only_a_started_song_with_a_duration_is_seekable(cx: &mut TestAppContext) {
     assert!(!player.snapshot().is_seekable());
 }
 
-#[gpui_kit::test]
-fn setting_the_repeat_changes_what_follows(cx: &mut TestAppContext) {
+#[test]
+fn setting_the_repeat_changes_what_follows() {
+    let cx = &TestExecutor::new();
     let player = idle_player(cx);
     player.fill_queue(&[named_song("a"), named_song("b")], 0);
     player.pretend_playing(true);
@@ -678,12 +703,12 @@ impl Drop for TestPlayer {
     }
 }
 
-fn player(server: &Server, cx: &mut TestAppContext) -> TestPlayer {
+fn player(server: &Server, cx: &TestExecutor) -> TestPlayer {
     // The engine and the network wake the test from their own threads
-    cx.executor().allow_parking();
+    cx.allow_parking();
     let output = OutputSettings::new(Some(player_device()), None);
     let address = server.clone().start();
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+    let executor = cx.executor();
     TestPlayer(Player::new(
         executor,
         session(&address),
@@ -695,7 +720,7 @@ fn player(server: &Server, cx: &mut TestAppContext) -> TestPlayer {
 
 fn wait_until(
     player: &Player,
-    cx: &mut TestAppContext,
+    cx: &TestExecutor,
     what: &str,
     mut condition: impl FnMut(&Core) -> bool,
 ) {
@@ -741,9 +766,10 @@ fn player_device() -> String {
         .expect("no such device")
 }
 
-#[gpui_kit::test]
+#[test]
 #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
-fn turning_dop_on_pauses_a_playing_song_and_locks_the_volume(cx: &mut TestAppContext) {
+fn turning_dop_on_pauses_a_playing_song_and_locks_the_volume() {
+    let cx = &TestExecutor::new();
     let server = Server::default();
     let songs = [server.add("a", wav(5_000))];
     let player = player(&server, cx);
@@ -758,9 +784,10 @@ fn turning_dop_on_pauses_a_playing_song_and_locks_the_volume(cx: &mut TestAppCon
     assert!(!player.snapshot().is_volume_locked());
 }
 
-#[gpui_kit::test]
+#[test]
 #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
-fn after_turning_dop_on_songs_wait_for_play(cx: &mut TestAppContext) {
+fn after_turning_dop_on_songs_wait_for_play() {
+    let cx = &TestExecutor::new();
     let server = Server::default();
     let songs = [server.add("a", wav(5_000)), server.add("b", wav(5_000))];
     let player = player(&server, cx);
@@ -784,9 +811,10 @@ fn after_turning_dop_on_songs_wait_for_play(cx: &mut TestAppContext) {
     wait_until(&player, cx, "a to play", |core| is_playing_song(core, "a"));
 }
 
-#[gpui_kit::test]
+#[test]
 #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
-fn turning_dop_on_while_a_song_opens_makes_it_wait(cx: &mut TestAppContext) {
+fn turning_dop_on_while_a_song_opens_makes_it_wait() {
+    let cx = &TestExecutor::new();
     let server = Server::default();
     let songs = [server.add("a", wav(5_000))];
     let player = player(&server, cx);
@@ -797,9 +825,10 @@ fn turning_dop_on_while_a_song_opens_makes_it_wait(cx: &mut TestAppContext) {
     });
 }
 
-#[gpui_kit::test]
+#[test]
 #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
-fn play_goes_straight_on_with_nothing_open_after_turning_dop_on(cx: &mut TestAppContext) {
+fn play_goes_straight_on_with_nothing_open_after_turning_dop_on() {
+    let cx = &TestExecutor::new();
     let server = Server::default();
     let songs = [server.add("a", wav(5_000))];
     let player = player(&server, cx);
@@ -810,9 +839,10 @@ fn play_goes_straight_on_with_nothing_open_after_turning_dop_on(cx: &mut TestApp
     assert_eq!(read(&player, |core| core.dop_start), DopStart::Settled);
 }
 
-#[gpui_kit::test]
+#[test]
 #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
-fn repeating_one_song_plays_it_until_repeat_is_off(cx: &mut TestAppContext) {
+fn repeating_one_song_plays_it_until_repeat_is_off() {
+    let cx = &TestExecutor::new();
     let server = Server::default();
     let songs = [server.add("a", wav(300)), server.add("b", wav(300))];
     let player = player(&server, cx);
@@ -834,9 +864,10 @@ fn repeating_one_song_plays_it_until_repeat_is_off(cx: &mut TestAppContext) {
     });
 }
 
-#[gpui_kit::test]
+#[test]
 #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
-fn a_pause_while_a_song_opens_holds(cx: &mut TestAppContext) {
+fn a_pause_while_a_song_opens_holds() {
+    let cx = &TestExecutor::new();
     let server = Server::default();
     let songs = [server.add("a", wav(5_000))];
     let player = player(&server, cx);
@@ -854,9 +885,10 @@ fn a_pause_while_a_song_opens_holds(cx: &mut TestAppContext) {
     assert_eq!(state(&player), State::Playing);
 }
 
-#[gpui_kit::test]
+#[test]
 #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
-fn a_pause_does_not_outlast_a_song_that_failed_to_open(cx: &mut TestAppContext) {
+fn a_pause_does_not_outlast_a_song_that_failed_to_open() {
+    let cx = &TestExecutor::new();
     let server = Server::default();
     let song = server.add("a", wav(1_000));
     let body = server.songs.lock().unwrap().remove("a").unwrap();
@@ -875,9 +907,10 @@ fn a_pause_does_not_outlast_a_song_that_failed_to_open(cx: &mut TestAppContext) 
     assert_eq!(state(&player), State::Playing);
 }
 
-#[gpui_kit::test]
+#[test]
 #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
-fn a_song_waiting_for_its_data_answers_the_controls(cx: &mut TestAppContext) {
+fn a_song_waiting_for_its_data_answers_the_controls() {
+    let cx = &TestExecutor::new();
     let server = Server::default();
     // Half of it arrives, which sounds before it runs out
     let songs = [server.add("a", wav(6_000))];
@@ -914,9 +947,10 @@ fn is_following_set(core: &Core, id: &str) -> bool {
             .is_some_and(|following| following.load.is_some())
 }
 
-#[gpui_kit::test]
+#[test]
 #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
-fn the_next_song_is_fetched_once_the_current_one_has_arrived(cx: &mut TestAppContext) {
+fn the_next_song_is_fetched_once_the_current_one_has_arrived() {
+    let cx = &TestExecutor::new();
     let server = Server::default();
     let songs = [
         server.add("a", wav(2_000)),
@@ -956,9 +990,10 @@ fn the_next_song_is_fetched_once_the_current_one_has_arrived(cx: &mut TestAppCon
     });
 }
 
-#[gpui_kit::test]
+#[test]
 #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
-fn moving_another_song_next_makes_it_follow(cx: &mut TestAppContext) {
+fn moving_another_song_next_makes_it_follow() {
+    let cx = &TestExecutor::new();
     let server = Server::default();
     let songs = [
         server.add("a", wav(1_500)),
@@ -980,9 +1015,10 @@ fn moving_another_song_next_makes_it_follow(cx: &mut TestAppContext) {
     assert_eq!(server.streamed()[..3], ["a", "b", "c"]);
 }
 
-#[gpui_kit::test]
+#[test]
 #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
-fn a_crossfade_shows_the_next_song_as_it_starts_fading_in(cx: &mut TestAppContext) {
+fn a_crossfade_shows_the_next_song_as_it_starts_fading_in() {
+    let cx = &TestExecutor::new();
     let server = Server::default();
     let songs = [server.add("a", wav(2_000)), server.add("b", wav(5_000))];
     let player = player(&server, cx);
@@ -1003,9 +1039,10 @@ fn a_crossfade_shows_the_next_song_as_it_starts_fading_in(cx: &mut TestAppContex
 /// With nothing left to come next, playback ends after the song, even when
 /// the removed song was already on its way to the device. That its audio
 /// is taken back is for the engine's tests, which can hear it.
-#[gpui_kit::test]
+#[test]
 #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
-fn removing_the_next_song_ends_playback_after_the_current_one(cx: &mut TestAppContext) {
+fn removing_the_next_song_ends_playback_after_the_current_one() {
+    let cx = &TestExecutor::new();
     let server = Server::default();
     let songs = [server.add("a", wav(1_000)), server.add("b", wav(5_000))];
     let player = player(&server, cx);
@@ -1025,9 +1062,10 @@ fn removing_the_next_song_ends_playback_after_the_current_one(cx: &mut TestAppCo
     assert!(player.snapshot().error().is_none());
 }
 
-#[gpui_kit::test]
+#[test]
 #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
-fn repeating_all_songs_goes_back_to_the_first(cx: &mut TestAppContext) {
+fn repeating_all_songs_goes_back_to_the_first() {
+    let cx = &TestExecutor::new();
     let server = Server::default();
     let songs = [server.add("a", wav(1_500)), server.add("b", wav(1_500))];
     let player = player(&server, cx);
@@ -1041,9 +1079,10 @@ fn repeating_all_songs_goes_back_to_the_first(cx: &mut TestAppContext) {
     wait_until(&player, cx, "a to play", |core| is_playing_song(core, "a"));
 }
 
-#[gpui_kit::test]
+#[test]
 #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
-fn shuffling_while_a_song_plays_changes_what_follows_it(cx: &mut TestAppContext) {
+fn shuffling_while_a_song_plays_changes_what_follows_it() {
+    let cx = &TestExecutor::new();
     let server = Server::default();
     let songs: Vec<Song> = (0..30)
         .map(|ix| server.add(&format!("s{ix}"), wav(1_000)))
@@ -1079,9 +1118,10 @@ fn shuffling_while_a_song_plays_changes_what_follows_it(cx: &mut TestAppContext)
     });
 }
 
-#[gpui_kit::test]
+#[test]
 #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
-fn a_next_song_that_cannot_be_fetched_fails_at_its_turn(cx: &mut TestAppContext) {
+fn a_next_song_that_cannot_be_fetched_fails_at_its_turn() {
+    let cx = &TestExecutor::new();
     let server = Server::default();
     let songs = [
         server.add("a", wav(1_000)),
@@ -1107,9 +1147,10 @@ fn a_next_song_that_cannot_be_fetched_fails_at_its_turn(cx: &mut TestAppContext)
     assert_eq!(server.streamed(), ["a", "gone", "gone"]);
 }
 
-#[gpui_kit::test]
+#[test]
 #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
-fn a_next_song_that_cannot_open_is_tried_once_more(cx: &mut TestAppContext) {
+fn a_next_song_that_cannot_open_is_tried_once_more() {
+    let cx = &TestExecutor::new();
     let server = Server::default();
     let songs = [
         server.add("a", wav(1_000)),
@@ -1128,9 +1169,10 @@ fn a_next_song_that_cannot_open_is_tried_once_more(cx: &mut TestAppContext) {
     assert_eq!(server.streamed(), ["a", "broken", "broken"]);
 }
 
-#[gpui_kit::test]
+#[test]
 #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
-fn a_next_song_that_breaks_as_it_joins_is_tried_once_more(cx: &mut TestAppContext) {
+fn a_next_song_that_breaks_as_it_joins_is_tried_once_more() {
+    let cx = &TestExecutor::new();
     let server = Server::default();
     let songs = [server.add("a", wav(1_000)), server.add("b", wav(1_000))];
     *server.cut.lock().unwrap() = Some(("b".to_owned(), 44 + 16));
@@ -1149,9 +1191,10 @@ fn a_next_song_that_breaks_as_it_joins_is_tried_once_more(cx: &mut TestAppContex
 
 /// A pause that crosses the events of the next song starting stays: the
 /// engine has paused the song, so the player must not show it as playing.
-#[gpui_kit::test]
+#[test]
 #[ignore = "needs a virtual output device named in HIPHILE_TEST_DEVICE"]
-fn a_pause_as_the_next_song_starts_holds(cx: &mut TestAppContext) {
+fn a_pause_as_the_next_song_starts_holds() {
+    let cx = &TestExecutor::new();
     let server = Server::default();
     let songs = [server.add("a", wav(1_000)), server.add("b", wav(5_000))];
     let player = player(&server, cx);

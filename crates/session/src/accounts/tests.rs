@@ -1,4 +1,4 @@
-use gpui_kit::TestAppContext;
+use executor::testing::TestExecutor;
 
 use super::*;
 
@@ -8,13 +8,9 @@ fn alice() -> config::Profile {
     config::Profile::new(SERVER, "alice")
 }
 
-/// On GPUI's executor, with the settings file in `dir` and a keychain of its own.
-fn accounts(
-    dir: &tempfile::TempDir,
-    keychain: &config::Keychain,
-    cx: &mut TestAppContext,
-) -> Accounts {
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+/// With the settings file in `dir` and a keychain of its own.
+fn accounts(dir: &tempfile::TempDir, keychain: &config::Keychain, cx: &TestExecutor) -> Accounts {
+    let executor = cx.executor();
     let net = net::Client::new("hiphile-test").unwrap();
     let store = Ok(config::Store::at(dir.path()));
     Accounts::new(executor, net, store, Some(keychain.clone()))
@@ -30,8 +26,9 @@ fn invalid(
     Some((invalid.field(), invalid.message().to_owned()))
 }
 
-#[gpui_kit::test]
-fn what_is_missing_is_asked_for_in_order(cx: &mut TestAppContext) {
+#[test]
+fn what_is_missing_is_asked_for_in_order() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let accounts = accounts(&dir, &config::Keychain::in_memory(), cx);
 
@@ -47,8 +44,9 @@ fn what_is_missing_is_asked_for_in_order(cx: &mut TestAppContext) {
     );
 }
 
-#[gpui_kit::test]
-fn an_unusable_address_is_told_as_a_sentence(cx: &mut TestAppContext) {
+#[test]
+fn an_unusable_address_is_told_as_a_sentence() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let accounts = accounts(&dir, &config::Keychain::in_memory(), cx);
 
@@ -57,8 +55,9 @@ fn an_unusable_address_is_told_as_a_sentence(cx: &mut TestAppContext) {
     assert!(message.ends_with('.'));
 }
 
-#[gpui_kit::test]
-fn connecting_to_an_unusable_address_is_told_as_a_sentence(cx: &mut TestAppContext) {
+#[test]
+fn connecting_to_an_unusable_address_is_told_as_a_sentence() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let accounts = accounts(&dir, &config::Keychain::in_memory(), cx);
 
@@ -71,8 +70,9 @@ fn connecting_to_an_unusable_address_is_told_as_a_sentence(cx: &mut TestAppConte
     assert!(invalid.message().ends_with('.'));
 }
 
-#[gpui_kit::test]
-fn the_last_profile_is_read_when_made(cx: &mut TestAppContext) {
+#[test]
+fn the_last_profile_is_read_when_made() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     config::Store::at(dir.path())
         .save_profile(&alice())
@@ -83,8 +83,9 @@ fn the_last_profile_is_read_when_made(cx: &mut TestAppContext) {
     assert_eq!(accounts.last_profile(), Some(alice()));
 }
 
-#[gpui_kit::test]
-fn a_password_in_the_file_comes_before_the_keychain(cx: &mut TestAppContext) {
+#[test]
+fn a_password_in_the_file_comes_before_the_keychain() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let keychain = config::Keychain::in_memory();
     keychain.set_password(&alice(), "from-keychain").unwrap();
@@ -107,8 +108,9 @@ fn a_password_in_the_file_comes_before_the_keychain(cx: &mut TestAppContext) {
     );
 }
 
-#[gpui_kit::test]
-fn a_password_kept_under_the_address_as_typed_is_still_found(cx: &mut TestAppContext) {
+#[test]
+fn a_password_kept_under_the_address_as_typed_is_still_found() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let typed = format!("{SERVER}/");
     let file = format!("server = \"{typed}\"\nusername = \"alice\"\n");
@@ -132,10 +134,9 @@ fn a_password_kept_under_the_address_as_typed_is_still_found(cx: &mut TestAppCon
     assert_eq!(keychain.adopt_password(&alice(), &typed).unwrap(), None);
 }
 
-#[gpui_kit::test]
-fn forgetting_a_profile_removes_the_password_kept_under_the_address_as_typed(
-    cx: &mut TestAppContext,
-) {
+#[test]
+fn forgetting_a_profile_removes_the_password_kept_under_the_address_as_typed() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let typed = format!("{SERVER}/");
     let file = format!("server = \"{typed}\"\nusername = \"alice\"\n");
@@ -153,8 +154,9 @@ fn forgetting_a_profile_removes_the_password_kept_under_the_address_as_typed(
     assert_eq!(keychain.password(&alice()).unwrap(), None);
 }
 
-#[gpui_kit::test]
-fn the_profiles_are_read_when_made(cx: &mut TestAppContext) {
+#[test]
+fn the_profiles_are_read_when_made() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let bob = config::Profile::new(SERVER, "bob");
     let store = config::Store::at(dir.path());
@@ -166,8 +168,9 @@ fn the_profiles_are_read_when_made(cx: &mut TestAppContext) {
     assert_eq!(accounts.profiles(), [alice(), bob]);
 }
 
-#[gpui_kit::test]
-fn a_forgotten_profile_is_gone_with_its_password(cx: &mut TestAppContext) {
+#[test]
+fn a_forgotten_profile_is_gone_with_its_password() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let bob = config::Profile::new(SERVER, "bob");
     let store = config::Store::at(dir.path());

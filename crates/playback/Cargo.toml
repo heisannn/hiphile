@@ -25,8 +25,7 @@ url.workspace = true
 
 [dev-dependencies]
 audio = { workspace = true, features = ["test-support"] }
-gpui-host.workspace = true
-gpui-kit = { workspace = true, features = ["test-support"] }
+executor = { workspace = true, features = ["test-support"] }
 serde_json.workspace = true
 tempfile.workspace = true
 

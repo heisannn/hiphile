@@ -1,13 +1,13 @@
-use gpui_kit::TestAppContext;
+use executor::testing::TestExecutor;
 
 use super::*;
 use crate::test_support::session;
 use crate::testing::{NOWHERE, wait_for};
 
-fn executor(cx: &mut TestAppContext) -> Executor {
+fn executor(cx: &TestExecutor) -> Executor {
     // The failures come from the network's own thread
-    cx.executor().allow_parking();
-    cx.update(|cx| gpui_host::executor(cx))
+    cx.allow_parking();
+    cx.executor()
 }
 
 fn alert(message: &str) -> Alert {
@@ -51,8 +51,9 @@ fn only_the_last_alerts_are_kept_for_a_host_that_follows_late() {
     assert_eq!(alerts.earlier[0].message, "1");
 }
 
-#[gpui_kit::test]
-fn a_sync_that_failed_before_it_was_followed_is_still_told(cx: &mut TestAppContext) {
+#[test]
+fn a_sync_that_failed_before_it_was_followed_is_still_told() {
+    let cx = &TestExecutor::new();
     let executor = executor(cx);
     let sync = LibrarySync::new(executor.clone(), session(NOWHERE));
     wait_for(cx, || !sync.status().is_running());
@@ -71,8 +72,9 @@ fn a_sync_that_failed_before_it_was_followed_is_still_told(cx: &mut TestAppConte
     assert_eq!(told.told_on, Some(Destination::Albums));
 }
 
-#[gpui_kit::test]
-fn the_first_sync_tells_of_its_failure_when_it_comes(cx: &mut TestAppContext) {
+#[test]
+fn the_first_sync_tells_of_its_failure_when_it_comes() {
+    let cx = &TestExecutor::new();
     let executor = executor(cx);
     let sync = LibrarySync::new(executor.clone(), session(NOWHERE));
     let collector = Collector::new();
@@ -84,8 +86,9 @@ fn the_first_sync_tells_of_its_failure_when_it_comes(cx: &mut TestAppContext) {
     assert_eq!(collector.follow().earlier.len(), 1);
 }
 
-#[gpui_kit::test]
-fn favorites_that_failed_before_they_were_followed_are_still_told(cx: &mut TestAppContext) {
+#[test]
+fn favorites_that_failed_before_they_were_followed_are_still_told() {
+    let cx = &TestExecutor::new();
     let executor = executor(cx);
     let favorites = FavoritesState::new(executor.clone(), session(NOWHERE).client().clone());
     wait_for(cx, || {

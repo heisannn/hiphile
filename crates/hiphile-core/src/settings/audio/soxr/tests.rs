@@ -1,7 +1,7 @@
 use config::{
     ResamplingQuality, SoxrInterpolation, SoxrParameters, SoxrPerformance, SoxrPhase, SoxrQuality,
 };
-use gpui_kit::TestAppContext;
+use executor::testing::TestExecutor;
 
 use crate::settings::audio::tests::{settings_saving_to, told};
 use crate::settings::{AudioSnapshot, Choice, SoxrSetting};
@@ -19,8 +19,9 @@ fn labels(options: &[Choice]) -> Vec<&str> {
     options.iter().map(Choice::label).collect()
 }
 
-#[gpui_kit::test]
-fn soxr_is_told_saved_and_reaches_the_output(cx: &mut TestAppContext) {
+#[test]
+fn soxr_is_told_saved_and_reaches_the_output() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -43,8 +44,9 @@ fn soxr_is_told_saved_and_reaches_the_output(cx: &mut TestAppContext) {
     }
 }
 
-#[gpui_kit::test]
-fn each_of_the_three_comes_back_at_the_quality_it_had(cx: &mut TestAppContext) {
+#[test]
+fn each_of_the_three_comes_back_at_the_quality_it_had() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -67,8 +69,9 @@ fn each_of_the_three_comes_back_at_the_quality_it_had(cx: &mut TestAppContext) {
     }
 }
 
-#[gpui_kit::test]
-fn a_changed_value_is_told_saved_and_reaches_the_output(cx: &mut TestAppContext) {
+#[test]
+fn a_changed_value_is_told_saved_and_reaches_the_output() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -94,8 +97,9 @@ fn a_changed_value_is_told_saved_and_reaches_the_output(cx: &mut TestAppContext)
     }
 }
 
-#[gpui_kit::test]
-fn the_values_come_back_after_another_resampler(cx: &mut TestAppContext) {
+#[test]
+fn the_values_come_back_after_another_resampler() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -118,8 +122,9 @@ fn the_values_come_back_after_another_resampler(cx: &mut TestAppContext) {
     assert_eq!(parameters.quality.filter().phase, SoxrPhase::Minimum);
 }
 
-#[gpui_kit::test]
-fn a_change_that_comes_after_another_resampler_leaves_that_one(cx: &mut TestAppContext) {
+#[test]
+fn a_change_that_comes_after_another_resampler_leaves_that_one() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -142,8 +147,9 @@ fn a_change_that_comes_after_another_resampler_leaves_that_one(cx: &mut TestAppC
     );
 }
 
-#[gpui_kit::test]
-fn a_preset_is_told_saved_and_reaches_the_output(cx: &mut TestAppContext) {
+#[test]
+fn a_preset_is_told_saved_and_reaches_the_output() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -163,8 +169,9 @@ fn a_preset_is_told_saved_and_reaches_the_output(cx: &mut TestAppContext) {
     }
 }
 
-#[gpui_kit::test]
-fn another_value_makes_the_preset_custom_and_the_same_one_does_not(cx: &mut TestAppContext) {
+#[test]
+fn another_value_makes_the_preset_custom_and_the_same_one_does_not() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -190,8 +197,9 @@ fn another_value_makes_the_preset_custom_and_the_same_one_does_not(cx: &mut Test
 }
 
 /// Low's rolloff is not High's in libsoxr, and changes nothing here.
-#[gpui_kit::test]
-fn choosing_custom_keeps_the_sound_and_a_preset_replaces_its_values(cx: &mut TestAppContext) {
+#[test]
+fn choosing_custom_keeps_the_sound_and_a_preset_replaces_its_values() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -219,8 +227,9 @@ fn choosing_custom_keeps_the_sound_and_a_preset_replaces_its_values(cx: &mut Tes
     assert!(!text.contains("soxr_precision"), "{text}");
 }
 
-#[gpui_kit::test]
-fn a_preset_leaves_what_does_not_change_the_sound_alone(cx: &mut TestAppContext) {
+#[test]
+fn a_preset_leaves_what_does_not_change_the_sound_alone() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -252,8 +261,9 @@ fn a_preset_leaves_what_does_not_change_the_sound_alone(cx: &mut TestAppContext)
     }
 }
 
-#[gpui_kit::test]
-fn values_off_the_lists_stay_options_and_presets_read_apart(cx: &mut TestAppContext) {
+#[test]
+fn values_off_the_lists_stay_options_and_presets_read_apart() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -305,8 +315,9 @@ fn values_off_the_lists_stay_options_and_presets_read_apart(cx: &mut TestAppCont
     );
 }
 
-#[gpui_kit::test]
-fn a_phase_and_an_interpolation_are_chosen_by_their_places(cx: &mut TestAppContext) {
+#[test]
+fn a_phase_and_an_interpolation_are_chosen_by_their_places() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -336,8 +347,9 @@ fn a_phase_and_an_interpolation_are_chosen_by_their_places(cx: &mut TestAppConte
     }
 }
 
-#[gpui_kit::test]
-fn what_has_a_default_of_its_own_goes_back_to_it(cx: &mut TestAppContext) {
+#[test]
+fn what_has_a_default_of_its_own_goes_back_to_it() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);
@@ -386,8 +398,9 @@ fn what_has_a_default_of_its_own_goes_back_to_it(cx: &mut TestAppContext) {
     assert_eq!(store.soxr_parameters().unwrap(), SoxrParameters::default());
 }
 
-#[gpui_kit::test]
-fn double_precision_makes_the_quality_custom(cx: &mut TestAppContext) {
+#[test]
+fn double_precision_makes_the_quality_custom() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let settings = settings_saving_to(&store, cx);

@@ -1,11 +1,10 @@
-use gpui_kit::TestAppContext;
+use executor::testing::TestExecutor;
 
 use super::*;
 
-/// On GPUI's executor, which the test's `run_until_parked` drives. Without a cache directory
-/// nothing on the disk or the network is touched.
-fn without_a_cache_dir(store: Option<config::Store>, cx: &mut TestAppContext) -> Readings {
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+/// Without a cache directory nothing on the disk or the network is touched.
+fn without_a_cache_dir(store: Option<config::Store>, cx: &TestExecutor) -> Readings {
+    let executor = cx.executor();
     let net = net::Client::new("hiphile-test").unwrap();
     Readings::with(executor, net, store, None, false, None)
 }
@@ -20,8 +19,9 @@ fn failures(notices: &mut broadcast::Receiver<ReadingsFailed>) -> Vec<String> {
         .collect()
 }
 
-#[gpui_kit::test]
-fn every_failure_says_what_went_wrong(cx: &mut TestAppContext) {
+#[test]
+fn every_failure_says_what_went_wrong() {
+    let cx = &TestExecutor::new();
     let readings = without_a_cache_dir(None, cx);
     let mut notices = readings.notices();
 
@@ -35,8 +35,9 @@ fn every_failure_says_what_went_wrong(cx: &mut TestAppContext) {
     assert!(failures[0].ends_with('.'));
 }
 
-#[gpui_kit::test]
-fn only_a_failure_is_told_as_one(cx: &mut TestAppContext) {
+#[test]
+fn only_a_failure_is_told_as_one() {
+    let cx = &TestExecutor::new();
     let readings = without_a_cache_dir(None, cx);
     let mut notices = readings.notices();
 
@@ -52,8 +53,9 @@ fn only_a_failure_is_told_as_one(cx: &mut TestAppContext) {
     assert!(failures(&mut notices).is_empty());
 }
 
-#[gpui_kit::test]
-fn each_change_is_published(cx: &mut TestAppContext) {
+#[test]
+fn each_change_is_published() {
+    let cx = &TestExecutor::new();
     let readings = without_a_cache_dir(None, cx);
     let mut changes = readings.subscribe();
 
@@ -68,8 +70,9 @@ fn each_change_is_published(cx: &mut TestAppContext) {
     assert_eq!(*changes.borrow_and_update().state(), ReadingsState::Off);
 }
 
-#[gpui_kit::test]
-fn the_choice_is_saved(cx: &mut TestAppContext) {
+#[test]
+fn the_choice_is_saved() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let store = config::Store::at(dir.path());
     let readings = without_a_cache_dir(Some(store.clone()), cx);

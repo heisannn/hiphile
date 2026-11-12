@@ -1,4 +1,4 @@
-use gpui_kit::TestAppContext;
+use executor::testing::TestExecutor;
 use serde_json::json;
 
 use super::*;
@@ -92,15 +92,15 @@ fn a_notice_the_user_closed_stays_closed_until_the_library_goes_quiet() {
     assert_eq!(notice.follow(true), Some(NoticeChange::Show));
 }
 
-/// An activity on GPUI's executor, following a library whose server is at `url`.
+/// An activity following a library whose server is at `url`.
 fn activity(
     catalog: Option<catalog::Catalog>,
     url: &str,
-    cx: &mut TestAppContext,
+    cx: &TestExecutor,
 ) -> (LibraryActivity, LibrarySync) {
     // The sync's requests wake the test from the network's own thread
-    cx.executor().allow_parking();
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+    cx.allow_parking();
+    let executor = cx.executor();
     let session = session_saving_into(catalog, url);
     let sync = LibrarySync::new(executor.clone(), session.clone());
     (LibraryActivity::new(executor, session, &sync), sync)
@@ -115,15 +115,16 @@ fn start_reading(activity: &LibraryActivity) {
     });
 }
 
-#[gpui_kit::test]
-fn a_reading_shows_once_it_proves_slow(cx: &mut TestAppContext) {
+#[test]
+fn a_reading_shows_once_it_proves_slow() {
+    let cx = &TestExecutor::new();
     let (activity, _sync) = activity(None, NOWHERE, cx);
 
     start_reading(&activity);
     cx.run_until_parked();
     assert_eq!(activity.status(), ActivitySnapshot::default());
 
-    cx.executor().advance_clock(SLOW_READING);
+    cx.advance_clock(SLOW_READING);
     cx.run_until_parked();
     let status = activity.status();
     assert_eq!(
@@ -142,8 +143,9 @@ fn a_reading_shows_once_it_proves_slow(cx: &mut TestAppContext) {
     assert!(status.shown().is_some());
 }
 
-#[gpui_kit::test]
-fn a_reading_that_ends_quickly_never_shows(cx: &mut TestAppContext) {
+#[test]
+fn a_reading_that_ends_quickly_never_shows() {
+    let cx = &TestExecutor::new();
     let (activity, _sync) = activity(None, NOWHERE, cx);
 
     start_reading(&activity);
@@ -151,17 +153,18 @@ fn a_reading_that_ends_quickly_never_shows(cx: &mut TestAppContext) {
         .0
         .state
         .update(|state| activity.finish_reading(state));
-    cx.executor().advance_clock(SLOW_READING);
+    cx.advance_clock(SLOW_READING);
     cx.run_until_parked();
 
     assert_eq!(activity.status(), ActivitySnapshot::default());
 }
 
-#[gpui_kit::test]
-fn a_notice_the_user_closed_stays_down_while_busy(cx: &mut TestAppContext) {
+#[test]
+fn a_notice_the_user_closed_stays_down_while_busy() {
+    let cx = &TestExecutor::new();
     let (activity, _sync) = activity(None, NOWHERE, cx);
     start_reading(&activity);
-    cx.executor().advance_clock(SLOW_READING);
+    cx.advance_clock(SLOW_READING);
     cx.run_until_parked();
 
     activity.notice_closed();
@@ -170,8 +173,9 @@ fn a_notice_the_user_closed_stays_down_while_busy(cx: &mut TestAppContext) {
     assert!(!activity.status().is_notice_shown());
 }
 
-#[gpui_kit::test]
-fn a_sync_shows_until_it_ends(cx: &mut TestAppContext) {
+#[test]
+fn a_sync_shows_until_it_ends() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let catalog = catalog::Catalog::open(dir.path()).unwrap();
     let url = server_answering(json!({
@@ -193,8 +197,9 @@ fn a_sync_shows_until_it_ends(cx: &mut TestAppContext) {
     assert!(!status.is_notice_shown());
 }
 
-#[gpui_kit::test]
-fn a_sync_under_way_before_the_activity_follows_it_shows(cx: &mut TestAppContext) {
+#[test]
+fn a_sync_under_way_before_the_activity_follows_it_shows() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let catalog = catalog::Catalog::open(dir.path()).unwrap();
     let url = server_answering(json!({
@@ -203,13 +208,13 @@ fn a_sync_under_way_before_the_activity_follows_it_shows(cx: &mut TestAppContext
         "searchResult3": { "song": [] },
         "scanStatus": { "scanning": false },
     }));
-    cx.executor().allow_parking();
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+    cx.allow_parking();
+    let executor = cx.executor();
     let sync = LibrarySync::new(executor.clone(), session_saving_into(Some(catalog), &url));
     // One step at a time, to stop between two stages
     while sync.status().progress().is_none() {
         assert!(sync.status().is_running(), "the sync ended unseen");
-        if !cx.executor().tick() {
+        if !cx.tick() {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }

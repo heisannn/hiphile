@@ -1,4 +1,4 @@
-use gpui_kit::TestAppContext;
+use executor::testing::TestExecutor;
 use serde_json::json;
 use subsonic::Album;
 
@@ -6,14 +6,10 @@ use super::*;
 use crate::test_support::session_saving_into;
 use crate::testing::{NOWHERE, Saved, keep, server_answering, wait_for};
 
-fn artist_list(
-    catalog: Option<catalog::Catalog>,
-    url: &str,
-    cx: &mut TestAppContext,
-) -> ArtistList {
+fn artist_list(catalog: Option<catalog::Catalog>, url: &str, cx: &TestExecutor) -> ArtistList {
     // The requests wake the test from the network's own thread
-    cx.executor().allow_parking();
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+    cx.allow_parking();
+    let executor = cx.executor();
     ArtistList::new(executor, session_saving_into(catalog, url))
 }
 
@@ -27,12 +23,13 @@ fn names(list: &ArtistList) -> Vec<String> {
     artists.iter().map(|it| it.name().to_owned()).collect()
 }
 
-fn wait_until_read(list: &ArtistList, cx: &mut TestAppContext) {
+fn wait_until_read(list: &ArtistList, cx: &TestExecutor) {
     wait_for(cx, || !list.status().is_refreshing());
 }
 
-#[gpui_kit::test]
-fn nothing_is_read_until_the_list_opens(cx: &mut TestAppContext) {
+#[test]
+fn nothing_is_read_until_the_list_opens() {
+    let cx = &TestExecutor::new();
     let list = artist_list(None, NOWHERE, cx);
 
     list.reload();
@@ -43,8 +40,9 @@ fn nothing_is_read_until_the_list_opens(cx: &mut TestAppContext) {
     assert_eq!(*status.artists(), Shelf::Loading);
 }
 
-#[gpui_kit::test]
-fn with_nothing_saved_the_servers_artists_show(cx: &mut TestAppContext) {
+#[test]
+fn with_nothing_saved_the_servers_artists_show() {
+    let cx = &TestExecutor::new();
     let url = server_answering(json!({ "artists": { "index": [
         { "name": "B", "artist": [{ "id": "b", "name": "Bill Evans", "albumCount": 1 }] },
         { "name": "M", "artist": [{ "id": "m", "name": "Miles Davis", "albumCount": 2 }] },
@@ -58,8 +56,9 @@ fn with_nothing_saved_the_servers_artists_show(cx: &mut TestAppContext) {
     assert_eq!(names(&list), ["Bill Evans", "Miles Davis"]);
 }
 
-#[gpui_kit::test]
-fn the_saved_artists_show_without_asking_the_server(cx: &mut TestAppContext) {
+#[test]
+fn the_saved_artists_show_without_asking_the_server() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let catalog = catalog::Catalog::open(dir.path()).unwrap();
     let saved = Saved {
@@ -76,8 +75,9 @@ fn the_saved_artists_show_without_asking_the_server(cx: &mut TestAppContext) {
     assert_eq!(list.status().failure(), None);
 }
 
-#[gpui_kit::test]
-fn a_reload_reads_the_saved_artists_again(cx: &mut TestAppContext) {
+#[test]
+fn a_reload_reads_the_saved_artists_again() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let catalog = catalog::Catalog::open(dir.path()).unwrap();
     let saved = |artists| Saved {
@@ -96,10 +96,9 @@ fn a_reload_reads_the_saved_artists_again(cx: &mut TestAppContext) {
     assert_eq!(names(&list), ["John Coltrane"]);
 }
 
-#[gpui_kit::test]
-fn the_saved_albums_name_the_artists_and_stay_when_the_server_cannot_be_reached(
-    cx: &mut TestAppContext,
-) {
+#[test]
+fn the_saved_albums_name_the_artists_and_stay_when_the_server_cannot_be_reached() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let catalog = catalog::Catalog::open(dir.path()).unwrap();
     let album: Album = serde_json::from_value(json!({
@@ -126,8 +125,9 @@ fn the_saved_albums_name_the_artists_and_stay_when_the_server_cannot_be_reached(
     );
 }
 
-#[gpui_kit::test]
-fn failing_to_read_a_first_list_says_why(cx: &mut TestAppContext) {
+#[test]
+fn failing_to_read_a_first_list_says_why() {
+    let cx = &TestExecutor::new();
     let list = artist_list(None, NOWHERE, cx);
 
     list.open();
@@ -147,7 +147,7 @@ fn shown(list: &ArtistList) -> Vec<String> {
     ids.map(ToString::to_string).collect()
 }
 
-fn wait_until_shown(list: &ArtistList, cx: &mut TestAppContext) {
+fn wait_until_shown(list: &ArtistList, cx: &TestExecutor) {
     wait_for(cx, || {
         let status = list.status();
         !status.is_refreshing() && status.shown().is_some()
@@ -179,7 +179,7 @@ fn saved_artists(added: [&str; 2]) -> Saved {
 /// The artists of [`saved_artists`] on show.
 fn shown_list(
     added: [&str; 2],
-    cx: &mut TestAppContext,
+    cx: &TestExecutor,
 ) -> (ArtistList, tempfile::TempDir, catalog::Catalog) {
     let dir = tempfile::tempdir().unwrap();
     let catalog = catalog::Catalog::open(dir.path()).unwrap();
@@ -193,8 +193,9 @@ fn shown_list(
 const OLDER: &str = "2024-01-01T00:00:00Z";
 const NEWER: &str = "2025-01-01T00:00:00Z";
 
-#[gpui_kit::test]
-fn a_query_finds_artists_by_name(cx: &mut TestAppContext) {
+#[test]
+fn a_query_finds_artists_by_name() {
+    let cx = &TestExecutor::new();
     let (list, _dir, _catalog) = shown_list([OLDER, NEWER], cx);
     assert_eq!(shown(&list), ["b", "m"]);
 
@@ -204,8 +205,9 @@ fn a_query_finds_artists_by_name(cx: &mut TestAppContext) {
     assert_eq!(shown(&list), ["b"]);
 }
 
-#[gpui_kit::test]
-fn the_order_chosen_goes_by_each_artists_newest_album(cx: &mut TestAppContext) {
+#[test]
+fn the_order_chosen_goes_by_each_artists_newest_album() {
+    let cx = &TestExecutor::new();
     let (list, _dir, _catalog) = shown_list([OLDER, NEWER], cx);
 
     list.choose_order(ArtistOrder::Added);
@@ -217,8 +219,9 @@ fn the_order_chosen_goes_by_each_artists_newest_album(cx: &mut TestAppContext) {
     assert_eq!(shown(&list), ["b", "m"]);
 }
 
-#[gpui_kit::test]
-fn choosing_the_order_already_chosen_keeps_its_direction(cx: &mut TestAppContext) {
+#[test]
+fn choosing_the_order_already_chosen_keeps_its_direction() {
+    let cx = &TestExecutor::new();
     let list = artist_list(None, NOWHERE, cx);
 
     list.choose_order(ArtistOrder::Released);
@@ -229,8 +232,9 @@ fn choosing_the_order_already_chosen_keeps_its_direction(cx: &mut TestAppContext
     assert!(!list.status().sort().is_descending);
 }
 
-#[gpui_kit::test]
-fn new_dates_for_the_same_artists_put_them_in_order_again(cx: &mut TestAppContext) {
+#[test]
+fn new_dates_for_the_same_artists_put_them_in_order_again() {
+    let cx = &TestExecutor::new();
     let (list, _dir, catalog) = shown_list([OLDER, NEWER], cx);
     list.choose_order(ArtistOrder::Added);
     cx.run_until_parked();

@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use gpui_kit::TestAppContext;
+use executor::testing::TestExecutor;
 use serde_json::{Value, json};
 
 use super::*;
@@ -53,14 +53,10 @@ fn server_of_no_albums() -> String {
     })
 }
 
-fn artist_detail(
-    catalog: Option<catalog::Catalog>,
-    url: &str,
-    cx: &mut TestAppContext,
-) -> ArtistDetail {
+fn artist_detail(catalog: Option<catalog::Catalog>, url: &str, cx: &TestExecutor) -> ArtistDetail {
     // The requests wake the test from the network's own thread
-    cx.executor().allow_parking();
-    let executor = cx.update(|cx| gpui_host::executor(cx));
+    cx.allow_parking();
+    let executor = cx.executor();
     ArtistDetail::new(executor, session_saving_into(catalog, url))
 }
 
@@ -69,9 +65,9 @@ fn page(detail: &ArtistDetail) -> ArtistPage {
 }
 
 /// Runs what is under way until `done`, past the delay before asking the server.
-fn wait_until(detail: &ArtistDetail, cx: &mut TestAppContext, done: impl Fn(&ArtistPage) -> bool) {
+fn wait_until(detail: &ArtistDetail, cx: &TestExecutor, done: impl Fn(&ArtistPage) -> bool) {
     for _ in 0..500 {
-        cx.executor().advance_clock(SERVER_DELAY);
+        cx.advance_clock(SERVER_DELAY);
         cx.run_until_parked();
         if detail.page().as_ref().is_some_and(&done) {
             return;
@@ -82,7 +78,7 @@ fn wait_until(detail: &ArtistDetail, cx: &mut TestAppContext, done: impl Fn(&Art
 }
 
 /// Runs what is under way until `task` ends.
-fn result_of<R>(mut task: Task<R>, cx: &mut TestAppContext) -> R {
+fn result_of<R>(mut task: Task<R>, cx: &TestExecutor) -> R {
     for _ in 0..500 {
         cx.run_until_parked();
         if let Some(result) = futures::FutureExt::now_or_never(&mut task) {
@@ -138,8 +134,9 @@ fn finish_albums(detail: &ArtistDetail, result: Result<Vec<Album>, String>, song
         .update(|state| detail.finish_albums(state, found, songs));
 }
 
-#[gpui_kit::test]
-fn showing_an_artist_fills_every_section(cx: &mut TestAppContext) {
+#[test]
+fn showing_an_artist_fills_every_section() {
+    let cx = &TestExecutor::new();
     let url = server();
     let detail = artist_detail(None, &url, cx);
 
@@ -156,8 +153,9 @@ fn showing_an_artist_fills_every_section(cx: &mut TestAppContext) {
     assert_eq!(page.similar.items().len(), 1);
 }
 
-#[gpui_kit::test]
-fn a_failed_section_leaves_the_rest(cx: &mut TestAppContext) {
+#[test]
+fn a_failed_section_leaves_the_rest() {
+    let cx = &TestExecutor::new();
     let url = server_answering_each(|method| match method {
         "getTopSongs" => Some(json!({
             "status": "failed", "error": { "code": 0, "message": "No outside service" },
@@ -177,8 +175,9 @@ fn a_failed_section_leaves_the_rest(cx: &mut TestAppContext) {
     assert!(error.starts_with("Couldn't load top songs."), "{error}");
 }
 
-#[gpui_kit::test]
-fn moving_through_artists_asks_the_server_only_about_where_it_stops(cx: &mut TestAppContext) {
+#[test]
+fn moving_through_artists_asks_the_server_only_about_where_it_stops() {
+    let cx = &TestExecutor::new();
     static ASKED: AtomicUsize = AtomicUsize::new(0);
     let url = server_answering_each(|method| {
         if method == "getArtist" {
@@ -189,7 +188,7 @@ fn moving_through_artists_asks_the_server_only_about_where_it_stops(cx: &mut Tes
     let detail = artist_detail(None, &url, cx);
 
     detail.show(&ArtistId::new("b"), Some(&listed("b", "Bill Evans")));
-    cx.executor().advance_clock(SERVER_DELAY / 2);
+    cx.advance_clock(SERVER_DELAY / 2);
     cx.run_until_parked();
     detail.show(&ArtistId::new("m"), Some(&listed("m", "Miles Davis")));
     wait_until(&detail, cx, |page| page.albums.is_loaded());
@@ -198,8 +197,9 @@ fn moving_through_artists_asks_the_server_only_about_where_it_stops(cx: &mut Tes
     assert_eq!(page(&detail).id, ArtistId::new("m"));
 }
 
-#[gpui_kit::test]
-fn an_artist_off_the_list_shows_once_the_server_names_them(cx: &mut TestAppContext) {
+#[test]
+fn an_artist_off_the_list_shows_once_the_server_names_them() {
+    let cx = &TestExecutor::new();
     let url = server();
     let detail = artist_detail(None, &url, cx);
 
@@ -211,8 +211,9 @@ fn an_artist_off_the_list_shows_once_the_server_names_them(cx: &mut TestAppConte
     assert_eq!(page(&detail).name.as_deref(), Some("Miles Davis"));
 }
 
-#[gpui_kit::test]
-fn the_saved_albums_show_when_the_server_cannot_be_reached(cx: &mut TestAppContext) {
+#[test]
+fn the_saved_albums_show_when_the_server_cannot_be_reached() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let catalog = catalog::Catalog::open(dir.path()).unwrap();
     let saved = Saved {
@@ -232,8 +233,9 @@ fn the_saved_albums_show_when_the_server_cannot_be_reached(cx: &mut TestAppConte
     assert_eq!(page.albums.items().len(), 1);
 }
 
-#[gpui_kit::test]
-fn the_saved_songs_of_an_artist_with_no_albums_make_their_page_and_play(cx: &mut TestAppContext) {
+#[test]
+fn the_saved_songs_of_an_artist_with_no_albums_make_their_page_and_play() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let catalog = catalog::Catalog::open(dir.path()).unwrap();
     keep(&catalog, &guest_songs());
@@ -246,7 +248,7 @@ fn the_saved_songs_of_an_artist_with_no_albums_make_their_page_and_play(cx: &mut
 
     // Their songs are all there is: asking for top songs leaves them
     detail.reload_top_songs();
-    cx.executor().advance_clock(SERVER_DELAY);
+    cx.advance_clock(SERVER_DELAY);
     cx.run_until_parked();
     assert_eq!(song_ids(page(&detail).top_songs.items()), ["a1", "b1"]);
 
@@ -255,8 +257,9 @@ fn the_saved_songs_of_an_artist_with_no_albums_make_their_page_and_play(cx: &mut
     assert_eq!(song_ids(&played.unwrap()), ["a1", "b1"]);
 }
 
-#[gpui_kit::test]
-fn songs_arriving_in_a_sync_fill_the_page_of_an_artist_with_no_albums(cx: &mut TestAppContext) {
+#[test]
+fn songs_arriving_in_a_sync_fill_the_page_of_an_artist_with_no_albums() {
+    let cx = &TestExecutor::new();
     let dir = tempfile::tempdir().unwrap();
     let catalog = catalog::Catalog::open(dir.path()).unwrap();
     let url = server_of_no_albums();
@@ -272,8 +275,9 @@ fn songs_arriving_in_a_sync_fill_the_page_of_an_artist_with_no_albums(cx: &mut T
     assert_eq!(song_ids(page(&detail).top_songs.items()), ["a1", "b1"]);
 }
 
-#[gpui_kit::test]
-fn an_artist_with_no_songs_at_all_has_no_albums_on_show(cx: &mut TestAppContext) {
+#[test]
+fn an_artist_with_no_songs_at_all_has_no_albums_on_show() {
+    let cx = &TestExecutor::new();
     let detail = artist_detail(None, NOWHERE, cx);
     detail.show(&ArtistId::new("m"), Some(&listed("m", "Miles Davis")));
 
@@ -284,8 +288,9 @@ fn an_artist_with_no_songs_at_all_has_no_albums_on_show(cx: &mut TestAppContext)
     assert!(!page.is_only_on_songs);
 }
 
-#[gpui_kit::test]
-fn a_failed_refresh_keeps_the_songs_of_an_artist_only_on_songs(cx: &mut TestAppContext) {
+#[test]
+fn a_failed_refresh_keeps_the_songs_of_an_artist_only_on_songs() {
+    let cx = &TestExecutor::new();
     let detail = artist_detail(None, NOWHERE, cx);
     detail.show(&ArtistId::new("m"), Some(&listed("m", "Miles Davis")));
     finish_albums(&detail, Ok(Vec::new()), songs(3));
@@ -297,8 +302,9 @@ fn a_failed_refresh_keeps_the_songs_of_an_artist_only_on_songs(cx: &mut TestAppC
     assert_eq!(page.top_songs.items().len(), 3);
 }
 
-#[gpui_kit::test]
-fn albums_arriving_later_bring_back_the_albums_and_the_top_songs(cx: &mut TestAppContext) {
+#[test]
+fn albums_arriving_later_bring_back_the_albums_and_the_top_songs() {
+    let cx = &TestExecutor::new();
     let url = server();
     let detail = artist_detail(None, &url, cx);
     detail.show(&ArtistId::new("m"), Some(&listed("m", "Miles Davis")));
@@ -312,23 +318,25 @@ fn albums_arriving_later_bring_back_the_albums_and_the_top_songs(cx: &mut TestAp
     });
 }
 
-#[gpui_kit::test]
-fn closing_drops_the_page_and_what_was_on_its_way(cx: &mut TestAppContext) {
+#[test]
+fn closing_drops_the_page_and_what_was_on_its_way() {
+    let cx = &TestExecutor::new();
     let url = server();
     let detail = artist_detail(None, &url, cx);
     detail.show(&ArtistId::new("m"), Some(&listed("m", "Miles Davis")));
 
     detail.close();
     for _ in 0..10 {
-        cx.executor().advance_clock(SERVER_DELAY);
+        cx.advance_clock(SERVER_DELAY);
         cx.run_until_parked();
     }
 
     assert_eq!(detail.page(), None);
 }
 
-#[gpui_kit::test]
-fn an_artists_songs_come_album_by_album(cx: &mut TestAppContext) {
+#[test]
+fn an_artists_songs_come_album_by_album() {
+    let cx = &TestExecutor::new();
     let url = server();
     let detail = artist_detail(None, &url, cx);
 
