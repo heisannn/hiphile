@@ -13,7 +13,7 @@ use crate::{Command, Commands};
 
 /// How far the hover of a name reaches past it, which its margins take back so that the name
 /// stays in line with the text around it.
-const REACH: f32 = 4.0;
+pub const REACH: f32 = 4.0;
 
 /// `name`, which shows `to` when it is clicked, in the type and color of the text around it. A
 /// name with nowhere to go is plain text.

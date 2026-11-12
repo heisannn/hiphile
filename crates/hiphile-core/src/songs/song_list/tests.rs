@@ -202,6 +202,7 @@ fn a_query_given_during_a_reload_holds_when_the_songs_arrive() {
     wait_until_shown(&list, cx);
 
     assert_eq!(shown(&list), ["b"]);
+    assert_eq!(list.status().query(), "blues");
 }
 
 #[test]

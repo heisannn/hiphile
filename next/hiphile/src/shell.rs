@@ -179,7 +179,7 @@ fn screen(destination: Destination, _location: Signal<Location>, cx: &ScreenCont
         Destination::Home => next_home::home(cx),
         Destination::Artists => empty(destination),
         Destination::Albums => empty(destination),
-        Destination::Songs => empty(destination),
+        Destination::Songs => next_songs::songs(cx),
         Destination::Playlists => empty(destination),
         Destination::Favorites => next_favorites::favorites(cx),
     }

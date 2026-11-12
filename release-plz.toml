@@ -99,6 +99,10 @@ name = "next-settings"
 release = false
 
 [[package]]
+name = "next-songs"
+release = false
+
+[[package]]
 name = "next-ui"
 release = false
 

@@ -5630,6 +5630,7 @@ dependencies = [
  "next-player",
  "next-search",
  "next-settings",
+ "next-songs",
  "next-ui",
  "playback",
  "presence",
@@ -5717,6 +5718,20 @@ dependencies = [
  "next-host",
  "next-ui",
  "session",
+]
+
+[[package]]
+name = "next-songs"
+version = "0.5.0"
+dependencies = [
+ "anti-webui",
+ "anti-webui-md3e",
+ "hiphile-core",
+ "next-host",
+ "next-ui",
+ "playback",
+ "serde_json",
+ "subsonic",
 ]
 
 [[package]]

@@ -50,6 +50,11 @@ impl SongListStatus {
         self.sort
     }
 
+    /// What the songs are filtered by, as it was typed.
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
     /// Whether the songs show by how well they match the query, so that no sort applies.
     pub fn is_ranked(&self) -> bool {
         self.by_relevance && !self.query.trim().is_empty()

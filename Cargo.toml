@@ -51,6 +51,7 @@ next-platform = { path = "next/platform" }
 next-player = { path = "next/player" }
 next-search = { path = "next/search" }
 next-settings = { path = "next/settings" }
+next-songs = { path = "next/songs" }
 next-ui = { path = "next/ui" }
 
 anyhow = "1.0"

@@ -26,6 +26,7 @@ next-platform.workspace = true
 next-player.workspace = true
 next-search.workspace = true
 next-settings.workspace = true
+next-songs.workspace = true
 next-ui.workspace = true
 presence.workspace = true
 subsonic.workspace = true

@@ -8,6 +8,7 @@ pub mod cover;
 pub mod detail_header;
 pub mod details;
 pub mod favorite_button;
+pub mod favorite_songs;
 pub mod keymap;
 mod known;
 pub mod link;
