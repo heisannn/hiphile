@@ -207,6 +207,7 @@ fn the_dictionaries_are_left_as_they_are_until_the_readings_are_needed() {
     let workspace = hiphile.workspace().unwrap();
     assert!(workspace.session().readings().is_some());
     workspace.shutdown();
+    cx.run_until_parked();
 }
 
 #[test]
@@ -480,6 +481,8 @@ fn the_profiles_signed_in_with_before_are_there_from_the_start() {
 #[test]
 fn switching_to_whoever_is_signed_in_leaves_their_workspace() {
     let cx = &TestExecutor::new();
+    // The workspace's requests answer from the network's own thread
+    cx.allow_parking();
     let (_dir, store) = store_with_alice_and_bob();
     let hiphile = hiphile(Ok(store), cx);
     hiphile.open_workspace(crate::test_support::session(NOWHERE), alice());
@@ -494,6 +497,7 @@ fn switching_to_whoever_is_signed_in_leaves_their_workspace() {
     assert!(!hiphile.snapshot().is_signing_in());
     assert_eq!(hiphile.workspace(), workspace);
     workspace.unwrap().shutdown();
+    cx.run_until_parked();
 }
 
 #[test]
@@ -510,6 +514,7 @@ fn switching_to_someone_without_a_saved_password_asks_for_one() {
     assert_eq!(ended(&mut switching, cx), Err(SwitchFailed::NoPassword));
     assert_eq!(hiphile.snapshot().profile(), Some(&alice()));
     hiphile.workspace().unwrap().shutdown();
+    cx.run_until_parked();
 }
 
 #[test]
@@ -533,6 +538,7 @@ fn switching_signs_in_with_the_saved_password_while_the_workspace_stays() {
     assert_eq!(hiphile.snapshot().profile(), Some(&alice()));
     assert!(!hiphile.snapshot().is_signing_in());
     hiphile.workspace().unwrap().shutdown();
+    cx.run_until_parked();
 }
 
 #[test]
@@ -616,4 +622,5 @@ fn a_profile_forgotten_is_off_the_others_with_its_password_unless_signed_in() {
     assert_eq!(store.profiles().unwrap(), [alice()]);
     assert_eq!(keychain.password(&bob()).unwrap(), None);
     hiphile.workspace().unwrap().shutdown();
+    cx.run_until_parked();
 }

@@ -67,6 +67,7 @@ fn each_of_the_three_comes_back_at_the_quality_it_had() {
         assert_eq!(settings.soxr_quality_ix(), 1);
         assert_eq!(settings.rubato_quality_ix(), 1);
     }
+    cx.run_until_parked();
 }
 
 #[test]
@@ -259,6 +260,7 @@ fn a_preset_leaves_what_does_not_change_the_sound_alone() {
         assert_eq!(settings.soxr_min_dft_value(), "4096");
         assert_eq!(settings.soxr_large_dft_value(), "1048576");
     }
+    cx.run_until_parked();
 }
 
 #[test]
@@ -313,6 +315,7 @@ fn values_off_the_lists_stay_options_and_presets_read_apart() {
         labels(&settings.soxr_coef_table_options()).first(),
         Some(&"1 kB")
     );
+    cx.run_until_parked();
 }
 
 #[test]
@@ -345,6 +348,7 @@ fn a_phase_and_an_interpolation_are_chosen_by_their_places() {
             interpolation
         );
     }
+    cx.run_until_parked();
 }
 
 #[test]
@@ -412,4 +416,5 @@ fn double_precision_makes_the_quality_custom() {
     assert!(snapshot.soxr_filter().double_precision);
     assert_eq!(snapshot.soxr_quality_ix(), 4);
     assert!(snapshot.is_soxr_resettable(SoxrSetting::Quality));
+    cx.run_until_parked();
 }

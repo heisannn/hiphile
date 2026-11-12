@@ -17,7 +17,10 @@ use crate::{BoxFuture, Detach, Executor, Spawned, Spawner};
 /// deterministically, unless the test has called [`Self::allow_parking`].
 ///
 /// Dropping it drops what its tasks still hold on its thread, so that the last of something, such
-/// as a network client, is not dropped on the thread that would have woken the task.
+/// as a network client, is not dropped on the thread that would have woken the task. A task still
+/// ready to run then fails the test, as what it would have done goes unchecked: a test ends with
+/// [`Self::run_until_parked`] when its last step leaves work behind. A test that has called
+/// [`Self::allow_parking`] cannot tell when other threads stop waking tasks, and is let off.
 pub struct TestExecutor {
     shared: Arc<Shared>,
     _on_one_thread: PhantomData<Rc<()>>,
@@ -117,7 +120,15 @@ impl Default for TestExecutor {
 
 impl Drop for TestExecutor {
     fn drop(&mut self) {
-        let foreign = lock(&self.shared.state).foreign.take();
+        let (foreign, ready) = {
+            let mut state = lock(&self.shared.state);
+            let ready = if state.allows_parking {
+                0
+            } else {
+                state.queue.iter().filter(|job| job.is_ready()).count()
+            };
+            (state.foreign.take(), ready)
+        };
         // Dropping a task's future can spawn or cancel others
         loop {
             let (jobs, queue, alarms) = {
@@ -135,11 +146,17 @@ impl Drop for TestExecutor {
                 .filter_map(Weak::upgrade)
                 .for_each(|job| job.end());
         }
-        if let Some(foreign) = foreign
-            && !thread::panicking()
-        {
+        if thread::panicking() {
+            return;
+        }
+        if let Some(foreign) = foreign {
             panic!("{foreign}");
         }
+        assert!(
+            ready == 0,
+            "{ready} tasks were ready to run when the test ended; run them with \
+             `run_until_parked` before it does"
+        );
     }
 }
 
@@ -295,6 +312,12 @@ impl Job {
         }
         drop(cell);
         self.queue();
+    }
+
+    /// Whether it is queued to be polled, rather than to be dropped.
+    fn is_ready(&self) -> bool {
+        let cell = lock(&self.cell);
+        cell.stage == Stage::Queued && !cell.is_cancelled && cell.future.is_some()
     }
 
     /// Queued rather than dropped at once, as the core cancels under its own locks and dropping

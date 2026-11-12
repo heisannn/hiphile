@@ -259,3 +259,27 @@ fn dropping_the_executor_drops_what_its_tasks_hold_on_its_thread() {
     assert_eq!(*lock(&dropped_on), Some(thread::current().id()));
     assert_eq!(sender.send(()), Err(()));
 }
+
+#[test]
+#[should_panic(expected = "ready to run when the test ended")]
+fn a_task_still_ready_when_the_test_ends_fails_it() {
+    let cx = TestExecutor::new();
+    cx.executor().spawn(async {}).detach();
+}
+
+#[test]
+fn a_task_that_waits_or_was_called_off_fails_nothing() {
+    let cx = TestExecutor::new();
+    let executor = cx.executor();
+    executor.spawn(future::pending::<()>()).detach();
+    cx.run_until_parked();
+
+    drop(executor.spawn(async {}));
+}
+
+#[test]
+fn a_test_that_allows_parking_is_let_off_what_is_ready() {
+    let cx = TestExecutor::new();
+    cx.allow_parking();
+    cx.executor().spawn(async {}).detach();
+}
