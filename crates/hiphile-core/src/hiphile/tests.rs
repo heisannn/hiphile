@@ -2,7 +2,7 @@ use executor::testing::TestExecutor;
 use tempfile::TempDir;
 
 use super::*;
-use crate::testing::{NOWHERE, server_never_answering, wait_for};
+use crate::testing::{NOWHERE, server_giving_image, server_never_answering, wait_for};
 
 fn hiphile(store: Result<config::Store, config::Error>, cx: &TestExecutor) -> Hiphile {
     hiphile_keeping(store, Caches::None, cx)
@@ -128,6 +128,59 @@ fn a_cover_neither_kept_nor_on_the_server_is_none() {
     cx.run_until_parked();
 
     assert_eq!(futures::FutureExt::now_or_never(&mut image), Some(None));
+}
+
+fn cover_file(hiphile: &Hiphile, url: &str, cx: &TestExecutor) -> Option<CoverSource> {
+    let mut file = hiphile.cover_file(url);
+    let mut found = None;
+    wait_for(cx, || {
+        found = futures::FutureExt::now_or_never(&mut file);
+        found.is_some()
+    });
+    found.flatten()
+}
+
+#[test]
+fn a_cover_fetched_is_given_as_the_file_it_is_kept_in() {
+    let cx = &TestExecutor::new();
+    cx.allow_parking();
+    let (_dir, store) = store_with("romaji_search = false\n");
+    let cache = tempfile::tempdir().unwrap();
+    let hiphile = hiphile_keeping(Ok(store), Caches::At(cache.path().to_owned()), cx);
+    let url = format!(
+        "{}/rest/getCoverArt?id=al-1&size=80",
+        server_giving_image(b"jpeg")
+    );
+
+    let Some(CoverSource::File(path)) = cover_file(&hiphile, &url, cx) else {
+        panic!("the cover was not kept");
+    };
+    assert_eq!(std::fs::read(&path).unwrap(), b"jpeg");
+    assert_eq!(
+        cover_file(&hiphile, &url, cx),
+        Some(CoverSource::File(path))
+    );
+}
+
+#[test]
+fn a_cover_fetched_again_without_caches_is_the_image_still_held() {
+    let cx = &TestExecutor::new();
+    cx.allow_parking();
+    let (_dir, store) = store_with("romaji_search = false\n");
+    let hiphile = hiphile(Ok(store), cx);
+    let url = format!(
+        "{}/rest/getCoverArt?id=al-1&size=80",
+        server_giving_image(b"jpeg")
+    );
+
+    let Some(CoverSource::Bytes(first)) = cover_file(&hiphile, &url, cx) else {
+        panic!("the cover did not come from the server");
+    };
+    let Some(CoverSource::Bytes(again)) = cover_file(&hiphile, &url, cx) else {
+        panic!("the cover did not come from the server");
+    };
+    assert_eq!(&first[..], b"jpeg");
+    assert!(Arc::ptr_eq(&first, &again));
 }
 
 #[test]

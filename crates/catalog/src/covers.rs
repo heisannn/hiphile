@@ -1,4 +1,4 @@
-use std::fs;
+use std::fs::{self, Metadata};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -53,6 +53,27 @@ impl KeptCover {
     }
 }
 
+/// A kept image as a file, for a reader that opens it itself.
+#[derive(Debug)]
+pub struct KeptCoverFile {
+    path: PathBuf,
+    fresh: bool,
+}
+
+impl KeptCoverFile {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn into_path(self) -> PathBuf {
+        self.path
+    }
+
+    pub fn is_fresh(&self) -> bool {
+        self.fresh
+    }
+}
+
 impl CoverStore {
     /// In the app's cache folder `cache`, beside the songs.
     pub fn in_cache(cache: &Path, capacity: u64) -> Self {
@@ -84,21 +105,40 @@ impl CoverStore {
             return None;
         }
         let metadata = fs::metadata(&path).ok();
-        // A rename keeps the time the temporary file was created, which is
-        // when the image arrived. Without that time, the image stays fresh.
-        let age = metadata
-            .as_ref()
-            .and_then(|metadata| metadata.created().ok())
-            .and_then(|created| created.elapsed().ok());
-        let fresh = age.is_none_or(|age| age < self.inner.refresh_after);
-        if let Some(metadata) = &metadata {
-            self.inner.blobs.touch(&path, metadata);
-        }
+        let fresh = self.use_file(&path, metadata.as_ref());
         Some(KeptCover { bytes, fresh })
     }
 
-    pub fn put(&self, request: &CoverArtRequest, bytes: &[u8]) -> Result<(), Error> {
-        self.inner.blobs.put(&self.path(request), bytes)
+    /// As [`Self::get`], without reading the image. Writing it again, once it is not fresh,
+    /// changes what is at the same path, and a write that goes over capacity may remove it.
+    pub fn get_file(&self, request: &CoverArtRequest) -> Option<KeptCoverFile> {
+        let path = self.path(request);
+        let metadata = fs::metadata(&path).ok().filter(Metadata::is_file)?;
+        if metadata.len() == 0 {
+            fs::remove_file(&path).ok();
+            return None;
+        }
+        let fresh = self.use_file(&path, Some(&metadata));
+        Some(KeptCoverFile { path, fresh })
+    }
+
+    /// Where the image went, or `None` when it takes too much of the capacity to be kept.
+    pub fn put(&self, request: &CoverArtRequest, bytes: &[u8]) -> Result<Option<PathBuf>, Error> {
+        let path = self.path(request);
+        Ok(self.inner.blobs.put(&path, bytes)?.then_some(path))
+    }
+
+    /// Records a use of the image at `path`, and returns whether it is fresh.
+    fn use_file(&self, path: &Path, metadata: Option<&Metadata>) -> bool {
+        // A rename keeps the time the temporary file was created, which is
+        // when the image arrived. Without that time, the image stays fresh.
+        let age = metadata
+            .and_then(|metadata| metadata.created().ok())
+            .and_then(|created| created.elapsed().ok());
+        if let Some(metadata) = metadata {
+            self.inner.blobs.touch(path, metadata);
+        }
+        age.is_none_or(|age| age < self.inner.refresh_after)
     }
 
     fn path(&self, request: &CoverArtRequest) -> PathBuf {
@@ -177,6 +217,25 @@ mod tests {
         let found = store.get(&cover).unwrap();
         assert!(!found.is_fresh());
         assert_eq!(found.bytes(), b"image");
+    }
+
+    #[test]
+    fn a_kept_image_is_found_as_the_file_it_was_put_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CoverStore::at(dir.path(), 300, Duration::ZERO);
+        let cover = request("https://music.example.com", "al-1", Some(80));
+        assert!(store.get_file(&cover).is_none());
+        let path = store.put(&cover, b"image").unwrap().unwrap();
+        let found = store.get_file(&cover).unwrap();
+        assert_eq!(found.path(), path);
+        assert_eq!(fs::read(found.path()).unwrap(), b"image");
+        assert!(!found.is_fresh());
+
+        fs::write(&path, b"").unwrap();
+        assert!(store.get_file(&cover).is_none());
+        assert!(!path.exists());
+        // Too large to keep, so in no file
+        assert_eq!(store.put(&cover, &[1; 301]).unwrap(), None);
     }
 
     #[test]

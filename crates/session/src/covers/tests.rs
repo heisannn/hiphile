@@ -115,6 +115,22 @@ fn a_kept_image_is_given_without_the_server() {
 }
 
 #[test]
+fn a_kept_image_is_given_as_its_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let covers = CoverStore::at(dir.path(), 1 << 20, Duration::from_secs(3600));
+    let net = net::Client::new("hiphile-test").unwrap();
+    let url = cover_url("al-1")
+        .as_str()
+        .replace("example.com", "127.0.0.1:9");
+    let unreachable = CoverArtRequest::parse(&url::Url::parse(&url).unwrap()).unwrap();
+    let path = covers.put(&unreachable, b"jpeg").unwrap().unwrap();
+
+    let file = block_on(cover_file(&net, Some(&covers), &url));
+    assert_eq!(file, Some(CoverSource::File(path)));
+    assert_eq!(block_on(cover_file(&net, None, &url)), None);
+}
+
+#[test]
 fn only_images_are_kept() {
     let headers = |content_type: &'static str| {
         let mut headers = HeaderMap::new();

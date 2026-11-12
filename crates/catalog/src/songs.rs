@@ -80,7 +80,7 @@ impl SongStore {
 
     /// Bytes that take most of the capacity on their own are not kept.
     pub fn put(&self, server: &Url, id: &SongId, bytes: &[u8]) -> Result<(), Error> {
-        self.blobs.put(&self.path(server, id), bytes)
+        self.blobs.put(&self.path(server, id), bytes).map(|_| ())
     }
 
     pub fn remove(&self, server: &Url, id: &SongId) -> Result<(), Error> {
