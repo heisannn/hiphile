@@ -9,7 +9,7 @@ use anti_webui_md3e::color_scheme;
 use anti_webui_md3e::components::{image, sized_icon};
 use anti_webui_md3e::icons::{self, Symbol};
 use hiphile_core::{CoverSource, Hiphile};
-use next_host::{Pending, on_ui};
+use next_host::on_ui;
 
 /// How many covers stay known once no view shows them. Each is a path or an image still held.
 const KEPT: usize = 512;
@@ -31,10 +31,31 @@ enum Loaded {
 
 struct Entry {
     loaded: Signal<Loaded>,
-    /// Holds `loaded` and the fetch, apart from any view.
+    /// Holds `loaded`, apart from any view.
     owner: Owner,
-    fetching: Option<Pending>,
+    /// Holds the fetch while it lasts. What waits on the UI thread is looked into at every update,
+    /// so it goes once the fetch ends.
+    fetching: Option<Owner>,
     views: usize,
+}
+
+impl Entry {
+    /// Kept once no view shows it: what was found. What was not may have been for a moment, as a
+    /// server that did not answer looks the same, and is asked for again when next shown.
+    fn is_kept(&self) -> bool {
+        self.fetching.is_none()
+            && self
+                .loaded
+                .with_untracked(|loaded| matches!(loaded, Loaded::Found(_)))
+    }
+
+    /// Calls off the fetch, if it lasts.
+    fn dispose(self) {
+        if let Some(fetching) = self.fetching {
+            fetching.dispose();
+        }
+        self.owner.dispose();
+    }
 }
 
 struct Covers {
@@ -52,10 +73,9 @@ thread_local! {
 /// another server needs no new call, as a cover's URL names its server.
 pub fn install_covers(hiphile: Hiphile) {
     COVERS.with(|covers| {
-        if let Some(old) = covers.borrow_mut().take() {
-            for entry in old.entries.into_values() {
-                entry.owner.dispose();
-            }
+        let old = covers.borrow_mut().take();
+        for entry in old.into_iter().flat_map(|old| old.entries.into_values()) {
+            entry.dispose();
         }
         *covers.borrow_mut() = Some(Covers {
             hiphile,
@@ -141,22 +161,19 @@ fn watch(url: Arc<str>) -> Signal<Loaded> {
             return entry.loaded;
         }
         let (loaded, owner) = create_root(|| signal(Loaded::Loading));
-        let fetching = owner.with(|| {
-            on_ui(covers.hiphile.cover_file(&url), {
-                let url = url.clone();
-                move |found| {
-                    loaded.set(found.map_or(Loaded::Missing, Loaded::Found));
-                    COVERS.with(|covers| {
-                        if let Some(entry) = covers
-                            .borrow_mut()
-                            .as_mut()
-                            .and_then(|covers| covers.entries.get_mut(&url))
-                        {
-                            entry.fetching = None;
-                        }
-                    });
+        let ((), fetching) = create_root(|| {
+            let (fetch, url) = (covers.hiphile.cover_file(&url), url.clone());
+            let _ = on_ui(fetch, move |found| {
+                loaded.set(found.map_or(Loaded::Missing, Loaded::Found));
+                let done = COVERS.with(|covers| {
+                    let mut covers = covers.borrow_mut();
+                    covers.as_mut()?.entries.get_mut(&url)?.fetching.take()
+                });
+                // Outside the borrow, and last: it is the owner this runs in
+                if let Some(done) = done {
+                    done.dispose();
                 }
-            })
+            });
         });
         covers.entries.insert(
             url.clone(),
@@ -188,7 +205,7 @@ fn unwatch(covers: &RefCell<Option<Covers>>, url: Arc<str>) {
         if entry.views > 0 {
             return;
         }
-        if entry.fetching.is_some() {
+        if !entry.is_kept() {
             covers.entries.remove(&url).into_iter().collect::<Vec<_>>()
         } else {
             covers.unseen.push_back(url);
@@ -202,10 +219,7 @@ fn unwatch(covers: &RefCell<Option<Covers>>, url: Arc<str>) {
     };
     // Outside the borrow: disposing runs cleanups, which may reach the covers again
     for entry in gone {
-        if let Some(fetching) = entry.fetching {
-            fetching.cancel();
-        }
-        entry.owner.dispose();
+        entry.dispose();
     }
 }
 
