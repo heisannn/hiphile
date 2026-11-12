@@ -16,6 +16,7 @@ anti-webui-md3e.workspace = true
 config.workspace = true
 executor.workspace = true
 hiphile-core = { workspace = true, features = ["desktop"] }
+media-controls.workspace = true
 net.workspace = true
 next-account.workspace = true
 next-host.workspace = true

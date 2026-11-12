@@ -5606,6 +5606,7 @@ dependencies = [
  "config 0.5.0",
  "executor",
  "hiphile-core",
+ "media-controls",
  "net",
  "next-account",
  "next-host",

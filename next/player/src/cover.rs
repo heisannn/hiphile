@@ -6,6 +6,7 @@ use anti_webui::prelude::*;
 use executor::Task;
 use hiphile_core::{Hiphile, Workspace};
 use next_host::{Pending, Scope, follow};
+use next_ui::cover::image_of;
 use subsonic::Song;
 
 /// What the cover is asked for at, which the bar shows at 56 points and the colors are taken from
@@ -66,8 +67,8 @@ pub fn now_playing_cover(hiphile: &Hiphile, workspace: &Workspace) -> Signal<Opt
 }
 
 fn fetch(hiphile: &Hiphile, url: &str) -> Task<Option<ImageSource>> {
-    let image = hiphile.cover_image(url);
-    next_host::executor().spawn(async move { image.await.map(ImageSource::from) })
+    let file = hiphile.cover_file(url);
+    next_host::executor().spawn(async move { file.await.map(image_of) })
 }
 
 #[cfg(test)]
