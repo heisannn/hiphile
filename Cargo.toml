@@ -45,6 +45,7 @@ updater = { path = "crates/updater" }
 
 next-account = { path = "next/account" }
 next-host = { path = "next/host" }
+next-platform = { path = "next/platform" }
 next-ui = { path = "next/ui" }
 
 anyhow = "1.0"
@@ -67,14 +68,19 @@ http = "1.5"
 gpui-kit = { version = "0.9.1", features = ["gpui-fast"] }
 hex = "0.4"
 keyring-core = "1.0"
+libc = "0.2"
 # Pinned: a new version may read compiled dictionaries differently, and the bundle in
 # `crates/fuzzy/src/bundle.rs` is compiled by this one.
 lindera = { version = "=6.2.0", default-features = false, features = ["mmap"] }
 md-5 = "0.11"
 nucleo-matcher = "0.3"
+# objc2 and its frameworks at the versions AntiWebUI's macOS backend uses, so that there is one of each
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std"] }
 objc2-core-audio = { version = "0.3", default-features = false, features = ["std", "AudioHardware"] }
 objc2-core-audio-types = { version = "0.3", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFString"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std"] }
 rand = "0.10"
 raw-window-handle = "0.6"
 realfft = "3.5"

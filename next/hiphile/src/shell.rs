@@ -7,11 +7,14 @@ use hiphile_core::settings::AppearanceSnapshot;
 use hiphile_core::{Hiphile, HiphileSnapshot, Workspace};
 use next_account::{sign_in, sign_in_dialog};
 use next_host::follow;
+use next_ui::cover::install_covers;
 use next_ui::theme::{follow_theme, is_dark};
 use next_ui::type_scale::body;
 use next_ui::window::moves_window;
 use next_ui::{Command, Commands, Screen, app_bar};
 
+use crate::MenuBar;
+use crate::menu_bar::Shown;
 use crate::navigation::{Navigation, index_of};
 use crate::rail::rail;
 use crate::settings_popup::settings_popup;
@@ -20,8 +23,9 @@ use crate::settings_popup::settings_popup;
 const WIDE: f32 = 1000.0;
 
 /// What fills the window: signing in, or the workspace of whoever is signed in. Its colors follow
-/// the appearance chosen, and `system_is_dark` when that follows the system.
-pub fn app(hiphile: Hiphile, system_is_dark: Signal<bool>) -> Div {
+/// the appearance chosen, and `system_is_dark` when that follows the system. The workspace takes
+/// what is chosen in `menu_bar`, and shows there where it is.
+pub fn app(hiphile: Hiphile, system_is_dark: Signal<bool>, menu_bar: MenuBar) -> Div {
     let appearance = follow(hiphile.settings().appearance().subscribe());
     follow_theme(
         move || {
@@ -32,6 +36,7 @@ pub fn app(hiphile: Hiphile, system_is_dark: Signal<bool>) -> Div {
         },
         || None,
     );
+    install_covers(hiphile.clone());
     let shown = follow(hiphile.subscribe());
     let workspace = memo(move || shown.with(|shown| shown.workspace().cloned()));
     let snackbars = snackbars();
@@ -46,7 +51,7 @@ pub fn app(hiphile: Hiphile, system_is_dark: Signal<bool>) -> Div {
             let hiphile = hiphile.clone();
             match workspace.get() {
                 None => untrack(|| signed_out(hiphile)),
-                Some(workspace) => untrack(|| signed_in(hiphile, workspace, shown)),
+                Some(workspace) => untrack(|| signed_in(hiphile, workspace, shown, menu_bar)),
             }
         }))
         .child(snackbars.view())
@@ -60,7 +65,12 @@ fn signed_out(hiphile: Hiphile) -> Div {
         .child(moves_window(div().absolute().top(0).left(0).right(0).h(44)))
 }
 
-fn signed_in(hiphile: Hiphile, workspace: Workspace, shown: Signal<HiphileSnapshot>) -> Div {
+fn signed_in(
+    hiphile: Hiphile,
+    workspace: Workspace,
+    shown: Signal<HiphileSnapshot>,
+    menu_bar: MenuBar,
+) -> Div {
     let navigation = Navigation::new();
     effect(move || workspace.showing(navigation.destination()));
     let width = signal(crate::WINDOW.0 as f32);
@@ -75,6 +85,12 @@ fn signed_in(hiphile: Hiphile, workspace: Workspace, shown: Signal<HiphileSnapsh
         Command::GoForward => navigation.forward(),
         Command::OpenSettings => settings_open.set(true),
         Command::OpenSearch => {}
+    });
+    menu_bar.attach(commands.clone(), move || Shown {
+        destination: Some(navigation.destination()),
+        can_go_back: navigation.can_go_back(),
+        can_go_forward: navigation.can_go_forward(),
+        covered: settings_open.get() || sign_in_request.with(Option::is_some),
     });
     div()
         .size_full()

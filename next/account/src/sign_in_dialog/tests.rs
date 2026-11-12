@@ -29,7 +29,7 @@ fn a_mistake_keeps_it_open_and_cancel_closes_it() {
     let mut ui = start(move || div().size_full().child(sign_in_dialog(hiphile, request)));
     assert!(find(Role::Heading, "Add Server").is_some());
 
-    press(&mut ui, Role::Button, "Sign in");
+    press(&mut ui, Role::Button, "Sign In");
     assert!(has_text("Enter the server address."));
     assert_eq!(nodes(Role::Dialog).len(), 1);
 

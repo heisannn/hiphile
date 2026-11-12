@@ -75,6 +75,10 @@ name = "next-host"
 release = false
 
 [[package]]
+name = "next-platform"
+release = false
+
+[[package]]
 name = "next-ui"
 release = false
 

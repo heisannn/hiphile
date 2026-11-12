@@ -1,11 +1,14 @@
 //! Driving views without a window: synthetic input, frames, and finding what is shown by role and
 //! name or by text. Nothing here needs a GPU.
 
+use std::cell::Cell;
 use std::time::{Duration, Instant};
 
 use anti_webui::core::Ui;
 use anti_webui::core::access::{AccessAction, AccessNode, perform, snapshot};
-use anti_webui::core::event::{Key, KeyEvent, Modifiers, NamedKey, PointerButton, WindowEvent};
+use anti_webui::core::event::{
+    Key, KeyEvent, Modifiers, NamedKey, PointerButton, ScrollPhase, ScrollSource, WindowEvent,
+};
 use anti_webui::core::geometry::{PointF, Scale, SizeI};
 use anti_webui::core::tree::{NodeKind, with_doc};
 use anti_webui::prelude::{IntoView, Role};
@@ -92,21 +95,108 @@ pub fn focus(ui: &mut Ui, role: Role, label: &str) {
     ui.update();
 }
 
+thread_local! {
+    /// When the last press was, in milliseconds. Presses are far apart unless a test says.
+    static PRESSED_AT: Cell<u32> = const { Cell::new(0) };
+}
+
 pub fn click(ui: &mut Ui, x: f32, y: f32) {
+    click_with(ui, x, y, Modifiers::default());
+}
+
+pub fn click_with(ui: &mut Ui, x: f32, y: f32, modifiers: Modifiers) {
+    press_at(ui, x, y, PointerButton::Primary, modifiers, 1000);
+}
+
+/// Clicks again where the last click was, soon enough to make a double click of it.
+pub fn double_click(ui: &mut Ui, x: f32, y: f32) {
+    click(ui, x, y);
+    press_at(ui, x, y, PointerButton::Primary, Modifiers::default(), 100);
+}
+
+pub fn right_click(ui: &mut Ui, x: f32, y: f32) {
+    press_at(
+        ui,
+        x,
+        y,
+        PointerButton::Secondary,
+        Modifiers::default(),
+        1000,
+    );
+}
+
+fn press_at(
+    ui: &mut Ui,
+    x: f32,
+    y: f32,
+    button: PointerButton,
+    modifiers: Modifiers,
+    after_ms: u32,
+) {
     let position = PointF::new(x, y);
+    let time = PRESSED_AT.with(|at| {
+        at.set(at.get() + after_ms);
+        at.get()
+    });
     ui.handle_event(WindowEvent::PointerMoved {
         position,
-        modifiers: Modifiers::default(),
+        modifiers,
     });
     for pressed in [true, false] {
         ui.handle_event(WindowEvent::PointerButton {
             position,
-            button: PointerButton::Primary,
+            button,
             pressed,
-            modifiers: Modifiers::default(),
-            time: 0,
+            modifiers,
+            time,
         });
     }
+    ui.update();
+}
+
+/// Presses the primary button at `from`, moves to `to` in steps, and lets go there.
+pub fn drag(ui: &mut Ui, from: (f32, f32), to: (f32, f32)) {
+    let none = Modifiers::default();
+    let at = |t: f32| PointF::new(from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
+    let time = PRESSED_AT.with(|pressed| {
+        pressed.set(pressed.get() + 1000);
+        pressed.get()
+    });
+    let button = |position, pressed| WindowEvent::PointerButton {
+        position,
+        button: PointerButton::Primary,
+        pressed,
+        modifiers: none,
+        time,
+    };
+    ui.handle_event(WindowEvent::PointerMoved {
+        position: at(0.0),
+        modifiers: none,
+    });
+    ui.handle_event(button(at(0.0), true));
+    ui.update();
+    for step in 1..=8 {
+        ui.handle_event(WindowEvent::PointerMoved {
+            position: at(step as f32 / 8.0),
+            modifiers: none,
+        });
+        ui.update();
+    }
+    ui.handle_event(button(at(1.0), false));
+    ui.update();
+}
+
+/// Scrolls what is at (`x`, `y`) by `dy` pixels of the window, down for more than 0.
+pub fn scroll(ui: &mut Ui, x: f32, y: f32, dy: f32) {
+    ui.handle_event(WindowEvent::Scroll {
+        position: PointF::new(x, y),
+        delta_x: 0.0,
+        delta_y: dy,
+        modifiers: Modifiers::default(),
+        source: ScrollSource::Unknown,
+        phase: ScrollPhase::Single,
+        time: 0,
+    });
     ui.update();
 }
 
@@ -176,11 +266,20 @@ pub const NOWHERE: &str = "http://127.0.0.1:9";
 
 /// What a test keeps until it ends: the core's runtime and the folder of its settings.
 pub struct TestCore {
-    _runtime: tokio::runtime::Runtime,
+    runtime: Option<tokio::runtime::Runtime>,
     /// Dropped after the runtime: the last of a client must not go inside it, as the runtime's
     /// tasks that hold the core would otherwise drop it there.
     nets: Vec<net::Client>,
     _dir: tempfile::TempDir,
+}
+
+impl Drop for TestCore {
+    fn drop(&mut self) {
+        // Without waiting for blocking work, which may wait on a server that never answers
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
+        }
+    }
 }
 
 /// A core whose settings file holds `config`, in a folder of its own, lent to this UI thread.
@@ -206,7 +305,7 @@ pub fn core(config: &str) -> (TestCore, hiphile_core::Hiphile) {
     );
     (
         TestCore {
-            _runtime: runtime,
+            runtime: Some(runtime),
             nets: vec![net],
             _dir: dir,
         },
