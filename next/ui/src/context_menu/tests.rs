@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::sync::Arc;
 
 use anti_webui::core::Ui;
+use anti_webui::core::access::Checked;
 use anti_webui::core::event::NamedKey;
 use anti_webui::core::tree::with_doc;
 use anti_webui_md3e::components::menu_item;
@@ -38,6 +39,7 @@ fn items(id: &str, chosen: &Rc<RefCell<Vec<String>>>) -> Vec<Vec<MenuItem>> {
 struct Shown {
     ui: Ui,
     menu: ContextMenu,
+    covers: Covers,
     selection: Selection<String>,
     chosen: Rc<RefCell<Vec<String>>>,
     sent: Rc<RefCell<Vec<Command>>>,
@@ -47,7 +49,8 @@ struct Shown {
 /// More button.
 fn a_row() -> Shown {
     let (commands, sent) = recording_commands();
-    let menu = ContextMenu::new();
+    let covers = Covers::new();
+    let menu = ContextMenu::new(covers);
     let selection = Selection::new();
     let chosen = Rc::new(RefCell::new(Vec::new()));
     let ui = start({
@@ -94,6 +97,7 @@ fn a_row() -> Shown {
     Shown {
         ui,
         menu,
+        covers,
         selection,
         chosen,
         sent,
@@ -155,6 +159,42 @@ fn more_opens_the_same_menu_below_itself_and_leaves_the_row_alone() {
     assert!(!shown.selection.contains(&"s1".to_owned()));
 }
 
+fn more_looks_pressed() -> bool {
+    find(Role::Button, "More").unwrap().checked == Some(Checked::True)
+}
+
+#[test]
+fn more_looks_pressed_while_the_menu_it_opened_is_open() {
+    let mut shown = a_row();
+    assert!(!more_looks_pressed());
+
+    press(&mut shown.ui, Role::Button, "More");
+    assert!(more_looks_pressed());
+
+    key(&mut shown.ui, NamedKey::Escape);
+    frames(&mut shown.ui, 400);
+    assert!(!more_looks_pressed());
+
+    let (x, y) = middle_of("Blue in Green");
+    right_click(&mut shown.ui, x, y);
+    assert!(shown.menu.is_open());
+    assert!(!more_looks_pressed());
+}
+
+#[test]
+fn the_screens_are_covered_while_it_is_open() {
+    let mut shown = a_row();
+    assert!(!shown.covers.any());
+
+    let (x, y) = middle_of("Blue in Green");
+    right_click(&mut shown.ui, x, y);
+    assert!(shown.covers.any());
+
+    key(&mut shown.ui, NamedKey::Escape);
+    frames(&mut shown.ui, 400);
+    assert!(!shown.covers.any());
+}
+
 #[test]
 fn escape_closes_it() {
     let mut shown = a_row();
@@ -171,7 +211,7 @@ fn escape_closes_it() {
 #[test]
 fn it_closes_when_what_it_was_opened_from_has_gone() {
     let mut ui = start(|| {
-        let menu = ContextMenu::new();
+        let menu = ContextMenu::new(Covers::new());
         let shown = signal(true);
         let remove = move || vec![vec![menu_item("Remove").on_click(move || shown.set(false))]];
         div()

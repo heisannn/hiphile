@@ -10,6 +10,7 @@ enum Order {
 struct Sorted {
     order: Signal<Order>,
     descending: Signal<bool>,
+    covers: Covers,
 }
 
 impl Sorted {
@@ -17,6 +18,7 @@ impl Sorted {
         Self {
             order: signal(Order::Title),
             descending: signal(false),
+            covers: Covers::new(),
         }
     }
 
@@ -33,6 +35,7 @@ impl Sorted {
             )
         };
         sort_menu(
+            self.covers,
             move || descending.get(),
             vec![
                 vec![by("Title", Order::Title), by("Year", Order::Year)],
@@ -63,6 +66,7 @@ fn choosing_from_the_menu_orders_the_list_and_closes_the_menu() {
     let sorted = Sorted::new();
     let view = sorted.view();
     let mut ui = start(move || view);
+    assert!(!sorted.covers.any());
 
     press(&mut ui, Role::Button, "Sort by Title, Ascending");
     frames(&mut ui, 300);
@@ -72,6 +76,7 @@ fn choosing_from_the_menu_orders_the_list_and_closes_the_menu() {
             .expanded,
         Some(true)
     );
+    assert!(sorted.covers.any());
     press(&mut ui, Role::MenuItem, "Year");
     frames(&mut ui, 300);
 
@@ -79,6 +84,7 @@ fn choosing_from_the_menu_orders_the_list_and_closes_the_menu() {
     let button = find(Role::Button, "Sort by Year, Ascending").expect("the button");
     assert_eq!(button.expanded, Some(false));
     assert!(find(Role::MenuItem, "Year").is_none());
+    assert!(!sorted.covers.any());
 }
 
 #[test]
@@ -96,7 +102,7 @@ fn the_way_is_chosen_from_the_same_menu() {
 
 #[test]
 fn without_a_checked_order_the_button_says_sort() {
-    let _ui = start(|| sort_menu(|| false, Vec::new()));
+    let _ui = start(|| sort_menu(Covers::new(), || false, Vec::new()));
 
     assert!(find(Role::Button, "Sort").is_some());
 }

@@ -15,7 +15,6 @@ use anti_webui_md3e::components::{
 };
 use anti_webui_md3e::typography::TextStyle;
 use anti_webui_md3e::{color_scheme, icons, set_color_scheme};
-use next_ui::app_bar;
 use next_ui::card_grid::{Card, card, card_row, columns_for};
 use next_ui::detail_header::{DetailHeader, detail_header, play_and_shuffle};
 use next_ui::details::{format_album_count, format_duration, format_song_count, join_details};
@@ -33,6 +32,7 @@ use next_ui::sort_menu::{SortOption, sort_menu};
 use next_ui::testing::{frames, scroll};
 use next_ui::theme::{DEFAULT_SEED, scheme};
 use next_ui::type_scale::{body, muted_text};
+use next_ui::{Covers, app_bar};
 
 const SCALE: f64 = 2.0;
 const HEIGHT: u32 = 760;
@@ -257,6 +257,7 @@ fn sort() -> Div {
         )
     };
     sort_menu(
+        Covers::new(),
         move || descending.get(),
         vec![
             vec![by("Title", 0), by("Artist", 1), by("Year", 2)],

@@ -230,7 +230,7 @@ pub(crate) fn artists_view(
         top_songs_expanded: signal(false),
         fetching: signal(None),
         action: RefCell::default(),
-        menu: ContextMenu::new(),
+        menu: ContextMenu::new(cx.covers),
         now_playing: follow_now_playing(&cx.workspace),
         list_node: node_ref(),
         page_node: node_ref(),
@@ -310,6 +310,7 @@ fn sort(view: &Rc<View>) -> Div {
         )
     };
     sort_menu(
+        view.cx.covers,
         move || sort.get().is_descending,
         vec![
             vec![

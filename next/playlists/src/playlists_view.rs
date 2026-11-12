@@ -117,7 +117,7 @@ impl Playlists {
             songs_node: node_ref(),
             songs_focused: signal(false),
             list_focused: Rc::default(),
-            menu: ContextMenu::new(),
+            menu: ContextMenu::new(cx.covers),
             dialogs: Dialogs::new(cx.covers),
             now_playing,
             scope: Scope::here(),

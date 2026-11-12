@@ -131,7 +131,7 @@ impl Model {
             album_rows: node_ref(),
             song_rows: node_ref(),
             waiting: Rc::default(),
-            menu: ContextMenu::new(),
+            menu: ContextMenu::new(cx.covers),
             now_playing,
         }
     }
@@ -582,6 +582,7 @@ fn order_menu(model: &Model) -> Div {
         )
     };
     sort_menu(
+        model.cx.covers,
         move || sort.get().is_descending,
         vec![
             vec![

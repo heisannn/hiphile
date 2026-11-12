@@ -19,6 +19,8 @@ pub struct MenuBar {
 /// What the menu bar shows of the screens.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Shown {
+    /// Whether a window takes what is chosen, whether someone is signed in or not.
+    pub(crate) attached: bool,
     /// Where the window is, while someone is signed in.
     pub(crate) destination: Option<Destination>,
     pub(crate) can_go_back: bool,
@@ -162,7 +164,11 @@ fn controls() -> Vec<Item<Command>> {
     .map(|(title, mode)| Item::command(title, Command::SetRepeat(mode), None))
     .collect();
     vec![
-        Item::command("Play/Pause", Command::TogglePlayback, None),
+        Item::command(
+            "Play/Pause",
+            Command::TogglePlayback,
+            Shortcut::command('p').option(),
+        ),
         Item::command("Next", Command::Next, Shortcut::command(Key::Right)),
         Item::command("Previous", Command::Previous, Shortcut::command(Key::Left)),
         Item::Separator,
@@ -198,11 +204,13 @@ fn controls() -> Vec<Item<Command>> {
     ]
 }
 
-/// Nothing goes while no one is signed in or something covers the screens: the menu bar's keys
-/// come before the window's, so a disabled item is what keeps them from what is open.
+/// Nothing goes while something covers the screens, and only the settings while no one is signed
+/// in: the menu bar's keys come before the window's, so a disabled item is what keeps them from
+/// what is open.
 fn state_of(shown: &Shown, command: &Command) -> ItemState {
     let free = shown.destination.is_some() && !shown.covered;
     match command {
+        Command::OpenSettings => ItemState::enabled(shown.attached && !shown.covered),
         Command::Show(location) => {
             ItemState::enabled(free).checked(shown.destination == Some(location.destination()))
         }

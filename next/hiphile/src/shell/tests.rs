@@ -1,9 +1,9 @@
-use anti_webui::core::event::NamedKey;
+use anti_webui::core::event::{Key, Modifiers, NamedKey};
 use anti_webui::prelude::Role;
 use next_player::testing::{CoverServer, png};
 use next_ui::testing::{
-    NOWHERE, SavedLibrary, core, find, frames, has_text, key, nodes, press, signed_in_core,
-    signed_in_core_with_library, start, typed, wait_until,
+    NOWHERE, SavedLibrary, core, find, focus, frames, has_text, key, key_with, nodes, press,
+    signed_in_core, signed_in_core_with_library, start, typed, wait_until,
 };
 use serde_json::json;
 
@@ -67,6 +67,21 @@ fn settings_open_over_the_window_and_escape_closes_them() {
     key(&mut ui, NamedKey::Escape);
     next_ui::testing::frames(&mut ui, 600);
     assert!(nodes(Role::Dialog).is_empty());
+}
+
+#[test]
+fn signed_out_the_settings_open_from_the_top_end() {
+    let (_core, hiphile) = core("");
+    let mut ui = start(move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window));
+    assert!(find(Role::Button, "Servers").is_none());
+
+    press(&mut ui, Role::Button, "Settings");
+    assert!(find(Role::Heading, "Settings").is_some());
+
+    key(&mut ui, NamedKey::Escape);
+    frames(&mut ui, 600);
+    assert!(find(Role::Heading, "Settings").is_none());
+    assert!(heading("Sign In"));
 }
 
 #[test]
@@ -135,6 +150,45 @@ fn in_the_smallest_window_the_rail_fits_and_the_screens_actions_keep_clear_of_th
     let servers = find(Role::Button, "Servers").expect("the servers");
     assert!(settings.bounds.right() <= servers.bounds.x);
     assert!(servers.bounds.right() <= width as f32);
+}
+
+fn focused() -> anti_webui::core::access::AccessNode {
+    let tree = anti_webui::core::access::snapshot();
+    tree.get(tree.focus.expect("something focused"))
+        .unwrap()
+        .clone()
+}
+
+fn tab(ui: &mut anti_webui::core::Ui, modifiers: Modifiers) {
+    key_with(ui, Key::Named(NamedKey::Tab), modifiers);
+}
+
+#[test]
+fn tab_reaches_the_settings_and_the_servers_after_the_screen_and_before_the_player() {
+    let (_core, hiphile) = signed_in_core(NOWHERE);
+    let mut ui = start(move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window));
+    press(&mut ui, Role::Button, "Songs");
+    wait_until(&mut ui, || {
+        nodes(Role::Button)
+            .iter()
+            .any(|node| node.label.as_deref().is_some_and(|l| l.starts_with("Sort")))
+    });
+    let player = find(Role::Toolbar, "Player").unwrap().bounds;
+    let rail = find(Role::Navigation, "Destinations").unwrap().bounds;
+
+    focus(&mut ui, Role::Button, "Settings");
+    tab(&mut ui, Modifiers::default().with_shift());
+    let before = focused();
+    assert!(before.bounds.bottom() <= player.y, "{before:?}");
+    assert!(before.bounds.x >= rail.right(), "{before:?}");
+
+    focus(&mut ui, Role::Button, "Settings");
+    tab(&mut ui, Modifiers::default());
+    assert_eq!(focused().label.as_deref(), Some("Servers"));
+
+    tab(&mut ui, Modifiers::default());
+    let after = focused();
+    assert!(after.bounds.y >= player.y, "{after:?}");
 }
 
 #[test]

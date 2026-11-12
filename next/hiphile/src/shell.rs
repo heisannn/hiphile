@@ -22,13 +22,14 @@ use next_ui::pane::GAP;
 use next_ui::theme::{follow_theme, is_dark};
 use next_ui::type_scale::body;
 use next_ui::window::moves_window;
-use next_ui::{Screen, ScreenContext, app_bar};
+use next_ui::{Command, Commands, Screen, ScreenContext, app_bar};
 
 use crate::MenuBar;
 use crate::menu_bar::Shown;
 use crate::navigation::{Navigation, index_of};
 use crate::rail::rail;
 use crate::reach::{Reach, show_outside};
+use crate::server_menu::server_menu;
 use crate::top_end::top_end;
 
 mod commands;
@@ -58,9 +59,10 @@ impl System {
     }
 }
 
-/// What fills the window: signing in, or the workspace of whoever is signed in. Its colors follow
-/// the appearance chosen, the system's when that follows it, and the cover of what plays. The
-/// workspace takes what is chosen in `menu_bar`, and shows there where it is.
+/// What fills the window: signing in, or the workspace of whoever is signed in, and the settings
+/// over either. Its colors follow the appearance chosen, the system's when that follows it, and
+/// the cover of what plays. The window takes what is chosen in `menu_bar`, and shows there where
+/// it is.
 pub fn app(hiphile: Hiphile, system: System, menu_bar: MenuBar, reach: Reach) -> Div {
     let appearance = follow(hiphile.settings().appearance().subscribe());
     let seed = signal(None::<Color>);
@@ -78,6 +80,8 @@ pub fn app(hiphile: Hiphile, system: System, menu_bar: MenuBar, reach: Reach) ->
     let shown = follow(hiphile.subscribe());
     let workspace = memo(move || shown.with(|shown| shown.workspace().cloned()));
     let snackbars = snackbars();
+    let settings_open = signal(false);
+    let settings = settings_popup(hiphile.clone(), settings_open);
     body(div())
         .size_full()
         .relative()
@@ -88,7 +92,7 @@ pub fn app(hiphile: Hiphile, system: System, menu_bar: MenuBar, reach: Reach) ->
         .child(dyn_view(move || {
             let hiphile = hiphile.clone();
             match workspace.get() {
-                None => untrack(|| signed_out(hiphile)),
+                None => untrack(|| signed_out(hiphile, menu_bar, settings_open)),
                 Some(workspace) => untrack(|| {
                     let parts = Parts {
                         snackbars,
@@ -96,20 +100,34 @@ pub fn app(hiphile: Hiphile, system: System, menu_bar: MenuBar, reach: Reach) ->
                         seed,
                         reach,
                         reduces_motion: system.reduces_motion,
+                        settings_open,
                     };
                     signed_in(hiphile, workspace, shown, parts)
                 }),
             }
         }))
+        .child(settings)
         .child(snackbars.view())
 }
 
-fn signed_out(hiphile: Hiphile) -> Div {
+/// Signing in, and the settings, which are all that `menu_bar` can choose meanwhile.
+fn signed_out(hiphile: Hiphile, menu_bar: MenuBar, settings_open: Signal<bool>) -> Div {
+    let commands = Commands::new(move |command| {
+        if command == Command::OpenSettings {
+            settings_open.set(true);
+        }
+    });
+    menu_bar.attach(commands.clone(), move || Shown {
+        attached: true,
+        covered: settings_open.get(),
+        ..Shown::default()
+    });
     div()
         .size_full()
         .relative()
         .child(sign_in(hiphile))
         .child(moves_window(div().absolute().top(0).left(0).right(0).h(44)))
+        .child(top_end(commands, None))
 }
 
 /// What the workspace's window is made with besides the workspace.
@@ -120,6 +138,7 @@ struct Parts {
     seed: Signal<Option<Color>>,
     reach: Reach,
     reduces_motion: Signal<bool>,
+    settings_open: Signal<bool>,
 }
 
 fn signed_in(
@@ -134,6 +153,7 @@ fn signed_in(
         seed,
         reach,
         reduces_motion,
+        settings_open,
     } = parts;
     let cover = now_playing_cover(&hiphile, &workspace);
     let colors = cover_seed(cover);
@@ -156,7 +176,6 @@ fn signed_in(
     let wide = memo(move || width.get() >= WIDE);
     let expanded = signal(true);
     effect(move || expanded.set(wide.get()));
-    let settings_open = signal(false);
     let search_open = signal(false);
     let sign_in_request = signal(None);
     let top_end_width = signal(0.0_f32);
@@ -187,6 +206,7 @@ fn signed_in(
             )
         });
         Shown {
+            attached: true,
             destination: Some(navigation.destination()),
             can_go_back: navigation.can_go_back(),
             can_go_forward: navigation.can_go_forward(),
@@ -207,6 +227,10 @@ fn signed_in(
     // What the lyrics cover takes no keys and no Tab
     let covered = move || panels.is_covered();
     let screen_home = Rc::new(Cell::new(None::<NodeRef>));
+    let servers = server_menu(hiphile.clone(), shown, sign_in_request, covers);
+    // Its place among the children is its place for Tab, after the screen it is over
+    let top_end = top_end(cx.commands.clone(), Some(servers))
+        .on_resized(move |w, _| top_end_width.set_if_changed(w));
     let root = div()
         .size_full()
         .relative()
@@ -241,24 +265,17 @@ fn signed_in(
                             top_end_width,
                             screen_home.clone(),
                         ))
+                        .child(top_end)
                         .child(show(move || panels.is_queue_shown(), {
                             let cx = cx.clone();
                             move || queue(&cx, panels).mr(GAP)
                         })),
                 )
                 .child(player_bar(player, cover, panels).mr(16))
-                .child(top_end(
-                    hiphile.clone(),
-                    shown,
-                    cx.commands.clone(),
-                    sign_in_request,
-                    top_end_width,
-                ))
                 .child(search(&cx, search_open)),
         )
         .child(lyrics_overlay(&cx, cover, panels, reduces_motion))
         .child(shell.dialogs.view(&cx))
-        .child(settings_popup(hiphile.clone(), settings_open))
         .child(sign_in_dialog(hiphile, sign_in_request));
     // A menu that closes, a row that goes and a press on what takes no focus each leave the focus
     // nowhere, where no key reaches the screens
