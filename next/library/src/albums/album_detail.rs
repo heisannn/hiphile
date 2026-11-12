@@ -89,8 +89,12 @@ fn loaded_album(model: &Model, loaded: LoadedAlbum) -> Div {
         empty_state("This album has no songs.", None, None)
     } else {
         let context = {
-            let model = model.clone();
-            KeyContext::new(SONGS, move |_| true, move |key| model.take_song_key(key))
+            let (model, asked) = (model.clone(), model.clone());
+            KeyContext::new(
+                SONGS,
+                move |key| asked.is_enabled_on_songs(*key),
+                move |key| model.take_song_key(key),
+            )
         };
         key_context(
             div()

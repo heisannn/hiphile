@@ -10,6 +10,8 @@ use hiphile_core::Workspace;
 use hiphile_core::favorites::Favorite;
 use hiphile_core::navigation::{Destination, Location};
 use hiphile_core::test_support::LibraryServer;
+use next_ui::keymap::Keystroke;
+use next_ui::list_detail::Split;
 use next_ui::testing::{
     TestCore, click_text, find, focus, frames, has_text, key, key_with, middle_of, nodes, press,
     right_click, screen_context, signed_in_core, start, typed, wait_until,
@@ -65,6 +67,8 @@ struct Albums {
     sent: Rc<RefCell<Vec<Command>>>,
     /// Whether the screen is there, as while the window shows Albums.
     here: Signal<bool>,
+    /// The keys that did nothing in the screen and went on to the window.
+    passed: Rc<RefCell<Vec<Keystroke>>>,
     workspace: Workspace,
     server: LibraryServer,
     _core: TestCore,
@@ -78,6 +82,7 @@ fn on(server: LibraryServer, at: Location) -> Albums {
     let here = signal(true);
     let left = Rc::new(RefCell::new(Vec::new()));
     let sent = Rc::new(RefCell::new(Vec::new()));
+    let passed = Rc::new(RefCell::new(Vec::new()));
     let commands = {
         let (left, sent, workspace) = (left.clone(), sent.clone(), workspace.clone());
         Commands::new(move |command: Command| {
@@ -96,20 +101,32 @@ fn on(server: LibraryServer, at: Location) -> Albums {
             }
         })
     };
-    let ui = start(move || {
-        let cx = screen_context(&hiphile, commands);
-        div().size_full().flex().flex_col().child(show(
-            move || here.get(),
-            move || {
-                let screen = albums(location, &cx);
-                div()
-                    .size_full()
-                    .flex()
-                    .flex_col()
-                    .child(div().flex().flex_row().children(screen.actions))
-                    .child(screen.body.flex_1().min_h(0))
-            },
-        ))
+    let ui = start({
+        let passed = passed.clone();
+        move || {
+            let cx = screen_context(&hiphile, commands);
+            // Kept between visits, as the shell keeps it
+            let split = Split::new();
+            let window = div().size_full().flex().flex_col().on_key_down(move |e| {
+                if !e.is_default_prevented() {
+                    passed
+                        .borrow_mut()
+                        .push(Keystroke::new(e.key.clone(), e.modifiers));
+                }
+            });
+            window.child(show(
+                move || here.get(),
+                move || {
+                    let screen = albums(location, split, &cx);
+                    div()
+                        .size_full()
+                        .flex()
+                        .flex_col()
+                        .child(div().flex().flex_row().children(screen.actions))
+                        .child(screen.body.flex_1().min_h(0))
+                },
+            ))
+        }
     });
     let mut albums = Albums {
         ui,
@@ -117,6 +134,7 @@ fn on(server: LibraryServer, at: Location) -> Albums {
         left,
         sent,
         here,
+        passed,
         workspace,
         server,
         _core: core,
@@ -141,6 +159,18 @@ impl Albums {
     }
 
     /// Waits for the songs of `album` to show.
+    /// Waits until whether the album on show and its songs are favorites is known.
+    fn wait_for_the_favorites(&mut self) {
+        self.wait_for(|| {
+            let favorites: Vec<_> = snapshot()
+                .nodes
+                .into_iter()
+                .filter(|node| node.label.as_deref() == Some("Favorite"))
+                .collect();
+            !favorites.is_empty() && favorites.iter().all(|favorite| !favorite.disabled)
+        });
+    }
+
     fn wait_for_songs(&mut self, title: &str) {
         let title = title.to_owned();
         self.wait_for(move || {
@@ -230,6 +260,11 @@ fn focused() -> Option<(Role, String)> {
     let focus = tree.focus?;
     let node = tree.nodes.into_iter().find(|node| node.id == focus)?;
     Some((node.role, node.label.unwrap_or_default()))
+}
+
+fn list_width() -> f64 {
+    let handle = find(Role::Separator, "List Width").expect("the handle");
+    handle.value.expect("a width").now
 }
 
 fn has_focus(role: Role, label: &str) -> bool {
@@ -534,6 +569,7 @@ fn the_playlist_key_asks_which_playlist_takes_the_album() {
 #[test]
 fn the_keys_go_to_the_album_or_the_song_with_the_focus() {
     let mut albums = showing_alpha();
+    albums.wait_for_the_favorites();
     albums.primary_char('d', false);
     albums.key(NamedKey::ArrowRight);
     albums.key(NamedKey::ArrowDown);
@@ -604,9 +640,37 @@ fn an_album_without_songs_is_not_played() {
     albums.wait_for(|| has_text("This album has no songs."));
 
     albums.primary(NamedKey::Enter);
+    albums.key(NamedKey::ArrowRight);
 
     assert!(albums.sent().is_empty());
     assert!(find(Role::Button, "Play").is_some_and(|play| play.disabled));
+    assert_eq!(
+        *albums.passed.borrow(),
+        [
+            Keystroke::named(NamedKey::Enter).with_primary(),
+            Keystroke::named(NamedKey::ArrowRight),
+        ]
+    );
+    assert!(has_focus(Role::ListBox, "Albums"));
+}
+
+#[test]
+fn the_list_comes_back_as_wide_as_it_was_left() {
+    let mut albums = showing_alpha();
+    let first = list_width();
+    focus(&mut albums.ui, Role::Separator, "List Width");
+    albums.key(NamedKey::ArrowRight);
+    let widened = list_width();
+    assert!(widened > first, "{widened} from {first}");
+    albums.here.set(false);
+    albums.go(Location::Home);
+
+    albums.go(at("a"));
+    albums.here.set(true);
+    albums.settle();
+    albums.wait_for_songs("Alpha");
+
+    assert_eq!(list_width(), widened);
 }
 
 #[test]

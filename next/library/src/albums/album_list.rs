@@ -63,23 +63,10 @@ pub(super) fn album_list(model: &Model) -> Div {
     div()
         .flex()
         .flex_col()
-        .child(filter(model))
+        .child(list_filter(model.filter, "Filter Albums", model.album_rows))
         .child(header(model))
         .child(failure(model))
         .child(rows(model))
-}
-
-/// Enter in it goes to the albums.
-fn filter(model: &Model) -> Div {
-    let rows = model.album_rows;
-    list_filter(model.filter, "Filter Albums").on_key_down(move |e| {
-        let m = e.modifiers;
-        if matches!(e.key, Key::Named(NamedKey::Enter)) && !(m.shift || m.ctrl || m.alt || m.logo) {
-            e.stop_propagation();
-            e.prevent_default();
-            rows.focus();
-        }
-    })
 }
 
 fn header(model: &Model) -> Div {
@@ -121,7 +108,7 @@ fn rows(model: &Model) -> Div {
         let (model, asked) = (model.clone(), model.clone());
         KeyContext::new(
             ALBUMS,
-            move |_| asked.selected().is_some(),
+            move |key| asked.is_enabled_on_albums(*key),
             move |key| model.take_album_key(key),
         )
     };
