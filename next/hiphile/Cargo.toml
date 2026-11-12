@@ -22,6 +22,7 @@ next-account.workspace = true
 next-host.workspace = true
 next-platform.workspace = true
 next-player.workspace = true
+next-settings.workspace = true
 next-ui.workspace = true
 presence.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }

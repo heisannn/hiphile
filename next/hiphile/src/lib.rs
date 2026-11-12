@@ -5,7 +5,6 @@ mod navigation;
 mod rail;
 mod reach;
 mod server_menu;
-mod settings_popup;
 mod shell;
 
 pub use menu_bar::MenuBar;

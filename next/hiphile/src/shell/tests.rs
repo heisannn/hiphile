@@ -69,6 +69,31 @@ fn settings_open_over_the_window_and_escape_closes_them() {
 }
 
 #[test]
+fn the_theme_chosen_in_the_settings_shows_behind_them_at_once() {
+    use anti_webui_md3e::color_scheme;
+    use next_ui::theme::{DEFAULT_SEED, scheme};
+
+    let (_core, hiphile) = signed_in_core(NOWHERE);
+    let appearance = hiphile.settings().appearance().clone();
+    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new(), Reach::Window));
+    let surface = |dark| scheme(DEFAULT_SEED, dark).surface;
+    assert_eq!(color_scheme().surface, surface(false));
+
+    press(&mut ui, Role::Button, "Settings");
+    press(&mut ui, Role::Tab, "Appearance");
+    press(&mut ui, Role::Radio, "Dark");
+    wait_until(&mut ui, || appearance.snapshot().appearance().is_some());
+    next_ui::testing::frames(&mut ui, 1000);
+    assert_eq!(color_scheme().surface, surface(true));
+    assert_eq!(nodes(Role::Dialog).len(), 1);
+
+    press(&mut ui, Role::Radio, "System");
+    wait_until(&mut ui, || appearance.snapshot().appearance().is_none());
+    next_ui::testing::frames(&mut ui, 1000);
+    assert_eq!(color_scheme().surface, surface(false));
+}
+
+#[test]
 fn signing_out_from_the_servers_goes_back_to_signing_in() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
     let mut ui = start({

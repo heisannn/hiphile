@@ -12,7 +12,7 @@ use anti_webui::core::geometry::PointF;
 use anti_webui::prelude::{Role, signal};
 use anti_webui_md3e::color_scheme;
 use hiphile_core::Hiphile;
-use next_hiphile::{MenuBar, Reach, WINDOW, app};
+use next_hiphile::{MenuBar, Reach, SMALLEST_WINDOW, WINDOW, app};
 use next_player::testing::{CoverServer, png};
 use next_ui::testing::{NOWHERE, click, core, find, frames, press, signed_in_core};
 use next_ui::theme::{DEFAULT_SEED, scheme};
@@ -61,13 +61,56 @@ fn main() {
                 press(ui, Role::MenuItem, "Add Server…");
             },
         );
+        for page in SETTINGS_PAGES {
+            shot(
+                &folder.join(format!("settings-{}-{theme}.png", page.to_lowercase())),
+                dark,
+                true,
+                |ui| settings(ui, page),
+            );
+        }
+        for resampler in ["r8brain", "soxr"] {
+            shot(
+                &folder.join(format!("settings-{resampler}-{theme}.png")),
+                dark,
+                true,
+                |ui| {
+                    settings(ui, "Audio");
+                    press(ui, Role::Radio, resampler);
+                    frames(ui, 100);
+                    let group = find(Role::Heading, &format!("{resampler} filter"))
+                        .expect("the resampler's settings");
+                    perform(group.id, AccessAction::ScrollIntoView);
+                },
+            );
+        }
         shot(
-            &folder.join(format!("settings-{theme}.png")),
+            &folder.join(format!("settings-r8brain-performance-{theme}.png")),
             dark,
             true,
             |ui| {
-                press(ui, Role::Button, "Settings");
+                settings(ui, "Audio");
+                press(ui, Role::Radio, "r8brain");
+                frames(ui, 100);
+                let last = find(Role::TextInput, "r8brain filter bank cache").expect("the field");
+                perform(last.id, AccessAction::ScrollIntoView);
             },
+        );
+        shot(
+            &folder.join(format!("settings-crossfeed-{theme}.png")),
+            dark,
+            true,
+            |ui| {
+                settings(ui, "DSP");
+                press(ui, Role::Switch, "Crossfeed");
+            },
+        );
+        shot_at(
+            &folder.join(format!("settings-narrow-{theme}.png")),
+            dark,
+            true,
+            SMALLEST_WINDOW,
+            |ui| settings(ui, "Audio"),
         );
         playing_shot(
             &folder.join(format!("player-playing-{theme}.png")),
@@ -104,13 +147,39 @@ fn main() {
     }
 }
 
+const SETTINGS_PAGES: [&str; 7] = [
+    "Audio",
+    "DSP",
+    "Queue",
+    "Lyrics",
+    "Storage",
+    "Discord",
+    "Appearance",
+];
+
+fn settings(ui: &mut Ui, page: &str) {
+    press(ui, Role::Button, "Settings");
+    frames(ui, 400);
+    press(ui, Role::Tab, page);
+}
+
 fn shot(path: &Path, dark: bool, signed_in: bool, drive: impl FnOnce(&mut Ui)) {
+    shot_at(path, dark, signed_in, WINDOW, drive);
+}
+
+fn shot_at(
+    path: &Path,
+    dark: bool,
+    signed_in: bool,
+    size: (i32, i32),
+    drive: impl FnOnce(&mut Ui),
+) {
     let (_core, hiphile) = if signed_in {
         signed_in_core(NOWHERE)
     } else {
         core("")
     };
-    render(path, dark, hiphile, drive);
+    render(path, dark, hiphile, size, drive);
 }
 
 /// A song with a cover from `covers` in the queue, in the state that `setup` puts the player in.
@@ -127,7 +196,7 @@ fn playing_shot(
     player.fill_queue(&[song()], 0);
     setup(&player);
     let default = scheme(DEFAULT_SEED, dark).primary;
-    render(path, dark, hiphile, move |ui| {
+    render(path, dark, hiphile, WINDOW, move |ui| {
         // The scheme cross-fades, which takes frames
         for _ in 0..500 {
             if color_scheme().primary != default {
@@ -142,10 +211,16 @@ fn playing_shot(
     });
 }
 
-fn render(path: &Path, dark: bool, hiphile: Hiphile, drive: impl FnOnce(&mut Ui)) {
+fn render(
+    path: &Path,
+    dark: bool,
+    hiphile: Hiphile,
+    size: (i32, i32),
+    drive: impl FnOnce(&mut Ui),
+) {
     let (width, height) = (
-        (WINDOW.0 as f64 * SCALE) as u32,
-        (WINDOW.1 as f64 * SCALE) as u32,
+        (size.0 as f64 * SCALE) as u32,
+        (size.1 as f64 * SCALE) as u32,
     );
     let pixels = headless::render_driven_rgba(
         width,
