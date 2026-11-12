@@ -11,6 +11,7 @@ mod freshness;
 mod handles;
 mod lyrics;
 mod number_range;
+mod pane_widths;
 mod queue;
 mod song_cache_usage;
 
@@ -28,5 +29,6 @@ pub use freshness::Freshness;
 pub use handles::Settings;
 pub use lyrics::{LYRICS_HIGHLIGHTS, LyricsSettings, LyricsSnapshot};
 pub use number_range::NumberRange;
+pub use pane_widths::{PaneWidths, PaneWidthsSnapshot};
 pub use queue::{QueueSettings, QueueSnapshot};
 pub use song_cache_usage::{SongCacheSnapshot, SongCacheUsage, format_size};
