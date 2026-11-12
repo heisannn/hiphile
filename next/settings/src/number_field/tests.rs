@@ -4,8 +4,11 @@ use config::R8brainQuality;
 use next_ui::testing::{TestCore, core, find, has_text, key, press, start, wait_until};
 
 use super::*;
-use crate::controls::never;
-use crate::testing::{replace, settle, value};
+use crate::r8brain_section::r8brain_groups;
+use crate::testing::{replace, value};
+
+/// Typed into after the field of a test, to tell when what was typed there has settled.
+const LATER: R8brainNumber = R8brainNumber::FilterBankCacheSize;
 
 struct R8brain {
     audio: AudioSettings,
@@ -14,7 +17,8 @@ struct R8brain {
     _core: TestCore,
 }
 
-/// The field of `number`, with r8brain resampling.
+/// The fields of the r8brain parameters, as the Audio page has them, of which the test is about
+/// `number`'s.
 fn r8brain(number: R8brainNumber) -> R8brain {
     let (core, hiphile) = core("");
     let audio = hiphile.settings().audio().clone();
@@ -23,7 +27,10 @@ fn r8brain(number: R8brainNumber) -> R8brain {
         let audio = audio.clone();
         move || {
             let shown = next_host::follow(audio.subscribe());
-            r8brain_number_field(&audio, shown, number, never())
+            div()
+                .size_full()
+                .overflow_y_scroll()
+                .children(r8brain_groups(&audio, shown))
         }
     });
     R8brain {
@@ -64,6 +71,15 @@ impl R8brain {
     fn press_enter(&mut self) {
         key(&mut self.ui, NamedKey::Enter);
     }
+
+    /// Waits until what was typed has settled and the screen has what came of it: a number typed
+    /// after it, whose reset button shows once it settles, settles after it.
+    fn wait_for_settling(&mut self) {
+        assert_ne!(self.number, LATER);
+        self.audio.type_r8brain(LATER, "3");
+        let reset = format!("Reset {}", LATER.name());
+        wait_until(&mut self.ui, || find(Role::Button, &reset).is_some());
+    }
 }
 
 #[test]
@@ -97,7 +113,7 @@ fn enter_shows_the_number_held_to_the_range() {
 fn typing_beyond_the_range_is_said_and_stays_until_enter() {
     let mut it = r8brain(R8brainNumber::Attenuation);
     it.type_text("1");
-    settle(&mut it.ui);
+    it.wait_for_settling();
     assert_eq!(it.shown(), "1");
     assert!(has_text("Enter 49 to 218."));
 
@@ -158,7 +174,7 @@ fn a_preset_replaces_typing_that_has_not_settled() {
     it.audio.select_r8brain_quality(0);
     it.wait_for("136.45");
 
-    settle(&mut it.ui);
+    it.wait_for_settling();
     it.leave();
     assert_eq!(
         it.audio.snapshot().r8brain_parameters().quality,
@@ -170,7 +186,7 @@ fn a_preset_replaces_typing_that_has_not_settled() {
 fn typing_keeps_its_form_once_it_has_settled() {
     let mut it = r8brain(R8brainNumber::TransitionBand);
     it.type_text("3.50");
-    settle(&mut it.ui);
+    it.wait_for_settling();
     assert_eq!(it.filter().transition_band, 3.5);
     assert_eq!(it.shown(), "3.50");
 
@@ -181,14 +197,15 @@ fn typing_keeps_its_form_once_it_has_settled() {
 #[test]
 fn an_empty_field_shows_that_the_resampler_chooses_the_filter_positions() {
     let mut it = r8brain(R8brainNumber::FilterFractions);
+    let reset = "Reset r8brain filter positions";
     it.type_text("512");
     it.press_enter();
-    it.wait_for("512");
+    wait_until(&mut it.ui, || find(Role::Button, reset).is_some());
 
     it.type_text("");
     it.press_enter();
     assert_eq!(it.filter().filter_fractions, None);
-    settle(&mut it.ui);
+    wait_until(&mut it.ui, || find(Role::Button, reset).is_none());
     assert_eq!(it.shown(), "");
 }
 

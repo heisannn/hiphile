@@ -17,7 +17,9 @@ next-ui.workspace = true
 session.workspace = true
 
 [dev-dependencies]
+catalog.workspace = true
 next-ui = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
 
 [lints]
 workspace = true

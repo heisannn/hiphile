@@ -5762,12 +5762,14 @@ version = "0.5.0"
 dependencies = [
  "anti-webui",
  "anti-webui-md3e",
+ "catalog",
  "config 0.5.0",
  "fuzzy",
  "hiphile-core",
  "next-host",
  "next-ui",
  "session",
+ "tempfile",
 ]
 
 [[package]]

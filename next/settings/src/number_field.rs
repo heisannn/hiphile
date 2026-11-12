@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::rc::Rc;
 
 use anti_webui::prelude::*;
@@ -33,7 +34,8 @@ pub(crate) struct Number {
     pub(crate) follows: Option<Rc<dyn Fn() -> String>>,
     /// Told of each change typed.
     pub(crate) typed: Rc<dyn Fn(&str)>,
-    /// Told when Enter is pressed or the field is left.
+    /// Told when Enter is pressed or the field is left, and as it goes while what was typed in it
+    /// is not left yet.
     pub(crate) left: Rc<dyn Fn()>,
     pub(crate) reset: Option<Reset>,
 }
@@ -146,9 +148,28 @@ pub(crate) fn number_field(number: Number, disabled: When) -> Div {
         let now = now.clone();
         Rc::new(move || value.set_if_changed(now()))
     };
+    // Typed into and not left yet. A field can go without losing the focus, as when another page
+    // is chosen, and what was typed then counts as it goes
+    let is_typed_into = Rc::new(Cell::new(false));
+    {
+        let (is_typed_into, left) = (is_typed_into.clone(), left.clone());
+        on_cleanup(move || {
+            if is_typed_into.get() {
+                left();
+            }
+        });
+    }
+    let typed: Rc<dyn Fn(&str)> = {
+        let is_typed_into = is_typed_into.clone();
+        Rc::new(move |text| {
+            is_typed_into.set(true);
+            typed(text);
+        })
+    };
     let leave = {
         let show_now = show_now.clone();
         Rc::new(move || {
+            is_typed_into.set(false);
             left();
             show_now();
         })

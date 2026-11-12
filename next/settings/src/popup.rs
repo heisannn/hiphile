@@ -53,11 +53,19 @@ pub fn settings_popup(hiphile: Hiphile, open: Signal<bool>) -> Show {
                     .pl(24.0_f32)
                     .pr(8.0_f32)
                     .child(
-                        styled_text(TextStyle::TITLE_LARGE, "Settings")
+                        styled_text(TextStyle::HEADLINE_SMALL, "Settings")
                             .flex_1()
                             .access(|a| a.role(Role::Heading).level(1)),
                     )
                     .child(close);
+                // Closing by a key or from assistive technology leaves the focus in a field, which
+                // counts what was typed into it only as it loses the focus
+                let surface_node = node_ref();
+                effect(move || {
+                    if !modal.open() {
+                        untrack(|| surface_node.blur());
+                    }
+                });
                 let page = dyn_view(move || {
                     let page = chosen.get();
                     let (settings, usage, readings) =
@@ -87,7 +95,7 @@ pub fn settings_popup(hiphile: Hiphile, open: Signal<bool>) -> Show {
                             .pb(24.0_f32)
                             .access(move |a| a.role(Role::TabPanel).label(page.label()))
                             .child(
-                                styled_text(TextStyle::HEADLINE_SMALL, page.label())
+                                styled_text(TextStyle::TITLE_LARGE, page.label())
                                     .flex_none()
                                     .access(|a| a.role(Role::Heading).level(2)),
                             )
@@ -110,6 +118,7 @@ pub fn settings_popup(hiphile: Hiphile, open: Signal<bool>) -> Show {
                     .max_h(760)
                     .rounded(28.0_f32)
                     .overflow_hidden()
+                    .node_ref(surface_node)
                     .access(|a| a.label("Settings"))
                     .dyn_style(move |s| {
                         let c = color_scheme();
