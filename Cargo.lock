@@ -299,6 +299,183 @@ dependencies = [
 ]
 
 [[package]]
+name = "anti-webui"
+version = "0.1.0"
+source = "git+https://github.com/bea4dev/AntiWebUI?rev=25e82a1d2a7a08658f0eede14cde47b34cce40a6#25e82a1d2a7a08658f0eede14cde47b34cce40a6"
+dependencies = [
+ "anti-webui-internal",
+]
+
+[[package]]
+name = "anti-webui-app"
+version = "0.1.0"
+source = "git+https://github.com/bea4dev/AntiWebUI?rev=25e82a1d2a7a08658f0eede14cde47b34cce40a6#25e82a1d2a7a08658f0eede14cde47b34cce40a6"
+dependencies = [
+ "anti-webui-core",
+ "anti-webui-macos",
+ "anti-webui-wayland",
+ "anti-webui-wgpu",
+ "anti-webui-windows",
+ "anti-webui-x11",
+ "libc",
+ "log",
+ "png 0.18.1",
+ "raw-window-handle",
+]
+
+[[package]]
+name = "anti-webui-core"
+version = "0.1.0"
+source = "git+https://github.com/bea4dev/AntiWebUI?rev=25e82a1d2a7a08658f0eede14cde47b34cce40a6#25e82a1d2a7a08658f0eede14cde47b34cce40a6"
+dependencies = [
+ "anti-webui-style",
+ "icu_properties",
+ "image",
+ "kurbo 0.13.1",
+ "libc",
+ "log",
+ "moxcms",
+ "parley",
+ "read-fonts 0.41.0",
+ "resvg 0.49.0",
+ "simplecss",
+ "slotmap",
+ "svgtypes 0.16.1",
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "anti-webui-internal"
+version = "0.1.0"
+source = "git+https://github.com/bea4dev/AntiWebUI?rev=25e82a1d2a7a08658f0eede14cde47b34cce40a6#25e82a1d2a7a08658f0eede14cde47b34cce40a6"
+dependencies = [
+ "anti-webui-app",
+ "anti-webui-core",
+ "anti-webui-macros",
+ "anti-webui-style",
+ "anti-webui-wgpu",
+ "anti-webui-widgets",
+]
+
+[[package]]
+name = "anti-webui-macos"
+version = "0.1.0"
+source = "git+https://github.com/bea4dev/AntiWebUI?rev=25e82a1d2a7a08658f0eede14cde47b34cce40a6#25e82a1d2a7a08658f0eede14cde47b34cce40a6"
+dependencies = [
+ "anti-webui-core",
+ "dispatch2",
+ "libc",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+ "objc2-io-surface",
+ "objc2-quartz-core 0.3.2",
+ "raw-window-handle",
+]
+
+[[package]]
+name = "anti-webui-macros"
+version = "0.1.0"
+source = "git+https://github.com/bea4dev/AntiWebUI?rev=25e82a1d2a7a08658f0eede14cde47b34cce40a6#25e82a1d2a7a08658f0eede14cde47b34cce40a6"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "anti-webui-md3e"
+version = "0.1.0"
+source = "git+https://github.com/bea4dev/AntiWebUI?rev=25e82a1d2a7a08658f0eede14cde47b34cce40a6#25e82a1d2a7a08658f0eede14cde47b34cce40a6"
+dependencies = [
+ "anti-webui",
+ "anti-webui-symbols-outlined",
+]
+
+[[package]]
+name = "anti-webui-style"
+version = "0.1.0"
+source = "git+https://github.com/bea4dev/AntiWebUI?rev=25e82a1d2a7a08658f0eede14cde47b34cce40a6#25e82a1d2a7a08658f0eede14cde47b34cce40a6"
+
+[[package]]
+name = "anti-webui-symbols-outlined"
+version = "0.1.0"
+source = "git+https://github.com/bea4dev/AntiWebUI?rev=25e82a1d2a7a08658f0eede14cde47b34cce40a6#25e82a1d2a7a08658f0eede14cde47b34cce40a6"
+
+[[package]]
+name = "anti-webui-wayland"
+version = "0.1.0"
+source = "git+https://github.com/bea4dev/AntiWebUI?rev=25e82a1d2a7a08658f0eede14cde47b34cce40a6#25e82a1d2a7a08658f0eede14cde47b34cce40a6"
+dependencies = [
+ "anti-webui-core",
+ "raw-window-handle",
+ "rustix",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-wlr",
+ "xkbcommon 0.9.0",
+]
+
+[[package]]
+name = "anti-webui-wgpu"
+version = "0.1.0"
+source = "git+https://github.com/bea4dev/AntiWebUI?rev=25e82a1d2a7a08658f0eede14cde47b34cce40a6#25e82a1d2a7a08658f0eede14cde47b34cce40a6"
+dependencies = [
+ "anti-webui-core",
+ "ash",
+ "bytemuck",
+ "kurbo 0.13.1",
+ "libc",
+ "libloading",
+ "log",
+ "naga",
+ "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-io-surface",
+ "objc2-metal 0.3.2",
+ "pollster 1.0.1",
+ "raw-window-handle",
+ "swash",
+ "wgpu",
+ "windows 0.62.2",
+]
+
+[[package]]
+name = "anti-webui-widgets"
+version = "0.1.0"
+source = "git+https://github.com/bea4dev/AntiWebUI?rev=25e82a1d2a7a08658f0eede14cde47b34cce40a6#25e82a1d2a7a08658f0eede14cde47b34cce40a6"
+dependencies = [
+ "anti-webui-core",
+]
+
+[[package]]
+name = "anti-webui-windows"
+version = "0.1.0"
+source = "git+https://github.com/bea4dev/AntiWebUI?rev=25e82a1d2a7a08658f0eede14cde47b34cce40a6#25e82a1d2a7a08658f0eede14cde47b34cce40a6"
+dependencies = [
+ "anti-webui-core",
+ "raw-window-handle",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+]
+
+[[package]]
+name = "anti-webui-x11"
+version = "0.1.0"
+source = "git+https://github.com/bea4dev/AntiWebUI?rev=25e82a1d2a7a08658f0eede14cde47b34cce40a6#25e82a1d2a7a08658f0eede14cde47b34cce40a6"
+dependencies = [
+ "anti-webui-core",
+ "log",
+ "raw-window-handle",
+ "rustix",
+ "x11rb 0.14.0",
+ "xim",
+ "xkbcommon 0.9.0",
+]
+
+[[package]]
 name = "anyhow"
 version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1614,8 +1791,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be17b688510d934ce13f48a2beba700e11583e281e0fda99c22bb256a14eda73"
 dependencies = [
  "bitflags 2.13.2",
- "fontdb",
- "harfrust",
+ "fontdb 0.23.0",
+ "harfrust 0.5.2",
  "linebender_resource_handle",
  "log",
  "rangemap",
@@ -2253,7 +2430,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2512,6 +2689,40 @@ dependencies = [
  "slotmap",
  "tinyvec",
  "ttf-parser",
+]
+
+[[package]]
+name = "fontdb"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2660c5e9157bf76d2db1294e4a9feba604ef610819a3b591088d0d8392a3290f"
+dependencies = [
+ "fontconfig-parser",
+ "log",
+ "slotmap",
+ "tinyvec",
+]
+
+[[package]]
+name = "fontique"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbf1df16263783918b7da396077521f92b729ef7c429444dfcf03581f1448b77"
+dependencies = [
+ "hashbrown 0.17.1",
+ "linebender_resource_handle",
+ "memmap2",
+ "objc2 0.6.5",
+ "objc2-core-foundation",
+ "objc2-core-text",
+ "objc2-foundation 0.3.2",
+ "parlance",
+ "read-fonts 0.41.0",
+ "roxmltree 0.21.2",
+ "smallvec",
+ "windows 0.62.2",
+ "windows-core 0.62.2",
+ "yeslogic-fontconfig-sys",
 ]
 
 [[package]]
@@ -2868,7 +3079,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.21",
- "windows 0.62.2",
+ "windows 0.57.0",
 ]
 
 [[package]]
@@ -3123,8 +3334,8 @@ dependencies = [
  "wayland-protocols",
  "wayland-protocols-plasma",
  "wayland-protocols-wlr",
- "x11rb",
- "xkbcommon",
+ "x11rb 0.13.2",
+ "xkbcommon 0.8.0",
  "zed-scap",
  "zed-xim",
 ]
@@ -3555,8 +3766,8 @@ dependencies = [
  "wayland-protocols",
  "wayland-protocols-plasma",
  "wayland-protocols-wlr",
- "x11rb",
- "xkbcommon",
+ "x11rb 0.13.2",
+ "xkbcommon 0.8.0",
  "zed-scap",
  "zed-xim",
 ]
@@ -3897,6 +4108,18 @@ dependencies = [
  "bytemuck",
  "core_maths",
  "read-fonts 0.37.0",
+ "smallvec",
+]
+
+[[package]]
+name = "harfrust"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c03d949a14aa089bbb282f7dd76a498a7f684428e4257202efc119ec010376f9"
+dependencies = [
+ "bitflags 2.13.2",
+ "bytemuck",
+ "read-fonts 0.41.0",
  "smallvec",
 ]
 
@@ -4248,7 +4471,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.57.0",
 ]
 
 [[package]]
@@ -4470,6 +4693,12 @@ name = "imagesize"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09e54e57b4c48b40f7aec75635392b12b3421fa26fe8b4332e63138ed278459c"
+
+[[package]]
+name = "imagesize"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65b27460c2c92b037f3f94c538ed9a3342f3fdf923606781629ccb35f82d042a"
 
 [[package]]
 name = "imgref"
@@ -5361,6 +5590,61 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
+name = "next-account"
+version = "0.5.0"
+dependencies = [
+ "anti-webui",
+ "anti-webui-md3e",
+ "config 0.5.0",
+ "hiphile-core",
+ "next-host",
+ "next-ui",
+ "session",
+]
+
+[[package]]
+name = "next-hiphile"
+version = "0.5.0"
+dependencies = [
+ "anti-webui",
+ "anti-webui-md3e",
+ "config 0.5.0",
+ "executor",
+ "hiphile-core",
+ "net",
+ "next-account",
+ "next-host",
+ "next-ui",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "next-host"
+version = "0.5.0"
+dependencies = [
+ "anti-webui",
+ "executor",
+ "tokio",
+]
+
+[[package]]
+name = "next-ui"
+version = "0.5.0"
+dependencies = [
+ "anti-webui",
+ "anti-webui-md3e",
+ "config 0.5.0",
+ "executor",
+ "hiphile-core",
+ "net",
+ "next-host",
+ "next-ui",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "nix"
 version = "0.31.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5901,6 +6185,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "180788110936d59bab6bd83b6060ffdfffb3b922ba1396b312ae795e1de9d81d"
 dependencies = [
  "bitflags 2.13.2",
+ "libc",
  "objc2 0.6.5",
  "objc2-core-foundation",
 ]
@@ -5928,6 +6213,7 @@ dependencies = [
  "dispatch2",
  "objc2 0.6.5",
  "objc2-foundation 0.3.2",
+ "objc2-io-surface",
 ]
 
 [[package]]
@@ -6160,6 +6446,62 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-link 0.2.1",
+]
+
+[[package]]
+name = "parlance"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73072a9470554c8e794778acece2312661218aaabb635600957d952cf01c716e"
+
+[[package]]
+name = "parley"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "61bd0c0c1737f0b3d3726dc06b225083af213b61913e4fbae1670613a106c6ce"
+dependencies = [
+ "fontique",
+ "hashbrown 0.17.1",
+ "linebender_resource_handle",
+ "parlance",
+ "parley_engine",
+ "smallvec",
+]
+
+[[package]]
+name = "parley_data"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c43b63f808f6cc8f4a3b07de0d62a977bddd2e0bb5c232bd9e93ba8ef92e5e4b"
+dependencies = [
+ "icu_collections",
+ "icu_properties",
+]
+
+[[package]]
+name = "parley_emoji"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c4482d912d7671a7cd2089794f90ef3bb5f5f8c738230fb0fcd50fa020f0ed3"
+
+[[package]]
+name = "parley_engine"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b74c0d373e462e504ad4436710a39f099e18e848e1ee711f70cd2dcd5a69b290"
+dependencies = [
+ "fontique",
+ "harfrust 0.12.0",
+ "hashbrown 0.17.1",
+ "icu_locale_core",
+ "icu_normalizer",
+ "icu_properties",
+ "icu_segmenter",
+ "linebender_resource_handle",
+ "parlance",
+ "parley_data",
+ "parley_emoji",
+ "skrifa 0.44.0",
 ]
 
 [[package]]
@@ -6839,7 +7181,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7274,7 +7616,7 @@ dependencies = [
  "pico-args",
  "rgb",
  "svgtypes 0.15.3",
- "tiny-skia",
+ "tiny-skia 0.11.4",
  "usvg 0.45.1",
  "zune-jpeg 0.4.21",
 ]
@@ -7291,8 +7633,26 @@ dependencies = [
  "pico-args",
  "rgb",
  "svgtypes 0.16.1",
- "tiny-skia",
+ "tiny-skia 0.11.4",
  "usvg 0.46.0",
+ "zune-jpeg 0.5.15",
+]
+
+[[package]]
+name = "resvg"
+version = "0.49.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1572844b6727a1bf842190e9947641a68ac44bed83f50afb4bd1407a2564bee8"
+dependencies = [
+ "bytemuck",
+ "gif 0.14.2",
+ "image-webp",
+ "log",
+ "pico-args",
+ "rgb",
+ "svgtypes 0.16.1",
+ "tiny-skia 0.12.0",
+ "usvg 0.49.0",
  "zune-jpeg 0.5.15",
 ]
 
@@ -7555,7 +7915,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7623,7 +7983,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -7849,7 +8209,7 @@ checksum = "609c5606d9d357b26e4ee1a7a01beac396628d0fa01ebbade2a09cefb88e65af"
 dependencies = [
  "fastrand",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -8473,7 +8833,7 @@ version = "0.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c2499c2d826531388872b2268718aed907a39bd785ab0dcfe57fab26283f92e"
 dependencies = [
- "skrifa 0.44.0",
+ "skrifa 0.40.0",
  "yazi",
  "zeno",
 ]
@@ -8828,7 +9188,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -8957,7 +9317,22 @@ dependencies = [
  "cfg-if",
  "log",
  "png 0.17.16",
- "tiny-skia-path",
+ "tiny-skia-path 0.11.4",
+]
+
+[[package]]
+name = "tiny-skia"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47ffee5eaaf5527f630fb0e356b90ebdec84d5d18d937c5e440350f88c5a91ea"
+dependencies = [
+ "arrayref",
+ "arrayvec",
+ "bytemuck",
+ "cfg-if",
+ "log",
+ "png 0.18.1",
+ "tiny-skia-path 0.12.0",
 ]
 
 [[package]]
@@ -8965,6 +9340,17 @@ name = "tiny-skia-path"
 version = "0.11.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9c9e7fc0c2e86a30b117d0462aa261b72b7a99b7ebd7deb3a14ceda95c5bdc93"
+dependencies = [
+ "arrayref",
+ "bytemuck",
+ "strict-num",
+]
+
+[[package]]
+name = "tiny-skia-path"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "edca365c3faccca67d06593c5980fa6c57687de727a03131735bb85f01fdeeb9"
 dependencies = [
  "arrayref",
  "bytemuck",
@@ -9480,7 +9866,7 @@ dependencies = [
  "base64 0.22.1",
  "data-url",
  "flate2",
- "fontdb",
+ "fontdb 0.23.0",
  "imagesize 0.13.0",
  "kurbo 0.11.3",
  "log",
@@ -9491,7 +9877,7 @@ dependencies = [
  "siphasher",
  "strict-num",
  "svgtypes 0.15.3",
- "tiny-skia-path",
+ "tiny-skia-path 0.11.4",
  "unicode-bidi",
  "unicode-script",
  "unicode-vo",
@@ -9507,7 +9893,7 @@ dependencies = [
  "base64 0.22.1",
  "data-url",
  "flate2",
- "fontdb",
+ "fontdb 0.23.0",
  "imagesize 0.14.0",
  "kurbo 0.13.1",
  "log",
@@ -9518,7 +9904,34 @@ dependencies = [
  "siphasher",
  "strict-num",
  "svgtypes 0.16.1",
- "tiny-skia-path",
+ "tiny-skia-path 0.11.4",
+ "unicode-bidi",
+ "unicode-script",
+ "unicode-vo",
+ "xmlwriter",
+]
+
+[[package]]
+name = "usvg"
+version = "0.49.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d09b73ee83641d390ad7ffd9000f347b16eb128e437675b6ff277ea5c7fcf22c"
+dependencies = [
+ "base64 0.23.1",
+ "data-url",
+ "fontdb 0.24.0",
+ "harfrust 0.12.0",
+ "imagesize 0.15.0",
+ "kurbo 0.13.1",
+ "log",
+ "pico-args",
+ "roxmltree 0.21.2",
+ "simplecss",
+ "siphasher",
+ "skrifa 0.44.0",
+ "strict-num",
+ "svgtypes 0.16.1",
+ "tiny-skia-path 0.12.0",
  "unicode-bidi",
  "unicode-script",
  "unicode-vo",
@@ -10120,7 +10533,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -10802,7 +11215,21 @@ dependencies = [
  "gethostname",
  "libc",
  "rustix",
- "x11rb-protocol",
+ "x11rb-protocol 0.13.2",
+ "xcursor",
+]
+
+[[package]]
+name = "x11rb"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a8885a854a8bfdf87a301e53e41b17c5f8f33639903131338b997b1eb614f44"
+dependencies = [
+ "as-raw-xcb-connection",
+ "gethostname",
+ "libc",
+ "rustix",
+ "x11rb-protocol 0.14.0",
  "xcursor",
 ]
 
@@ -10811,6 +11238,12 @@ name = "x11rb-protocol"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
+
+[[package]]
+name = "x11rb-protocol"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "acf4d1bc32aa46eec18caa634ec3cf4c05bfa151f12b93b510b15190f69a1ca8"
 
 [[package]]
 name = "xattr"
@@ -10841,10 +11274,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "163b33ed8786455e2fa5d72f554057ce3f3182425434f756cd39c99839d88e23"
 
 [[package]]
+name = "xim"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28eeca625387ebe77f391175dfd5cbdfa1dd1b25eb66820b5c9b19d64a2296b0"
+dependencies = [
+ "ahash",
+ "hashbrown 0.17.1",
+ "log",
+ "x11rb 0.14.0",
+ "xim-ctext 0.5.0",
+ "xim-parser 0.3.0",
+]
+
+[[package]]
 name = "xim-ctext"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ac61a7062c40f3c37b6e82eeeef835d5cc7824b632a72784a89b3963c33284c"
+dependencies = [
+ "encoding_rs",
+]
+
+[[package]]
+name = "xim-ctext"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4af1bc64b152f8ee409b4c07978078f79de5d93375217804d8358a77c5bb9e6"
 dependencies = [
  "encoding_rs",
 ]
@@ -10859,10 +11315,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "xim-parser"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb506ad59e78bbf0237fc5b906b8bbd550c38f7f23dd0bdc7f94e5391c031257"
+dependencies = [
+ "bitflags 2.13.2",
+]
+
+[[package]]
 name = "xkbcommon"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d66ca9352cbd4eecbbc40871d8a11b4ac8107cfc528a6e14d7c19c69d0e1ac9"
+dependencies = [
+ "as-raw-xcb-connection",
+ "libc",
+ "memmap2",
+ "xkeysym",
+]
+
+[[package]]
+name = "xkbcommon"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7a974f48060a14e95705c01f24ad9c3345022f4d97441b8a36beb7ed5c4a02d"
 dependencies = [
  "as-raw-xcb-connection",
  "libc",
@@ -11118,9 +11595,9 @@ dependencies = [
  "ahash",
  "hashbrown 0.14.5",
  "log",
- "x11rb",
- "xim-ctext",
- "xim-parser",
+ "x11rb 0.13.2",
+ "xim-ctext 0.3.0",
+ "xim-parser 0.2.2",
 ]
 
 [[package]]

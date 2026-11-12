@@ -5,11 +5,15 @@ crates=(
   subsonic net client audio playback presence catalog config fuzzy lyrics media-controls dsd dsp r8brain
   soxr executor updater session hiphile-core hiphile-cli
 )
+# The app on AntiWebUI, which shares the core with the GPUI app but not GPUI
+next_crates=(next-host next-ui next-account next-hiphile)
 root="$(cd "$(dirname "$0")/.." && pwd)"
 status=0
-for crate in "${crates[@]}"; do
+for crate in "${crates[@]}" "${next_crates[@]}"; do
   # A path spec, since crates.io also has packages named like ours (`config`)
   spec="path+file://$root/crates/$crate"
+  # Named apart from their folders
+  [[ $crate == next-* ]] && spec="path+file://$root/next/${crate#next-}#$crate"
   if ! tree="$(cargo tree --locked -p "$spec" -e normal --prefix none)"; then
     echo "error: could not list what $crate depends on" >&2
     status=1

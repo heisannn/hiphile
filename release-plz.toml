@@ -60,6 +60,24 @@ changelog_include = [
 name = "hiphile-cli"
 release = false
 
+# The app on AntiWebUI is tried next to the released one and not released, so a change to it alone
+# does not start a release
+[[package]]
+name = "next-account"
+release = false
+
+[[package]]
+name = "next-hiphile"
+release = false
+
+[[package]]
+name = "next-host"
+release = false
+
+[[package]]
+name = "next-ui"
+release = false
+
 # release-plz looks for each crate in the latest `v*` tag and fails on a crate that the tag lacks,
 # so a crate stays out of the release until the first tag that contains it. Remove its entry once
 # that tag exists: until then a change to it alone does not start a release or reach the changelog.

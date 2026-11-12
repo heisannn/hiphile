@@ -1,0 +1,22 @@
+[package]
+name = "next-account"
+description = "Signing in on AntiWebUI, and switching between the servers signed in with."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+anti-webui.workspace = true
+anti-webui-md3e.workspace = true
+config.workspace = true
+hiphile-core.workspace = true
+next-host.workspace = true
+next-ui.workspace = true
+session.workspace = true
+
+[dev-dependencies]
+next-ui = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

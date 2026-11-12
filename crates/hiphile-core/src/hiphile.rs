@@ -456,8 +456,10 @@ impl Hiphile {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn open_workspace(&self, session: Session, profile: config::Profile) {
+    /// Opens a workspace on `session` as if `profile` had signed in, for tests of the core and of
+    /// the views: signing in for real opens the user's own catalog and plays.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn open_workspace(&self, session: Session, profile: config::Profile) {
         let session = session.with_readings(self.readings().clone());
         self.0
             .state
