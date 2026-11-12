@@ -472,14 +472,14 @@ fn the_end_of_a_sync_gives_up_on_an_album_it_did_not_bring() {
 #[test]
 fn the_list_says_while_a_sync_brings_it_up_to_date() {
     let mut albums = showing_alpha();
-    assert!(find(Role::ProgressBar, "Updating the library").is_none());
+    assert!(find(Role::ProgressBar, "Updating Library").is_none());
 
     albums.server.hold("getAlbumList2");
     albums.workspace.refresh(Destination::Albums);
-    albums.wait_for(|| find(Role::ProgressBar, "Updating the library").is_some());
+    albums.wait_for(|| find(Role::ProgressBar, "Updating Library").is_some());
 
     albums.server.release("getAlbumList2");
-    albums.wait_for(|| find(Role::ProgressBar, "Updating the library").is_none());
+    albums.wait_for(|| find(Role::ProgressBar, "Updating Library").is_none());
 }
 
 /// Albums whose server refuses the list, with focus on Retry.
@@ -661,7 +661,7 @@ fn an_album_without_songs_is_not_played() {
         LibraryServer::new(vec![album("a", "Alpha", &[])]),
         Location::Albums(None),
     );
-    albums.wait_for(|| has_text("This album has no songs."));
+    albums.wait_for(|| has_text("No songs"));
 
     albums.primary(NamedKey::Enter);
     albums.key(NamedKey::ArrowRight);

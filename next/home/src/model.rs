@@ -39,6 +39,22 @@ impl Shelves {
         sections(&self.recommended, &self.recent, &self.most_played)
     }
 
+    /// Why every shelf failed, when they all failed for the same reason, which Home then says
+    /// once.
+    pub(crate) fn common_failure(&self) -> Option<String> {
+        let reasons = [
+            failure_of(&self.recommended),
+            failure_of(&self.recent),
+            failure_of(&self.most_played),
+            failure_of(&self.new_albums),
+        ];
+        let first = reasons[0]?;
+        reasons
+            .iter()
+            .all(|reason| *reason == Some(first))
+            .then(|| first.to_owned())
+    }
+
     pub(crate) fn albums(&self, shelf: AlbumShelf) -> &Shelf<Album> {
         match shelf {
             AlbumShelf::Recommended => &self.recommended,
@@ -94,6 +110,13 @@ impl Shelves {
                 .cloned()
                 .map(Target::Album),
         }
+    }
+}
+
+fn failure_of<T>(shelf: &Shelf<T>) -> Option<&str> {
+    match shelf {
+        Shelf::Failed(reason) => Some(reason),
+        Shelf::Loading | Shelf::Loaded(_) => None,
     }
 }
 

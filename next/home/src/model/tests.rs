@@ -68,6 +68,35 @@ fn no_plays_takes_the_most_played_shelf_away() {
 }
 
 #[test]
+fn shelves_that_all_failed_alike_fail_once() {
+    let failed = |reason: &str| Shelves {
+        recommended: Shelf::Failed("offline".into()),
+        recent: Shelf::Failed("offline".into()),
+        most_played: Shelf::Failed("offline".into()),
+        new_albums: Shelf::Failed(reason.into()),
+    };
+
+    assert_eq!(
+        failed("offline").common_failure().as_deref(),
+        Some("offline")
+    );
+    assert_eq!(failed("HTTP 500").common_failure(), None);
+}
+
+#[test]
+fn a_shelf_that_did_not_fail_keeps_the_failures_apart() {
+    let one_loading = Shelves {
+        recommended: Shelf::Failed("offline".into()),
+        recent: Shelf::Loading,
+        most_played: Shelf::Failed("offline".into()),
+        new_albums: Shelf::Failed("offline".into()),
+    };
+
+    assert_eq!(one_loading.common_failure(), None);
+    assert_eq!(shelves(&[], 0).common_failure(), None);
+}
+
+#[test]
 fn loading_and_failing_shelves_keep_their_place() {
     let shelves = Shelves {
         recommended: Shelf::Failed("offline".into()),

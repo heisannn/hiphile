@@ -20,6 +20,9 @@ use next_ui::context_menu::{ContextMenu, pressed_at};
 use next_ui::cover::{CoverKind, cover};
 use next_ui::keymap::{KeyBinding, KeyContext, bind_keys, key_context};
 use next_ui::link::{album_artist_link, artist_line, song_line};
+use next_ui::load_state::{
+    HOME, MOST_PLAYED, NEW_ALBUMS, NONE_ON_SERVER, RECENTLY_PLAYED, RECOMMENDATIONS, load_failure,
+};
 use next_ui::menus::{album_menu, show_in_albums_item, song_menu};
 use next_ui::now_playing::{NowPlaying, follow_now_playing, song_row_label};
 use next_ui::page_row::{PageRow, page_row};
@@ -148,6 +151,7 @@ fn page(cx: &ScreenContext, node: NodeRef) -> Div {
     };
     let shelves = page.shelves;
     let sections = memo(move || shelves.with(Shelves::sections));
+    let common_failure = memo(move || shelves.with(Shelves::common_failure));
     let (focused, node) = (page.focused, page.node);
     let shown = Cell::new(false);
     let view = div()
@@ -165,14 +169,23 @@ fn page(cx: &ScreenContext, node: NodeRef) -> Div {
                 node.focus();
             }
         })
-        .child(for_each(
-            move || sections.get(),
-            |section| *section as u8,
-            {
+        .child(dyn_view({
+            let page = page.clone();
+            move || {
                 let page = page.clone();
-                move |section| page.section(section)
-            },
-        ))
+                match common_failure.get() {
+                    Some(reason) => untrack(|| page.failed_page(&reason).into_view()),
+                    None => untrack(|| {
+                        for_each(
+                            move || sections.get(),
+                            |section| *section as u8,
+                            move |section| page.section(section),
+                        )
+                        .into_view()
+                    }),
+                }
+            }
+        }))
         .child(page.menu.view());
     let context = {
         let (asked, taken) = (page.clone(), page);
@@ -315,10 +328,10 @@ impl Page {
     fn albums_status(&self, shelf: AlbumShelf, status: &Shelf<Album>) -> Div {
         match (shelf, status) {
             (_, Shelf::Failed(reason)) => self.failure(reason, section_with(shelf)),
-            (AlbumShelf::New, Shelf::Loaded(_)) => section_note("This server has no albums."),
-            (AlbumShelf::Recommended, _) => section_loading("Loading recommendations"),
-            (AlbumShelf::MostPlayed, _) => section_loading("Loading most played albums"),
-            (AlbumShelf::New, _) => section_loading("Loading new albums"),
+            (AlbumShelf::New, Shelf::Loaded(_)) => section_note(NONE_ON_SERVER),
+            (AlbumShelf::Recommended, _) => section_loading(RECOMMENDATIONS.loading()),
+            (AlbumShelf::MostPlayed, _) => section_loading(MOST_PLAYED.loading()),
+            (AlbumShelf::New, _) => section_loading(NEW_ALBUMS.loading()),
         }
     }
 
@@ -334,7 +347,7 @@ impl Page {
                 div().flex().flex_col().flex_none().children(rows)
             }),
             Shelf::Failed(reason) => untrack(|| this.failure(&reason, HomeSection::RecentlyPlayed)),
-            Shelf::Loading => untrack(|| section_loading("Loading recently played songs")),
+            Shelf::Loading => untrack(|| section_loading(RECENTLY_PLAYED.loading())),
         })
     }
 
@@ -407,6 +420,24 @@ impl Page {
             .node_ref(node)
             .on_click(click)
             .on_pointer_down(self.menu_on_press(item))
+    }
+
+    /// Every shelf that failed for `reason`, said once, with Retry, which tries each again and
+    /// leaves the focus on the page as it gives way to the wait.
+    fn failed_page(&self, reason: &str) -> Div {
+        let shelves = self.cx.workspace.shelves().clone();
+        let node = self.node;
+        load_failure(HOME.load_failed(), reason.to_owned(), move || {
+            for section in [
+                HomeSection::Recommended,
+                HomeSection::RecentlyPlayed,
+                HomeSection::MostPlayed,
+                HomeSection::NewAlbums,
+            ] {
+                shelves.retry(section);
+            }
+            node.focus();
+        })
     }
 
     /// What a shelf that could not be had says, with Retry, which leaves the focus on the page as

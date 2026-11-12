@@ -7,7 +7,7 @@ use hiphile_core::navigation::Destination;
 use hiphile_core::songs::{Column, SongListStatus};
 use next_ui::details::format_song_count;
 use next_ui::list_pane::{ListHeader, list_filter, list_header, refresh_failure};
-use next_ui::load_state::{empty_state, load_failure, no_matches, pane_loading};
+use next_ui::load_state::{SONGS, empty_state, load_failure, no_matches, pane_loading};
 use next_ui::pane::pane;
 use next_ui::sort_menu::{SortOption, sort_menu};
 use next_ui::{Screen, ScreenContext};
@@ -78,18 +78,18 @@ fn content(table: &Table) -> Div {
         .child(dyn_view(move || {
             let table = table.clone();
             match phase.get() {
-                Phase::Loading => untrack(|| pane_loading("Loading Songs").into_view()),
+                Phase::Loading => untrack(|| pane_loading(SONGS.loading()).into_view()),
                 Phase::Failed(reason) => untrack(|| {
                     let song_list = table.song_list.clone();
-                    load_failure("Songs didn't load", reason, move || song_list.reload())
+                    load_failure(SONGS.load_failed(), reason, move || song_list.reload())
                         .into_view()
                 }),
                 Phase::Empty => {
-                    untrack(|| empty_state("This server has no songs", None, None).into_view())
+                    untrack(|| empty_state(&SONGS.none_on_server(), None, None).into_view())
                 }
                 Phase::NoMatches(query) => untrack(|| {
                     let note = table.cx.workspace.session().missing_readings_note();
-                    no_matches(&format!("No songs match “{query}”"), note).into_view()
+                    no_matches(move || query.clone(), note).into_view()
                 }),
                 Phase::Rows => untrack(|| table.view().into_view()),
             }
@@ -123,7 +123,7 @@ fn header(table: &Table) -> Div {
         })
     };
     let is_updating = move || status.with(|status| status.shown().is_some() && status.is_loading());
-    list_header(ListHeader::new(count).updating("Updating Songs", is_updating))
+    list_header(ListHeader::new(count).updating(SONGS.updating(), is_updating))
 }
 
 /// That reading the songs again failed, while those read before stay on show.
@@ -135,7 +135,7 @@ fn failed_refresh(table: &Table) -> Div {
         let song_list = song_list.clone();
         match failure.get() {
             Some(reason) => untrack(|| {
-                refresh_failure("Songs didn't update", reason, move || song_list.reload())
+                refresh_failure(SONGS.refresh_failed(), reason, move || song_list.reload())
                     .into_view()
             }),
             None => untrack(|| div().into_view()),

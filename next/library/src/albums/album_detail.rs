@@ -13,7 +13,7 @@ use next_ui::details::{format_duration, format_song_count, join_details};
 use next_ui::favorite_button::favorite_button;
 use next_ui::keymap::{KeyContext, key_context};
 use next_ui::link::{artist_line, artist_link, song_artist_link};
-use next_ui::load_state::{empty_state, load_failure, pane_loading};
+use next_ui::load_state::{self, ALBUM, empty_state, load_failure, pane_loading};
 use next_ui::menus::{Songs, add_to_playlist_item, favorite_item, go_to_artist_item, queue_items};
 use next_ui::now_playing::song_row_label;
 use next_ui::row_buttons::RowButtons;
@@ -60,10 +60,10 @@ pub(super) fn album_detail(model: &Model) -> Div {
         let standing = standing.get();
         untrack(|| match standing {
             Standing::None => div().into_view(),
-            Standing::Loading => pane_loading("Loading Album").into_view(),
+            Standing::Loading => pane_loading(ALBUM.loading()).into_view(),
             Standing::Failed(reason) => {
                 let retry = model.clone();
-                load_failure("Couldn't load this album", reason, move || {
+                load_failure(ALBUM.load_failed(), reason, move || {
                     if let Some(album) = untrack(|| retry.selected()) {
                         retry.detail.show(album);
                     }
@@ -89,7 +89,7 @@ fn loaded_album(model: &Model, loaded: Memo<Option<LoadedAlbum>>) -> Div {
     let listed = model.clone();
     let list = dyn_view(move || {
         if is_empty.get() {
-            return untrack(|| empty_state("This album has no songs.", None, None));
+            return untrack(|| empty_state(&load_state::SONGS.none(), None, None));
         }
         let model = listed.clone();
         untrack(|| {

@@ -20,7 +20,10 @@ use next_ui::detail_header::{DetailHeader, detail_header, play_and_shuffle};
 use next_ui::details::{format_album_count, format_duration, format_song_count, join_details};
 use next_ui::list_detail::{Split, list_detail};
 use next_ui::list_pane::{ListHeader, list_filter, list_header, refresh_failure};
-use next_ui::load_state::{empty_state, load_failure, no_matches, pane_loading};
+use next_ui::load_state::{
+    self, NONE_ON_SERVER, PLAYLISTS, RECENTLY_PLAYED, TOP_SONGS, empty_state, load_failure,
+    no_matches, pane_loading,
+};
 use next_ui::now_playing::{PlayState, play_state_icon, skippable, song_row_label};
 use next_ui::pane::{GAP, pane};
 use next_ui::row_list::{ROW_PADDING, RowList, Selection, row_list};
@@ -331,11 +334,12 @@ fn albums(covers: Rc<[PathBuf]>, narrow: bool) -> Div {
         .flex_col()
         .child(list_filter(filter, "Filter Albums", rows))
         .child(list_header(
-            ListHeader::new(|| Some(format_album_count(128))).updating("Updating Albums", || true),
+            ListHeader::new(|| Some(format_album_count(128)))
+                .updating(load_state::ALBUMS.updating(), || true),
         ));
     if narrow {
         list_pane = list_pane.child(refresh_failure(
-            "Albums didn't update",
+            load_state::ALBUMS.refresh_failed(),
             "The server didn't answer.",
             || {},
         ));
@@ -567,11 +571,11 @@ fn artist(covers: Rc<[PathBuf]>) -> Div {
             styled_icon_button(icons::REFRESH, IconButtonStyle::standard())
                 .access(|a| a.label("Reload Top Songs")),
         ))
-        .child(section_loading("Loading Top Songs"))
+        .child(section_loading(TOP_SONGS.loading()))
         .child(section_heading("Similar Artists"))
         .child(section_failure("The server didn't answer.", || {}))
         .child(section_heading("Appears On"))
-        .child(section_note("Mina Arai appears on no other albums."));
+        .child(section_note(NONE_ON_SERVER));
     window(
         "Artists",
         Vec::new(),
@@ -667,7 +671,7 @@ fn home(covers: Rc<[PathBuf]>) -> Div {
         .child(section_heading("Artists"))
         .child(artist_shelf)
         .child(section_heading("Recently Played"))
-        .child(section_loading("Loading Recently Played"));
+        .child(section_loading(RECENTLY_PLAYED.loading()));
     window("Home", Vec::new(), pane(page))
 }
 
@@ -690,21 +694,21 @@ fn states() -> Div {
             .flex_row()
             .gap(GAP)
             .child(column(
-                pane_loading("Loading Albums"),
+                pane_loading(load_state::ALBUMS.loading()),
                 load_failure(
-                    "Albums didn't load",
+                    load_state::ALBUMS.load_failed(),
                     "The server didn't answer. Check that it is running and that this computer can reach it.",
                     || {},
                 ),
             ))
             .child(column(
                 empty_state(
-                    "No playlists",
+                    &PLAYLISTS.none(),
                     Some("Playlists you make, and those shared with you, show here."),
                     Some(styled_button("New Playlist", ButtonStyle::tonal())),
                 ),
                 no_matches(
-                    "No albums match “blue”",
+                    || "blue".to_owned(),
                     Some("Readings of Japanese titles are still downloading."),
                 ),
             )),

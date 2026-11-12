@@ -508,7 +508,7 @@ fn search_shots(folder: &Path, theme: &str, dark: bool, covers: &CoverServer) {
         WINDOW,
         |ui| {
             typed(ui, "xylophone");
-            wait_until(ui, || has_text("Nothing matches."));
+            wait_until(ui, || has_text("No matches for “xylophone”"));
         },
     );
     shot(

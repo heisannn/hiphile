@@ -5,7 +5,6 @@ use std::sync::Arc;
 use anti_webui::prelude::*;
 use anti_webui_md3e::color_scheme;
 use anti_webui_md3e::components::{MenuItem, TabsStyle, styled_tabs, tab};
-use hiphile_core::alerts;
 use hiphile_core::favorites::{
     Favorite, FavoriteLists, FavoritesLoad, FavoritesSnapshot, FavoritesState, Section,
 };
@@ -15,7 +14,10 @@ use next_ui::context_menu::ContextMenu;
 use next_ui::details::{format_album_count, format_artist_count, format_song_count};
 use next_ui::keymap::{KeyBinding, KeyContext, Keystroke, bind_keys, key_context};
 use next_ui::list_pane::{ListHeader, list_header, refresh_failure};
-use next_ui::load_state::{empty_state, load_failure, pane_loading};
+use next_ui::load_state::{
+    FAVORITE_ALBUMS, FAVORITE_ARTISTS, FAVORITE_SONGS, FAVORITES, empty_state, load_failure,
+    pane_loading,
+};
 use next_ui::menus::{album_menu, artist_menu, show_in_albums_item, song_menu};
 use next_ui::now_playing::NowPlaying;
 use next_ui::now_playing::follow_now_playing;
@@ -184,7 +186,7 @@ fn header(view: &Rc<View>) -> Div {
         })
     };
     list_header(
-        ListHeader::new(count).updating("Updating the favorites", move || {
+        ListHeader::new(count).updating(FAVORITES.updating(), move || {
             shown.with(|shown| shown.is_loaded() && shown.is_reloading())
         }),
     )
@@ -200,7 +202,7 @@ fn refresh_error(view: &Rc<View>) -> Div {
         match error.get() {
             None => untrack(|| div().into_view()),
             Some(reason) => untrack(|| {
-                refresh_failure("Couldn't refresh the favorites", reason, move || {
+                refresh_failure(FAVORITES.refresh_failed(), reason, move || {
                     favorites.refresh()
                 })
                 .into_view()
@@ -244,20 +246,18 @@ fn body(view: Rc<View>) -> Div {
 
 fn shaped(view: &Rc<View>, shape: Shape) -> Div {
     match shape {
-        Shape::Loading => pane_loading("Loading the favorites"),
+        Shape::Loading => pane_loading(FAVORITES.loading()),
         Shape::Failed(reason) => {
             let favorites = view.favorites.clone();
-            load_failure(alerts::FAVORITES_FAILED, reason, move || {
-                favorites.refresh()
-            })
+            load_failure(FAVORITES.load_failed(), reason, move || favorites.refresh())
         }
         Shape::Empty(section) => {
-            let (message, note) = match section {
-                Section::Songs => ("No favorite songs", "Right-click a song to add it."),
-                Section::Albums => ("No favorite albums", "Right-click an album to add it."),
-                Section::Artists => ("No favorite artists", "Right-click an artist to add them."),
+            let (subject, note) = match section {
+                Section::Songs => (FAVORITE_SONGS, "Right-click a song to add it."),
+                Section::Albums => (FAVORITE_ALBUMS, "Right-click an album to add it."),
+                Section::Artists => (FAVORITE_ARTISTS, "Right-click an artist to add them."),
             };
-            empty_state(message, Some(note), None)
+            empty_state(&subject.none(), Some(note), None)
         }
         Shape::Listed(Section::Songs) => song_list(view),
         Shape::Listed(Section::Albums) => album_list(view),

@@ -21,7 +21,9 @@ use next_ui::details::{format_album_count, format_song_count, join_details};
 use next_ui::favorite_button::favorite_button;
 use next_ui::keymap::{KeyContext, key_context};
 use next_ui::link::{album_link, artist_line, song_artist_link};
-use next_ui::load_state::{load_failure, pane_loading};
+use next_ui::load_state::{
+    ALBUMS, ARTIST, NONE_ON_SERVER, SIMILAR_ARTISTS, SONGS, TOP_SONGS, load_failure, pane_loading,
+};
 use next_ui::now_playing::song_row_label;
 use next_ui::page_row::{PageRow, page_row};
 use next_ui::pane::INSET;
@@ -105,10 +107,10 @@ fn content(view: Rc<View>) -> impl IntoView {
         untrack(move || {
             match shape {
                 Shape::Nothing => div(),
-                Shape::Waiting => pane_loading("Loading the artist"),
+                Shape::Waiting => pane_loading(ARTIST.loading()),
                 Shape::Failed(reason) => {
                     let retrying = view.clone();
-                    load_failure("Couldn't load this artist", reason, move || {
+                    load_failure(ARTIST.load_failed(), reason, move || {
                         retrying.page_node.focus();
                         retrying.detail.reload();
                     })
@@ -230,7 +232,7 @@ fn header_of(view: &Rc<View>, head: Head) -> Div {
     let waiting = show(is_fetching, || {
         indeterminate_circular_progress()
             .size(PROGRESS)
-            .access(|a| a.role(Role::ProgressBar).label("Loading the songs"))
+            .access(|a| a.role(Role::ProgressBar).label(SONGS.loading()))
     });
     detail_header(
         header
@@ -308,7 +310,7 @@ fn songs_part(view: &Rc<View>, section: Memo<Option<ArtistSection>>) -> Div {
         .child(dyn_view(move || {
             let (view, detail) = (view.clone(), detail.clone());
             match load.get() {
-                Load::Loading => untrack(|| section_loading("Loading top songs").into_view()),
+                Load::Loading => untrack(|| section_loading(TOP_SONGS.loading()).into_view()),
                 Load::Failed(reason) => untrack(|| {
                     section_failure(reason, move || detail.reload_top_songs()).into_view()
                 }),
@@ -480,11 +482,11 @@ fn albums_heading(view: &Rc<View>, albums: Memo<Albums>) -> Div {
                 return div().into_view();
             };
             let status = match load {
-                Load::Loading => section_loading("Loading albums"),
+                Load::Loading => section_loading(ALBUMS.loading()),
                 Load::Failed(reason) => section_failure(reason, move || detail.reload_albums()),
                 Load::Loaded => div().flex().flex_col().child(show(
                     move || is_empty.get(),
-                    || section_note("This artist has no albums."),
+                    || section_note(NONE_ON_SERVER),
                 )),
             };
             div()
@@ -637,7 +639,7 @@ fn similar(view: &Rc<View>) -> Div {
                 Err(Load::Failed(reason)) => {
                     section_failure(reason, move || detail.reload_similar())
                 }
-                Err(Load::Loading | Load::Loaded) => section_loading("Loading similar artists"),
+                Err(Load::Loading | Load::Loaded) => section_loading(SIMILAR_ARTISTS.loading()),
             };
             div()
                 .flex()

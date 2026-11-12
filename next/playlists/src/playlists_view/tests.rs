@@ -770,7 +770,7 @@ fn typing_in_the_filter_keeps_the_playlist_chosen() {
     assert_eq!(opened.chosen(), chosen("a"));
     primary_key(&mut opened.ui, Key::Character("a".into()));
     typed(&mut opened.ui, "zzzz");
-    wait_until(&mut opened.ui, || has_text("No playlists match “zzzz”"));
+    wait_until(&mut opened.ui, || has_text("No matches for “zzzz”"));
     assert_eq!(opened.chosen(), chosen("a"));
 }
 
@@ -1066,7 +1066,7 @@ fn the_list_failing_to_load_offers_to_try_again() {
 fn new_playlist_asks_the_shell() {
     let server = PlaylistsServer::new(&[]);
     let mut opened = open_at(&server, Location::Playlists(None));
-    wait_until(&mut opened.ui, || has_text("No playlists yet"));
+    wait_until(&mut opened.ui, || has_text("No playlists"));
     assert!(!has_text("0 playlists"));
 
     press(&mut opened.ui, Role::Button, "New Playlist…");

@@ -11,7 +11,7 @@ use next_ui::cover::CoverKind;
 use next_ui::details::{format_album_count, format_artist_count};
 use next_ui::keymap::{KeyContext, key_context};
 use next_ui::list_pane::{ListHeader, list_filter, list_header, refresh_failure};
-use next_ui::load_state::{empty_state, load_failure, no_matches, pane_loading};
+use next_ui::load_state::{ARTISTS, empty_state, load_failure, no_matches, pane_loading};
 use next_ui::row_cover::row_cover;
 use next_ui::row_list::{ROW_PADDING, RowList, RowSource, is_context_click, row_list};
 use next_ui::row_text::row_text;
@@ -46,7 +46,7 @@ fn header(view: &Rc<View>) -> Div {
     let count = memo(move || status.with(|status| Some(status.shown()?.items().len())));
     list_header(
         ListHeader::new(move || count.get().map(format_artist_count))
-            .updating("Updating the artists", move || {
+            .updating(ARTISTS.updating(), move || {
                 count.get().is_some() && status.with(ArtistListStatus::is_refreshing)
             }),
     )
@@ -62,10 +62,7 @@ fn refresh_error(view: &Rc<View>) -> Div {
         match error.get() {
             None => untrack(|| div().into_view()),
             Some(reason) => untrack(|| {
-                refresh_failure("Couldn't refresh the artists", reason, move || {
-                    list.reload()
-                })
-                .into_view()
+                refresh_failure(ARTISTS.refresh_failed(), reason, move || list.reload()).into_view()
             }),
         }
     }))
@@ -106,18 +103,21 @@ fn body(view: Rc<View>) -> Div {
 
 fn shaped(view: &Rc<View>, shape: Shape) -> Div {
     match shape {
-        Shape::Loading => pane_loading("Loading the artists"),
+        Shape::Loading => pane_loading(ARTISTS.loading()),
         Shape::Failed(reason) => {
             let retrying = view.clone();
-            load_failure("Couldn't load artists", reason, move || {
+            load_failure(ARTISTS.load_failed(), reason, move || {
                 retrying.focus_list();
                 retrying.list.reload();
             })
         }
-        Shape::Empty => empty_state("This server has no artists.", None, None),
+        Shape::Empty => empty_state(&ARTISTS.none_on_server(), None, None),
         Shape::NoMatches => {
-            let note = view.cx.workspace.session().missing_readings_note();
-            no_matches("No artists match the filter.", note)
+            let (filter, note) = (
+                view.filter,
+                view.cx.workspace.session().missing_readings_note(),
+            );
+            no_matches(move || filter.get(), note)
         }
         Shape::Listed => artist_list(view),
     }

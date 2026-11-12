@@ -1,5 +1,4 @@
 use anti_webui::prelude::*;
-use hiphile_core::alerts::SYNC_FAILED;
 use hiphile_core::library::AlbumListStatus;
 use hiphile_core::{Shelf, Shown};
 use next_ui::Command;
@@ -8,7 +7,7 @@ use next_ui::details::format_album_count;
 use next_ui::keymap::{KeyContext, key_context};
 use next_ui::link::album_line;
 use next_ui::list_pane::{ListHeader, list_filter, list_header, refresh_failure};
-use next_ui::load_state::{empty_state, load_failure, no_matches, pane_loading};
+use next_ui::load_state::{self, LIBRARY, empty_state, load_failure, no_matches, pane_loading};
 use next_ui::menus::album_menu;
 use next_ui::row_cover::row_cover;
 use next_ui::row_list::{ROW_PADDING, RowList, RowSource, is_context_click, row_list};
@@ -77,7 +76,7 @@ fn header(model: &Model) -> Div {
         memo(move || count.get().is_some() && status.with(AlbumListStatus::is_updating));
     list_header(
         ListHeader::new(move || count.get().map(format_album_count))
-            .updating("Updating the library", move || is_updating.get()),
+            .updating(LIBRARY.updating(), move || is_updating.get()),
     )
 }
 
@@ -89,7 +88,7 @@ fn failure(model: &Model) -> Div {
         let commands = commands.clone();
         match failure.get() {
             Some(reason) => untrack(|| {
-                refresh_failure(SYNC_FAILED, reason, move || {
+                refresh_failure(LIBRARY.refresh_failed(), reason, move || {
                     commands.send(Command::Refresh);
                 })
                 .into_view()
@@ -150,19 +149,22 @@ fn rows(model: &Model) -> Div {
 
 fn in_place_of_rows(model: &Model, standing: Standing) -> Div {
     match standing {
-        Standing::Loading => pane_loading("Loading Albums"),
+        Standing::Loading => pane_loading(load_state::ALBUMS.loading()),
         Standing::Failed(reason) => {
             let (rows, commands) = (model.album_rows, model.cx.commands.clone());
-            load_failure("Couldn't load albums", reason, move || {
+            load_failure(load_state::ALBUMS.load_failed(), reason, move || {
                 rows.focus();
                 commands.send(Command::Refresh);
             })
         }
-        Standing::NoAlbums => empty_state("This server has no albums.", None, None),
-        Standing::NoMatches => no_matches(
-            "No albums match the filter.",
-            model.cx.workspace.session().missing_readings_note(),
-        ),
+        Standing::NoAlbums => empty_state(&load_state::ALBUMS.none_on_server(), None, None),
+        Standing::NoMatches => {
+            let filter = model.filter;
+            no_matches(
+                move || filter.get(),
+                model.cx.workspace.session().missing_readings_note(),
+            )
+        }
         Standing::Rows => div(),
     }
 }

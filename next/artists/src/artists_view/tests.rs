@@ -766,7 +766,7 @@ fn an_artist_with_no_songs_at_all_says_so_under_albums() {
     shown.page_of("m");
 
     assert!(find(Role::Heading, "Albums").is_some());
-    assert!(has_text("This artist has no albums."));
+    assert!(has_text("None on this server"));
     let play = find(Role::Button, "Play").expect("Play");
     assert!(play.disabled);
 }
@@ -854,7 +854,7 @@ fn play_shows_it_is_fetching_until_the_songs_arrive() {
         shown.view.fetching.get_untracked(),
         Some(ArtistId::new("m"))
     );
-    assert!(find(Role::ProgressBar, "Loading the songs").is_some());
+    assert!(find(Role::ProgressBar, "Loading Songs").is_some());
     assert!(find(Role::Button, "Play").unwrap().disabled);
 
     server.release("getAlbum");
@@ -928,14 +928,12 @@ fn a_refresh_shows_it_is_updating_and_why_it_failed() {
     server.hold("getArtists");
     shown.view.list.reload();
     let ui = &mut shown.ui;
-    wait_until(ui, || {
-        find(Role::ProgressBar, "Updating the artists").is_some()
-    });
+    wait_until(ui, || find(Role::ProgressBar, "Updating Artists").is_some());
 
     server.refuse("getArtists");
     server.release("getArtists");
     let ui = &mut shown.ui;
-    wait_until(ui, || has_text("Couldn't refresh the artists"));
+    wait_until(ui, || has_text("Couldn't refresh artists"));
     assert!(find(Role::ListOption, "Miles Davis").is_some());
 }
 

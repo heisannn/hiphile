@@ -429,6 +429,27 @@ Material 3 Expressive にデザインし直す Hiphile を、詰まったデス�
 ドキュメントでは API、部品、ファイル、ガイドの名前を英語のまま書き、コードの書式にする。周りの説明は
 そのページの言語で書く。
 
+### 状態の言葉
+
+読み込み中、失敗、空、絞り込みの結果無しは、どの画面も `next_ui::load_state` の辞書（`Subject` と
+その定数、`NONE_ON_SERVER`、`no_matches`）で言う。画面ごとに言い回しを作らない。
+
+| 状態 | 言い方 | 例 |
+| --- | --- | --- |
+| 待ち（アクセシビリティの名前） | `Loading <名前>`、`Updating <名前>`。名前はタイトルケース | `Loading Songs`、`Updating Library` |
+| 失敗の見出し | `Couldn't load <もの>`、`Couldn't refresh <もの>` | `Couldn't load songs`、`Couldn't load this album` |
+| 失敗の本文 | コアの理由。何が起きたかと戻り方を言い、見出しを繰り返さない | `Couldn't reach the server. Check your connection and try again.` |
+| 空 | `No <もの>`。サーバーのライブラリにあるものは `No <もの> on this server` | `No playlists`、`No songs on this server` |
+| 見出しの下の節の空 | 見出しがものを言うので `None on this server` | |
+| 絞り込みの結果無し | `No matches for “<入れた言葉>”` | `No matches for “blue”` |
+
+- 見出しと短い状態（待ち、空、結果無し）には句点を付けない。失敗の本文と補足（`Right-click a song to
+  add it.`）は文なので句点を付ける。
+- 同じ失敗を知らせとペインの両方で言うときは同じ言葉にする（`Couldn't refresh the library`）。
+- 失敗にはいつも Retry を付ける。Retry で直らない理由は、本文で直し方を言う。
+- Home のように、すべての節が同じ理由で失敗したら、節ごとに並べず、1 つの失敗と、すべてをやり直す
+  Retry にまとめる。
+
 ### ボタンと確認のダイアログ
 
 ボタンのラベルは短く、ふつうは 1、2 語で、手つきや部品ではなく結果を言う。`Click to save` ではなく
