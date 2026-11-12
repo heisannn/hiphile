@@ -84,6 +84,17 @@ fn a_query_finds_albums_by_name_or_artist_the_best_first() {
 }
 
 #[test]
+fn the_query_stays_for_a_view_to_take_up_again() {
+    let cx = &TestExecutor::new();
+    let (list, _sync) = shown_list(cx);
+    assert_eq!(list.query(), "");
+
+    list.set_query("blue");
+
+    assert_eq!(list.query(), "blue");
+}
+
+#[test]
 fn the_order_chosen_arranges_what_the_query_finds() {
     let cx = &TestExecutor::new();
     let (list, _sync) = shown_list(cx);

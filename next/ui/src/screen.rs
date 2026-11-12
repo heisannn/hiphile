@@ -4,11 +4,16 @@ use anti_webui_md3e::typography::TextStyle;
 
 use crate::window::{kept_still, moves_window};
 
+/// The height of the small top app bar, which a band beside it keeps to stay in line.
+pub const APP_BAR_HEIGHT: f32 = 64.0;
+
 /// What a screen shows: its title and what it does, in the bar above it, and itself below.
 pub struct Screen {
     pub title: String,
     /// Icon buttons and menus at the end of the bar, such as sorting.
     pub actions: Vec<Div>,
+    /// Made of panes, such as [`crate::pane::pane`] or [`crate::list_detail::list_detail`]: the
+    /// shell gives it only its margins.
     pub body: Div,
 }
 
@@ -36,7 +41,7 @@ pub fn app_bar(navigation: Vec<Div>, title: String, actions: Vec<Div>) -> Div {
             .flex_row()
             .flex_none()
             .items_center()
-            .h(64)
+            .h(APP_BAR_HEIGHT)
             .px(4.0_f32)
             .select_none()
             .child(kept_still(div().flex().flex_row().children(navigation)))

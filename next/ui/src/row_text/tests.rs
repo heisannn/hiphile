@@ -27,6 +27,7 @@ fn in_width(width: i32, view: Div) -> Div {
 #[test]
 fn the_fade_compiles() {
     anti_webui::wgpu::check_shader(&FADE_END).unwrap();
+    anti_webui::wgpu::check_shader(&FADE_LAST_LINE).unwrap();
 }
 
 #[test]
@@ -61,4 +62,18 @@ fn a_title_that_grows_too_long_starts_to_fade() {
 
     assert!(has_text("Longer than the two hundred pixels it has"));
     assert!(fades("Longer than the two hundred pixels it has"));
+}
+
+#[test]
+fn only_a_paragraph_longer_than_its_lines_fades() {
+    let long = "A comment that goes on for far longer than the two lines it is given, so that it \
+                has to be cut somewhere in the middle of what it says";
+    let _ui = start(move || {
+        div()
+            .child(in_width(200, faded_after(div().child(long), 2, 20.0)))
+            .child(in_width(200, faded_after(div().child("Short"), 2, 20.0)))
+    });
+
+    assert!(fades(long));
+    assert!(!fades("Short"));
 }

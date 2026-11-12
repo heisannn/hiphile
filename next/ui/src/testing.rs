@@ -1,7 +1,8 @@
 //! Driving views without a window: synthetic input, frames, and finding what is shown by role and
 //! name or by text. Nothing here needs a GPU.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use anti_webui::core::Ui;
@@ -11,7 +12,14 @@ use anti_webui::core::event::{
 };
 use anti_webui::core::geometry::{PointF, Scale, SizeI};
 use anti_webui::core::tree::{NodeKind, with_doc};
-use anti_webui::prelude::{IntoView, Role};
+use anti_webui::prelude::{IntoView, Role, on_cleanup};
+use anti_webui_md3e::components::snackbars;
+
+use crate::{Command, Commands, Covers, Known, ScreenContext};
+
+mod library;
+
+pub use library::{SavedLibrary, save_library, signed_in_core_with_library};
 
 /// The size the main window opens at.
 pub const WINDOW: (i32, i32) = (1200, 760);
@@ -267,8 +275,8 @@ pub const NOWHERE: &str = "http://127.0.0.1:9";
 /// What a test keeps until it ends: the core's runtime and the folder of its settings.
 pub struct TestCore {
     runtime: Option<tokio::runtime::Runtime>,
-    /// Dropped after the runtime: the last of a client must not go inside it, as the runtime's
-    /// tasks that hold the core would otherwise drop it there.
+    /// Never dropped. The last of a client must not go on the runtime's threads, which drop the
+    /// tasks that hold the core in the background once it shuts down.
     nets: Vec<net::Client>,
     _dir: tempfile::TempDir,
 }
@@ -278,6 +286,9 @@ impl Drop for TestCore {
         // Without waiting for blocking work, which may wait on a server that never answers
         if let Some(runtime) = self.runtime.take() {
             runtime.shutdown_background();
+        }
+        for net in self.nets.drain(..) {
+            std::mem::forget(net);
         }
     }
 }
@@ -321,4 +332,28 @@ pub fn signed_in_core(server: &str) -> (TestCore, hiphile_core::Hiphile) {
     core.nets.push(session.client().net().clone());
     hiphile.open_workspace(session, config::Profile::new(server, "alice"));
     (core, hiphile)
+}
+
+/// Commands that are kept in the order they are sent, for the test to read.
+pub fn recording_commands() -> (Commands, Rc<RefCell<Vec<Command>>>) {
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    let commands = Commands::new({
+        let sent = sent.clone();
+        move |command| sent.borrow_mut().push(command)
+    });
+    (commands, sent)
+}
+
+/// What a screen is made with on the workspace of `hiphile`, which is signed in, sending to
+/// `commands`. Made in a view, as it follows the workspace for as long as the view lives; what it
+/// tells shows where the view puts `snackbars.view()`.
+///
+/// It keeps `hiphile` until then, as the app does: the workspace goes with the last of it, and
+/// what the view keeps of the context may not be the workspace.
+pub fn screen_context(hiphile: &hiphile_core::Hiphile, commands: Commands) -> ScreenContext {
+    let workspace = hiphile.workspace().expect("signed in");
+    let known = Known::follow(hiphile, &workspace);
+    let kept = hiphile.clone();
+    on_cleanup(move || drop(kept));
+    ScreenContext::new(workspace, commands, known, snackbars(), Covers::new())
 }

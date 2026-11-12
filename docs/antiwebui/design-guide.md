@@ -79,7 +79,7 @@ Material 3 Expressive にデザインし直す Hiphile を、詰まったデス�
   | `surface_container_high` | ダイアログ、設定のポップアップ、検索のバー |
   | `on_surface_variant` | 詳細、補いの文字、選んでいないタブ |
   | `primary`、`on_primary` | 既定の決定、選択の強調、再生ボタン |
-  | `secondary_container`、`tertiary_container` | レールの目印、選んだメニューの項目など、部品が決めたもの |
+  | `secondary_container`、`tertiary_container` | レールの目印、選んだメニューの項目など、部品が決めたもの。選んだ行とカードの塗り |
   | `error`、`error_container` | 失敗と検証のエラーだけ |
   | `outline`、`outline_variant` | 枠線と区切り |
   | `scrim` | ダイアログとポップアップの後ろ |
@@ -156,8 +156,8 @@ Material 3 Expressive にデザインし直す Hiphile を、詰まったデス�
 | サーバーと設定 | レールの下端。サーバーは `initials_avatar` のボタンから md3e の `menu`（サーバーの一覧、Add Server…、Sign Out）を出す。設定はアイコンボタンでポップアップを開く |
 | 画面の見出し | 戻ると進む、画面のタイトル、並べ替えと絞り込みを持つ小さなアプリバー（`next_ui::app_bar`）。長いリストの上に大きく畳まるバーは置かない |
 | 画面の本体 | レールとバーから離した `surface_container` のペイン（角 28） |
-| Albums、Artists、Playlists | `split_row` の上の一覧と詳細のペイン。詳細のヘッダーは大きなカバーと、`button_group` に入れた `extended_fab` の再生とトーンのシャッフル |
-| Home | Recommended は `carousel`（multi-browse）。棚は `clickable_card` の並び。下に行 |
+| Albums、Artists、Playlists | `next_ui::list_detail` の一覧と詳細のペイン。一覧は決まった幅を保ち、残りを詳細に渡す（widgets の `split_row` は比率で分けるので使わない）。詳細のヘッダーは大きなカバーと、`button_group` に入れた `extended_fab` の再生とトーンのシャッフル |
+| Home | どの棚も `next_ui::card_grid` のカードの 1 行と、曲の行。並びはコアの `sections()` のとおり。md3e の `carousel` は、キーとフォーカスが無く、外からスクロールできず、縦のホイールを取ってページを止めるので使わない |
 | Songs | 詰めた行と並べ替えられる列の `row_list` |
 | Favorites | md3e の secondary の `tabs` |
 | 検索 | md3e の `search_bar` と、その下に付く結果。レールの FAB とキーで開く |
@@ -297,6 +297,9 @@ Material 3 Expressive にデザインし直す Hiphile を、詰まったデス�
 - 選択は情報の一部。タブ、移動先、選べる行、絞り込みはずっと選んだ状態を見せる。
 - 選んだ移動先、行、タブは、その項目自身の面で示す：md3e の目印、塗り、強い文字の色。先頭の端の棒や片側の
   枠線を選択の印にしない。
+- 選んだ行とカードは `secondary_container` で塗り、キーがそのリストに無い間は塗りを弱める。弱めても、
+  ホバーの灰色の状態レイヤーと見分けられる色味を残す。文字の色は選んでも変えない。md3e の
+  `on_secondary_container` は詳細の `on_surface_variant` より弱く、タイトルが詳細より薄く見えるため。
 - 取り返しのつく操作とつかない操作を分ける。取り返しのつくものは元に戻すスナックバーにし、取り返しの
   つかない重い操作だけを `alert_dialog` で確かめ、その対象と結果を名乗る。
 

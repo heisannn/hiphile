@@ -89,6 +89,8 @@ pub(crate) fn rail(
     )
     .relative()
     .h_full()
+    // A short window has no room for the foot below the destinations
+    .overflow_y_scroll()
     .access(|a| a.role(Role::Navigation).label("Destinations"))
     .child(div().flex_1())
     .child(foot)

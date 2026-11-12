@@ -67,11 +67,27 @@ name = "next-account"
 release = false
 
 [[package]]
+name = "next-artists"
+release = false
+
+[[package]]
+name = "next-favorites"
+release = false
+
+[[package]]
 name = "next-hiphile"
 release = false
 
 [[package]]
+name = "next-home"
+release = false
+
+[[package]]
 name = "next-host"
+release = false
+
+[[package]]
+name = "next-library"
 release = false
 
 [[package]]
@@ -83,7 +99,19 @@ name = "next-player"
 release = false
 
 [[package]]
+name = "next-playlists"
+release = false
+
+[[package]]
+name = "next-search"
+release = false
+
+[[package]]
 name = "next-settings"
+release = false
+
+[[package]]
+name = "next-songs"
 release = false
 
 [[package]]

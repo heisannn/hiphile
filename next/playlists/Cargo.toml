@@ -1,0 +1,24 @@
+[package]
+name = "next-playlists"
+description = "The Playlists screen on AntiWebUI: the playlists, the songs of the one chosen, and editing both."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+anti-webui.workspace = true
+anti-webui-md3e.workspace = true
+hiphile-core.workspace = true
+next-host.workspace = true
+next-ui.workspace = true
+playback.workspace = true
+subsonic.workspace = true
+
+[dev-dependencies]
+hiphile-core = { workspace = true, features = ["test-support"] }
+next-ui = { workspace = true, features = ["test-support"] }
+serde_json.workspace = true
+
+[lints]
+workspace = true

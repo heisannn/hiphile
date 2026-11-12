@@ -34,6 +34,7 @@ struct List {
     reorders: Signal<Vec<(Vec<u32>, usize)>>,
     /// How many rows were made.
     made: Rc<Cell<usize>>,
+    is_single: bool,
 }
 
 impl List {
@@ -46,6 +47,14 @@ impl List {
             menus: signal(Vec::new()),
             reorders: signal(Vec::new()),
             made: Rc::default(),
+            is_single: false,
+        }
+    }
+
+    fn single(count: u32) -> Self {
+        Self {
+            is_single: true,
+            ..Self::of(count)
         }
     }
 
@@ -66,6 +75,11 @@ impl List {
         .on_open(move |id| opened.update(|opened| opened.push(id)))
         .on_context_menu(move |id, at| menus.update(|menus| menus.push((id, at))))
         .on_reorder(move |ids, to| reorders.update(|reorders| reorders.push((ids, to))));
+        let list = if self.is_single {
+            list.single_selection()
+        } else {
+            list
+        };
         div().size_full().flex().flex_col().child(row_list(list))
     }
 
@@ -199,6 +213,23 @@ fn primary_a_selects_every_row() {
     key_with(&mut ui, Key::Character("a".into()), Modifiers::PRIMARY);
 
     assert_eq!(list.selected(), ids(0..30));
+}
+
+#[test]
+fn a_single_selection_takes_one_row_whatever_the_modifiers() {
+    let list = List::single(10);
+    let mut ui = list.start();
+    click_song(&mut ui, 2);
+
+    click_song_with(&mut ui, 5, shift());
+    assert_eq!(list.selected(), ids([5]));
+    click_song_with(&mut ui, 7, Modifiers::PRIMARY);
+    assert_eq!(list.selected(), ids([7]));
+    key_shifted(&mut ui, NamedKey::ArrowDown);
+    assert_eq!(list.selected(), ids([8]));
+    key_with(&mut ui, Key::Character("a".into()), Modifiers::PRIMARY);
+    assert_eq!(list.selected(), ids([8]));
+    assert!(!nodes(Role::ListBox)[0].multiselectable);
 }
 
 #[test]
@@ -415,4 +446,66 @@ fn a_row_can_be_called_other_than_what_it_shows() {
         .filter_map(|row| row.label)
         .collect();
     assert_eq!(labels, ["Song 0, by Nobody", "Song 1, by Nobody"]);
+}
+
+#[test]
+fn a_rows_name_follows_what_it_reads() {
+    let rows = songs(0..2);
+    let playing = signal(None::<u32>);
+    let mut ui = start(move || {
+        let list = RowList::new(
+            "Songs",
+            move || rows.clone(),
+            |song: &Song| song.id,
+            |song, _| row_text(song.title.clone(), None),
+        )
+        .row_label(move |song| match playing.get() {
+            Some(id) if id == song.id => format!("{}, playing", song.title),
+            _ => song.title.clone(),
+        });
+        div().size_full().flex().flex_col().child(row_list(list))
+    });
+    let labels = || -> Vec<String> {
+        nodes(Role::ListOption)
+            .into_iter()
+            .filter_map(|row| row.label)
+            .collect()
+    };
+
+    assert_eq!(labels(), ["Song 0", "Song 1"]);
+    playing.set(Some(1));
+    ui.update();
+    assert_eq!(labels(), ["Song 0", "Song 1, playing"]);
+}
+
+#[test]
+fn with_no_cursor_a_step_lands_where_the_keys_start() {
+    let rows = songs(0..10);
+    let selection = Selection::new();
+    let mut ui = start(move || {
+        let list = RowList::new(
+            "Songs",
+            move || rows.clone(),
+            |song: &Song| song.id,
+            |song, _| row_text(song.title.clone(), None),
+        )
+        .selection(selection)
+        .keys_start_at(|| Some(6));
+        div().size_full().flex().flex_col().child(row_list(list))
+    });
+    crate::testing::focus(&mut ui, Role::ListBox, "Songs");
+    let selected = || {
+        selection
+            .0
+            .with_untracked(|s| s.ids().copied().collect::<Vec<_>>())
+    };
+
+    key(&mut ui, NamedKey::ArrowDown);
+    assert_eq!(selected(), [6]);
+    key(&mut ui, NamedKey::ArrowDown);
+    assert_eq!(selected(), [7]);
+
+    selection.clear();
+    key(&mut ui, NamedKey::Home);
+    assert_eq!(selected(), [0]);
 }

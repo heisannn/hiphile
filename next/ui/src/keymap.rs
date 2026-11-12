@@ -169,6 +169,11 @@ impl<C: Clone + 'static> KeyContext<C> {
     }
 }
 
+/// Whether a text field has the focus, which keeps the keys it uses for itself.
+pub fn is_typing() -> bool {
+    focus::is_in_text_field()
+}
+
 /// Makes `element` the context `context`: while the focus is in it, the bindings of the context
 /// run its enabled commands.
 pub fn key_context<C: Clone + 'static>(element: Div, context: &KeyContext<C>) -> Div {

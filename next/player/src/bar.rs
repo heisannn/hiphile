@@ -2,7 +2,7 @@ use anti_webui::prelude::*;
 use anti_webui_md3e::color_scheme;
 use anti_webui_md3e::components::{
     ButtonSize, IconButtonStyle, Ink, button_group, icon_toggle_button, image, sized_icon,
-    styled_icon_button,
+    styled_icon_button, tooltip,
 };
 use anti_webui_md3e::icons::{self, Symbol};
 use anti_webui_md3e::typography::TextStyle;
@@ -13,34 +13,12 @@ use subsonic::Song;
 
 use crate::control::{PLAY, STANDARD_TOGGLE, icon_control};
 use crate::cover::Cover;
+use crate::panels::Panels;
 use crate::position::{LANE, position_line};
 use crate::volume::volume;
 
 const COVER: f32 = 56.0;
 const COVER_CORNER: f32 = 12.0;
-
-/// Which of the panels beside the pane are open, which the bar switches.
-#[non_exhaustive]
-#[derive(Clone, Copy)]
-pub struct Panels {
-    pub queue: Signal<bool>,
-    pub lyrics: Signal<bool>,
-}
-
-impl Panels {
-    pub fn new() -> Self {
-        Self {
-            queue: signal(false),
-            lyrics: signal(false),
-        }
-    }
-}
-
-impl Default for Panels {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 /// What `player` plays, with `cover` as its cover, and what controls it.
 pub fn player_bar(player: playback::Player, cover: Signal<Option<Cover>>, panels: Panels) -> Div {
@@ -263,8 +241,6 @@ fn extras(player: playback::Player, shown: Signal<PlayerSnapshot>, panels: Panel
         small().disabled_when(move || !has_song.get()),
     )
     .access(|a| a.label("Lyrics"));
-    let queue =
-        icon_toggle_button(icons::QUEUE_MUSIC, panels.queue, small()).access(|a| a.label("Queue"));
     let format = muted_text(TextStyle::LABEL_MEDIUM, move || {
         format.get().unwrap_or_default()
     })
@@ -278,9 +254,35 @@ fn extras(player: playback::Player, shown: Signal<PlayerSnapshot>, panels: Panel
         .gap(4.0_f32)
         .child(format)
         .child(lyrics)
-        .child(queue)
+        .child(queue_toggle(panels))
         .child(volume(player, shown))
 }
+
+/// Disabled where the queue does not fit, which it says while the pointer rests on it.
+fn queue_toggle(panels: Panels) -> Div {
+    let fits = memo(move || panels.queue_fits());
+    let toggle = move || {
+        icon_toggle_button(
+            icons::QUEUE_MUSIC,
+            Binding::new(
+                move || panels.is_queue_shown(),
+                move |_| panels.toggle_queue(),
+            ),
+            small().disabled_when(move || !fits.get()),
+        )
+        .access(|a| a.label("Queue"))
+    };
+    div().flex().flex_none().child(dyn_view(move || {
+        if fits.get() {
+            untrack(toggle)
+        } else {
+            // On what holds it, as what is disabled takes no pointer
+            untrack(|| tooltip(div().flex().child(toggle()), NO_ROOM_FOR_QUEUE))
+        }
+    }))
+}
+
+const NO_ROOM_FOR_QUEUE: &str = "Widen the window to show the queue.";
 
 #[cfg(test)]
 mod tests;

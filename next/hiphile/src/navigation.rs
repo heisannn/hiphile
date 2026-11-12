@@ -16,6 +16,11 @@ impl Navigation {
         }
     }
 
+    /// Where the window is, which also says what is selected there.
+    pub(crate) fn location(&self) -> Signal<Location> {
+        self.location
+    }
+
     pub(crate) fn destination(&self) -> Destination {
         self.location.with(Location::destination)
     }
@@ -29,6 +34,11 @@ impl Navigation {
             self.history.update(|history| history.visit(now));
         }
         self.location.set(to);
+    }
+
+    /// Goes to `to` without making where the window is somewhere to go back to.
+    pub(crate) fn show_in_place(&self, to: Location) {
+        self.location.set_if_changed(to);
     }
 
     pub(crate) fn back(&self) {

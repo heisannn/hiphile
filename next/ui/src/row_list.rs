@@ -13,6 +13,7 @@ use anti_webui_md3e::components::Ink;
 use hiphile_core::Shown;
 
 use crate::keymap::{Keystroke, handles_keys};
+use crate::selection::selection_fill;
 
 mod selection;
 
@@ -24,6 +25,8 @@ use selection::Order;
 pub const ROW_HEIGHT: f32 = 48.0;
 /// From the edge of the list to the rows, whose corners are rounded.
 const INSET: f32 = 8.0;
+/// From a row's edge to what it shows, which puts that on the line of the rest of a pane.
+pub const ROW_PADDING: f32 = crate::pane::INSET - INSET;
 
 /// What a row list shows: items in the order they show.
 pub trait RowSource: 'static {
@@ -152,6 +155,7 @@ type Look<S, K> = Rc<dyn Fn(&<S as RowSource>::Item, RowState<K>) -> Div>;
 type IdOf<S, K> = Rc<dyn Fn(&<S as RowSource>::Item) -> K>;
 type LabelOf<S> = Rc<dyn Fn(&<S as RowSource>::Item) -> String>;
 type OnReorder<K> = Rc<dyn Fn(Vec<K>, usize)>;
+type KeysStart<K> = Rc<dyn Fn() -> Option<K>>;
 
 /// A row list to be made by [`row_list`].
 pub struct RowList<S: RowSource, K: 'static> {
@@ -161,11 +165,13 @@ pub struct RowList<S: RowSource, K: 'static> {
     row: Look<S, K>,
     row_label: Option<LabelOf<S>>,
     selection: Option<Selection<K>>,
+    is_single: bool,
     row_height: f32,
     node: Option<NodeRef>,
     on_open: Option<Rc<dyn Fn(K)>>,
     on_context_menu: Option<Rc<dyn Fn(K, PointF)>>,
     on_reorder: Option<OnReorder<K>>,
+    keys_start: Option<KeysStart<K>>,
 }
 
 impl<S: RowSource, K: Clone + Eq + Hash + 'static> RowList<S, K> {
@@ -185,11 +191,13 @@ impl<S: RowSource, K: Clone + Eq + Hash + 'static> RowList<S, K> {
             row: Rc::new(row),
             row_label: None,
             selection: None,
+            is_single: false,
             row_height: ROW_HEIGHT,
             node: None,
             on_open: None,
             on_context_menu: None,
             on_reorder: None,
+            keys_start: None,
         }
     }
 
@@ -199,7 +207,14 @@ impl<S: RowSource, K: Clone + Eq + Hash + 'static> RowList<S, K> {
         self
     }
 
-    /// What a row is called, for assistive technology. It is what the row shows otherwise.
+    /// Only one row is selected at a time: Shift, ⌘ and ⌘A add none to it.
+    pub fn single_selection(mut self) -> Self {
+        self.is_single = true;
+        self
+    }
+
+    /// What a row is called, for assistive technology. It is what the row shows otherwise. It may
+    /// read signals, such as whether the row's song plays, and follows them.
     pub fn row_label(mut self, label: impl Fn(&S::Item) -> String + 'static) -> Self {
         self.row_label = Some(Rc::new(label));
         self
@@ -234,6 +249,13 @@ impl<S: RowSource, K: Clone + Eq + Hash + 'static> RowList<S, K> {
     /// go before, which is the number of rows for after the last.
     pub fn on_reorder(mut self, reorder: impl Fn(Vec<K>, usize) + 'static) -> Self {
         self.on_reorder = Some(Rc::new(reorder));
+        self
+    }
+
+    /// The row that a step of the keys lands on while no row is the cursor, such as the song that
+    /// plays. It is the first row otherwise.
+    pub fn keys_start_at(mut self, start: impl Fn() -> Option<K> + 'static) -> Self {
+        self.keys_start = Some(Rc::new(start));
         self
     }
 }
@@ -295,11 +317,13 @@ pub fn row_list<S: RowSource, K: Clone + Eq + Hash + 'static>(list: RowList<S, K
         row,
         row_label,
         selection,
+        is_single,
         row_height,
         node,
         on_open,
         on_context_menu,
         on_reorder,
+        keys_start,
     } = list;
     let selection = selection.unwrap_or_else(Selection::new);
     let node = node.unwrap_or_else(node_ref);
@@ -322,6 +346,7 @@ pub fn row_list<S: RowSource, K: Clone + Eq + Hash + 'static>(list: RowList<S, K
     let place = Place {
         shared: shared.clone(),
         selection,
+        is_single,
         focused,
         node,
         row,
@@ -343,16 +368,23 @@ pub fn row_list<S: RowSource, K: Clone + Eq + Hash + 'static>(list: RowList<S, K
     .node_ref(node)
     .focusable()
     .select_none()
-    .access(move |a| a.role(Role::ListBox).label(label.clone()).multiselectable())
+    .access(move |a| {
+        let a = a.role(Role::ListBox).label(label.clone());
+        if is_single { a } else { a.multiselectable() }
+    })
     .on_focus_change(move |on| focused.set(on));
     handles_keys(list, move |stroke| {
         take_key(
             stroke,
             &shared,
             selection,
+            is_single,
             node,
             row_height,
-            on_open.as_deref(),
+            KeyHooks {
+                on_open: on_open.as_deref(),
+                start: keys_start.as_deref(),
+            },
         )
     })
 }
@@ -401,9 +433,26 @@ fn device_row_height(row_height: f32) -> f32 {
     scale.px(row_height) as f32 / scale.as_f32()
 }
 
+/// Scrolls the list `node` refers to just far enough to show the row at `position`, as a selection
+/// made other than by the keys needs. Whether it could: a list not laid out yet, as large as
+/// nothing, is left as it is, and [`has_room_for_rows`] says when it can.
+pub fn scroll_to_row(node: NodeRef, position: usize, row_height: f32) -> bool {
+    if !has_room_for_rows(node, row_height) {
+        return false;
+    }
+    reveal(node, position, row_height);
+    true
+}
+
+/// Whether the list `node` refers to is laid out, with room for a row.
+pub fn has_room_for_rows(node: NodeRef, row_height: f32) -> bool {
+    node.logical_rect()
+        .is_some_and(|rect| rect.height >= row_height)
+}
+
 /// Scrolls the list just far enough to show the row at `position`, once it is laid out, which it
 /// may not be yet for rows that just came.
-fn reveal(node: NodeRef, position: usize, row_height: f32) {
+pub fn reveal(node: NodeRef, position: usize, row_height: f32) {
     let Some(rect) = node.logical_rect() else {
         return;
     };
@@ -428,16 +477,27 @@ fn rows_in_view(node: NodeRef, row_height: f32) -> usize {
         .max(1)
 }
 
+/// What the list's owner gave for the keys to call.
+struct KeyHooks<'a, K> {
+    on_open: Option<&'a dyn Fn(K)>,
+    start: Option<&'a dyn Fn() -> Option<K>>,
+}
+
 fn take_key<S: RowSource, K: Clone + Eq + Hash + 'static>(
     stroke: &Keystroke,
     shared: &Shared<S, K>,
     selection: Selection<K>,
+    is_single: bool,
     node: NodeRef,
     row_height: f32,
-    on_open: Option<&dyn Fn(K)>,
+    hooks: KeyHooks<'_, K>,
 ) -> bool {
+    let KeyHooks {
+        on_open,
+        start: keys_start,
+    } = hooks;
     let m = stroke.modifiers();
-    if m.primary() && !m.shift && !m.alt && stroke.key().is_char('a') {
+    if !is_single && m.primary() && !m.shift && !m.alt && stroke.key().is_char('a') {
         selection.0.update(|selected| selected.select_all(shared));
         return true;
     }
@@ -466,10 +526,25 @@ fn take_key<S: RowSource, K: Clone + Eq + Hash + 'static>(
         NamedKey::End => Motion::Last,
         _ => return false,
     };
-    let page = rows_in_view(node, row_height);
-    let to = selection
-        .0
-        .update(|selected| selected.move_by(motion, m.shift, shared, page));
+    let has_cursor = selection
+        .cursor()
+        .is_some_and(|cursor| shared.position_of(&cursor).is_some());
+    let start = keys_start
+        .filter(|_| !has_cursor && matches!(motion, Motion::By(_) | Motion::Pages(_)))
+        .and_then(untrack)
+        .and_then(|id| Some((shared.position_of(&id)?, id)));
+    let to = match start {
+        Some((position, id)) => {
+            selection.0.update(|selected| selected.select_only(id));
+            Some(position)
+        }
+        None => {
+            let page = rows_in_view(node, row_height);
+            selection
+                .0
+                .update(|selected| selected.move_by(motion, m.shift && !is_single, shared, page))
+        }
+    };
     if let Some(to) = to {
         reveal(node, to, row_height);
     }
@@ -487,6 +562,7 @@ struct Reorder<K: 'static> {
 struct Place<S: RowSource, K: 'static> {
     shared: Rc<Shared<S, K>>,
     selection: Selection<K>,
+    is_single: bool,
     focused: Signal<bool>,
     node: NodeRef,
     row: Look<S, K>,
@@ -521,7 +597,10 @@ impl<S: RowSource, K: Clone + Eq + Hash + 'static> Place<S, K> {
             let id = id.clone();
             memo(move || selection.contains(&id))
         };
-        let label = self.row_label.as_ref().map(|label| label(item));
+        let label = self.row_label.clone().map(|label| {
+            let rows = self.shared.rows;
+            move || rows.with(|rows| rows.get(position).map(|item| label(item)))
+        });
         let look = (self.row)(
             item,
             RowState {
@@ -530,16 +609,7 @@ impl<S: RowSource, K: Clone + Eq + Hash + 'static> Place<S, K> {
                 selection,
             },
         );
-        let ink = Ink::new(
-            move |c| {
-                if selected.get() && focused.get() {
-                    c.on_secondary_container
-                } else {
-                    c.on_surface
-                }
-            },
-            || false,
-        );
+        let ink = Ink::new(|c| c.on_surface, || false);
         let frame = div()
             .absolute()
             .top(0)
@@ -552,19 +622,17 @@ impl<S: RowSource, K: Clone + Eq + Hash + 'static> Place<S, K> {
             .rounded(12.0_f32)
             .access(move |a| {
                 let a = a.role(Role::ListOption).selected(selected.get());
-                match &label {
-                    Some(label) => a.label(label.clone()),
+                match label.as_ref().and_then(|label| label()) {
+                    Some(label) => a.label(label),
                     None => a,
                 }
             })
             .dyn_style(move |s| {
                 let c = color_scheme();
-                match (selected.get(), focused.get()) {
-                    (true, true) => s
-                        .bg(c.secondary_container)
-                        .text_color(c.on_secondary_container),
-                    (true, false) => s.bg(c.surface_container_highest).text_color(c.on_surface),
-                    (false, _) => s.text_color(c.on_surface),
+                let s = s.text_color(c.on_surface);
+                match selection_fill(&c, selected.get(), focused.get()) {
+                    Some(fill) => s.bg(fill),
+                    None => s,
                 }
             })
             .on_click(self.click(id.clone()))
@@ -580,14 +648,15 @@ impl<S: RowSource, K: Clone + Eq + Hash + 'static> Place<S, K> {
     fn click(&self, id: K) -> impl Fn(&PointerEvent) + 'static {
         let (shared, selection, on_open) =
             (self.shared.clone(), self.selection, self.on_open.clone());
+        let is_single = self.is_single;
         move |e| {
             let m = e.modifiers;
             if is_context_click(e) {
                 return;
             }
-            if m.primary() {
+            if m.primary() && !is_single {
                 selection.0.update(|selected| selected.toggle(id.clone()));
-            } else if m.shift {
+            } else if m.shift && !is_single {
                 selection
                     .0
                     .update(|selected| selected.extend_to(id.clone(), &*shared));
@@ -705,8 +774,24 @@ fn selected_in_order<S: RowSource, K: Clone + Eq + Hash + 'static>(
     })
 }
 
+/// Makes `control` in a row do only what it does itself: pressing it does not select, open or
+/// ripple the row. Opening the row's menu with the secondary button still reaches the row.
+pub fn row_control(control: Div) -> Div {
+    control
+        .on_pointer_down(|e| {
+            if !is_context_click(e) {
+                e.stop_propagation();
+            }
+        })
+        .on_click(|e| {
+            if !is_context_click(e) {
+                e.stop_propagation();
+            }
+        })
+}
+
 /// The secondary button, or Control and the primary one on macOS.
-fn is_context_click(e: &PointerEvent) -> bool {
+pub fn is_context_click(e: &PointerEvent) -> bool {
     match e.button {
         Some(PointerButton::Secondary) => true,
         Some(PointerButton::Primary) => cfg!(target_os = "macos") && e.modifiers.ctrl,

@@ -1,7 +1,7 @@
 //! A Subsonic server on a local port that serves playlists and takes changes to them, for the
 //! tests of the core and of the views.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Condvar, Mutex};
@@ -37,6 +37,8 @@ struct FakePlaylist {
     id: String,
     name: String,
     songs: Vec<String>,
+    /// What the server says of it besides, such as its comment.
+    details: Value,
 }
 
 #[derive(Default)]
@@ -47,6 +49,11 @@ struct State {
     readonly: HashSet<String>,
     held: HashSet<&'static str>,
     refused: HashSet<&'static str>,
+    /// What the server says of a song besides its title.
+    songs: HashMap<String, Value>,
+    /// The songs starred, once the server serves favorites.
+    starred: Option<Vec<String>>,
+    covers: HashMap<String, Arc<[u8]>>,
 }
 
 type Shared = Arc<(Mutex<State>, Condvar)>;
@@ -68,6 +75,7 @@ impl PlaylistsServer {
                 id: (*id).to_owned(),
                 name: (*name).to_owned(),
                 songs: songs.iter().map(|song| (*song).to_owned()).collect(),
+                details: json!({}),
             })
             .collect();
         let shared = state.clone();
@@ -129,6 +137,35 @@ impl PlaylistsServer {
         state.readonly.insert(playlist.to_owned());
     }
 
+    /// Says `details` of the song `id` besides its title, such as its artist, its duration and
+    /// its cover.
+    pub fn describe_song(&self, id: &str, details: Value) {
+        let mut state = self.state.0.lock().unwrap();
+        state.songs.insert(id.to_owned(), details);
+    }
+
+    /// Says `details` of `playlist` besides its name and songs, such as its comment.
+    pub fn describe_playlist(&self, playlist: &str, details: Value) {
+        let mut state = self.state.0.lock().unwrap();
+        let found = state
+            .playlists
+            .iter_mut()
+            .find(|listed| listed.id == playlist);
+        found.unwrap().details = details;
+    }
+
+    /// Serves the favorites, of which `songs` are the songs. Until then they are not served.
+    pub fn serve_favorites(&self, songs: &[&str]) {
+        let mut state = self.state.0.lock().unwrap();
+        state.starred = Some(songs.iter().map(|song| (*song).to_owned()).collect());
+    }
+
+    /// Serves `png` for the cover `id`.
+    pub fn serve_cover(&self, id: &str, png: Vec<u8>) {
+        let mut state = self.state.0.lock().unwrap();
+        state.covers.insert(id.to_owned(), png.into());
+    }
+
     pub fn songs(&self, playlist: &str) -> Vec<String> {
         let state = self.state.0.lock().unwrap();
         state
@@ -149,6 +186,14 @@ fn serve(mut stream: TcpStream, shared: &Shared) {
     let (lock, released) = &**shared;
     let mut state = lock.lock().unwrap();
     state.requests.push(request.clone());
+    if request.method == "getCoverArt" {
+        let cover = request
+            .value("id")
+            .and_then(|id| state.covers.get(id).cloned());
+        drop(state);
+        write_cover(stream, cover.as_deref());
+        return;
+    }
     let method = request.method.clone();
     let wait = |state| {
         released
@@ -186,6 +231,22 @@ fn serve(mut stream: TcpStream, shared: &Shared) {
     stream.write_all(response.as_bytes()).ok();
 }
 
+fn write_cover(mut stream: TcpStream, png: Option<&[u8]>) {
+    let Some(png) = png else {
+        stream
+            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .ok();
+        return;
+    };
+    let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        png.len()
+    );
+    // A request given up on has nobody to answer
+    stream.write_all(head.as_bytes()).ok();
+    stream.write_all(png).ok();
+}
+
 fn answer(request: &Request, state: &mut State) -> Result<Value, &'static str> {
     if state.refused.contains(request.method.as_str()) {
         return Err("Refused");
@@ -195,7 +256,7 @@ fn answer(request: &Request, state: &mut State) -> Result<Value, &'static str> {
             let listed: Vec<Value> = state
                 .playlists
                 .iter()
-                .map(|playlist| playlist_json(playlist, &state.readonly))
+                .map(|playlist| playlist_json(playlist, state))
                 .collect();
             Ok(json!({ "playlists": { "playlist": listed } }))
         }
@@ -203,8 +264,13 @@ fn answer(request: &Request, state: &mut State) -> Result<Value, &'static str> {
             let id = request.value("id").unwrap_or_default();
             let found = state.playlists.iter().find(|listed| listed.id == id);
             found
-                .map(|playlist| json!({ "playlist": with_songs(playlist, &state.readonly) }))
+                .map(|playlist| json!({ "playlist": with_songs(playlist, state) }))
                 .ok_or("Not found")
+        }
+        "getStarred2" => {
+            let starred = state.starred.as_ref().ok_or("Not implemented")?;
+            let songs: Vec<Value> = starred.iter().map(|id| song_json(id, state)).collect();
+            Ok(json!({ "starred2": { "song": songs } }))
         }
         "createPlaylist" => {
             let songs = request
@@ -223,12 +289,13 @@ fn answer(request: &Request, state: &mut State) -> Result<Value, &'static str> {
                     id: id.clone(),
                     name: request.value("name").unwrap_or_default().to_owned(),
                     songs,
+                    details: json!({}),
                 });
                 id
             };
             let playlist = state.playlists.iter().find(|listed| listed.id == id);
             let playlist = playlist.ok_or("Not found")?;
-            Ok(json!({ "playlist": with_songs(playlist, &state.readonly) }))
+            Ok(json!({ "playlist": with_songs(playlist, state) }))
         }
         "updatePlaylist" => {
             let id = request.value("playlistId").unwrap_or_default();
@@ -258,27 +325,42 @@ fn answer(request: &Request, state: &mut State) -> Result<Value, &'static str> {
     }
 }
 
-fn playlist_json(playlist: &FakePlaylist, readonly: &HashSet<String>) -> Value {
+fn playlist_json(playlist: &FakePlaylist, state: &State) -> Value {
     let mut json = json!({
         "id": playlist.id,
         "name": playlist.name,
         "owner": "alice",
         "songCount": playlist.songs.len(),
     });
-    if readonly.contains(&playlist.id) {
+    if state.readonly.contains(&playlist.id) {
         json["owner"] = json!("bob");
         json["readonly"] = json!(true);
     }
-    json
+    with_details(json, &playlist.details)
 }
 
-fn with_songs(playlist: &FakePlaylist, readonly: &HashSet<String>) -> Value {
-    let mut json = playlist_json(playlist, readonly);
+fn with_songs(playlist: &FakePlaylist, state: &State) -> Value {
+    let mut json = playlist_json(playlist, state);
     json["entry"] = playlist
         .songs
         .iter()
-        .map(|song| json!({ "id": song, "title": song }))
+        .map(|song| song_json(song, state))
         .collect();
+    json
+}
+
+fn song_json(id: &str, state: &State) -> Value {
+    let json = json!({ "id": id, "title": id });
+    match state.songs.get(id) {
+        Some(details) => with_details(json, details),
+        None => json,
+    }
+}
+
+fn with_details(mut json: Value, details: &Value) -> Value {
+    if let (Value::Object(json), Value::Object(details)) = (&mut json, details) {
+        json.extend(details.clone());
+    }
     json
 }
 

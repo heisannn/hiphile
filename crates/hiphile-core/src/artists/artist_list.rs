@@ -17,6 +17,7 @@ pub struct ArtistListStatus {
     shown: Option<Shown<Artist>>,
     /// From the saved albums: without a saved library, no artist has a date.
     dates: Arc<ArtistDates>,
+    query: String,
     sort: ArtistSort,
     is_reading: bool,
     /// Refreshing artists already on show failed, for this reason. Artists that never showed
@@ -38,6 +39,10 @@ impl ArtistListStatus {
 
     pub fn dates(&self) -> &Arc<ArtistDates> {
         &self.dates
+    }
+
+    pub fn query(&self) -> &str {
+        &self.query
     }
 
     pub fn sort(&self) -> ArtistSort {
@@ -73,7 +78,6 @@ struct Inner {
 struct State {
     status: ArtistListStatus,
     is_open: bool,
-    query: String,
     /// Counts the readings, so that one replaced while it was finishing on another thread cannot
     /// change the list after its successor has.
     work_id: u64,
@@ -92,12 +96,12 @@ impl ArtistList {
                     artists: Shelf::Loading,
                     shown: None,
                     dates: Arc::default(),
+                    query: String::new(),
                     sort: ArtistSort::default(),
                     is_reading: false,
                     failure: None,
                 },
                 is_open: false,
-                query: String::new(),
                 work_id: 0,
                 arranging: Arranging::default(),
                 _work: Task::ready(()),
@@ -147,8 +151,8 @@ impl ArtistList {
 
     pub fn set_query(&self, query: &str) {
         self.0.state.update(|state| {
-            if state.query != query {
-                state.query = query.to_owned();
+            if state.status.query != query {
+                state.status.query = query.to_owned();
                 self.arrange(state);
             }
         });
@@ -293,7 +297,7 @@ impl Arranged for State {
 
     fn order(&self) -> Self::Order {
         let status = &self.status;
-        (self.query.clone(), status.dates.clone(), status.sort)
+        (status.query.clone(), status.dates.clone(), status.sort)
     }
 
     fn index(artists: &[Artist], speller: Option<&dyn Speller>) -> Index {

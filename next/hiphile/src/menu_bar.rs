@@ -1,7 +1,10 @@
+use std::sync::Arc;
+
 use anti_webui::prelude::*;
 use hiphile_core::navigation::Destination;
-use next_platform::menu::{Item, ItemState, Menu, Shortcut, Standard};
+use next_platform::menu::{Item, ItemState, Key, Menu, Shortcut, Standard};
 use next_ui::{Command, Commands};
+use playback::RepeatMode;
 
 use crate::navigation::location_of;
 
@@ -22,6 +25,14 @@ pub(crate) struct Shown {
     pub(crate) can_go_forward: bool,
     /// Something is open over the screens, such as the settings.
     pub(crate) covered: bool,
+    /// There is a song to play, pause, skip or seek.
+    pub(crate) has_song: bool,
+    pub(crate) has_queue: bool,
+    pub(crate) shuffled: bool,
+    /// What repeats, while someone is signed in.
+    pub(crate) repeat: Option<RepeatMode>,
+    pub(crate) queue_fits: bool,
+    pub(crate) queue_shown: bool,
 }
 
 impl MenuBar {
@@ -97,7 +108,19 @@ pub fn menus() -> Vec<Menu<Command>> {
                 Item::standard("Quit hiphile", Standard::Quit),
             ],
         ),
-        Menu::new("Library", Vec::new()),
+        Menu::new(
+            "Library",
+            vec![
+                Item::command("Refresh Library", Command::Refresh, Shortcut::command('r')),
+                Item::Separator,
+                Item::command(
+                    "New Playlist…",
+                    Command::NewPlaylist(Arc::from([])),
+                    Shortcut::command('n'),
+                ),
+                Item::command("Save Queue as Playlist…", Command::SaveQueue, None),
+            ],
+        ),
         Menu::new(
             "View",
             [
@@ -109,9 +132,63 @@ pub fn menus() -> Vec<Menu<Command>> {
             ]
             .into_iter()
             .chain(destinations)
+            .chain([
+                Item::Separator,
+                Item::command(
+                    "Queue",
+                    Command::ToggleQueue,
+                    Shortcut::command('u').option(),
+                ),
+            ])
             .collect(),
         ),
-        Menu::new("Controls", Vec::new()),
+        Menu::new("Controls", controls()),
+    ]
+}
+
+fn controls() -> Vec<Item<Command>> {
+    let repeat = [
+        ("Off", RepeatMode::Off),
+        ("All", RepeatMode::All),
+        ("One", RepeatMode::One),
+    ]
+    .into_iter()
+    .map(|(title, mode)| Item::command(title, Command::SetRepeat(mode), None))
+    .collect();
+    vec![
+        Item::command("Play/Pause", Command::TogglePlayback, None),
+        Item::command("Next", Command::Next, Shortcut::command(Key::Right)),
+        Item::command("Previous", Command::Previous, Shortcut::command(Key::Left)),
+        Item::Separator,
+        Item::command(
+            "Shuffle",
+            Command::ToggleShuffle,
+            Shortcut::command('s').option(),
+        ),
+        Item::Submenu(Menu::new("Repeat", repeat)),
+        Item::Separator,
+        Item::command(
+            "Seek Forward",
+            Command::SeekForward,
+            Shortcut::command(Key::Right).shift(),
+        ),
+        Item::command(
+            "Seek Backward",
+            Command::SeekBackward,
+            Shortcut::command(Key::Left).shift(),
+        ),
+        Item::Separator,
+        Item::command("Volume Up", Command::VolumeUp, Shortcut::command(Key::Up)),
+        Item::command(
+            "Volume Down",
+            Command::VolumeDown,
+            Shortcut::command(Key::Down),
+        ),
+        Item::command(
+            "Mute",
+            Command::ToggleMute,
+            Shortcut::command(Key::Down).option(),
+        ),
     ]
 }
 
@@ -125,7 +202,20 @@ fn state_of(shown: &Shown, command: &Command) -> ItemState {
         }
         Command::GoBack => ItemState::enabled(free && shown.can_go_back),
         Command::GoForward => ItemState::enabled(free && shown.can_go_forward),
-        Command::OpenSearch | Command::OpenSettings => ItemState::enabled(free),
+        Command::TogglePlayback
+        | Command::Next
+        | Command::Previous
+        | Command::SeekForward
+        | Command::SeekBackward => ItemState::enabled(free && shown.has_song),
+        Command::SaveQueue => ItemState::enabled(free && shown.has_queue),
+        Command::ToggleQueue => {
+            ItemState::enabled(free && shown.queue_fits).checked(shown.queue_shown)
+        }
+        Command::ToggleShuffle => ItemState::enabled(free).checked(shown.shuffled),
+        Command::SetRepeat(repeat) => {
+            ItemState::enabled(free).checked(shown.repeat == Some(*repeat))
+        }
+        _ => ItemState::enabled(free),
     }
 }
 

@@ -4,7 +4,7 @@ use subsonic::{Song, SongId};
 
 /// A row of a playlist. A song can be in a playlist more than once, so rows
 /// keep their selection and identity by this rather than by song or position.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EntryId(u64);
 
 impl EntryId {
