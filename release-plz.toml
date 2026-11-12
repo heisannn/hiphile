@@ -67,6 +67,10 @@ name = "next-account"
 release = false
 
 [[package]]
+name = "next-favorites"
+release = false
+
+[[package]]
 name = "next-hiphile"
 release = false
 
