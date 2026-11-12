@@ -34,8 +34,8 @@ thread_local! {
 }
 
 /// The playlists beside the songs of the one `location` names. While it names none, or one that
-/// has gone, it is the one open before or else the first listed. Choosing another sends
-/// [`Command::Show`].
+/// has gone, it is the one open before or else the first listed. Choosing another with the pointer
+/// sends [`Command::Show`], and moving to it with the keys [`Command::ShowInPlace`].
 pub fn playlists(location: Signal<Location>, cx: &ScreenContext) -> Screen {
     keys::bind();
     let screen = Playlists::new(location, cx);
@@ -130,10 +130,18 @@ impl Playlists {
         self.wanted.get().flatten()
     }
 
-    fn show(&self, playlist: Option<PlaylistId>) {
+    /// Shows `playlist`, chosen with the pointer, which leaves the playlist that was on show to go
+    /// back to.
+    fn choose(&self, playlist: PlaylistId) {
         self.cx
             .commands
-            .send(Command::Show(Location::Playlists(playlist)));
+            .send(Command::Show(Location::Playlists(Some(playlist))));
+    }
+
+    fn show_in_place(&self, playlist: Option<PlaylistId>) {
+        self.cx
+            .commands
+            .send(Command::ShowInPlace(Location::Playlists(playlist)));
     }
 
     /// Keeps the location, the list's selection and the open playlist one.
@@ -184,7 +192,9 @@ impl Playlists {
                     return;
                 };
                 match only {
-                    Some(chosen) if wanted.as_ref() != Some(&chosen) => this.show(Some(chosen)),
+                    Some(chosen) if wanted.as_ref() != Some(&chosen) => {
+                        this.show_in_place(Some(chosen));
+                    }
                     Some(_) => {}
                     None => reselect.set(()),
                 }
@@ -234,7 +244,7 @@ impl Playlists {
             return;
         };
         if let Kept::Instead(kept) = self.kept(&wanted) {
-            self.show(kept);
+            self.show_in_place(kept);
         }
     }
 
@@ -373,7 +383,7 @@ impl Playlists {
                 .and_then(|position| after_removal(position, after.visible().len()))
                 .and_then(|position| after.visible_playlist(position))
                 .map(|listed| listed.id().clone());
-            self.show(next);
+            self.show_in_place(next);
         }
         self.list_node.focus();
     }

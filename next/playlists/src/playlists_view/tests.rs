@@ -20,11 +20,14 @@ use subsonic::SongId;
 
 use super::*;
 
-/// The screen at a location of its own, which takes the [`Command::Show`]s it sends.
+/// The screen at a location of its own, which takes the [`Command::Show`]s and
+/// [`Command::ShowInPlace`]s it sends.
 struct Opened {
     ui: Ui,
     hiphile: Hiphile,
     location: Signal<Location>,
+    /// What going back would show, the last first.
+    left: Rc<RefCell<Vec<Location>>>,
     sent: Rc<RefCell<Vec<Command>>>,
     covers: Covers,
     _core: TestCore,
@@ -46,6 +49,10 @@ impl Opened {
     fn chosen(&self) -> Location {
         self.location.get_untracked()
     }
+
+    fn left(&self) -> Vec<Location> {
+        self.left.borrow().clone()
+    }
 }
 
 fn open_at(server: &PlaylistsServer, at: Location) -> Opened {
@@ -53,16 +60,25 @@ fn open_at(server: &PlaylistsServer, at: Location) -> Opened {
     let location = Rc::new(Cell::new(None));
     let covers = Rc::new(Cell::new(None));
     let sent = Rc::new(RefCell::new(Vec::new()));
+    let left = Rc::new(RefCell::new(Vec::new()));
     let ui = start({
         let (hiphile, made, sent) = (hiphile.clone(), location.clone(), sent.clone());
-        let covers = covers.clone();
+        let (covers, left) = (covers.clone(), left.clone());
         move || {
             install_covers(hiphile.clone());
             let location = signal(at);
             made.set(Some(location));
             let commands = Commands::new(move |command| {
-                if let Command::Show(to) = &command {
-                    location.set(to.clone());
+                match &command {
+                    Command::Show(to) => {
+                        let now = location.get_untracked();
+                        if now.is_worth_returning_to_from(to) {
+                            left.borrow_mut().push(now);
+                        }
+                        location.set_if_changed(to.clone());
+                    }
+                    Command::ShowInPlace(to) => location.set_if_changed(to.clone()),
+                    _ => {}
                 }
                 sent.borrow_mut().push(command);
             });
@@ -81,6 +97,7 @@ fn open_at(server: &PlaylistsServer, at: Location) -> Opened {
         ui,
         hiphile,
         location: location.get().expect("made"),
+        left,
         sent,
         covers: covers.get().expect("made"),
         _core: core,
@@ -208,7 +225,7 @@ fn the_playlist_the_location_names_is_shown() {
 }
 
 #[test]
-fn moving_through_the_list_chooses_each_playlist() {
+fn moving_through_the_list_shows_each_playlist_in_place() {
     let server = two_playlists();
     let mut opened = loaded(&server);
     wait_until(&mut opened.ui, || is_focused("Playlists"));
@@ -217,6 +234,20 @@ fn moving_through_the_list_chooses_each_playlist() {
 
     assert_eq!(opened.chosen(), chosen("b"));
     wait_until(&mut opened.ui, || songs() == ["Song 4"]);
+    assert!(opened.left().is_empty());
+}
+
+#[test]
+fn choosing_another_playlist_leaves_the_one_on_show_to_go_back_to() {
+    let server = two_playlists();
+    let mut opened = loaded(&server);
+    wait_until(&mut opened.ui, || is_focused("Playlists"));
+
+    click_text(&mut opened.ui, "Beta");
+
+    wait_until(&mut opened.ui, || songs() == ["Song 4"]);
+    assert_eq!(opened.chosen(), chosen("b"));
+    assert_eq!(opened.left(), [chosen("a")]);
 }
 
 #[test]
@@ -618,6 +649,7 @@ fn a_playlist_that_has_gone_leaves_the_one_open() {
 
     wait_until(&mut opened.ui, || location.get_untracked() == chosen("b"));
     assert_eq!(songs(), ["Song 4"]);
+    assert!(opened.left().is_empty());
 }
 
 #[test]
@@ -651,6 +683,7 @@ fn deleting_the_chosen_playlist_chooses_the_one_in_its_place() {
     press(&mut opened.ui, Role::Button, "Delete");
 
     assert_eq!(opened.chosen(), chosen("b"));
+    assert!(opened.left().is_empty());
     wait_until(&mut opened.ui, || labels_in("Playlists") == ["Beta"]);
     wait_until(&mut opened.ui, || {
         !server.requests("deletePlaylist").is_empty()

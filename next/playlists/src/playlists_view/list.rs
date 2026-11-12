@@ -14,7 +14,7 @@ use next_ui::details::{format_duration, format_playlist_count, format_song_count
 use next_ui::keymap::{KeyContext, key_context};
 use next_ui::list_pane::{ListHeader, list_filter, list_header, refresh_failure};
 use next_ui::load_state::{empty_state, load_failure, no_matches, pane_loading};
-use next_ui::row_list::{ROW_PADDING, RowList, row_list};
+use next_ui::row_list::{ROW_PADDING, RowList, is_context_click, row_list};
 use next_ui::row_text::row_text;
 use next_ui::{AlbumAction, Command, Commands};
 use playback::Placement;
@@ -137,13 +137,21 @@ fn rows(screen: &Playlists) -> Div {
         })
     });
     let username = screen.username.clone();
-    let (opening, menu_of) = (screen.clone(), screen.clone());
+    let (chooser, opening, menu_of) = (screen.clone(), screen.clone(), screen.clone());
     let list = row_list(
         RowList::new(
             "Playlists",
             move || visible.get(),
             |playlist: &Playlist| playlist.id().clone(),
-            move |_, row| playlist_row(visible, row.position(), row.id().clone(), username.clone()),
+            move |_, row| {
+                playlist_row(
+                    &chooser,
+                    visible,
+                    row.position(),
+                    row.id().clone(),
+                    username.clone(),
+                )
+            },
         )
         .row_label(|playlist| playlist.name().to_owned())
         .selection(screen.list_selection)
@@ -173,12 +181,15 @@ fn rows(screen: &Playlists) -> Div {
 
 /// The name of the playlist at `position` and, below, whose it is when it is not the user's,
 /// how many songs it has and how long they last. It follows the playlist while it stays there.
+/// Choosing it with the pointer leaves the playlist on show to go back to.
 fn playlist_row(
+    screen: &Playlists,
     visible: Memo<Rc<[Playlist]>>,
     position: usize,
     id: PlaylistId,
     username: Arc<str>,
 ) -> Div {
+    let (screen, chosen) = (screen.clone(), id.clone());
     let playlist = memo(move || {
         visible.with(|visible| {
             visible
@@ -192,6 +203,12 @@ fn playlist_row(
         .flex_row()
         .items_center()
         .px(ROW_PADDING)
+        .size_full()
+        .on_click(move |e| {
+            if !is_context_click(e) {
+                screen.choose(chosen.clone());
+            }
+        })
         .child(dyn_view(move || {
             let playlist = playlist.get();
             let username = username.clone();
