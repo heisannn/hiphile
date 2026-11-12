@@ -277,7 +277,7 @@ Expressive にデザインし直してみる。どんな感じになるかを見
 | サーバーと設定 | タイトルバーのサーバーのメニューと設定のボタン | レールの下端。サーバーは `initials_avatar` のボタンから md3e の `menu`（サーバーの一覧、Add Server…、Sign Out）を出す。設定はアイコンボタンでポップアップを開く。`wide_navigation_rail` は `Div` を返すので、移動先のあとに子を足せる |
 | 検索 | ダイアログの中の `Command` パレット | md3e の `search_bar` と、その下に付く結果。レールの FAB とキーで開く |
 | 画面の見出し | 文字の見出し | 戻ると進む、画面のタイトル、並べ替えと絞り込みを持つ小さな `TopAppBar`。長いリストの上に大きく畳まるバーは置かない |
-| Albums、Artists、Playlists | `MasterDetail` | `split_row` の上の一覧と詳細のペイン。詳細のヘッダーは大きなカバーと、`button_group` に入れた `extended_fab` の再生とトーンのシャッフル |
+| Albums、Artists、Playlists | `MasterDetail` | `next_ui::list_detail` の一覧と詳細のペイン（`split_row` は比率で分け、px の最小と最大が無いので使わない）。詳細のヘッダーは大きなカバーと、`button_group` に入れた `extended_fab` の再生とトーンのシャッフル |
 | Home | カードの棚、最近再生した曲 | Recommended は `carousel`（multi-browse）。棚は `clickable_card` の並び。下に行 |
 | Songs | ライブラリ全体の `uniform_list` | 詰めた行と並べ替えられる列の `row_list` |
 | Favorites | セグメントのタブ | md3e の secondary の `tabs` |

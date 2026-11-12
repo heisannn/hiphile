@@ -156,7 +156,7 @@ Material 3 Expressive にデザインし直す Hiphile を、詰まったデス�
 | サーバーと設定 | レールの下端。サーバーは `initials_avatar` のボタンから md3e の `menu`（サーバーの一覧、Add Server…、Sign Out）を出す。設定はアイコンボタンでポップアップを開く |
 | 画面の見出し | 戻ると進む、画面のタイトル、並べ替えと絞り込みを持つ小さなアプリバー（`next_ui::app_bar`）。長いリストの上に大きく畳まるバーは置かない |
 | 画面の本体 | レールとバーから離した `surface_container` のペイン（角 28） |
-| Albums、Artists、Playlists | `split_row` の上の一覧と詳細のペイン。詳細のヘッダーは大きなカバーと、`button_group` に入れた `extended_fab` の再生とトーンのシャッフル |
+| Albums、Artists、Playlists | `next_ui::list_detail` の一覧と詳細のペイン。一覧は決まった幅を保ち、残りを詳細に渡す（widgets の `split_row` は比率で分けるので使わない）。詳細のヘッダーは大きなカバーと、`button_group` に入れた `extended_fab` の再生とトーンのシャッフル |
 | Home | Recommended は `carousel`（multi-browse）。棚は `clickable_card` の並び。下に行 |
 | Songs | 詰めた行と並べ替えられる列の `row_list` |
 | Favorites | md3e の secondary の `tabs` |
