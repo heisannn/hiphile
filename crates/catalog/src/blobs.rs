@@ -97,9 +97,10 @@ impl Blobs {
     ///
     /// Bytes that would not fit in what a removal leaves are not written:
     /// the removal would take them, and every other file, straight away.
-    pub(crate) fn put(&self, path: &Path, bytes: &[u8]) -> Result<(), Error> {
+    /// Whether they were written.
+    pub(crate) fn put(&self, path: &Path, bytes: &[u8]) -> Result<bool, Error> {
         if bytes.len() as u64 > self.after_removal() {
-            return Ok(());
+            return Ok(false);
         }
         let dir = path.parent().unwrap_or(&self.root);
         fs::create_dir_all(dir).map_err(|source| Error::Io {
@@ -122,7 +123,7 @@ impl Blobs {
             });
         }
         self.record(bytes.len() as u64);
-        Ok(())
+        Ok(true)
     }
 
     fn record(&self, added: u64) {

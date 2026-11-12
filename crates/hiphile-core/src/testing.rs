@@ -68,6 +68,30 @@ pub(crate) fn server_answering_each(
     url
 }
 
+/// A server that gives `image` as a JPEG in answer to anything.
+pub(crate) fn server_giving_image(image: &'static [u8]) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.unwrap();
+            let mut request = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            while request.read_line(&mut line).is_ok_and(|read| read > 2) {
+                line.clear();
+            }
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n",
+                image.len(),
+            );
+            stream.write_all(head.as_bytes()).ok();
+            stream.write_all(image).ok();
+        }
+    });
+    url
+}
+
 /// Runs what is under way until `done`, as answers from the network arrive off the executor.
 pub(crate) fn wait_for(cx: &TestExecutor, mut done: impl FnMut() -> bool) {
     for _ in 0..500 {

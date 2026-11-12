@@ -19,7 +19,7 @@ mod store;
 mod sync;
 
 pub use cover_links::{CoverLink, CoverLinks};
-pub use covers::{COVER_CAPACITY, COVER_REFRESH_AFTER, CoverStore, KeptCover};
+pub use covers::{COVER_CAPACITY, COVER_REFRESH_AFTER, CoverStore, KeptCover, KeptCoverFile};
 pub use scrobbles::{ScrobbleTarget, Scrobbles};
 pub use songs::{KeptSong, SONG_CAPACITY, SongStore};
 pub use store::{Catalog, Recommended, SavedReading};

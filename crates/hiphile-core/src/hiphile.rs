@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 
 use executor::{Executor, Publish, Published, Task};
-use session::{Accounts, Invalid, Readings, Session, SignedIn};
+use session::{Accounts, CoverSource, Invalid, Readings, Session, SignedIn};
 use subsonic::Credentials;
 use tokio::sync::watch;
 
@@ -91,6 +91,7 @@ struct Inner {
     readings: OnceLock<Readings>,
     /// `None` when there is nowhere to keep them.
     covers: Option<catalog::CoverStore>,
+    fetched_covers: Arc<covers::FetchedCovers>,
     /// What the player's song cache writes to, for as long as the core lives. `None` when there
     /// is nowhere to keep them.
     songs: Option<catalog::SongStore>,
@@ -188,6 +189,7 @@ impl Hiphile {
             dictionaries,
             readings: OnceLock::new(),
             covers,
+            fetched_covers: Arc::default(),
             songs,
             accounts,
             alerts: alerts::Collector::new(),
@@ -237,6 +239,19 @@ impl Hiphile {
             &self.0.executor,
             self.0.net.clone(),
             self.0.covers.clone(),
+            Arc::from(url),
+        )
+    }
+
+    /// The cover at `url`, as [`Self::cover_image`] has it, in the file it is kept in. Where it
+    /// is not kept, the same image fetched again for `url` is the same allocation while any is
+    /// held.
+    pub fn cover_file(&self, url: &str) -> Task<Option<CoverSource>> {
+        covers::cover_file(
+            &self.0.executor,
+            self.0.net.clone(),
+            self.0.covers.clone(),
+            self.0.fetched_covers.clone(),
             Arc::from(url),
         )
     }
