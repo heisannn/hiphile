@@ -201,8 +201,10 @@ fn the_playlist_the_location_names_is_shown() {
     let server = two_playlists();
     let mut opened = open_at(&server, chosen("b"));
 
-    wait_until(&mut opened.ui, || songs() == ["Song 4"]);
-    assert_eq!(selected_in("Playlists").as_deref(), Some("Beta"));
+    // The list and the songs load apart
+    wait_until(&mut opened.ui, || {
+        songs() == ["Song 4"] && selected_in("Playlists").as_deref() == Some("Beta")
+    });
 }
 
 #[test]
@@ -536,14 +538,19 @@ fn the_songs_of_a_playlist_that_diverged_cant_be_dragged_or_moved() {
     let mut opened = loaded(&server);
     server.refuse("createPlaylist");
     server.hold("getPlaylist");
+    let editable = find(Role::ListBox, "Songs").expect("the songs").id;
     select_song(&mut opened.ui, "Song 1");
     alt_key(&mut opened.ui, NamedKey::ArrowDown);
     let playlists = opened.playlists();
     wait_until(&mut opened.ui, || playlists.snapshot().is_diverged());
     wait_until(&mut opened.ui, || songs() == ["Song 2", "Song 1", "Song 3"]);
+    // The screen learns of it after the core, and makes the songs again without dragging, which
+    // takes the focus back to them
+    wait_until(&mut opened.ui, || {
+        find(Role::ListBox, "Songs").is_some_and(|songs| songs.id != editable)
+            && is_focused("Songs")
+    });
     let writes = server.requests("createPlaylist").len();
-
-    assert!(is_focused("Songs"));
     alt_key(&mut opened.ui, NamedKey::ArrowDown);
     let (x, y) = middle_of("Song 3");
     drag(
