@@ -350,6 +350,30 @@ fn going_back_in_order_brings_the_current_entry_into_view() {
 }
 
 #[test]
+fn removing_an_entry_before_the_current_one_leaves_the_rows_where_they_are() {
+    let ids: Vec<String> = (0..100).map(|ix| ix.to_string()).collect();
+    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let mut shown = queue_of(&ids, 80);
+    wait_until(&mut shown.ui, || {
+        find(Role::ListOption, "80, paused").is_some()
+    });
+    shown.focus_list();
+    shown.key(NamedKey::Home);
+    wait_until(&mut shown.ui, || {
+        find(Role::ListOption, "0, played").is_some()
+    });
+
+    shown.key(NamedKey::Backspace);
+
+    wait_until(&mut shown.ui, || {
+        find(Role::ListOption, "0, played").is_none()
+    });
+    shown.settle();
+    assert!(find(Role::ListOption, "1, played").is_some());
+    assert!(find(Role::ListOption, "80, paused").is_none());
+}
+
+#[test]
 fn the_menu_acts_on_the_entry_under_the_pointer() {
     let mut shown = queue_of(&["a", "b", "c"], 0);
     let (x, y) = in_row("c", 0.5);
