@@ -1,17 +1,17 @@
 use anti_webui::prelude::*;
-use anti_webui_md3e::components::{
-    MenuItem, MenuStyle, Snackbar, Snackbars, initials_avatar, menu_item, styled_menu,
-};
+use anti_webui_md3e::components::{MenuItem, MenuStyle, initials_avatar, menu_item, styled_menu};
 use hiphile_core::format::format_profile;
 use hiphile_core::{Hiphile, HiphileSnapshot, SwitchFailed};
+use next_account::SignInRequest;
 use next_host::Scope;
 use next_ui::window::kept_still;
 
-/// Who is signed in, which opens the servers to switch to and signing out.
+/// Who is signed in, which opens the servers to switch to, adding one and signing out. Adding
+/// one, or a password that has to be typed, puts a request in `sign_in`.
 pub(crate) fn server_menu(
     hiphile: Hiphile,
     shown: Signal<HiphileSnapshot>,
-    snackbars: Snackbars,
+    sign_in: Signal<Option<SignInRequest>>,
 ) -> Div {
     let open = signal(false);
     let signed_in = memo(move || shown.with(|shown| shown.profile().cloned()));
@@ -36,14 +36,16 @@ pub(crate) fn server_menu(
                     let hiphile = hiphile.clone();
                     menu_item(format_profile(&profile))
                         .selected_when(move || is_signed_in)
-                        .on_click(move || switch(&hiphile, profile.clone(), scope, snackbars))
+                        .on_click(move || switch(&hiphile, profile.clone(), scope, sign_in))
                 })
                 .collect::<Vec<MenuItem>>();
+            let add = menu_item("Add Server…")
+                .on_click(move || sign_in.set(Some(SignInRequest::AddServer)));
             let sign_out = menu_item("Sign Out").on_click(move || hiphile.sign_out());
             styled_menu(
                 move || open.get(),
                 move || open.set(false),
-                vec![switching, vec![sign_out]],
+                vec![switching, vec![add], vec![sign_out]],
                 MenuStyle::new()
                     .anchor(anchor)
                     .placement(Placement::AboveStart),
@@ -64,18 +66,21 @@ pub(crate) fn server_menu(
         .child(menu)
 }
 
-/// Signs in with `profile` and its saved password in place of whoever is signed in.
-fn switch(hiphile: &Hiphile, profile: config::Profile, scope: Scope, snackbars: Snackbars) {
+/// Signs in with `profile` and its saved password in place of whoever is signed in, or asks for
+/// the password.
+fn switch(
+    hiphile: &Hiphile,
+    profile: config::Profile,
+    scope: Scope,
+    sign_in: Signal<Option<SignInRequest>>,
+) {
     let switching = hiphile.switch_to(profile.clone());
     scope.on_ui(switching, move |switched| {
-        let message = match switched {
+        let failure = match switched {
             Ok(()) => return,
-            Err(SwitchFailed::NoPassword) => format!(
-                "No password is saved for {}. Sign out, then sign in to it.",
-                format_profile(&profile)
-            ),
-            Err(SwitchFailed::SignIn(error)) => error,
+            Err(SwitchFailed::NoPassword) => None,
+            Err(SwitchFailed::SignIn(error)) => Some(error),
         };
-        snackbars.show(Snackbar::new(message).closable());
+        sign_in.set(Some(SignInRequest::Password { profile, failure }));
     });
 }

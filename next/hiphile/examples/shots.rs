@@ -1,5 +1,6 @@
 //! Draws the window into PNG files without opening one, to see how it looks:
-//! `cargo run -p next-hiphile --example shots -- <folder>`. It needs a GPU, not a display.
+//! `cargo run -p next-hiphile --example shots -- <folder>`. It needs a GPU, not a display. Menus
+//! open as windows of their own, which it does not draw.
 
 use std::path::{Path, PathBuf};
 
@@ -42,11 +43,12 @@ fn main() {
             },
         );
         shot(
-            &folder.join(format!("servers-{theme}.png")),
+            &folder.join(format!("add-server-{theme}.png")),
             dark,
             true,
             |ui| {
                 press(ui, Role::Button, "Servers");
+                press(ui, Role::MenuItem, "Add Server…");
             },
         );
         shot(

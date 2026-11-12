@@ -89,3 +89,15 @@ fn the_rail_closes_in_a_narrow_window() {
 
     assert!(find(Role::Button, "Open Navigation").is_some());
 }
+
+#[test]
+fn adding_a_server_opens_signing_in_over_the_workspace() {
+    let (_core, hiphile) = signed_in_core(NOWHERE);
+    let mut ui = start(move || app(hiphile, signal(false)));
+
+    press(&mut ui, Role::Button, "Servers");
+    press(&mut ui, Role::MenuItem, "Add Server…");
+
+    assert!(find(Role::Heading, "Add Server").is_some());
+    assert!(find(Role::Navigation, "Destinations").is_some());
+}

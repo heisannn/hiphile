@@ -1,8 +1,10 @@
 use anti_webui::prelude::*;
 use anti_webui_md3e::color_scheme;
-use anti_webui_md3e::components::{AppBarKind, TopAppBar, icon_button, top_app_bar};
+use anti_webui_md3e::components::icon_button;
 use anti_webui_md3e::icons;
 use anti_webui_md3e::motion::fast_effects;
+use anti_webui_md3e::typography::TextStyle;
+use next_ui::type_scale::styled_text;
 
 /// The settings, over the window and as large as it allows. Escape and the scrim close it.
 pub(crate) fn settings_popup(open: Signal<bool>) -> Show {
@@ -41,9 +43,22 @@ pub(crate) fn settings_popup(open: Signal<bool>) -> Show {
                             .opacity(v)
                             .scale(0.96 + 0.04 * v)
                     })
-                    .child(top_app_bar(
-                        TopAppBar::new(AppBarKind::Small, "Settings").action(close),
-                    ));
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .flex_none()
+                            .items_center()
+                            .h(64)
+                            .pl(24.0_f32)
+                            .pr(8.0_f32)
+                            .child(
+                                styled_text(TextStyle::TITLE_LARGE, "Settings")
+                                    .flex_1()
+                                    .access(|a| a.role(Role::Heading).level(1)),
+                            )
+                            .child(close),
+                    );
                 div().size_full().child(modal.scrim(scrim)).child(
                     div()
                         .absolute()

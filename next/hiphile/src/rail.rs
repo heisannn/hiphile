@@ -1,11 +1,12 @@
 use anti_webui::prelude::*;
 use anti_webui_md3e::components::{
-    FabStyle, IconButtonStyle, Snackbars, icon_button, nav_item, styled_extended_fab,
-    styled_icon_button, wide_navigation_rail,
+    FabStyle, IconButtonStyle, icon_button, nav_item, styled_extended_fab, styled_icon_button,
+    wide_navigation_rail,
 };
 use anti_webui_md3e::icons::{self, Symbol};
 use hiphile_core::navigation::Destination;
 use hiphile_core::{Hiphile, HiphileSnapshot};
+use next_account::SignInRequest;
 use next_ui::window::{kept_still, moves_window};
 use next_ui::{Command, Commands};
 
@@ -27,7 +28,7 @@ pub(crate) fn rail(
     hiphile: Hiphile,
     shown: Signal<HiphileSnapshot>,
     commands: Commands,
-    snackbars: Snackbars,
+    sign_in: Signal<Option<SignInRequest>>,
 ) -> Div {
     let destinations = Destination::ALL
         .iter()
@@ -77,7 +78,7 @@ pub(crate) fn rail(
         .gap(12.0_f32)
         .pl(NARROW_INSET)
         .pb(20.0_f32)
-        .child(server_menu(hiphile, shown, snackbars))
+        .child(server_menu(hiphile, shown, sign_in))
         .child(settings);
     wide_navigation_rail(
         destinations,

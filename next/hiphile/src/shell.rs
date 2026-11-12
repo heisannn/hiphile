@@ -1,11 +1,11 @@
 use anti_webui::prelude::*;
 use anti_webui_md3e::color_scheme;
-use anti_webui_md3e::components::{IconButtonStyle, Snackbars, snackbars, styled_icon_button};
+use anti_webui_md3e::components::{IconButtonStyle, snackbars, styled_icon_button};
 use anti_webui_md3e::icons;
 use hiphile_core::navigation::Destination;
 use hiphile_core::settings::AppearanceSnapshot;
 use hiphile_core::{Hiphile, HiphileSnapshot, Workspace};
-use next_account::sign_in;
+use next_account::{sign_in, sign_in_dialog};
 use next_host::follow;
 use next_ui::theme::{follow_theme, is_dark};
 use next_ui::type_scale::body;
@@ -46,7 +46,7 @@ pub fn app(hiphile: Hiphile, system_is_dark: Signal<bool>) -> Div {
             let hiphile = hiphile.clone();
             match workspace.get() {
                 None => untrack(|| signed_out(hiphile)),
-                Some(workspace) => untrack(|| signed_in(hiphile, workspace, shown, snackbars)),
+                Some(workspace) => untrack(|| signed_in(hiphile, workspace, shown)),
             }
         }))
         .child(snackbars.view())
@@ -60,12 +60,7 @@ fn signed_out(hiphile: Hiphile) -> Div {
         .child(moves_window(div().absolute().top(0).left(0).right(0).h(44)))
 }
 
-fn signed_in(
-    hiphile: Hiphile,
-    workspace: Workspace,
-    shown: Signal<HiphileSnapshot>,
-    snackbars: Snackbars,
-) -> Div {
+fn signed_in(hiphile: Hiphile, workspace: Workspace, shown: Signal<HiphileSnapshot>) -> Div {
     let navigation = Navigation::new();
     effect(move || workspace.showing(navigation.destination()));
     let width = signal(crate::WINDOW.0 as f32);
@@ -73,6 +68,7 @@ fn signed_in(
     let expanded = signal(true);
     effect(move || expanded.set(wide.get()));
     let settings_open = signal(false);
+    let sign_in_request = signal(None);
     let commands = Commands::new(move |command| match command {
         Command::Show(location) => navigation.go(location),
         Command::GoBack => navigation.back(),
@@ -88,10 +84,10 @@ fn signed_in(
         .child(rail(
             navigation,
             expanded,
-            hiphile,
+            hiphile.clone(),
             shown,
             commands.clone(),
-            snackbars,
+            sign_in_request,
         ))
         .child(
             div()
@@ -119,6 +115,7 @@ fn signed_in(
                 )),
         )
         .child(settings_popup(settings_open))
+        .child(sign_in_dialog(hiphile, sign_in_request))
 }
 
 /// What `destination` shows.
