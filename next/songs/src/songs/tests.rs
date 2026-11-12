@@ -79,6 +79,7 @@ fn shown_after(server: &SongsServer, before: impl FnOnce(&Hiphile)) -> Shown {
                 title,
                 actions,
                 body,
+                ..
             } = songs(&cx);
             div()
                 .size_full()

@@ -15,6 +15,10 @@ pub struct Screen {
     /// Made of panes, such as [`crate::pane::pane`] or [`crate::list_detail::list_detail`]: the
     /// shell gives it only its margins.
     pub body: Div,
+    /// Where the keys go while nothing has the focus and nothing on the screen has had it, as
+    /// after a menu opened from where the focus was not: what the screen is mostly about, such
+    /// as its list.
+    pub home: Option<NodeRef>,
 }
 
 impl Screen {
@@ -23,7 +27,13 @@ impl Screen {
             title: title.into(),
             actions: Vec::new(),
             body,
+            home: None,
         }
+    }
+
+    pub fn home(mut self, node: NodeRef) -> Self {
+        self.home = Some(node);
+        self
     }
 
     pub fn action(mut self, action: Div) -> Self {

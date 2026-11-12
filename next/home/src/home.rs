@@ -43,7 +43,8 @@ const RELOADING_INDICATOR: f32 = 20.0;
 
 /// Home, which takes the focus when it comes on show.
 pub fn home(cx: &ScreenContext) -> Screen {
-    Screen::new(Destination::Home.label(), pane(page(cx)))
+    let node = node_ref();
+    Screen::new(Destination::Home.label(), pane(page(cx, node))).home(node)
 }
 
 /// What a selection or a heading is scrolled to by.
@@ -98,7 +99,7 @@ struct Page {
     now_playing: Memo<Option<NowPlaying>>,
 }
 
-fn page(cx: &ScreenContext) -> Div {
+fn page(cx: &ScreenContext, node: NodeRef) -> Div {
     let workspace = &cx.workspace;
     let recommended = follow(workspace.recommendations().subscribe());
     let shelved = follow(workspace.shelves().subscribe());
@@ -119,7 +120,7 @@ fn page(cx: &ScreenContext) -> Div {
         columns: memo(move || columns_for(width.get()).min(MAX_COLUMNS)),
         selection: signal(None),
         focused: signal(false),
-        node: node_ref(),
+        node,
         menu: ContextMenu::new(),
         places: Places::default(),
         now_playing: follow_now_playing(workspace),

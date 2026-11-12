@@ -45,7 +45,7 @@ pub fn playlists(location: Signal<Location>, cx: &ScreenContext) -> Screen {
         .child(screen.menu.view())
         .child(dialogs::rename_dialog(&screen))
         .child(dialogs::delete_dialog(&screen));
-    Screen::new(Destination::Playlists.label(), body)
+    Screen::new(Destination::Playlists.label(), body).home(screen.list_node)
 }
 
 /// What the parts of the screen share. Cheap to clone.
