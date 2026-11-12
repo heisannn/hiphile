@@ -133,10 +133,13 @@ const fn as_written(place: Place) -> Tier {
 
 /// How good a match on a spelling of `searchable` is, if it counts: inside a
 /// word, what spelling folds together stops meaning anything unless the text
-/// is Japanese, where it is the only way in. `ship` is not in Gossip.
+/// is Japanese, where it is the only way in. `ship` is not in Gossip. Nor does
+/// a spelling too short to read, which doubled letters fold to: `zzzz` spells
+/// `z`, which is not after John.
 fn as_spelled(place: Place, needle: &str, searchable: &Searchable) -> Option<Tier> {
     match (place, searchable.has_japanese) {
         (Place::InsideWord, false) => None,
+        (_, false) if needle.len() < MIN_ANYWHERE => None,
         (Place::InsideWord, true) if needle.len() < MIN_ANYWHERE => None,
         (Place::InsideWord, true) => Some(READ_INSIDE),
         (_, false) => Some(RESPELLED),
@@ -450,6 +453,19 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn letters_folded_short_say_nothing_of_a_word_that_is_not_japanese() {
+        for (typed, title) in [
+            ("z", "John Coltrane"),
+            ("zzzz", "John Coltrane"),
+            ("qqqq", "Queen"),
+            ("ssss", "Shinjuku"),
+        ] {
+            assert_eq!(tier_of(typed, title, None), None, "{typed} in {title}");
+        }
+        assert_eq!(tier_of("jo", "John Coltrane", None), Some(PREFIX));
     }
 
     #[test]
