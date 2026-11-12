@@ -1,12 +1,17 @@
 //! The app's one window: signing in, then the rail, the screens and what opens over them.
 
+pub mod menu_bar;
 mod navigation;
 mod rail;
 mod server_menu;
 mod settings_popup;
 mod shell;
 
+pub use menu_bar::MenuBar;
 pub use shell::app;
+
+/// The window's title, which the platform finds the window by.
+pub const TITLE: &str = "Hiphile";
 
 /// The size the window opens at, and the least it can be made.
 pub const WINDOW: (i32, i32) = (1200, 760);

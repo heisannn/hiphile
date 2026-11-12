@@ -19,6 +19,7 @@ hiphile-core = { workspace = true, features = ["desktop"] }
 net.workspace = true
 next-account.workspace = true
 next-host.workspace = true
+next-platform.workspace = true
 next-ui.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 

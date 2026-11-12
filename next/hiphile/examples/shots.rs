@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use anti_webui::app::headless;
 use anti_webui::core::Ui;
 use anti_webui::prelude::{Role, signal};
-use next_hiphile::{WINDOW, app};
+use next_hiphile::{MenuBar, WINDOW, app};
 use next_ui::testing::{NOWHERE, core, frames, press, signed_in_core};
 
 const SCALE: f64 = 2.0;
@@ -76,7 +76,7 @@ fn shot(path: &Path, dark: bool, signed_in: bool, drive: impl FnOnce(&mut Ui)) {
         width,
         height,
         SCALE,
-        move || app(hiphile, signal(dark)),
+        move || app(hiphile, signal(dark), MenuBar::new()),
         |ui| {
             frames(ui, 100);
             drive(ui);

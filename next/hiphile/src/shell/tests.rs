@@ -13,7 +13,7 @@ fn heading(text: &str) -> bool {
 #[test]
 fn signed_out_it_asks_to_sign_in_without_the_rail() {
     let (_core, hiphile) = core("");
-    let _ui = start(move || app(hiphile, signal(false)));
+    let _ui = start(move || app(hiphile, signal(false), MenuBar::new()));
 
     assert!(heading("Sign In"));
     assert!(find(Role::Navigation, "Destinations").is_none());
@@ -22,7 +22,7 @@ fn signed_out_it_asks_to_sign_in_without_the_rail() {
 #[test]
 fn signed_in_the_rail_goes_to_each_destination() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
-    let mut ui = start(move || app(hiphile, signal(false)));
+    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new()));
     assert!(find(Role::Navigation, "Destinations").is_some());
     assert_eq!(find(Role::Button, "Home").unwrap().selected, Some(true));
 
@@ -40,7 +40,7 @@ fn signed_in_the_rail_goes_to_each_destination() {
 #[test]
 fn back_and_forward_retrace_the_destinations() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
-    let mut ui = start(move || app(hiphile, signal(false)));
+    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new()));
     assert!(find(Role::Button, "Back").unwrap().disabled);
 
     press(&mut ui, Role::Button, "Albums");
@@ -56,7 +56,7 @@ fn back_and_forward_retrace_the_destinations() {
 #[test]
 fn settings_open_over_the_window_and_escape_closes_them() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
-    let mut ui = start(move || app(hiphile, signal(false)));
+    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new()));
 
     press(&mut ui, Role::Button, "Settings");
     assert_eq!(nodes(Role::Dialog).len(), 1);
@@ -71,7 +71,7 @@ fn signing_out_from_the_servers_goes_back_to_signing_in() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
     let mut ui = start({
         let hiphile = hiphile.clone();
-        move || app(hiphile, signal(false))
+        move || app(hiphile, signal(false), MenuBar::new())
     });
 
     press(&mut ui, Role::Button, "Servers");
@@ -85,7 +85,10 @@ fn signing_out_from_the_servers_goes_back_to_signing_in() {
 #[test]
 fn the_rail_closes_in_a_narrow_window() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
-    let _ui = next_ui::testing::start_at(move || app(hiphile, signal(false)), (900, 600));
+    let _ui = next_ui::testing::start_at(
+        move || app(hiphile, signal(false), MenuBar::new()),
+        (900, 600),
+    );
 
     assert!(find(Role::Button, "Open Navigation").is_some());
 }
@@ -93,7 +96,7 @@ fn the_rail_closes_in_a_narrow_window() {
 #[test]
 fn adding_a_server_opens_signing_in_over_the_workspace() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
-    let mut ui = start(move || app(hiphile, signal(false)));
+    let mut ui = start(move || app(hiphile, signal(false), MenuBar::new()));
 
     press(&mut ui, Role::Button, "Servers");
     press(&mut ui, Role::MenuItem, "Add Server…");
