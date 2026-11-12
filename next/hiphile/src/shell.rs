@@ -120,7 +120,7 @@ fn signed_in(
         snackbars,
     );
     let cx = shell.context();
-    let panels = shell.panels;
+    let (panels, dialogs, covers) = (shell.panels, shell.dialogs, cx.covers);
     menu_bar.attach(cx.commands.clone(), move || {
         let (has_song, has_queue, shuffled, repeat) = playing.with(|playing| {
             (
@@ -136,7 +136,9 @@ fn signed_in(
             can_go_forward: navigation.can_go_forward(),
             covered: settings_open.get()
                 || search_open.get()
-                || sign_in_request.with(Option::is_some),
+                || sign_in_request.with(Option::is_some)
+                || dialogs.is_open()
+                || covers.any(),
             has_song,
             has_queue,
             shuffled,

@@ -5,6 +5,7 @@ use anti_webui_md3e::components::{
     AlertDialog, ButtonStyle, TextFieldStyle, alert_dialog, dialog, outlined_text_field,
     styled_button,
 };
+use next_ui::Covers;
 use next_ui::dialog_parts::{dialog_actions, dialog_content, focused_field};
 use subsonic::PlaylistId;
 
@@ -23,13 +24,16 @@ pub(super) struct Dialogs {
 }
 
 impl Dialogs {
-    pub(super) fn new() -> Self {
-        Self {
+    /// Counted in `covers` while one is open.
+    pub(super) fn new(covers: Covers) -> Self {
+        let this = Self {
             rename_open: signal(false),
             renaming: signal(None),
             delete_open: signal(false),
             deleting: signal(None),
-        }
+        };
+        covers.add(move || this.rename_open.get() || this.delete_open.get());
+        this
     }
 
     fn is_open(&self) -> bool {

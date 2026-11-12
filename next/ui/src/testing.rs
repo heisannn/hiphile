@@ -15,7 +15,7 @@ use anti_webui::core::tree::{NodeKind, with_doc};
 use anti_webui::prelude::{IntoView, Role, on_cleanup};
 use anti_webui_md3e::components::snackbars;
 
-use crate::{Command, Commands, Known, ScreenContext};
+use crate::{Command, Commands, Covers, Known, ScreenContext};
 
 mod library;
 
@@ -355,5 +355,5 @@ pub fn screen_context(hiphile: &hiphile_core::Hiphile, commands: Commands) -> Sc
     let known = Known::follow(hiphile, &workspace);
     let kept = hiphile.clone();
     on_cleanup(move || drop(kept));
-    ScreenContext::new(workspace, commands, known, snackbars())
+    ScreenContext::new(workspace, commands, known, snackbars(), Covers::new())
 }

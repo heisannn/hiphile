@@ -463,6 +463,22 @@ fn the_menu_bar_follows_the_player() {
 }
 
 #[test]
+fn while_a_playlist_dialog_is_open_the_menu_bar_goes_nowhere() {
+    let (_core, hiphile) = signed_in_core(NOWHERE);
+    let (mut ui, menu_bar) = start_with_menu_bar(hiphile);
+    let songs = Command::Show(Location::Songs);
+
+    menu_bar.choose(Command::NewPlaylist(Arc::from([])));
+    frames(&mut ui, 400);
+    assert!(find(Role::Heading, "New Playlist").is_some());
+    assert!(!menu_bar.state_of(&songs).is_enabled());
+
+    menu_bar.choose(songs);
+    ui.update();
+    assert_eq!(find(Role::Button, "Home").unwrap().selected, Some(true));
+}
+
+#[test]
 fn saving_the_queue_asks_for_the_new_playlists_name() {
     let (_core, hiphile) = signed_in_core(NOWHERE);
     let player = hiphile.workspace().unwrap().player().clone();

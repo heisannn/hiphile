@@ -7,13 +7,13 @@ use anti_webui::core::event::Modifiers;
 use hiphile_core::Hiphile;
 use hiphile_core::favorites::Favorite;
 use hiphile_core::test_support::PlaylistsServer;
-use next_ui::Commands;
 use next_ui::cover::install_covers;
 use next_ui::row_list::ROW_HEIGHT;
 use next_ui::testing::{
     TestCore, click_text, drag, find, focus, frames, has_text, key, key_with, middle_of, nodes,
     press, right_click, screen_context, signed_in_core, start, typed, wait_until,
 };
+use next_ui::{Commands, Covers};
 use playback::Placement;
 use serde_json::json;
 use subsonic::SongId;
@@ -26,6 +26,7 @@ struct Opened {
     hiphile: Hiphile,
     location: Signal<Location>,
     sent: Rc<RefCell<Vec<Command>>>,
+    covers: Covers,
     _core: TestCore,
 }
 
@@ -50,9 +51,11 @@ impl Opened {
 fn open_at(server: &PlaylistsServer, at: Location) -> Opened {
     let (core, hiphile) = signed_in_core(server.url());
     let location = Rc::new(Cell::new(None));
+    let covers = Rc::new(Cell::new(None));
     let sent = Rc::new(RefCell::new(Vec::new()));
     let ui = start({
         let (hiphile, made, sent) = (hiphile.clone(), location.clone(), sent.clone());
+        let covers = covers.clone();
         move || {
             install_covers(hiphile.clone());
             let location = signal(at);
@@ -64,6 +67,7 @@ fn open_at(server: &PlaylistsServer, at: Location) -> Opened {
                 sent.borrow_mut().push(command);
             });
             let cx = screen_context(&hiphile, commands);
+            covers.set(Some(cx.covers));
             let screen = playlists(location, &cx);
             div()
                 .size_full()
@@ -78,6 +82,7 @@ fn open_at(server: &PlaylistsServer, at: Location) -> Opened {
         hiphile,
         location: location.get().expect("made"),
         sent,
+        covers: covers.get().expect("made"),
         _core: core,
     }
 }
@@ -745,6 +750,22 @@ fn a_playlist_that_wont_load_loads_again_on_retry() {
     press(&mut opened.ui, Role::Button, "Retry");
 
     wait_until(&mut opened.ui, || songs() == ["Song 4"]);
+}
+
+#[test]
+fn the_screens_dialogs_cover_the_screens_while_they_are_open() {
+    let server = two_playlists();
+    let mut opened = loaded(&server);
+    wait_until(&mut opened.ui, || is_focused("Playlists"));
+    assert!(!opened.covers.any());
+
+    key(&mut opened.ui, NamedKey::F(2));
+    assert!(has_dialog("Rename Playlist"));
+    assert!(opened.covers.any());
+
+    key(&mut opened.ui, NamedKey::Escape);
+    frames(&mut opened.ui, 500);
+    assert!(!opened.covers.any());
 }
 
 #[test]

@@ -5,6 +5,7 @@ pub mod card_grid;
 mod command;
 pub mod context_menu;
 pub mod cover;
+mod covers;
 pub mod detail_header;
 pub mod details;
 pub mod dialog_parts;
@@ -36,6 +37,7 @@ pub mod type_scale;
 pub mod window;
 
 pub use command::{AlbumAction, Command, Commands};
+pub use covers::Covers;
 pub use known::Known;
 pub use screen::{APP_BAR_HEIGHT, Screen, app_bar};
 pub use screen_context::ScreenContext;
