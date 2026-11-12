@@ -34,7 +34,7 @@ pub(super) fn list_pane(view: &Rc<View>) -> Div {
     div()
         .flex()
         .flex_col()
-        .child(list_filter(view.filter, "Filter Artists"))
+        .child(list_filter(view.filter, "Filter Artists", view.list_node))
         .child(header(view))
         .child(refresh_error(view))
         .child(key_context(body(view.clone()), &context))

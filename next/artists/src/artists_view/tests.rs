@@ -89,6 +89,8 @@ impl Shown {
             move || {
                 let location = signal(at);
                 let away = signal(false);
+                // Kept between visits, as the shell keeps it
+                let split = Split::new();
                 *places.borrow_mut() = Some((location, away));
                 let commands = Commands::new(move |command| {
                     if let Command::Show(to) | Command::ShowInPlace(to) = &command {
@@ -103,7 +105,7 @@ impl Shown {
                         return div();
                     }
                     untrack(|| {
-                        let (view, Screen { body, .. }) = artists_view(location, &cx);
+                        let (view, Screen { body, .. }) = artists_view(location, split, &cx);
                         *made.borrow_mut() = Some(view);
                         div()
                             .size_full()
@@ -244,6 +246,11 @@ fn focused() -> Option<AccessNode> {
     let tree = snapshot();
     let focus = tree.focus?;
     tree.nodes.into_iter().find(|node| node.id == focus)
+}
+
+fn list_width() -> f64 {
+    let handle = find(Role::Separator, "List Width").expect("the handle");
+    handle.value.expect("a width").now
 }
 
 fn focused_label() -> Option<String> {
@@ -626,6 +633,37 @@ fn the_filter_outlasts_the_screen() {
 }
 
 #[test]
+fn enter_in_the_filter_goes_on_to_the_list() {
+    let server = server(0);
+    let mut shown = Shown::on(&server);
+    shown.listed(2);
+    focus(&mut shown.ui, Role::TextInput, "Filter Artists");
+    typed(&mut shown.ui, "Miles");
+    shown.listed(1);
+
+    key(&mut shown.ui, NamedKey::Enter);
+
+    assert_eq!(focused_label().as_deref(), Some("Artists"));
+}
+
+#[test]
+fn the_list_comes_back_as_wide_as_it_was_left() {
+    let server = server(0);
+    let mut shown = Shown::on(&server);
+    shown.listed(2);
+    let first = list_width();
+    focus(&mut shown.ui, Role::Separator, "List Width");
+    key(&mut shown.ui, NamedKey::ArrowRight);
+    let widened = list_width();
+    assert!(widened > first, "{widened} from {first}");
+
+    shown.visit(Location::Artists(None));
+    shown.listed(2);
+
+    assert_eq!(list_width(), widened);
+}
+
+#[test]
 fn coming_back_to_no_artist_shows_the_last_one() {
     let server = server(0);
     let mut shown = Shown::on(&server);
@@ -911,7 +949,8 @@ fn the_order_chosen_in_the_bar_sorts_the_list() {
         move || {
             let (commands, _) = next_ui::testing::recording_commands();
             let cx = screen_context(&hiphile, commands);
-            let (view, Screen { actions, .. }) = artists_view(signal(Location::Artists(None)), &cx);
+            let location = signal(Location::Artists(None));
+            let (view, Screen { actions, .. }) = artists_view(location, Split::new(), &cx);
             *made.borrow_mut() = Some(view);
             div().children(actions)
         }

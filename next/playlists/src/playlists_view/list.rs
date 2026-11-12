@@ -33,7 +33,7 @@ pub(super) fn pane(screen: &Playlists) -> Div {
     let new = styled_icon_button(icons::ADD, IconButtonStyle::standard())
         .access(|a| a.label("New Playlist…"))
         .on_click(move |_| commands.send(Command::NewPlaylist(Arc::from([]))));
-    let filter = screen.filter;
+    let (filter, list) = (screen.filter, screen.list_node);
     let state = screen.state.clone();
     div()
         .size_full()
@@ -41,7 +41,7 @@ pub(super) fn pane(screen: &Playlists) -> Div {
         .flex_col()
         .child(show(
             move || count.get().is_some_and(|count| count > 0),
-            move || list_filter(filter, "Filter Playlists"),
+            move || list_filter(filter, "Filter Playlists", list),
         ))
         .child(list_header(
             ListHeader::new(move || {

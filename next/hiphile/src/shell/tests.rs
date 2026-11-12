@@ -311,3 +311,78 @@ fn once_a_rows_menu_has_closed_the_keys_go_to_the_list_again() {
     key(&mut ui, NamedKey::ArrowDown);
     wait_until(&mut ui, || selected_song().as_deref() == Some("Cherokee"));
 }
+
+fn two_albums() -> SavedLibrary {
+    SavedLibrary {
+        albums: serde_json::from_value(json!([
+            { "id": "a", "name": "Alpha", "artist": "Artist", "artistId": "ar" },
+            { "id": "b", "name": "Beta", "artist": "Artist", "artistId": "ar" },
+        ]))
+        .unwrap(),
+        ..SavedLibrary::default()
+    }
+}
+
+fn list_width() -> f64 {
+    let handle = find(Role::Separator, "List Width").expect("the handle");
+    handle.value.expect("a width").now
+}
+
+fn is_selected(album: &str) -> bool {
+    find(Role::ListOption, album).is_some_and(|row| row.selected == Some(true))
+}
+
+#[test]
+fn the_rail_comes_back_to_the_album_left() {
+    let (_core, hiphile, _catalog) = signed_in_core_with_library(NOWHERE, &two_albums());
+    let mut ui = start(move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window));
+    press(&mut ui, Role::Button, "Albums");
+    wait_until(&mut ui, || is_selected("Alpha"));
+    press(&mut ui, Role::ListOption, "Beta");
+    press(&mut ui, Role::Button, "Home");
+
+    press(&mut ui, Role::Button, "Albums");
+
+    wait_until(&mut ui, || find(Role::ListOption, "Beta").is_some());
+    assert!(is_selected("Beta"));
+    press(&mut ui, Role::Button, "Back");
+    assert_eq!(find(Role::Button, "Home").unwrap().selected, Some(true));
+}
+
+#[test]
+fn a_list_keeps_the_width_given_it_and_saves_it() {
+    let (_core, hiphile, _catalog) = signed_in_core_with_library(NOWHERE, &two_albums());
+    let widths = hiphile.settings().pane_widths().clone();
+    let mut ui = start(move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window));
+    press(&mut ui, Role::Button, "Albums");
+    wait_until(&mut ui, || find(Role::ListOption, "Alpha").is_some());
+    let first = list_width();
+    next_ui::testing::focus(&mut ui, Role::Separator, "List Width");
+
+    key(&mut ui, NamedKey::ArrowRight);
+    let widened = list_width();
+    press(&mut ui, Role::Button, "Artists");
+    let artists = list_width();
+    press(&mut ui, Role::Button, "Albums");
+
+    assert!(widened > first, "{widened} from {first}");
+    assert_eq!(list_width(), widened);
+    assert_eq!(artists, first);
+    let saved = widths.snapshot();
+    assert_eq!(saved.width(Pane::AlbumList), Some(widened as f32));
+    assert_eq!(saved.width(Pane::ArtistList), None);
+}
+
+#[test]
+fn a_list_starts_as_wide_as_it_was_left() {
+    let (_core, hiphile, _catalog) = signed_in_core_with_library(NOWHERE, &two_albums());
+    hiphile
+        .settings()
+        .pane_widths()
+        .set_width(Pane::AlbumList, 400.0);
+    let mut ui = start(move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window));
+
+    press(&mut ui, Role::Button, "Albums");
+
+    assert_eq!(list_width(), 400.0);
+}

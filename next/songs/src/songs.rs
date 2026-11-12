@@ -111,12 +111,7 @@ fn filter(table: &Table) -> Div {
             }
         });
     });
-    let list = table.list;
-    list_filter(value, "Filter Songs").on_key_down(move |e| {
-        if matches!(e.key, Key::Named(NamedKey::Enter)) && !e.is_default_prevented() {
-            list.focus();
-        }
-    })
+    list_filter(value, "Filter Songs", table.list)
 }
 
 fn header(table: &Table) -> Div {

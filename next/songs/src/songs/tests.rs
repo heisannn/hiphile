@@ -404,12 +404,13 @@ fn a_heading_clicked_during_a_filter_holds_until_the_filter_is_emptied() {
     wait_for_rows(&mut shown, ["Cherokee", "Blues", "Airegin"]);
 
     // Typing on keeps to the heading
-    typed(&mut shown.ui, "e");
-    key(&mut shown.ui, NamedKey::Backspace);
-    let list = shown.song_list();
-    wait_until(&mut shown.ui, || list.status().query() == "e");
+    focus(&mut shown.ui, Role::TextInput, "Filter Songs");
+    typed(&mut shown.ui, "r");
+    wait_for_rows(&mut shown, ["Cherokee"]);
     assert!(find(Role::Button, "Time, Ascending").is_some());
+    key(&mut shown.ui, NamedKey::Backspace);
     wait_for_rows(&mut shown, ["Cherokee", "Blues", "Airegin"]);
+    assert!(find(Role::Button, "Time, Ascending").is_some());
 
     // A new filter ranks again, with the sort kept for when it is emptied
     filter_by(&mut shown, "");

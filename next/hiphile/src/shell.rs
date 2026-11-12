@@ -1,12 +1,14 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use anti_webui::core::reactive::effect_with;
 use anti_webui::prelude::*;
 use anti_webui_md3e::color_scheme;
 use anti_webui_md3e::components::{IconButtonStyle, Snackbars, snackbars, styled_icon_button};
 use anti_webui_md3e::icons;
+use config::Pane;
 use hiphile_core::navigation::{Destination, Location};
-use hiphile_core::settings::AppearanceSnapshot;
+use hiphile_core::settings::{AppearanceSnapshot, PaneWidths};
 use hiphile_core::{Hiphile, HiphileSnapshot, Workspace};
 use next_account::{sign_in, sign_in_dialog};
 use next_host::follow;
@@ -15,7 +17,7 @@ use next_search::search;
 use next_settings::settings_popup;
 use next_ui::cover::install_covers;
 use next_ui::keymap::keeps_focus;
-use next_ui::list_detail::{DETAIL_MIN_WIDTH, LIST_MIN_WIDTH};
+use next_ui::list_detail::{DETAIL_MIN_WIDTH, LIST_MIN_WIDTH, Split};
 use next_ui::pane::GAP;
 use next_ui::theme::{follow_theme, is_dark};
 use next_ui::type_scale::body;
@@ -145,6 +147,7 @@ fn signed_in(
     let player = workspace.player().clone();
     let playing = follow(player.subscribe());
     let navigation = Navigation::new();
+    let splits = Splits::new(hiphile.settings().pane_widths());
     effect({
         let workspace = workspace.clone();
         move || workspace.showing(navigation.destination())
@@ -232,6 +235,7 @@ fn signed_in(
                         })
                         .child(screens(
                             navigation,
+                            splits,
                             &cx,
                             panels,
                             top_end_width,
@@ -265,6 +269,7 @@ fn signed_in(
 /// has the focus.
 fn screens(
     navigation: Navigation,
+    splits: Splits,
     cx: &ScreenContext,
     panels: Panels,
     top_end_width: Signal<f32>,
@@ -280,7 +285,7 @@ fn screens(
                 actions,
                 body,
                 home: screen_home,
-            } = screen(destination, navigation.location(), &cx);
+            } = screen(destination, navigation.location(), splits, &cx);
             home.set(screen_home);
             // The queue's own bar takes the window's top end while it shows
             let bar = div().flex_none().dyn_style(move |s| {
@@ -301,14 +306,53 @@ fn screens(
 }
 
 /// What `destination` shows, which reads from `location` what is selected on it.
-fn screen(destination: Destination, location: Signal<Location>, cx: &ScreenContext) -> Screen {
+fn screen(
+    destination: Destination,
+    location: Signal<Location>,
+    splits: Splits,
+    cx: &ScreenContext,
+) -> Screen {
     match destination {
         Destination::Home => next_home::home(cx),
-        Destination::Artists => next_artists::artists(location, cx),
-        Destination::Albums => next_library::albums(location, cx),
+        Destination::Artists => next_artists::artists(location, splits.artists, cx),
+        Destination::Albums => next_library::albums(location, splits.albums, cx),
         Destination::Songs => next_songs::songs(cx),
-        Destination::Playlists => next_playlists::playlists(location, cx),
+        Destination::Playlists => next_playlists::playlists(location, splits.playlists, cx),
         Destination::Favorites => next_favorites::favorites(cx),
+    }
+}
+
+/// The widths the user gave the screens' lists, which last while other screens show and from one
+/// launch to the next.
+#[derive(Clone, Copy)]
+struct Splits {
+    artists: Split,
+    albums: Split,
+    playlists: Split,
+}
+
+impl Splits {
+    fn new(widths: &PaneWidths) -> Self {
+        let saved = widths.snapshot();
+        let split = |pane| {
+            let split = saved
+                .width(pane)
+                .map_or_else(Split::new, Split::with_list_width);
+            let widths = widths.clone();
+            effect_with(move |was: Option<f32>| {
+                let width = split.list_width();
+                if was.is_some_and(|was| was != width) {
+                    widths.set_width(pane, width);
+                }
+                width
+            });
+            split
+        };
+        Self {
+            artists: split(Pane::ArtistList),
+            albums: split(Pane::AlbumList),
+            playlists: split(Pane::PlaylistList),
+        }
     }
 }
 

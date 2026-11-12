@@ -35,13 +35,14 @@ thread_local! {
 
 /// The playlists beside the songs of the one `location` names. While it names none, or one that
 /// has gone, it is the one open before or else the first listed. Choosing another with the pointer
-/// sends [`Command::Show`], and moving to it with the keys [`Command::ShowInPlace`].
-pub fn playlists(location: Signal<Location>, cx: &ScreenContext) -> Screen {
+/// sends [`Command::Show`], and moving to it with the keys [`Command::ShowInPlace`]. The list is as
+/// wide as `split` says.
+pub fn playlists(location: Signal<Location>, split: Split, cx: &ScreenContext) -> Screen {
     keys::bind();
     let screen = Playlists::new(location, cx);
     screen.follow_location();
     screen.follow_songs();
-    let body = list_detail(Split::new(), list::pane(&screen), detail::pane(&screen))
+    let body = list_detail(split, list::pane(&screen), detail::pane(&screen))
         .child(screen.menu.view())
         .child(dialogs::rename_dialog(&screen))
         .child(dialogs::delete_dialog(&screen));
@@ -95,7 +96,7 @@ impl Playlists {
             })
         });
         let now_playing = follow_now_playing(&cx.workspace);
-        let filter = signal(String::new());
+        let filter = signal(state.query());
         {
             let state = state.clone();
             effect(move || {

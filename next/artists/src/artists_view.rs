@@ -75,17 +75,7 @@ fn bind_artists_keys() {
         .into_iter()
         .chain([(Keystroke::named(NamedKey::ArrowRight), Open)])
         .map(|(stroke, command)| KeyBinding::new(stroke, command, ARTISTS_CONTEXT));
-    let moves = [
-        (NamedKey::ArrowUp, GridMotion::Up),
-        (NamedKey::ArrowDown, GridMotion::Down),
-        (NamedKey::ArrowLeft, GridMotion::Left),
-        (NamedKey::ArrowRight, GridMotion::Right),
-        (NamedKey::PageUp, GridMotion::PageUp),
-        (NamedKey::PageDown, GridMotion::PageDown),
-        (NamedKey::Home, GridMotion::First),
-        (NamedKey::End, GridMotion::Last),
-    ]
-    .map(|(key, motion)| (Keystroke::named(key), Move(motion)));
+    let moves = GridMotion::strokes().map(|(stroke, motion)| (stroke, Move(motion)));
     let on_page = on_either
         .into_iter()
         .chain([
@@ -204,12 +194,17 @@ pub(crate) struct View {
 }
 
 /// The artists, beside the page of the one where the window is, which `location` says. Choosing
-/// another sends [`Command::Show`], and moving through the list [`Command::ShowInPlace`].
-pub fn artists(location: Signal<Location>, cx: &ScreenContext) -> Screen {
-    artists_view(location, cx).1
+/// another sends [`Command::Show`], and moving through the list [`Command::ShowInPlace`]. The list
+/// is as wide as `split` says.
+pub fn artists(location: Signal<Location>, split: Split, cx: &ScreenContext) -> Screen {
+    artists_view(location, split, cx).1
 }
 
-pub(crate) fn artists_view(location: Signal<Location>, cx: &ScreenContext) -> (Rc<View>, Screen) {
+pub(crate) fn artists_view(
+    location: Signal<Location>,
+    split: Split,
+    cx: &ScreenContext,
+) -> (Rc<View>, Screen) {
     bind_artists_keys();
     let list = cx.workspace.artists().clone();
     let detail = cx.workspace.artist_detail().clone();
@@ -286,8 +281,8 @@ pub(crate) fn artists_view(location: Signal<Location>, cx: &ScreenContext) -> (R
         }
     });
     view.focus_list();
-    let body = list_detail(Split::new(), list::list_pane(&view), page::page_pane(&view))
-        .child(view.menu.view());
+    let body =
+        list_detail(split, list::list_pane(&view), page::page_pane(&view)).child(view.menu.view());
     let screen = Screen::new("Artists", body)
         .action(sort(&view))
         .home(view.list_node);

@@ -14,7 +14,7 @@ use hiphile_core::artists::{ArtistPage, ArtistSection, album_count_to_show};
 use hiphile_core::favorites::Favorite;
 use hiphile_core::navigation::Location;
 use next_ui::card_grid::{CARD_GAP, Card, card, card_row};
-use next_ui::context_menu::more_button;
+use next_ui::context_menu::{more_button, pressed_at};
 use next_ui::cover::{CoverKind, cover};
 use next_ui::detail_header::{DetailHeader, detail_header, play_and_shuffle};
 use next_ui::details::{format_album_count, format_song_count, join_details};
@@ -708,13 +708,4 @@ fn on_card(
 fn is_selected(view: &Rc<View>, item: &Item) -> impl Fn() -> bool + 'static {
     let (selected, item) = (view.item, item.clone());
     move || selected.with(|selected| selected.as_ref() == Some(&item))
-}
-
-/// Where `e` was pressed, in logical pixels of the window, as a menu opens at.
-fn pressed_at(e: &PointerEvent) -> PointF {
-    let scale = window_scale();
-    PointF::new(
-        scale.to_logical(e.position.x),
-        scale.to_logical(e.position.y),
-    )
 }
