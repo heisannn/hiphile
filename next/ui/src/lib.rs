@@ -2,6 +2,7 @@
 //! screen shows.
 
 mod command;
+pub mod cover;
 mod screen;
 pub mod theme;
 pub mod type_scale;

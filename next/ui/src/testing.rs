@@ -176,11 +176,20 @@ pub const NOWHERE: &str = "http://127.0.0.1:9";
 
 /// What a test keeps until it ends: the core's runtime and the folder of its settings.
 pub struct TestCore {
-    _runtime: tokio::runtime::Runtime,
+    runtime: Option<tokio::runtime::Runtime>,
     /// Dropped after the runtime: the last of a client must not go inside it, as the runtime's
     /// tasks that hold the core would otherwise drop it there.
     nets: Vec<net::Client>,
     _dir: tempfile::TempDir,
+}
+
+impl Drop for TestCore {
+    fn drop(&mut self) {
+        // Without waiting for blocking work, which may wait on a server that never answers
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_background();
+        }
+    }
 }
 
 /// A core whose settings file holds `config`, in a folder of its own, lent to this UI thread.
@@ -206,7 +215,7 @@ pub fn core(config: &str) -> (TestCore, hiphile_core::Hiphile) {
     );
     (
         TestCore {
-            _runtime: runtime,
+            runtime: Some(runtime),
             nets: vec![net],
             _dir: dir,
         },

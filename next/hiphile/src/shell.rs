@@ -7,6 +7,7 @@ use hiphile_core::settings::AppearanceSnapshot;
 use hiphile_core::{Hiphile, HiphileSnapshot, Workspace};
 use next_account::{sign_in, sign_in_dialog};
 use next_host::follow;
+use next_ui::cover::install_covers;
 use next_ui::theme::{follow_theme, is_dark};
 use next_ui::type_scale::body;
 use next_ui::window::moves_window;
@@ -32,6 +33,7 @@ pub fn app(hiphile: Hiphile, system_is_dark: Signal<bool>) -> Div {
         },
         || None,
     );
+    install_covers(hiphile.clone());
     let shown = follow(hiphile.subscribe());
     let workspace = memo(move || shown.with(|shown| shown.workspace().cloned()));
     let snackbars = snackbars();

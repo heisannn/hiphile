@@ -13,7 +13,7 @@ config.workspace = true
 executor = { workspace = true, optional = true }
 hiphile-core.workspace = true
 net = { workspace = true, optional = true }
-next-host = { workspace = true, optional = true }
+next-host.workspace = true
 tempfile = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt-multi-thread"] }
 
@@ -22,7 +22,6 @@ tokio = { workspace = true, optional = true, features = ["rt-multi-thread"] }
 test-support = [
   "dep:executor",
   "dep:net",
-  "dep:next-host",
   "dep:tempfile",
   "dep:tokio",
   "hiphile-core/test-support",
