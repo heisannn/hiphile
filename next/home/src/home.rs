@@ -11,6 +11,7 @@ use anti_webui_md3e::components::{
 };
 use anti_webui_md3e::icons;
 use hiphile_core::Shelf;
+use hiphile_core::favorites::Favorite;
 use hiphile_core::home::{AlbumShelf, HomeSection, Item, MAX_COLUMNS, ReloadFailed};
 use hiphile_core::navigation::Destination;
 use next_host::{follow, notices};
@@ -18,17 +19,18 @@ use next_ui::card_grid::{Card, GridMotion, card, card_row, columns_for, step};
 use next_ui::context_menu::{ContextMenu, pressed_at};
 use next_ui::cover::{CoverKind, cover};
 use next_ui::keymap::{KeyBinding, KeyContext, bind_keys, key_context};
-use next_ui::link::{album_artist_link, artist_line};
+use next_ui::link::{album_artist_link, artist_line, song_line};
 use next_ui::menus::{album_menu, show_in_albums_item, song_menu};
-use next_ui::now_playing::{NowPlaying, follow_now_playing, skippable, song_row_label};
+use next_ui::now_playing::{NowPlaying, follow_now_playing, song_row_label};
 use next_ui::page_row::{PageRow, page_row};
 use next_ui::pane::pane;
+use next_ui::row_buttons::RowButtons;
 use next_ui::row_cover::row_cover;
 use next_ui::row_list::is_context_click;
 use next_ui::section::{
     section_failure, section_heading, section_heading_with, section_loading, section_note,
 };
-use next_ui::song_row::song_with_cover;
+use next_ui::song_row::{SongRow, song_words};
 use next_ui::{Command, Screen, ScreenContext};
 use subsonic::{Album, Song};
 
@@ -353,10 +355,33 @@ impl Page {
             let (title, state, skipped) = (song.title().to_owned(), state.clone(), skipped.clone());
             move || song_row_label(&title, state(), skipped())
         };
-        let cover = row_cover(&self.cx.workspace, song.cover_art(), CoverKind::Album);
-        let content = skippable(
-            song_with_cover(song, cover, state, &self.cx.commands),
-            skipped,
+        let groups = {
+            let (this, item) = (self.clone(), item.clone());
+            move || {
+                this.target(&item)
+                    .map(|target| this.menu_of(&target))
+                    .unwrap_or_default()
+            }
+        };
+        let (commands, known) = (&self.cx.commands, self.cx.known);
+        let buttons = RowButtons::new(
+            Favorite::Song(song.clone()),
+            commands,
+            known,
+            self.menu,
+            groups,
+        )
+        .selected_when(self.is_selected(&item));
+        let words = song_words(song, Some(song_line(song, commands)));
+        let content = next_ui::song_row::song_row(
+            SongRow::new(song, words, state)
+                .cover(row_cover(
+                    &self.cx.workspace,
+                    song.cover_art(),
+                    CoverKind::Album,
+                ))
+                .skipped_when(skipped)
+                .buttons(buttons),
         );
         let row = PageRow::new(content)
             .label(label)

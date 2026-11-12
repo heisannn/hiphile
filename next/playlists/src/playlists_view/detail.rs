@@ -243,7 +243,7 @@ fn song_list(screen: &Playlists, are_editable: bool) -> Div {
         "Songs",
         move || entries.get(),
         |entry: &Entry| entry.id(),
-        move |entry, row| song_row(&row_of, entry, row.position()),
+        move |entry, row| song_row(&row_of, entry, row),
     )
     .row_label(move |entry| {
         let song = entry.song();

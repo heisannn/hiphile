@@ -25,7 +25,7 @@ pub struct PageRow {
 }
 
 impl PageRow {
-    /// `content` fills the row, such as [`crate::song_row::song_with_cover`].
+    /// `content` fills the row, such as a [`crate::song_row::song_row`].
     pub fn new(content: Div) -> Self {
         Self {
             content,

@@ -3,7 +3,6 @@ use std::sync::Arc;
 use anti_webui::prelude::*;
 use anti_webui_md3e::color_scheme;
 use anti_webui_md3e::components::MenuItem;
-use anti_webui_md3e::typography::TextStyle;
 use hiphile_core::favorites::Favorite;
 use hiphile_core::library::{AlbumDetailSnapshot, LoadedAlbum};
 use next_ui::Command;
@@ -16,10 +15,10 @@ use next_ui::keymap::{KeyContext, key_context};
 use next_ui::link::{artist_line, artist_link, song_artist_link};
 use next_ui::load_state::{empty_state, load_failure, pane_loading};
 use next_ui::menus::{Songs, add_to_playlist_item, favorite_item, go_to_artist_item, queue_items};
-use next_ui::now_playing::{play_state_icon, skippable, song_row_label};
-use next_ui::row_list::{ROW_PADDING, RowList, row_list};
-use next_ui::row_text::row_text;
-use next_ui::type_scale::muted_text;
+use next_ui::now_playing::song_row_label;
+use next_ui::row_buttons::RowButtons;
+use next_ui::row_list::{RowList, RowState, row_list};
+use next_ui::song_row::{SongRow, song_words};
 use subsonic::{Album, AlbumId, ArtistId, CoverArtId, Song, SongId};
 
 use super::keys::SONGS;
@@ -28,16 +27,6 @@ use super::{Model, SONG_ROW_HEIGHT};
 /// What the cover in the head is asked for at: as many pixels as it shows at its largest on a
 /// screen of two to a point.
 const COVER_PIXELS: u32 = 384;
-/// The lane of a song's number, or of the icon of the song playing, as wide as three figures.
-const NUMBER_LANE: f32 = 24.0;
-/// The lane of a song's length, which keeps the buttons before it in line.
-const DURATION_LANE: f32 = 48.0;
-/// Between a row's lanes.
-const LANE_GAP: f32 = 12.0;
-/// What a small icon button has between its edge and its icon, which brings the last of a row
-/// closer to the edge than words for its icon to line up with theirs.
-const BUTTON_PADDING: f32 = 8.0;
-
 /// What the detail shows of the album on show. A loaded album is known by its id alone: another
 /// version of it, such as the server's after the saved one, changes what shows in place, which
 /// keeps the focus, the cursor and the scroll in its songs.
@@ -253,7 +242,7 @@ fn song_rows(
         "Songs",
         move || songs.get(),
         |song: &Song| song.id().clone(),
-        move |song, _| {
+        move |song, row| {
             let is_by_another_artist = untrack(|| {
                 loaded.with(|loaded| {
                     loaded
@@ -261,7 +250,7 @@ fn song_rows(
                         .is_some_and(|loaded| loaded.is_by_another_artist(song))
                 })
             });
-            song_row(&look, songs, song, is_by_another_artist)
+            song_row(&look, songs, song, is_by_another_artist, row)
         },
     )
     .row_height(SONG_ROW_HEIGHT)
@@ -289,52 +278,23 @@ fn song_rows(
     })
 }
 
-/// The number, or what plays, the title and, on a compilation, the artist, then whether it is a
-/// favorite, how long it lasts and what else there is to do with it. A song played past is faded.
+/// The number, the title and, on a compilation, the artist, then whether it plays, how long it
+/// lasts, and its buttons.
 fn song_row(
     model: &Model,
     songs: Memo<Arc<[Song]>>,
     song: &Song,
     is_by_another_artist: bool,
+    row: RowState<SongId>,
 ) -> Div {
     let (commands, known, now_playing) =
         (model.cx.commands.clone(), model.cx.known, model.now_playing);
     let id = song.id().clone();
-    let state =
-        memo(move || now_playing.with(|now| now.as_ref().and_then(|now| now.state_of(&id))));
-    let number = song
-        .track()
-        .map(|track| track.to_string())
-        .unwrap_or_default();
-    let lane = div()
-        .flex()
-        .flex_row()
-        .flex_none()
-        .items_center()
-        .justify_end()
-        .w(NUMBER_LANE)
-        .child(dyn_view(move || {
-            let number = number.clone();
-            if state.get().is_some() {
-                untrack(|| play_state_icon(move || state.get()).into_view())
-            } else {
-                untrack(|| muted_text(TextStyle::BODY_MEDIUM, number).into_view())
-            }
-        }));
+    let state = move || now_playing.with(|now| now.as_ref().and_then(|now| now.state_of(&id)));
     let artist = is_by_another_artist
         .then(|| song_artist_link(song, &commands))
         .flatten()
         .map(|artist| artist_line(Some(artist), None));
-    let words = row_text(song.title().to_owned(), None)
-        .flex_1()
-        .children(artist);
-    let duration = muted_text(
-        TextStyle::BODY_MEDIUM,
-        song.duration().map(format_duration).unwrap_or_default(),
-    )
-    .flex_none()
-    .w(DURATION_LANE)
-    .text_align(TextAlign::Right);
     let menu = {
         let model = model.clone();
         let song_id = song.id().clone();
@@ -345,26 +305,20 @@ fn song_row(
                 .unwrap_or_default()
         }
     };
+    let buttons = RowButtons::new(
+        Favorite::Song(song.clone()),
+        &commands,
+        known,
+        model.menu,
+        menu,
+    )
+    .selected_when(move || row.is_selected());
     let skipped = song.clone();
-    skippable(
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(LANE_GAP)
-            .pl(ROW_PADDING)
-            .pr(ROW_PADDING - BUTTON_PADDING)
-            .size_full()
-            .child(lane)
-            .child(words)
-            .child(favorite_button(
-                Favorite::Song(song.clone()),
-                &commands,
-                known,
-            ))
-            .child(duration)
-            .child(more_button(model.menu, menu)),
-        move || known.is_skipped(&skipped),
+    next_ui::song_row::song_row(
+        SongRow::new(song, song_words(song, artist), state)
+            .number(song.track())
+            .skipped_when(move || known.is_skipped(&skipped))
+            .buttons(buttons),
     )
 }
 

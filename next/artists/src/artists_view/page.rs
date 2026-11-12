@@ -22,13 +22,14 @@ use next_ui::favorite_button::favorite_button;
 use next_ui::keymap::{KeyContext, key_context};
 use next_ui::link::{album_link, artist_line, song_artist_link};
 use next_ui::load_state::{load_failure, pane_loading};
-use next_ui::now_playing::{skippable, song_row_label};
+use next_ui::now_playing::song_row_label;
 use next_ui::page_row::{PageRow, page_row};
 use next_ui::pane::INSET;
+use next_ui::row_buttons::RowButtons;
 use next_ui::row_cover::row_cover;
 use next_ui::row_list::is_context_click;
 use next_ui::section::{section_failure, section_heading, section_loading, section_note};
-use next_ui::song_row::song_with_line;
+use next_ui::song_row::{SongRow, song_words};
 use next_ui::{AlbumAction, Command};
 use subsonic::{Album, Artist, ArtistId, CoverArtId, Song};
 
@@ -347,13 +348,32 @@ fn song_row(view: &Rc<View>, position: usize, song: Song) -> Div {
         let id = song.id().clone();
         move || now_playing.with(|now| now.as_ref()?.state_of(&id))
     };
-    let cover = row_cover(&view.cx.workspace, song.cover_art(), CoverKind::Album);
-    let content = skippable(
-        song_with_line(&song, cover, artist_line(artist, album), state),
-        {
-            let song = song.clone();
-            move || known.is_skipped(&song)
-        },
+    let groups = {
+        let (view, song) = (view.clone(), song.clone());
+        move || view.song_menu(&song)
+    };
+    let buttons = RowButtons::new(
+        Favorite::Song(song.clone()),
+        commands,
+        known,
+        view.menu,
+        groups,
+    )
+    .selected_when(is_selected(view, &item));
+    let skipped = song.clone();
+    let content = next_ui::song_row::song_row(
+        SongRow::new(
+            &song,
+            song_words(&song, Some(artist_line(artist, album))),
+            state,
+        )
+        .cover(row_cover(
+            &view.cx.workspace,
+            song.cover_art(),
+            CoverKind::Album,
+        ))
+        .skipped_when(move || known.is_skipped(&skipped))
+        .buttons(buttons),
     );
     let label = {
         let song = song.clone();

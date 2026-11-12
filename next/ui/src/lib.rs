@@ -24,6 +24,7 @@ pub mod page_row;
 pub mod pane;
 pub mod pane_handle;
 pub mod playlist_dialogs;
+pub mod row_buttons;
 pub mod row_cover;
 pub mod row_list;
 pub mod row_text;
