@@ -81,6 +81,25 @@ fn without_icons(label: &str) -> &str {
     label.trim_start_matches(|c: char| is_icon(c) || c.is_whitespace())
 }
 
+/// Whether the node with `role` and `label` shows that the keys are on it, with the ring md3e's
+/// components show their focus with, on it or on what is in it.
+pub fn shows_keys(role: Role, label: &str) -> bool {
+    let node = find(role, label).unwrap_or_else(|| panic!("no {role:?} named {label:?}"));
+    with_doc(|d| {
+        let mut next = vec![KeyData::from_ffi(node.id).into()];
+        while let Some(id) = next.pop() {
+            let Some(node) = d.get(id) else {
+                continue;
+            };
+            if node.computed.outline_width > 0.0 {
+                return true;
+            }
+            next.extend(node.children.iter().copied());
+        }
+        false
+    })
+}
+
 pub fn nodes(role: Role) -> Vec<AccessNode> {
     snapshot()
         .nodes

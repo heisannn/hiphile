@@ -6,8 +6,8 @@ use anti_webui::core::event::{Key, Modifiers, NamedKey};
 use super::*;
 use crate::row_text::row_text;
 use crate::testing::{
-    click, click_with, double_click, drag, has_text, key, key_with, middle_of, nodes, right_click,
-    scroll, start,
+    WINDOW, click, click_with, double_click, drag, focus, has_text, key, key_with, middle_of,
+    nodes, right_click, scroll, shows_keys, start,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -96,6 +96,17 @@ impl List {
 
     fn scrolled(&self) -> f32 {
         self.node.scroll_offset().y
+    }
+
+    /// The songs whose rows show that the keys are on them.
+    fn keyed(&self) -> Vec<u32> {
+        self.rows
+            .get_untracked()
+            .iter()
+            .map(|song| song.id)
+            .filter(|id| has_text(&format!("Song {id}")))
+            .filter(|id| shows_keys(Role::ListOption, &format!("Song {id}")))
+            .collect()
     }
 }
 
@@ -292,6 +303,74 @@ fn scrolling_shows_the_rows_it_comes_to_and_keeps_the_selection() {
     assert!(!has_text("Song 1"));
     assert!(has_text("Song 505"));
     assert_eq!(list.selected(), ids([1]));
+}
+
+#[test]
+fn once_the_cursors_row_goes_the_keys_go_on_from_where_it_was() {
+    let list = List::of(1000);
+    let mut ui = list.start();
+    focus(&mut ui, Role::ListBox, "Songs");
+    list.selection.select(500);
+    // The row in the middle of the list's height
+    list.node
+        .scroll_to(0.0, 500.0 * ROW_HEIGHT - WINDOW.1 as f32 / 2.0);
+    ui.update();
+    let scrolled = list.scrolled();
+
+    list.rows.set(songs((0..1000).filter(|id| *id != 500)));
+    ui.update();
+    assert_eq!(list.keyed(), [501]);
+    key(&mut ui, NamedKey::ArrowDown);
+
+    assert_eq!(list.selected(), ids([502]));
+    assert_eq!(list.keyed(), [502]);
+    assert_eq!(list.scrolled(), scrolled);
+}
+
+#[test]
+fn a_filter_that_hides_the_cursors_row_leaves_the_cursor_as_it_is() {
+    let list = List::of(10);
+    let mut ui = list.start();
+    click_song(&mut ui, 5);
+
+    list.rows.set(songs([1, 3, 7]));
+    ui.update();
+    assert_eq!(list.selection.cursor(), Some(5));
+    key(&mut ui, NamedKey::Enter);
+    assert!(list.opened.get_untracked().is_empty());
+    list.rows.set(songs(0..10));
+    ui.update();
+    key(&mut ui, NamedKey::ArrowDown);
+
+    assert_eq!(list.selected(), ids([6]));
+}
+
+#[test]
+fn tabbing_into_a_list_with_nothing_selected_shows_the_keys_on_its_first_row() {
+    let list = List::of(5);
+    let mut ui = list.start();
+    assert!(list.keyed().is_empty());
+
+    key(&mut ui, NamedKey::Tab);
+
+    assert_eq!(list.keyed(), [0]);
+    assert!(list.selected().is_empty());
+}
+
+#[test]
+fn of_the_rows_selected_the_cursors_shows_the_keys_on_it_once_they_are_used() {
+    let list = List::of(10);
+    let mut ui = list.start();
+    click_song(&mut ui, 2);
+    click_song_with(&mut ui, 4, shift());
+    assert!(list.keyed().is_empty());
+
+    key_shifted(&mut ui, NamedKey::ArrowDown);
+    assert_eq!(list.selected(), ids(2..=5));
+    assert_eq!(list.keyed(), [5]);
+
+    click_song_with(&mut ui, 7, Modifiers::PRIMARY);
+    assert!(list.keyed().is_empty());
 }
 
 #[test]

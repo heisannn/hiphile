@@ -12,7 +12,7 @@ use crate::cover::ROUND;
 use crate::keymap::Keystroke;
 use crate::pane::INSET;
 use crate::row_text::faded_end;
-use crate::selection::{CORNER, When, selection_fill};
+use crate::selection::{CORNER, When, focus_ring, selection_fill, shows_keys_on};
 
 pub const CARD_MIN_WIDTH: f32 = 160.0;
 /// Between cards, across and down.
@@ -127,6 +127,7 @@ pub struct Card {
     line: Option<Div>,
     selected: When,
     focused: When,
+    keyed: When,
 }
 
 impl Card {
@@ -140,6 +141,7 @@ impl Card {
             line: None,
             selected: Rc::new(|| false),
             focused: Rc::new(|| false),
+            keyed: Rc::new(|| false),
         }
     }
 
@@ -172,12 +174,19 @@ impl Card {
         self.focused = Rc::new(f);
         self
     }
+
+    /// Whether the keys are on the card while the focus shows, as a row list says of its rows: the
+    /// selected one, or where a step lands with none.
+    pub fn keyed_when(mut self, f: impl Fn() -> bool + 'static) -> Self {
+        self.keyed = Rc::new(f);
+        self
+    }
 }
 
 /// A filled card that reacts to the pointer as Material's do, but takes no focus of its own: what
 /// the cards are in has it and moves the selection with the keys, as a row list does. Selected, it
-/// is filled in the selection's color, less strongly without the focus. Its clicks are the
-/// caller's.
+/// is filled in the selection's color, less strongly without the focus, and the keys on it show
+/// as the focus. Its clicks are the caller's.
 pub fn card(card: Card) -> Div {
     let Card {
         cover,
@@ -187,9 +196,11 @@ pub fn card(card: Card) -> Div {
         line,
         selected,
         focused,
+        keyed,
     } = card;
     let selected = memo(move || selected());
     let focused = memo(move || focused());
+    let keyed = memo(move || keyed());
     let cover = if is_round {
         div()
             .flex()
@@ -227,7 +238,17 @@ pub fn card(card: Card) -> Div {
         }))
         .children(line);
     let ink = Ink::new(|c| c.on_surface, || false);
+    shows_keys_on(&ink, keyed);
+    // Over the card rather than on it: a picture is painted after what holds it, and would hide
+    // the ring where the cover meets the edge
+    let ring = div()
+        .absolute()
+        .inset(0)
+        .rounded(CORNER)
+        .pointer_events_none()
+        .dyn_style(move |s| focus_ring(s, keyed.get(), &color_scheme()));
     let card = filled_card()
+        .relative()
         .min_w(0)
         .cursor(CursorIcon::Pointer)
         .select_none()
@@ -244,7 +265,8 @@ pub fn card(card: Card) -> Div {
             }
         })
         .child(cover)
-        .child(words);
+        .child(words)
+        .child(ring);
     ink.paint(ink.listen(card))
 }
 

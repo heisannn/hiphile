@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use super::*;
 use crate::row_text::row_text;
-use crate::testing::{click_text, find, nodes, start};
+use crate::testing::{click_text, find, nodes, shows_keys, start};
 
 fn content(title: &str) -> Div {
     row_text(title.to_owned(), None)
@@ -26,6 +26,27 @@ fn a_row_is_an_option_that_says_whether_it_is_selected() {
     ui.update();
     let row = find(Role::ListOption, "Blue, playing").unwrap();
     assert_eq!(row.selected, Some(true));
+}
+
+#[test]
+fn the_row_the_keys_are_on_shows_it() {
+    let keyed = signal(false);
+    let mut ui = start(move || {
+        div()
+            .flex()
+            .flex_col()
+            .child(page_row(
+                PageRow::new(content("Blue")).keyed_when(move || keyed.get()),
+            ))
+            .child(page_row(PageRow::new(content("Red"))))
+    });
+    assert!(!shows_keys(Role::ListOption, "Blue"));
+
+    keyed.set(true);
+    ui.update();
+
+    assert!(shows_keys(Role::ListOption, "Blue"));
+    assert!(!shows_keys(Role::ListOption, "Red"));
 }
 
 #[test]

@@ -136,16 +136,16 @@ impl<K: Clone + Eq + Hash> Selected<K> {
         }
     }
 
-    /// Moves the cursor and selects it, or, with `extend`, what is from the anchor to it. Where
-    /// the cursor went.
+    /// Moves the cursor from `current`, the position it is at, and selects it, or, with `extend`,
+    /// what is from the anchor to it. Where the cursor went.
     pub(super) fn move_by(
         &mut self,
         motion: Motion,
         extend: bool,
+        current: Option<usize>,
         order: &impl Order<K>,
         page: usize,
     ) -> Option<usize> {
-        let current = self.cursor.as_ref().and_then(|id| order.position_of(id));
         let to = motion.apply(current, order.len(), page)?;
         let id = order.id_at(to)?;
         if extend {

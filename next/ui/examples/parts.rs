@@ -29,7 +29,7 @@ use next_ui::section::{
     section_failure, section_heading, section_heading_with, section_loading, section_note,
 };
 use next_ui::sort_menu::{SortOption, sort_menu};
-use next_ui::testing::{frames, scroll};
+use next_ui::testing::{frames, key, key_with, scroll};
 use next_ui::theme::{DEFAULT_SEED, scheme};
 use next_ui::type_scale::{body, muted_text};
 use next_ui::{Covers, app_bar};
@@ -81,6 +81,31 @@ fn main() {
             },
         );
         shot(&at("states"), WIDE, dark, states, |_| {});
+        let c = covers.clone();
+        shot(
+            &at("focus-tab"),
+            WIDE,
+            dark,
+            move || focus(c),
+            |ui| {
+                key(ui, NamedKey::Tab);
+            },
+        );
+        let c = covers.clone();
+        shot(
+            &at("focus-keys"),
+            WIDE,
+            dark,
+            move || focus(c),
+            |ui| {
+                key(ui, NamedKey::Tab);
+                key(ui, NamedKey::ArrowDown);
+                key(ui, NamedKey::ArrowDown);
+                let shift = Modifiers::default().with_shift();
+                key_with(ui, Key::Named(NamedKey::ArrowDown), shift);
+                key_with(ui, Key::Named(NamedKey::ArrowDown), shift);
+            },
+        );
     }
 }
 
@@ -387,6 +412,59 @@ fn album_detail(cover: &Path) -> Div {
         .flex_col()
         .child(detail_header(header))
         .child(row_list(list).flex_1().min_h(0))
+}
+
+/// A list and cards that the keys are on.
+fn focus(covers: Rc<[PathBuf]>) -> Div {
+    let songs = tracks();
+    let list = RowList::new(
+        "Songs",
+        move || songs.clone(),
+        |song: &Track| song.id,
+        |song, _| {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(12.0_f32)
+                .px(ROW_PADDING)
+                .size_full()
+                .child(row_text(song.title, None).flex_1())
+                .child(muted_text(
+                    TextStyle::BODY_MEDIUM,
+                    format_duration(Duration::from_secs(song.seconds)),
+                ))
+        },
+    );
+    let cards = card_row(
+        4,
+        albums_list()
+            .iter()
+            .take(4)
+            .map(|album| {
+                let id = album.id;
+                card(
+                    Card::new(picture(&covers[id % COVERS]), album.title)
+                        .details(album.artist)
+                        .selected_when(move || id == 1)
+                        .focused_when(|| true)
+                        .keyed_when(move || id == 1),
+                )
+            })
+            .collect(),
+    );
+    window(
+        "Focus",
+        Vec::new(),
+        list_detail(
+            Split::new(),
+            div()
+                .flex()
+                .flex_col()
+                .child(row_list(list).flex_1().min_h(0)),
+            div().flex().flex_col().child(cards),
+        ),
+    )
 }
 
 fn link(name: &str) -> Div {

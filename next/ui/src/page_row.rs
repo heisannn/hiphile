@@ -8,7 +8,7 @@ use anti_webui_md3e::color_scheme;
 use anti_webui_md3e::components::Ink;
 
 use crate::row_list::{ROW_HEIGHT, ROW_PADDING};
-use crate::selection::{CORNER, When, selection_fill};
+use crate::selection::{CORNER, When, focus_ring, selection_fill, shows_keys_on};
 
 /// From the edge of the page to the row, which puts what the row shows on the line of the rest of
 /// the pane, as in a row list.
@@ -20,6 +20,7 @@ pub struct PageRow {
     label: Option<Rc<dyn Fn() -> String>>,
     selected: When,
     focused: When,
+    keyed: When,
 }
 
 impl PageRow {
@@ -30,6 +31,7 @@ impl PageRow {
             label: None,
             selected: Rc::new(|| false),
             focused: Rc::new(|| false),
+            keyed: Rc::new(|| false),
         }
     }
 
@@ -50,6 +52,12 @@ impl PageRow {
         self.focused = Rc::new(f);
         self
     }
+
+    /// Whether the keys are on the row while the focus shows, as a row list says of its rows.
+    pub fn keyed_when(mut self, f: impl Fn() -> bool + 'static) -> Self {
+        self.keyed = Rc::new(f);
+        self
+    }
 }
 
 /// A row as high as those of a row list and that looks like one, but takes no focus of its own:
@@ -60,10 +68,13 @@ pub fn page_row(row: PageRow) -> Div {
         label,
         selected,
         focused,
+        keyed,
     } = row;
     let selected = memo(move || selected());
     let focused = memo(move || focused());
+    let keyed = memo(move || keyed());
     let ink = Ink::new(|c| c.on_surface, || false);
+    shows_keys_on(&ink, keyed);
     let frame = div()
         .flex()
         .flex_row()
@@ -83,7 +94,7 @@ pub fn page_row(row: PageRow) -> Div {
         })
         .dyn_style(move |s| {
             let c = color_scheme();
-            let s = s.text_color(c.on_surface);
+            let s = focus_ring(s.text_color(c.on_surface), keyed.get(), &c);
             match selection_fill(&c, selected.get(), focused.get()) {
                 Some(fill) => s.bg(fill),
                 None => s,
