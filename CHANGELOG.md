@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/heisannn/hiphile/compare/v0.5.0...v0.6.0) - 2026-11-12
+
+### Added
+
+- *(account)* switch between the servers signed in with
+
+### Fixed
+
+- *(player)* stop and say so when the audio engine's thread ends by a fault
+- *(config)* let a setting that cannot be read lose only itself
+- *(config)* keep the settings file's permissions and its link when saving
+- *(account)* find the password an earlier version kept under the address as typed
+- *(player)* pick a song up where it was when it stops arriving
+
 ## [0.5.0](https://github.com/heisannn/hiphile/compare/v0.4.0...v0.5.0) - 2026-11-09
 
 ### Added
