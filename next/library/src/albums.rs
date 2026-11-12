@@ -116,7 +116,7 @@ impl Model {
         });
         Self {
             cx: cx.clone(),
-            filter: signal(list.query()),
+            filter: signal(list.status().query().to_owned()),
             list,
             status,
             detail,

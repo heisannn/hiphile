@@ -87,11 +87,11 @@ fn a_query_finds_albums_by_name_or_artist_the_best_first() {
 fn the_query_stays_for_a_view_to_take_up_again() {
     let cx = &TestExecutor::new();
     let (list, _sync) = shown_list(cx);
-    assert_eq!(list.query(), "");
+    assert_eq!(list.status().query(), "");
 
     list.set_query("blue");
 
-    assert_eq!(list.query(), "blue");
+    assert_eq!(list.status().query(), "blue");
 }
 
 #[test]
