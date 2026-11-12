@@ -4,10 +4,11 @@ use anti_webui::prelude::*;
 use executor::Executor;
 use hiphile_core::{Caches, Hiphile};
 use next_hiphile::menu_bar::menus;
-use next_hiphile::{MenuBar, Reach, SMALLEST_WINDOW, TITLE, WINDOW, app};
+use next_hiphile::{MenuBar, Reach, SMALLEST_WINDOW, System, TITLE, WINDOW, app};
 use next_platform::appearance::system_is_dark;
 use next_platform::locale::set_lang;
 use next_platform::menu::MainMenu;
+use next_platform::motion::reduces_motion;
 use next_platform::window::MainWindow;
 
 fn main() {
@@ -46,7 +47,11 @@ fn main() {
             effect(move || main_menu.update(|command| menu_bar.state_of(command)));
             // AntiWebUI opens the window once this has run
             request_frame(|_| set_up_window());
-            app(shown, system_is_dark(), menu_bar, Reach::System)
+            let system = System {
+                is_dark: system_is_dark(),
+                reduces_motion: reduces_motion(),
+            };
+            app(shown, system, menu_bar, Reach::System)
         });
 
     // Before the runtime goes: saving and putting the device back as the player found it run on it

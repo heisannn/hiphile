@@ -1,6 +1,6 @@
 use std::cell::Cell;
 
-use anti_webui::prelude::{Color, effect, rgb};
+use anti_webui::prelude::{Color, effect, rgb, untrack};
 use anti_webui_md3e::{
     ColorScheme, SchemeOptions, SchemeVariant, motion, set_color_scheme, set_color_scheme_animated,
 };
@@ -31,13 +31,17 @@ pub fn is_dark(appearance: Option<Appearance>, system_is_dark: bool) -> bool {
     }
 }
 
-/// Keeps the thread's scheme to `dark` and `seed`: at once the first time, and then by a
-/// cross-fade. A seed of `None` is [`DEFAULT_SEED`].
-pub fn follow_theme(dark: impl Fn() -> bool + 'static, seed: impl Fn() -> Option<Color> + 'static) {
+/// Keeps the thread's scheme to `dark` and `seed`: at once the first time and while
+/// `reduces_motion`, and else by a cross-fade. A seed of `None` is [`DEFAULT_SEED`].
+pub fn follow_theme(
+    dark: impl Fn() -> bool + 'static,
+    seed: impl Fn() -> Option<Color> + 'static,
+    reduces_motion: impl Fn() -> bool + 'static,
+) {
     let first = Cell::new(true);
     effect(move || {
         let colors = scheme(seed().unwrap_or(DEFAULT_SEED), dark());
-        if first.replace(false) {
+        if first.replace(false) || untrack(&reduces_motion) {
             set_color_scheme(colors);
         } else {
             set_color_scheme_animated(colors, motion::slow_effects());

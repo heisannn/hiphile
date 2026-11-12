@@ -180,6 +180,35 @@ fn the_queue_is_checked_while_it_shows_and_cannot_open_where_it_does_not_fit() {
 }
 
 #[test]
+fn the_lyrics_open_on_a_song_and_are_checked_while_open() {
+    let lyrics = Command::ToggleLyrics;
+    let no_song = Shown {
+        has_song: false,
+        ..playing()
+    };
+    assert!(!state_of(&no_song, &lyrics).is_enabled());
+    assert!(!state_of(&playing(), &lyrics).is_checked());
+
+    let open = Shown {
+        lyrics_open: true,
+        queue_shown: false,
+        ..playing()
+    };
+    assert!(state_of(&open, &lyrics).is_checked());
+}
+
+#[test]
+fn over_the_lyrics_back_closes_them_and_forward_waits() {
+    let open = Shown {
+        can_go_back: false,
+        lyrics_open: true,
+        ..playing()
+    };
+    assert!(state_of(&open, &Command::GoBack).is_enabled());
+    assert!(!state_of(&open, &Command::GoForward).is_enabled());
+}
+
+#[test]
 fn shuffle_and_the_repeat_mode_are_checked() {
     let shown = Shown {
         shuffled: true,
@@ -307,7 +336,12 @@ fn start_with_menu_bar(hiphile: Hiphile) -> (Ui, MenuBar) {
     let ui = start(|| {
         let menu_bar = MenuBar::new();
         made.set(Some(menu_bar));
-        app(hiphile, signal(false), menu_bar, crate::Reach::Window)
+        app(
+            hiphile,
+            crate::System::fixed(false),
+            menu_bar,
+            crate::Reach::Window,
+        )
     });
     (ui, made.get().expect("the root to have run"))
 }
@@ -422,7 +456,12 @@ fn in_the_narrowest_window_the_queue_cannot_open() {
         || {
             let menu_bar = MenuBar::new();
             made.set(Some(menu_bar));
-            app(hiphile, signal(false), menu_bar, crate::Reach::Window)
+            app(
+                hiphile,
+                crate::System::fixed(false),
+                menu_bar,
+                crate::Reach::Window,
+            )
         },
         (900, 560),
     );
@@ -491,4 +530,66 @@ fn saving_the_queue_asks_for_the_new_playlists_name() {
     menu_bar.choose(Command::SaveQueue);
     frames(&mut ui, 400);
     assert!(find(Role::Heading, "New Playlist").is_some());
+}
+
+/// The window, signed in, on a song whose lyrics are not found.
+fn on_a_song() -> (next_ui::testing::TestCore, Ui, MenuBar, playback::Player) {
+    let (core, hiphile) = signed_in_core(NOWHERE);
+    let player = hiphile.workspace().unwrap().player().clone();
+    player.fill_queue(&songs(&["a", "b"]), 0);
+    let (mut ui, menu_bar) = start_with_menu_bar(hiphile);
+    wait_until(&mut ui, || {
+        menu_bar.state_of(&Command::ToggleLyrics).is_enabled()
+    });
+    (core, ui, menu_bar, player)
+}
+
+#[test]
+fn the_menu_bar_opens_the_lyrics_over_the_window_and_back_closes_them() {
+    let (_core, mut ui, menu_bar, _player) = on_a_song();
+    menu_bar.choose(Command::Show(Location::Songs));
+    menu_bar.choose(Command::ToggleQueue);
+    ui.update();
+
+    menu_bar.choose(Command::ToggleLyrics);
+    ui.update();
+    assert!(find(Role::Dialog, "Lyrics").is_some());
+    assert!(menu_bar.state_of(&Command::ToggleLyrics).is_checked());
+    assert!(!menu_bar.state_of(&Command::ToggleQueue).is_checked());
+    frames(&mut ui, 1500);
+    assert!(find(Role::Button, "Albums").unwrap().disabled);
+
+    menu_bar.choose(Command::GoBack);
+    ui.update();
+    assert!(!menu_bar.state_of(&Command::ToggleLyrics).is_checked());
+    assert!(menu_bar.state_of(&Command::ToggleQueue).is_checked());
+    assert!(!find(Role::Button, "Albums").unwrap().disabled);
+    assert_eq!(find(Role::Button, "Songs").unwrap().selected, Some(true));
+    frames(&mut ui, 1500);
+    assert!(find(Role::Dialog, "Lyrics").is_none());
+}
+
+#[test]
+fn going_somewhere_closes_the_lyrics() {
+    let (_core, mut ui, menu_bar, _player) = on_a_song();
+    menu_bar.choose(Command::ToggleLyrics);
+    ui.update();
+
+    menu_bar.choose(Command::Show(Location::Albums(None)));
+    ui.update();
+    assert!(!menu_bar.state_of(&Command::ToggleLyrics).is_checked());
+    assert_eq!(find(Role::Button, "Albums").unwrap().selected, Some(true));
+}
+
+#[test]
+fn the_lyrics_close_when_there_is_no_song() {
+    let (_core, mut ui, menu_bar, player) = on_a_song();
+    menu_bar.choose(Command::ToggleLyrics);
+    ui.update();
+
+    player.fill_queue(&[], 0);
+    wait_until(&mut ui, || {
+        !menu_bar.state_of(&Command::ToggleLyrics).is_checked()
+    });
+    assert!(!menu_bar.state_of(&Command::ToggleLyrics).is_enabled());
 }

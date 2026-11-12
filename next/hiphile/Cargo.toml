@@ -37,7 +37,9 @@ subsonic.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
 
 [dev-dependencies]
+futures.workspace = true
 hiphile-core = { workspace = true, features = ["desktop", "test-support"] }
+lyrics = { workspace = true, features = ["test-support"] }
 next-player = { workspace = true, features = ["test-support"] }
 next-ui = { workspace = true, features = ["test-support"] }
 playback = { workspace = true, features = ["test-support"] }

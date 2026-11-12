@@ -85,7 +85,7 @@ Expressive にデザインし直してみる。どんな感じになるかを見
 | 日本語の字形 | ロケールは `LC_ALL`、`LC_CTYPE`、`LANG` からしか読まず、Finder から開いた `.app` にはどれも無い（`anti-webui-core/src/text/mod.rs:74-79`）。md3e の部品はフォントの並びを定数 `"Roboto Flex, system-ui, sans-serif"` で決める（`anti-webui-md3e/src/typography.rs:6`） | `main` の最初、スレッドを立てる前に、`next-platform` がシステムのロケール（`NSLocale`）から `LANG` を入れる。edition 2024 では `std::env::set_var` が `unsafe` なので、`unsafe_code` を許す `next-platform` のモジュールに置く | — |
 | リスト | `virtual_list(count, row_height, row)` は行の高さが 1 種類で、キー操作が無い。`table` は 1 行しか選べず、行は 28 px。`sortable_list` は `virtual_list` の中では使えない（d23:234） | `virtual_list` の上に `next-ui::row_list` を作る。並べ替えをまたいで曲についていく選択、Shift と ⌘ での選択、キーでの移動、`draggable` と `drop_target` での並べ替えを持たせる。行の高さがまちまちな唯一のリストであるアーティストのページは、`content_visibility_auto` を使ったスクロールにする（d29） | 見出しの固定は無い |
 | ポインタの位置に出すメニュー | md3e の `menu` は要素にしか付けられない（`MenuStyle::anchor(NodeRef)`、`anti-webui-md3e/src/components/menu.rs:125`） | 押された点に大きさ 0 の要素を絶対配置で置き、そこに md3e の `menu` を付ける。だめなら widgets の `context_menu` を md3e の色で使う | — |
-| 要素をまたぐ動き、スクロールのアニメーション | どちらも無い | カバーが歌詞へ飛ぶ動きは `portal`、`animated`、`NodeRef::logical_rect` で作る。歌詞が行を追う動きは `request_frame` と `scroll_to` で作る | — |
+| 要素をまたぐ動き、スクロールのアニメーション | どちらも無い | 歌詞はウィンドウ全体を覆う層なので、カバーはその層の中を飛ぶ。出発点はバーのカバーの `NodeRef::logical_rect` で、`animated` のばねで動かす。`portal` は要らなかった。歌詞が行を追う動きは `request_frame` と `scroll_to` で作る | — |
 | 動きを減らす設定 | 無い（d13:294-299） | `next-platform` が `NSWorkspace` の `accessibilityDisplayShouldReduceMotion` を読み、Hiphile の動き（カバーの飛行、歌詞のスクロール、配色のクロスフェード）がそれに従う | md3e の部品の動きは止まらない |
 | テストの時間 | フレームには `Instant` を渡せるが、`set_timeout` と `animated` は `Instant::now()` を読む（`anti-webui-core/src/animation.rs:102`、`:484`） | テストは時間ではなく状態を確かめる | タイマーやばねを進められない |
 | 配色の範囲 | 配色はスレッドに 1 つで、部品はそれを読む（`anti-webui-md3e/src/color.rs:254-264`、`:289-326`） | ウィンドウが 1 つなので配色も 1 つで、アプリ全体が同じ配色になる | — |
@@ -112,6 +112,12 @@ Expressive にデザインし直してみる。どんな感じになるかを見
   `anti-webui-core/src/window.rs:709-720`）があるとそこに届く。普通のアプリは root を作らないので、
   ウィンドウがメインの 1 つだけなら届かない。読んだだけで実行はしていない。ミニプレーヤーを戻すときに
   確かめる。
+- **ホイールはポインタの下の要素の祖先にしか届かない。** 歌詞の「Sync」ボタンは行のスクロール領域に
+  重ねた兄弟なので、その上でホイールを回しても行は動かない。ボタンの `on_scroll` で受けた量を
+  `window_scale().to_logical` で論理ピクセルにし、`scroll_to` でスクロール領域に渡す。
+- **headless の描画は、画像があると 1 秒ぶんフレームを進めてから描く**
+  （`anti-webui-app/src/headless.rs:44-52`）。動きの途中は `render_driven_rgba` では撮れないので、
+  `shots` は飛んでいるカバーを `Gpu` と `Renderer` で自分で描く。
 
 ## 構成
 

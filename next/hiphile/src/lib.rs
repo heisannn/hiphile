@@ -10,7 +10,7 @@ mod top_end;
 
 pub use menu_bar::MenuBar;
 pub use reach::Reach;
-pub use shell::app;
+pub use shell::{System, app};
 
 /// The window's title, which the platform finds the window by.
 pub const TITLE: &str = "Hiphile";

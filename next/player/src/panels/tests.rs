@@ -35,3 +35,16 @@ fn the_queue_cannot_be_made_wider_than_its_room_or_its_most() {
     panels.set_queue_width(QUEUE_MAX_WIDTH);
     assert_eq!(panels.queue_width(), 300.0);
 }
+
+#[test]
+fn the_queue_toggled_under_the_lyrics_closes_them_and_shows() {
+    let panels = Panels::new();
+    panels.queue.set(true);
+    panels.lyrics.set(true);
+    assert!(panels.is_queue_shown());
+    assert!(!panels.is_queue_in_view());
+
+    panels.toggle_queue();
+    assert!(!panels.lyrics.get_untracked());
+    assert!(panels.is_queue_in_view());
+}

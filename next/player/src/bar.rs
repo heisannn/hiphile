@@ -18,7 +18,7 @@ use crate::position::{LANE, position_line};
 use crate::volume::volume;
 
 const COVER: f32 = 56.0;
-const COVER_CORNER: f32 = 12.0;
+pub(crate) const COVER_CORNER: f32 = 12.0;
 
 /// What `player` plays, with `cover` as its cover, and what controls it.
 pub fn player_bar(player: playback::Player, cover: Signal<Option<Cover>>, panels: Panels) -> Div {
@@ -31,7 +31,7 @@ pub fn player_bar(player: playback::Player, cover: Signal<Option<Cover>>, panels
         .gap(24.0_f32)
         .py(12.0_f32)
         .access(|a| a.role(Role::Toolbar).label("Player"))
-        .child(now_playing(shown, cover, panels.lyrics))
+        .child(now_playing(shown, cover, panels))
         .child(transport(player.clone(), shown))
         .child(extras(player, shown, panels))
 }
@@ -47,17 +47,26 @@ fn side() -> Div {
         .flex_basis(0.0_f32)
 }
 
-fn now_playing(
-    shown: Signal<PlayerSnapshot>,
-    cover: Signal<Option<Cover>>,
-    lyrics: Signal<bool>,
-) -> Div {
+fn now_playing(shown: Signal<PlayerSnapshot>, cover: Signal<Option<Cover>>, panels: Panels) -> Div {
     let has_song = memo(move || shown.with(PlayerSnapshot::has_song));
+    // The lane that gives way, as the other keeps the volume at the edge
+    side()
+        .min_w(0.0_f32)
+        .gap(12.0_f32)
+        .child(show(
+            move || has_song.get(),
+            move || cover_button(cover, panels),
+        ))
+        .child(song_words(shown, TextStyle::TITLE_MEDIUM))
+}
+
+/// The title of the song, in `style`, and under it the artist and the album, or the player's
+/// error, which wraps as it tells how to go on.
+pub(crate) fn song_words(shown: Signal<PlayerSnapshot>, style: TextStyle) -> Div {
     let title =
         memo(move || shown.with(|shown| shown.current_song().map(|song| song.title().to_owned())));
     let details = memo(move || shown.with(|shown| shown.current_song().map(details_of)));
     let error = memo(move || shown.with(|shown| shown.error().map(str::to_owned)));
-    // An error wraps, as it tells how to go on
     let status = dyn_view(move || match error.get() {
         Some(error) => untrack(|| error_text(error)),
         None => untrack(|| {
@@ -67,26 +76,14 @@ fn now_playing(
             .whitespace_nowrap()
         }),
     });
-    let title = styled_text(TextStyle::TITLE_MEDIUM, move || {
-        title.get().unwrap_or_default()
-    })
-    .whitespace_nowrap();
-    let words = div()
+    let title = styled_text(style, move || title.get().unwrap_or_default()).whitespace_nowrap();
+    div()
         .flex()
         .flex_col()
         .min_w(0.0_f32)
         .overflow_clip()
         .child(title)
-        .child(status);
-    // The lane that gives way, as the other keeps the volume at the edge
-    side()
-        .min_w(0.0_f32)
-        .gap(12.0_f32)
-        .child(show(
-            move || has_song.get(),
-            move || cover_button(cover, lyrics),
-        ))
-        .child(words)
+        .child(status)
 }
 
 /// The artist and the album, as far as the song has them.
@@ -98,11 +95,30 @@ fn details_of(song: &Song) -> String {
     }
 }
 
-fn cover_button(cover: Signal<Option<Cover>>, lyrics: Signal<bool>) -> Div {
-    let ink = Ink::new(|c| c.on_surface, || false);
-    let focused = ink.focused;
-    let picture = dyn_view(move || match cover.get() {
-        Some(cover) => untrack(|| image(move || cover.image()).size_full().into_view()),
+/// Hidden while the lyrics' cover stands in for it.
+fn cover_button(cover: Signal<Option<Cover>>, panels: Panels) -> Div {
+    let lyrics_shown = panels.lyrics_shown;
+    cover_toggle(cover_picture(cover), || COVER_CORNER, panels.lyrics)
+        .w(COVER)
+        .h(COVER)
+        .node_ref(panels.bar_cover)
+        .dyn_style(move |s| s.opacity(if lyrics_shown.get() { 0.0_f32 } else { 1.0 }))
+}
+
+/// `cover` filling its box, or what stands for it while there is none.
+pub(crate) fn cover_picture(cover: Signal<Option<Cover>>) -> View {
+    picture_of(cover, |cover| {
+        image(move || cover.image()).size_full().into_view()
+    })
+}
+
+/// `cover` as `picture` draws it, or what stands for it while there is none.
+pub(crate) fn picture_of(
+    cover: Signal<Option<Cover>>,
+    picture: impl Fn(Cover) -> View + 'static,
+) -> View {
+    dyn_view(move || match cover.get() {
+        Some(cover) => untrack(|| picture(cover)),
         None => untrack(|| {
             div()
                 .size_full()
@@ -117,21 +133,34 @@ fn cover_button(cover: Signal<Option<Cover>>, lyrics: Signal<bool>) -> Div {
                 .child(sized_icon(icons::ALBUM, 24.0))
                 .into_view()
         }),
-    });
+    })
+}
+
+/// `picture` as the button that opens the lyrics or closes them, with corners of `corner`.
+pub(crate) fn cover_toggle(
+    picture: impl IntoView,
+    corner: impl Fn() -> f32 + Copy + 'static,
+    lyrics: Signal<bool>,
+) -> Div {
+    let ink = Ink::new(|c| c.on_surface, || false);
+    let focused = ink.focused;
     // Over the picture, which would hide what is drawn under the children
-    let layer = ink.paint(div().absolute().inset(0.0_f32).rounded(COVER_CORNER));
+    let layer = ink.paint(
+        div()
+            .absolute()
+            .inset(0.0_f32)
+            .dyn_style(move |s| s.rounded(corner())),
+    );
     let root = div()
         .relative()
         .flex_none()
-        .w(COVER)
-        .h(COVER)
-        .rounded(COVER_CORNER)
         .overflow_clip()
         .select_none()
         .cursor(CursorIcon::Pointer)
         .focusable()
         .access(|a| a.role(Role::Button).label("Lyrics"))
         .dyn_style(move |s| {
+            let s = s.rounded(corner());
             if focused.get() {
                 s.outline(3.0_f32)
                     .outline_offset(2.0_f32)
@@ -151,6 +180,26 @@ fn small() -> IconButtonStyle {
 }
 
 fn transport(player: playback::Player, shown: Signal<PlayerSnapshot>) -> Div {
+    let has_song = memo(move || shown.with(PlayerSnapshot::has_song));
+    let controls = controls(player.clone(), shown);
+    let position = div().h(LANE).child(show(
+        move || has_song.get(),
+        move || position_line(player.clone(), shown),
+    ));
+    div()
+        .flex()
+        .flex_col()
+        .flex_none()
+        .gap(4.0_f32)
+        .w(pct(40.0))
+        .min_w(320.0_f32)
+        .max_w(560.0_f32)
+        .child(controls)
+        .child(position)
+}
+
+/// Shuffle, previous, play, next and repeat, in a row.
+pub(crate) fn controls(player: playback::Player, shown: Signal<PlayerSnapshot>) -> Div {
     let has_song = memo(move || shown.with(PlayerSnapshot::has_song));
     let is_playing = memo(move || shown.with(PlayerSnapshot::is_playing));
     let is_shuffled = memo(move || shown.with(PlayerSnapshot::is_shuffled));
@@ -207,7 +256,7 @@ fn transport(player: playback::Player, shown: Signal<PlayerSnapshot>) -> Div {
         a.label("Repeat").value_text(mode)
     });
 
-    let controls = div()
+    div()
         .flex()
         .flex_row()
         .items_center()
@@ -215,57 +264,49 @@ fn transport(player: playback::Player, shown: Signal<PlayerSnapshot>) -> Div {
         .gap(8.0_f32)
         .child(shuffle)
         .child(button_group([previous, play, next]))
-        .child(repeat_button);
-    let position = div().h(LANE).child(show(
-        move || has_song.get(),
-        move || position_line(player.clone(), shown),
-    ));
-    div()
-        .flex()
-        .flex_col()
-        .flex_none()
-        .gap(4.0_f32)
-        .w(pct(40.0))
-        .min_w(320.0_f32)
-        .max_w(560.0_f32)
-        .child(controls)
-        .child(position)
+        .child(repeat_button)
 }
 
 fn extras(player: playback::Player, shown: Signal<PlayerSnapshot>, panels: Panels) -> Div {
-    let has_song = memo(move || shown.with(PlayerSnapshot::has_song));
+    side()
+        .justify_end()
+        .gap(4.0_f32)
+        .child(format_text(shown).mr(8.0_f32))
+        .child(lyrics_toggle(shown, panels))
+        .child(queue_toggle(panels))
+        .child(volume(player, shown))
+}
+
+/// What the song is encoded in, cut off where there is no room for more.
+pub(crate) fn format_text(shown: Signal<PlayerSnapshot>) -> Div {
     let format = memo(move || shown.with(PlayerSnapshot::format_text));
-    let lyrics = icon_toggle_button(
-        icons::LYRICS,
-        panels.lyrics,
-        small().disabled_when(move || !has_song.get()),
-    )
-    .access(|a| a.label("Lyrics"));
-    let format = muted_text(TextStyle::LABEL_MEDIUM, move || {
+    muted_text(TextStyle::LABEL_MEDIUM, move || {
         format.get().unwrap_or_default()
     })
     .flex_shrink(1.0_f32)
     .min_w(0.0_f32)
     .overflow_clip()
     .whitespace_nowrap()
-    .mr(8.0_f32);
-    side()
-        .justify_end()
-        .gap(4.0_f32)
-        .child(format)
-        .child(lyrics)
-        .child(queue_toggle(panels))
-        .child(volume(player, shown))
+}
+
+pub(crate) fn lyrics_toggle(shown: Signal<PlayerSnapshot>, panels: Panels) -> Div {
+    let has_song = memo(move || shown.with(PlayerSnapshot::has_song));
+    icon_toggle_button(
+        icons::LYRICS,
+        panels.lyrics,
+        small().disabled_when(move || !has_song.get()),
+    )
+    .access(|a| a.label("Lyrics"))
 }
 
 /// Disabled where the queue does not fit, which it says while the pointer rests on it.
-fn queue_toggle(panels: Panels) -> Div {
+pub(crate) fn queue_toggle(panels: Panels) -> Div {
     let fits = memo(move || panels.queue_fits());
     let toggle = move || {
         icon_toggle_button(
             icons::QUEUE_MUSIC,
             Binding::new(
-                move || panels.is_queue_shown(),
+                move || panels.is_queue_in_view(),
                 move |_| panels.toggle_queue(),
             ),
             small().disabled_when(move || !fits.get()),

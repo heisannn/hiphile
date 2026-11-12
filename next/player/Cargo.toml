@@ -1,6 +1,6 @@
 [package]
 name = "next-player"
-description = "The player bar and the queue on AntiWebUI, and the colors taken from the cover of what plays."
+description = "The player bar, the queue and the lyrics on AntiWebUI, and the colors taken from the cover of what plays."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -9,8 +9,10 @@ license.workspace = true
 [dependencies]
 anti-webui.workspace = true
 anti-webui-md3e.workspace = true
+config.workspace = true
 executor.workspace = true
 hiphile-core.workspace = true
+lyrics.workspace = true
 next-host.workspace = true
 next-ui.workspace = true
 playback.workspace = true
@@ -22,6 +24,8 @@ tempfile = { workspace = true, optional = true }
 test-support = ["dep:tempfile"]
 
 [dev-dependencies]
+futures.workspace = true
+lyrics = { workspace = true, features = ["test-support"] }
 next-player = { path = ".", features = ["test-support"] }
 next-ui = { workspace = true, features = ["test-support"] }
 playback = { workspace = true, features = ["test-support"] }

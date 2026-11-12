@@ -14,7 +14,14 @@ pub const QUEUE_MAX_WIDTH: f32 = 448.0;
 pub struct Panels {
     /// Whether the queue is asked for. It shows only where it fits.
     pub queue: Signal<bool>,
+    /// Whether the lyrics are asked for. They show over all of the window.
     pub lyrics: Signal<bool>,
+    /// Whether any of the lyrics shows, coming or going, which then has the bar's cover.
+    pub(crate) lyrics_shown: Signal<bool>,
+    /// Whether the lyrics have come all the way and hide all that is under them.
+    pub(crate) lyrics_cover: Signal<bool>,
+    /// The bar's cover, which the lyrics' cover leaves from and comes back to.
+    pub(crate) bar_cover: NodeRef,
     /// The most the queue can be given beside the screens.
     queue_room: Signal<f32>,
     /// What the user made it, which less room makes it narrower than.
@@ -27,10 +34,18 @@ impl Panels {
         Self {
             queue: signal(false),
             lyrics: signal(false),
+            lyrics_shown: signal(false),
+            lyrics_cover: signal(false),
+            bar_cover: node_ref(),
             queue_room: signal(f32::INFINITY),
             queue_width: signal(QUEUE_WIDTH),
             queue_selection: Selection::new(),
         }
+    }
+
+    /// Whether the lyrics hide all that is under them, which then takes no keys. Tracks it.
+    pub fn is_covered(&self) -> bool {
+        self.lyrics_cover.get()
     }
 
     /// Tells the queue the most it can be given beside the screens, which the owner of the layout
@@ -50,9 +65,21 @@ impl Panels {
         self.queue.get() && self.queue_fits()
     }
 
-    /// Opens the queue or closes it, where it fits.
+    /// Whether the queue shows and the lyrics are not over it. Tracks it.
+    pub fn is_queue_in_view(&self) -> bool {
+        self.is_queue_shown() && !self.lyrics.get()
+    }
+
+    /// Opens the queue or closes it, where it fits. Under the lyrics, it closes them and shows
+    /// the queue.
     pub fn toggle_queue(&self) {
-        if untrack(|| self.queue_fits()) {
+        if !untrack(|| self.queue_fits()) {
+            return;
+        }
+        if self.lyrics.get_untracked() {
+            self.lyrics.set(false);
+            self.queue.set(true);
+        } else {
             self.queue.update(|open| *open = !*open);
         }
     }

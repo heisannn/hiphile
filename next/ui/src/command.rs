@@ -67,6 +67,7 @@ pub enum Command {
     ToggleShuffle,
     SetRepeat(RepeatMode),
     ToggleQueue,
+    ToggleLyrics,
     /// Asks for a name and makes a playlist of the songs in the queue.
     SaveQueue,
 }

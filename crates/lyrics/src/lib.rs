@@ -17,6 +17,12 @@ pub use model::{Lyrics, PlainLyrics, TimedLine, TimedLyrics, TimedTextElement};
 #[cfg(any(test, feature = "test-support"))]
 pub use musixmatch::lyrics_from_richsync_body;
 
+/// Lyrics of `text` with no timing, for the tests of what shows them.
+#[cfg(any(test, feature = "test-support"))]
+pub fn plain_lyrics(text: &str, copyright: Option<&str>) -> Lyrics {
+    Lyrics::Plain(PlainLyrics::new(text, copyright.map(Into::into)))
+}
+
 const ARTIST_SEPARATORS: [char; 5] = [',', '&', '，', '＆', '、'];
 
 /// Per provider, so that a song with a long list of artists does not take a long

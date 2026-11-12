@@ -17,6 +17,15 @@ pub(super) fn focused() -> Option<NodeId> {
     with_doc(|d| d.state.focused)
 }
 
+/// Moves the focus to `node` with the next update, if it is still in the window.
+pub(super) fn give(node: NodeId) {
+    with_doc(|d| {
+        if d.get(node).is_some() {
+            d.pending_focus = Some(Some(node));
+        }
+    });
+}
+
 pub(super) fn is_in_text_field() -> bool {
     with_doc(|d| {
         d.state

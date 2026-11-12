@@ -173,6 +173,15 @@ fn the_toggles_open_and_close_their_panels() {
         Some(Checked::True)
     );
 
+    // Under the lyrics, the queue shows instead
+    assert_eq!(
+        find(Role::ToggleButton, "Queue").unwrap().checked,
+        Some(Checked::False)
+    );
+    press(&mut bar.ui, Role::ToggleButton, "Queue");
+    assert!(!bar.panels.lyrics.get());
+    assert!(bar.panels.queue.get());
+
     press(&mut bar.ui, Role::ToggleButton, "Queue");
     assert!(!bar.panels.queue.get());
 }

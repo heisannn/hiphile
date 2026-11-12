@@ -63,6 +63,8 @@ pub(crate) struct Parts {
     pub(crate) cache: Option<PathBuf>,
     pub(crate) covers: Option<catalog::CoverStore>,
     pub(crate) song_cache: Option<playback::SongCache>,
+    /// In place of the lyrics services, for tests.
+    pub(crate) find_lyrics: Option<lyrics::FindLyrics>,
 }
 
 impl Workspace {
@@ -74,6 +76,7 @@ impl Workspace {
             cache,
             covers,
             song_cache,
+            find_lyrics,
         } = parts;
         let library = LibrarySync::new(executor.clone(), session.clone());
         let activity = LibraryActivity::new(executor.clone(), session.clone(), &library);
@@ -85,7 +88,15 @@ impl Workspace {
         let player = new_player(&executor, session.clone(), store, &audio, song_cache);
         #[cfg(not(feature = "desktop"))]
         drop(covers);
-        let finder = lyrics::Finder::with_cache(session.client().net().clone(), cache.as_deref());
+        let lyrics = match find_lyrics {
+            Some(find_lyrics) => {
+                lyrics::CurrentLyrics::with_find_lyrics(executor.clone(), find_lyrics)
+            }
+            None => lyrics::CurrentLyrics::new(
+                executor.clone(),
+                lyrics::Finder::with_cache(session.client().net().clone(), cache.as_deref()),
+            ),
+        };
         let recommendations = DailyRecommendations::new(executor.clone(), session.clone());
         let this = Self(Arc::new(Inner {
             profile,
@@ -101,7 +112,7 @@ impl Workspace {
             favorites: FavoritesState::new(executor.clone(), session.client().clone()),
             playlists: PlaylistsState::new(executor.clone(), session.clone()),
             player,
-            lyrics: lyrics::CurrentLyrics::new(executor.clone(), finder),
+            lyrics,
             session,
             executor,
             settings,

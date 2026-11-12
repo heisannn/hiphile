@@ -8,9 +8,9 @@ use std::time::Duration;
 use anti_webui::app::headless;
 use anti_webui::core::Ui;
 use anti_webui::core::event::NamedKey;
-use anti_webui::prelude::{Role, signal};
+use anti_webui::prelude::Role;
 use hiphile_core::test_support::HomeServer;
-use next_hiphile::{MenuBar, Reach, SMALLEST_WINDOW, WINDOW, app};
+use next_hiphile::{MenuBar, Reach, SMALLEST_WINDOW, System, WINDOW, app};
 use next_player::testing::png;
 use next_ui::testing::{find, frames, key, nodes, signed_in_core};
 
@@ -209,7 +209,7 @@ fn shot(
         width,
         height,
         SCALE,
-        move || app(hiphile, signal(dark), MenuBar::new(), Reach::Window),
+        move || app(hiphile, System::fixed(dark), MenuBar::new(), Reach::Window),
         |ui| {
             settle(ui);
             drive(ui);

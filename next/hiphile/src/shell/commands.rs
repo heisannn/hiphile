@@ -76,10 +76,25 @@ impl Shell {
     pub(super) fn run(&self, command: Command) {
         let workspace = &self.workspace;
         match command {
-            Command::Show(location) => self.navigation.go(location),
-            Command::ShowInPlace(location) => self.navigation.show_in_place(location),
-            Command::GoBack => self.navigation.back(),
-            Command::GoForward => self.navigation.forward(),
+            Command::Show(location) => {
+                self.close_lyrics();
+                self.navigation.go(location);
+            }
+            Command::ShowInPlace(location) => {
+                self.close_lyrics();
+                self.navigation.show_in_place(location);
+            }
+            // Out of the lyrics, back to where the window was
+            Command::GoBack => {
+                if !self.close_lyrics() {
+                    self.navigation.back();
+                }
+            }
+            Command::GoForward => {
+                if !untrack(|| self.panels.lyrics.get()) {
+                    self.navigation.forward();
+                }
+            }
             Command::OpenSettings => self.settings_open.set(true),
             Command::OpenSearch => self.search_open.set(true),
             // What could not play is told by the player's alerts
@@ -124,8 +139,24 @@ impl Shell {
             Command::ToggleShuffle => workspace.player().toggle_shuffle(),
             Command::SetRepeat(repeat) => workspace.player().set_repeat(repeat),
             Command::ToggleQueue => self.panels.toggle_queue(),
+            Command::ToggleLyrics => {
+                let lyrics = self.panels.lyrics;
+                if lyrics.get_untracked() || workspace.player().snapshot().has_song() {
+                    lyrics.set(!lyrics.get_untracked());
+                }
+            }
             Command::SaveQueue => self.save_queue(),
         }
+    }
+
+    /// Whether they were open.
+    fn close_lyrics(&self) -> bool {
+        let lyrics = self.panels.lyrics;
+        let was_open = lyrics.get_untracked();
+        if was_open {
+            lyrics.set(false);
+        }
+        was_open
     }
 
     fn save_queue(&self) {
