@@ -728,7 +728,7 @@ pub fn row_control(control: Div) -> Div {
 }
 
 /// The secondary button, or Control and the primary one on macOS.
-pub(crate) fn is_context_click(e: &PointerEvent) -> bool {
+pub fn is_context_click(e: &PointerEvent) -> bool {
     match e.button {
         Some(PointerButton::Secondary) => true,
         Some(PointerButton::Primary) => cfg!(target_os = "macos") && e.modifiers.ctrl,

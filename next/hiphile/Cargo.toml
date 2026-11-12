@@ -20,6 +20,7 @@ media-controls.workspace = true
 net.workspace = true
 next-account.workspace = true
 next-favorites.workspace = true
+next-home.workspace = true
 next-host.workspace = true
 next-platform.workspace = true
 next-player.workspace = true

@@ -5624,6 +5624,7 @@ dependencies = [
  "net",
  "next-account",
  "next-favorites",
+ "next-home",
  "next-host",
  "next-platform",
  "next-player",
@@ -5636,6 +5637,21 @@ dependencies = [
  "subsonic",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "next-home"
+version = "0.5.0"
+dependencies = [
+ "anti-webui",
+ "anti-webui-md3e",
+ "hiphile-core",
+ "next-host",
+ "next-player",
+ "next-ui",
+ "playback",
+ "serde_json",
+ "subsonic",
 ]
 
 [[package]]

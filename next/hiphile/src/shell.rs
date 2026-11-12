@@ -176,7 +176,7 @@ fn signed_in(
 /// What `destination` shows, which reads from `location` what is selected on it.
 fn screen(destination: Destination, _location: Signal<Location>, cx: &ScreenContext) -> Screen {
     match destination {
-        Destination::Home => empty(destination),
+        Destination::Home => next_home::home(cx),
         Destination::Artists => empty(destination),
         Destination::Albums => empty(destination),
         Destination::Songs => empty(destination),

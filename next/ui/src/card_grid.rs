@@ -139,6 +139,7 @@ pub struct Card {
     is_round: bool,
     title: String,
     details: Option<String>,
+    line: Option<Div>,
     selected: When,
     focused: When,
 }
@@ -151,6 +152,7 @@ impl Card {
             is_round: false,
             title: title.into(),
             details: None,
+            line: None,
             selected: Rc::new(|| false),
             focused: Rc::new(|| false),
         }
@@ -159,6 +161,13 @@ impl Card {
     /// A line below the title, such as the artist or the year.
     pub fn details(mut self, details: impl Into<String>) -> Self {
         self.details = Some(details.into());
+        self
+    }
+
+    /// A line below the title that is more than words, such as an artist that is a link
+    /// ([`crate::link::artist_line`]). It keeps its own colors.
+    pub fn line(mut self, line: Div) -> Self {
+        self.line = Some(line);
         self
     }
 
@@ -190,6 +199,7 @@ pub fn card(card: Card) -> Div {
         is_round,
         title,
         details,
+        line,
         selected,
         focused,
     } = card;
@@ -234,7 +244,8 @@ pub fn card(card: Card) -> Div {
                     })
                     .child(text(details)),
             )
-        }));
+        }))
+        .children(line);
     let ink = Ink::new(
         move |c| {
             if selected.get() && focused.get() {

@@ -45,6 +45,7 @@ updater = { path = "crates/updater" }
 
 next-account = { path = "next/account" }
 next-favorites = { path = "next/favorites" }
+next-home = { path = "next/home" }
 next-host = { path = "next/host" }
 next-platform = { path = "next/platform" }
 next-player = { path = "next/player" }

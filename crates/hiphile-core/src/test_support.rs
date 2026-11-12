@@ -1,9 +1,11 @@
 //! Fake servers and a session on them, for the tests of the core and of the views that follow it.
 
 mod favorites_server;
+mod home_server;
 mod playlists_server;
 
 pub use favorites_server::{FavoritesServer, song_json};
+pub use home_server::HomeServer;
 pub use playlists_server::{PlaylistsServer, Request};
 
 use std::sync::Arc;
