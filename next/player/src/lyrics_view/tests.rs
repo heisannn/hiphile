@@ -110,7 +110,7 @@ pub(super) fn stand(size: (i32, i32)) -> Stand {
                 .flex()
                 .flex_col()
                 .child(div().flex_1())
-                .child(player_bar(shown, signal(None), panels))
+                .child(player_bar(&cx, shown, signal(None), panels))
                 .child(lyrics_overlay(&cx, signal(None), panels, reduces_motion))
         },
         size,
@@ -319,7 +319,11 @@ fn the_details_have_the_song_its_favorite_and_its_controls() {
             .count()
     });
     assert_eq!(titles, 2);
-    assert!(find(Role::ToggleButton, "Favorite").is_some());
+    let favorites = nodes(Role::ToggleButton)
+        .into_iter()
+        .filter(|node| node.label.as_deref() == Some("Favorite"))
+        .count();
+    assert_eq!(favorites, 2);
     let shuffles = nodes(Role::ToggleButton)
         .into_iter()
         .filter(|node| node.label.as_deref() == Some("Shuffle"))

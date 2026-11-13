@@ -4,10 +4,14 @@ use std::rc::Rc;
 use anti_webui::core::Ui;
 use anti_webui::core::access::Checked;
 use anti_webui::core::event::NamedKey;
+use hiphile_core::test_support::FavoritesServer;
+use next_ui::Command;
 use next_ui::testing::{
-    NOWHERE, TestCore, find, focus, has_text, key, press, signed_in_core, start, wait_until,
+    NOWHERE, TestCore, find, focus, has_text, key, press, recording_commands, screen_context,
+    signed_in_core, start, wait_until,
 };
 use serde_json::json;
+use std::cell::RefCell;
 
 use super::*;
 
@@ -29,27 +33,36 @@ struct Bar {
     ui: Ui,
     player: playback::Player,
     panels: Panels,
+    sent: Rc<RefCell<Vec<Command>>>,
 }
 
 /// The bar of a player that `setup` has put in the state the test starts from, with that state
 /// shown.
 fn bar(setup: impl FnOnce(&playback::Player)) -> Bar {
-    let (core, hiphile) = signed_in_core(NOWHERE);
+    bar_on(NOWHERE, setup)
+}
+
+/// As [`bar`], on the workspace on `server`.
+fn bar_on(server: &str, setup: impl FnOnce(&playback::Player)) -> Bar {
+    let (core, hiphile) = signed_in_core(server);
     let player = hiphile.workspace().unwrap().player().clone();
     setup(&player);
     let panels = Rc::new(Cell::new(None));
     let kept = panels.clone();
     let shown = player.clone();
+    let (commands, sent) = recording_commands();
     let ui = start(move || {
         let panels = Panels::new();
         kept.set(Some(panels));
-        player_bar(shown, signal(None), panels)
+        let cx = screen_context(&hiphile, commands);
+        player_bar(&cx, shown, signal(None), panels)
     });
     Bar {
         _core: core,
         ui,
         player,
         panels: panels.get().unwrap(),
+        sent,
     }
 }
 
@@ -193,4 +206,31 @@ fn the_cover_opens_the_lyrics() {
     press(&mut bar.ui, Role::Button, "Show Lyrics");
     assert!(bar.panels.lyrics.get());
     assert!(find(Role::Button, "Hide Lyrics").is_some());
+}
+
+#[test]
+fn with_nothing_to_play_there_is_no_favorite() {
+    let _bar = bar(|_| {});
+
+    assert!(find(Role::ToggleButton, "Favorite").is_none());
+}
+
+#[test]
+fn the_favorite_beside_the_song_toggles_it() {
+    let server = FavoritesServer::new(&["a"]);
+    let mut bar = bar_on(server.url(), with_a_song);
+    wait_until(&mut bar.ui, || {
+        find(Role::ToggleButton, "Favorite").is_some_and(|node| !node.disabled)
+    });
+    assert_eq!(
+        find(Role::ToggleButton, "Favorite").unwrap().checked,
+        Some(Checked::True)
+    );
+
+    press(&mut bar.ui, Role::ToggleButton, "Favorite");
+
+    assert_eq!(
+        *bar.sent.borrow(),
+        [Command::ToggleFavorite(Favorite::Song(song("a")))]
+    );
 }

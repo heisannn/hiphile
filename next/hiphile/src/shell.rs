@@ -275,7 +275,7 @@ fn signed_in(
                             move || queue(&cx, panels).mr(GAP)
                         })),
                 )
-                .child(player_bar(player, cover, panels).mr(16))
+                .child(player_bar(&cx, player, cover, panels).mr(16))
                 .child(search(&cx, search_open)),
         )
         .child(lyrics_overlay(&cx, cover, panels, reduces_motion))
