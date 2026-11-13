@@ -8,10 +8,8 @@ use anti_webui::prelude::*;
 use anti_webui_md3e::color_scheme;
 use anti_webui_md3e::motion::{default_spatial, slow_effects};
 use anti_webui_md3e::typography::TextStyle;
-use hiphile_core::favorites::Favorite;
 use next_host::follow;
 use next_ui::cover::{cover_over, picture_at_once};
-use next_ui::favorite_button::favorite_button;
 use next_ui::keymap::{
     FocusBefore, KeyBinding, KeyContext, Keystroke, bind_keys, is_bound, key_context,
 };
@@ -22,7 +20,7 @@ use subsonic::Song;
 
 use crate::bar::{
     COVER_CORNER as BAR_COVER_CORNER, controls, cover_toggle, format_text, lyrics_toggle,
-    picture_of, queue_toggle, song_words,
+    picture_of, queue_toggle, song_favorite, song_words,
 };
 use crate::cover::Cover;
 use crate::panels::Panels;
@@ -389,19 +387,13 @@ fn details(
     panels: Panels,
 ) -> Div {
     let has_song = memo(move || playing.with(PlayerSnapshot::has_song));
-    let song = memo(move || playing.with(|shown| shown.current_song().cloned()));
-    let (commands, known) = (cx.commands.clone(), cx.known);
-    let favorite = dyn_view(move || match song.get() {
-        Some(song) => untrack(|| favorite_button(Favorite::Song(song), &commands, known)),
-        None => untrack(div),
-    });
     let header = div()
         .flex()
         .flex_row()
         .items_center()
         .gap(8.0_f32)
         .child(song_words(playing, TextStyle::TITLE_LARGE).flex_1())
-        .child(div().flex().flex_none().child(favorite));
+        .child(song_favorite(cx, playing));
     let position = {
         let player = player.clone();
         div().h(LANE).mt(16.0_f32).child(show(
