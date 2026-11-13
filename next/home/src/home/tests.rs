@@ -5,16 +5,15 @@ use std::time::Instant;
 use anti_webui::core::Ui;
 use anti_webui::core::event::WindowEvent;
 use anti_webui::core::geometry::{Scale, SizeI};
-use anti_webui::core::tree::{NodeKind, with_doc};
 use hiphile_core::favorites::Favorite;
 use hiphile_core::navigation::Location;
 use hiphile_core::test_support::HomeServer;
 use next_ui::cover::install_covers;
 use next_ui::keymap::Keystroke;
 use next_ui::testing::{
-    TestCore, click_text, double_click, find, focus, key, key_with, middle_of, nodes, press,
-    recording_commands, right_click, screen_context, shows_keys, signed_in_core, start_at,
-    wait_until,
+    TestCore, click_text, double_click, find, focus, has_text_starting, key, key_with, middle_of,
+    nodes, press, recording_commands, right_click, screen_context, shows_keys, signed_in_core,
+    start_at, wait_until,
 };
 use next_ui::{AlbumAction, Known};
 use playback::Placement;
@@ -197,14 +196,6 @@ fn selected_label() -> Option<String> {
     selected().map(|(label, _)| label)
 }
 
-fn shows_text_starting(start: &str) -> bool {
-    with_doc(|doc| {
-        doc.nodes.iter().any(
-            |(_, node)| matches!(&node.kind, NodeKind::Text(shown) if shown.text.starts_with(start)),
-        )
-    })
-}
-
 fn show_album(id: &str) -> Command {
     Command::Show(Location::Albums(Some(AlbumId::new(id))))
 }
@@ -222,7 +213,7 @@ fn a_server_with_no_albums_says_so() {
     let _shown = settled_home_on(server(&[], 0), SIX_ACROSS);
 
     assert_eq!(headings(), ["New albums"]);
-    assert!(shows_text_starting("None on this server"));
+    assert!(has_text_starting("None on this server"));
 }
 
 #[test]
@@ -552,7 +543,7 @@ fn key_reloads_the_recommendations(key: NamedKey) {
     wait_until(&mut shown.ui, || {
         server.asked("random") == 2
             && find(Role::Button, "Reload Recommendations").is_some()
-            && shows_text_starting("Couldn't get new recommendations.")
+            && has_text_starting("Couldn't get new recommendations.")
     });
     assert_eq!(options(), ["r0", "a0"]);
     assert!(shown.sent().is_empty());
