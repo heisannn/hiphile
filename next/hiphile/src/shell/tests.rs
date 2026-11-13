@@ -2,8 +2,8 @@ use anti_webui::core::event::{Key, Modifiers, NamedKey};
 use anti_webui::prelude::{Checked, Role};
 use next_player::testing::{CoverServer, png};
 use next_ui::testing::{
-    NOWHERE, SavedLibrary, core, find, focus, frames, has_text, key, key_with, nodes, press,
-    signed_in_core, signed_in_core_with_library, start, typed, wait_until,
+    NOWHERE, SavedLibrary, core, find, focus, frames, has_text, has_text_starting, key, key_with,
+    nodes, press, signed_in_core, signed_in_core_with_library, start, typed, wait_until,
 };
 use serde_json::json;
 
@@ -480,4 +480,14 @@ fn a_list_starts_as_wide_as_it_was_left() {
     press(&mut ui, Role::Button, "Albums");
 
     assert_eq!(list_width(), 400.0);
+}
+
+#[test]
+fn a_failed_sync_is_told_away_from_the_albums() {
+    let (_core, hiphile) = signed_in_core(NOWHERE);
+    let mut ui = start(move || app(hiphile, System::fixed(false), MenuBar::new(), Reach::Window));
+
+    wait_until(&mut ui, || {
+        has_text_starting(&format!("{}. ", hiphile_core::alerts::SYNC_FAILED))
+    });
 }

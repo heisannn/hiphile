@@ -308,6 +308,14 @@ pub fn has_text(text: &str) -> bool {
     })
 }
 
+pub fn has_text_starting(start: &str) -> bool {
+    with_doc(|doc| {
+        doc.nodes.iter().any(
+            |(_, node)| matches!(&node.kind, NodeKind::Text(shown) if shown.text.starts_with(start)),
+        )
+    })
+}
+
 /// The middle of the node that shows `text`, in the window.
 pub fn middle_of(text: &str) -> (f32, f32) {
     let id = with_doc(|doc| {

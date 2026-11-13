@@ -25,6 +25,7 @@ use next_ui::window::moves_window;
 use next_ui::{Command, Commands, Screen, ScreenContext, app_bar};
 
 use crate::MenuBar;
+use crate::alerts::tell_alerts;
 use crate::menu_bar::Shown;
 use crate::navigation::{Navigation, index_of};
 use crate::rail::rail;
@@ -84,6 +85,7 @@ pub fn app(hiphile: Hiphile, system: System, menu_bar: MenuBar, reach: Reach) ->
     let shown = follow(hiphile.subscribe());
     let workspace = memo(move || shown.with(|shown| shown.workspace().cloned()));
     let snackbars = snackbars();
+    tell_alerts(hiphile.alerts(), snackbars, || None);
     let settings_open = signal(false);
     let settings = settings_popup(hiphile.clone(), settings_open, schemes);
     body(div())
@@ -183,6 +185,9 @@ fn signed_in(
     let search_open = signal(false);
     let sign_in_request = signal(None);
     let top_end_width = signal(0.0_f32);
+    tell_alerts(workspace.alerts(), snackbars, move || {
+        Some(untrack(|| navigation.destination()))
+    });
     let shell = Shell::new(
         &hiphile,
         workspace,

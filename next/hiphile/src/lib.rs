@@ -1,5 +1,6 @@
 //! The app's one window: signing in, then the rail, the screens and what opens over them.
 
+mod alerts;
 pub mod menu_bar;
 mod navigation;
 mod rail;
