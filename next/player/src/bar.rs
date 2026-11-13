@@ -6,7 +6,10 @@ use anti_webui_md3e::components::{
 };
 use anti_webui_md3e::icons::{self, Symbol};
 use anti_webui_md3e::typography::TextStyle;
+use hiphile_core::favorites::Favorite;
 use next_host::follow;
+use next_ui::ScreenContext;
+use next_ui::favorite_button::favorite_button;
 use next_ui::focus_ring::focus_ring;
 use next_ui::row_text::faded_end;
 use next_ui::type_scale::{error_text, muted_text, styled_text};
@@ -22,8 +25,14 @@ use crate::volume::volume;
 const COVER: f32 = 56.0;
 pub(crate) const COVER_CORNER: f32 = 12.0;
 
-/// What `player` plays, with `cover` as its cover, and what controls it.
-pub fn player_bar(player: playback::Player, cover: Signal<Option<Cover>>, panels: Panels) -> Div {
+/// What `player` plays, with `cover` as its cover and the favorite beside it, and what controls
+/// it.
+pub fn player_bar(
+    cx: &ScreenContext,
+    player: playback::Player,
+    cover: Signal<Option<Cover>>,
+    panels: Panels,
+) -> Div {
     let shown = follow(player.subscribe());
     div()
         .flex()
@@ -33,7 +42,7 @@ pub fn player_bar(player: playback::Player, cover: Signal<Option<Cover>>, panels
         .gap(24.0_f32)
         .py(12.0_f32)
         .access(|a| a.role(Role::Toolbar).label("Player"))
-        .child(now_playing(shown, cover, panels))
+        .child(now_playing(cx, shown, cover, panels))
         .child(transport(player.clone(), shown, panels))
         .child(extras(player, shown, panels))
 }
@@ -49,7 +58,12 @@ fn side() -> Div {
         .flex_basis(0.0_f32)
 }
 
-fn now_playing(shown: Signal<PlayerSnapshot>, cover: Signal<Option<Cover>>, panels: Panels) -> Div {
+fn now_playing(
+    cx: &ScreenContext,
+    shown: Signal<PlayerSnapshot>,
+    cover: Signal<Option<Cover>>,
+    panels: Panels,
+) -> Div {
     let has_song = memo(move || shown.with(PlayerSnapshot::has_song));
     // The lane that gives way, as the other keeps the volume at the edge
     side()
@@ -60,6 +74,19 @@ fn now_playing(shown: Signal<PlayerSnapshot>, cover: Signal<Option<Cover>>, pane
             move || cover_button(cover, panels),
         ))
         .child(song_words(shown, TextStyle::TITLE_MEDIUM))
+        .child(song_favorite(cx, shown))
+}
+
+/// The button that makes the song a favorite or no longer one, which keeps its size as the words
+/// before it give way. Nothing while there is no song.
+pub(crate) fn song_favorite(cx: &ScreenContext, shown: Signal<PlayerSnapshot>) -> Div {
+    let song = memo(move || shown.with(|shown| shown.current_song().cloned()));
+    let (commands, known) = (cx.commands.clone(), cx.known);
+    let favorite = dyn_view(move || match song.get() {
+        Some(song) => untrack(|| favorite_button(Favorite::Song(song), &commands, known)),
+        None => untrack(div),
+    });
+    div().flex().flex_none().child(favorite)
 }
 
 /// The title of the song, in `style`, and under it the artist and the album, or the player's
